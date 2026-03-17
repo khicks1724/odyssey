@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Odyssey — Project Roadmap & Technical Bible</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=Fraunces:ital,wght@0,300;0,400;0,700;1,300;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #080c10;
+    --surface: #0d1219;
+    --surface2: #111820;
+    --border: #1e2a38;
+    --accent: #e8a235;
+    --accent2: #3b8eea;
+    --accent3: #52c98e;
+    --danger: #e85555;
+    --text: #d4dde8;
+    --muted: #5a6a7e;
+    --heading: #f0f4f8;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* Grain overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 1000;
+    opacity: 0.4;
+  }
+
+  /* HERO */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 80px 60px;
+    position: relative;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .hero::after {
+    content: '';
+    position: absolute;
+    top: -200px;
+    right: -200px;
+    width: 700px;
+    height: 700px;
+    background: radial-gradient(circle, rgba(232, 162, 53, 0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .hero-eyebrow {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 24px;
+    opacity: 0;
+    animation: fadeUp 0.6s ease forwards 0.1s;
+  }
+
+  .hero-title {
+    font-family: 'Fraunces', serif;
+    font-size: clamp(72px, 10vw, 140px);
+    font-weight: 700;
+    line-height: 0.9;
+    color: var(--heading);
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+    opacity: 0;
+    animation: fadeUp 0.7s ease forwards 0.2s;
+  }
+
+  .hero-title span {
+    color: var(--accent);
+    font-style: italic;
+  }
+
+  .hero-subtitle {
+    font-family: 'Fraunces', serif;
+    font-size: clamp(16px, 2vw, 22px);
+    font-weight: 300;
+    font-style: italic;
+    color: var(--muted);
+    margin-bottom: 60px;
+    max-width: 600px;
+    opacity: 0;
+    animation: fadeUp 0.7s ease forwards 0.35s;
+  }
+
+  .hero-meta {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    gap: 0;
+    width: fit-content;
+    border: 1px solid var(--border);
+    opacity: 0;
+    animation: fadeUp 0.7s ease forwards 0.5s;
+  }
+
+  .meta-item {
+    padding: 20px 32px;
+    border-right: 1px solid var(--border);
+  }
+  .meta-item:last-child { border-right: none; }
+
+  .meta-label {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .meta-value {
+    font-family: 'Syne', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--heading);
+  }
+
+  .meta-value.accent { color: var(--accent); }
+  .meta-value.blue { color: var(--accent2); }
+  .meta-value.green { color: var(--accent3); }
+
+  /* SECTION LAYOUT */
+  .section {
+    padding: 80px 60px;
+    border-bottom: 1px solid var(--border);
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 20px;
+    margin-bottom: 52px;
+  }
+
+  .section-num {
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  .section-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--heading);
+    letter-spacing: -0.01em;
+  }
+
+  /* STACK GRID */
+  .stack-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+
+  .stack-card {
+    background: var(--surface);
+    padding: 32px;
+    transition: background 0.2s;
+  }
+
+  .stack-card:hover { background: var(--surface2); }
+
+  .stack-layer {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  .stack-tech {
+    font-family: 'Syne', sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--heading);
+    margin-bottom: 8px;
+  }
+
+  .stack-reason {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .stack-tag {
+    display: inline-block;
+    margin-top: 12px;
+    padding: 3px 10px;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: 1px solid;
+  }
+
+  .tag-fast { color: var(--accent3); border-color: rgba(82, 201, 142, 0.3); }
+  .tag-free { color: var(--accent); border-color: rgba(232, 162, 53, 0.3); }
+  .tag-critical { color: var(--accent2); border-color: rgba(59, 142, 234, 0.3); }
+  .tag-later { color: var(--muted); border-color: var(--border); }
+
+  /* TIMELINE */
+  .timeline {
+    position: relative;
+    padding-left: 40px;
+  }
+
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    bottom: 8px;
+    width: 1px;
+    background: linear-gradient(to bottom, var(--accent), var(--accent2), var(--accent3), var(--border));
+  }
+
+  .timeline-phase {
+    position: relative;
+    margin-bottom: 52px;
+  }
+
+  .timeline-phase::before {
+    content: '';
+    position: absolute;
+    left: -36px;
+    top: 6px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg);
+  }
+
+  .timeline-phase:nth-child(2)::before { border-color: var(--accent2); }
+  .timeline-phase:nth-child(3)::before { border-color: var(--accent3); }
+  .timeline-phase:nth-child(4)::before { border-color: var(--muted); border-style: dashed; }
+
+  .phase-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  .phase-name {
+    font-family: 'Syne', sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--heading);
+  }
+
+  .phase-duration {
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding: 3px 12px;
+    border: 1px solid rgba(232, 162, 53, 0.3);
+  }
+
+  .phase-duration.blue { color: var(--accent2); border-color: rgba(59, 142, 234, 0.3); }
+  .phase-duration.green { color: var(--accent3); border-color: rgba(82, 201, 142, 0.3); }
+  .phase-duration.grey { color: var(--muted); border-color: var(--border); }
+
+  .week-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+
+  .week-card {
+    background: var(--surface);
+    padding: 24px 28px;
+  }
+
+  .week-num {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .week-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--heading);
+    margin-bottom: 14px;
+  }
+
+  .week-tasks {
+    list-style: none;
+  }
+
+  .week-tasks li {
+    position: relative;
+    padding-left: 16px;
+    margin-bottom: 5px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .week-tasks li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-size: 10px;
+  }
+
+  /* COST TABLE */
+  .cost-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--border);
+  }
+
+  .cost-table th {
+    background: var(--surface2);
+    padding: 14px 20px;
+    text-align: left;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cost-table td {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  .cost-table tr:last-child td { border-bottom: none; }
+  .cost-table tr:hover td { background: var(--surface); }
+
+  .cost-table td:last-child {
+    font-family: 'Syne', sans-serif;
+    font-weight: 600;
+    color: var(--heading);
+    text-align: right;
+  }
+
+  .cost-free { color: var(--accent3) !important; }
+  .cost-low { color: var(--accent) !important; }
+  .cost-total {
+    background: var(--surface2) !important;
+    font-family: 'Syne', sans-serif !important;
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    color: var(--heading) !important;
+  }
+
+  /* SCHEMA */
+  .schema-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 32px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    line-height: 1.8;
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .schema-block::before {
+    content: 'SQL';
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: var(--muted);
+  }
+
+  .sql-keyword { color: var(--accent2); }
+  .sql-type { color: var(--accent); }
+  .sql-comment { color: var(--muted); font-style: italic; }
+  .sql-string { color: var(--accent3); }
+
+  /* AI SECTION */
+  .ai-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+
+  .ai-card {
+    background: var(--surface);
+    padding: 32px;
+  }
+
+  .ai-card-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--heading);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ai-card-title::before {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+
+  .token-breakdown {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 20px 24px;
+    margin-top: 16px;
+  }
+
+  .token-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .token-row:last-child { border-bottom: none; font-weight: 700; color: var(--heading); }
+  .token-row span:last-child { color: var(--accent); font-family: 'Syne', sans-serif; }
+
+  /* PRINCIPLES */
+  .principles-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+
+  .principle {
+    background: var(--surface);
+    padding: 32px;
+  }
+
+  .principle-num {
+    font-family: 'Fraunces', serif;
+    font-size: 48px;
+    font-weight: 700;
+    color: var(--border);
+    line-height: 1;
+    margin-bottom: 16px;
+  }
+
+  .principle-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--heading);
+    margin-bottom: 10px;
+  }
+
+  .principle-body {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  /* MILESTONE TRACKER */
+  .milestone-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+  }
+
+  .milestone {
+    display: grid;
+    grid-template-columns: 120px 1fr 160px;
+    align-items: center;
+    background: var(--surface);
+    padding: 20px 28px;
+    gap: 24px;
+    transition: background 0.15s;
+  }
+
+  .milestone:hover { background: var(--surface2); }
+
+  .milestone-date {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+  }
+
+  .milestone-name {
+    font-family: 'Syne', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--heading);
+  }
+
+  .milestone-status {
+    text-align: right;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border: 1px solid;
+    width: fit-content;
+    margin-left: auto;
+  }
+
+  .status-now { color: var(--accent); border-color: rgba(232, 162, 53, 0.4); background: rgba(232, 162, 53, 0.05); }
+  .status-next { color: var(--accent2); border-color: rgba(59, 142, 234, 0.3); }
+  .status-future { color: var(--muted); border-color: var(--border); }
+  .status-stretch { color: var(--accent3); border-color: rgba(82, 201, 142, 0.3); }
+
+  /* FOOTER */
+  .footer {
+    padding: 60px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+  }
+
+  .footer strong {
+    font-family: 'Fraunces', serif;
+    font-size: 28px;
+    font-weight: 700;
+    font-style: italic;
+    color: var(--heading);
+    display: block;
+    margin-bottom: 12px;
+    letter-spacing: 0;
+  }
+
+  /* ANIMATIONS */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* NAV */
+  .nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: rgba(8, 12, 16, 0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 52px;
+  }
+
+  .nav-brand {
+    font-family: 'Fraunces', serif;
+    font-size: 18px;
+    font-weight: 700;
+    font-style: italic;
+    color: var(--heading);
+  }
+
+  .nav-brand span { color: var(--accent); }
+
+  .nav-links {
+    display: flex;
+    gap: 32px;
+    list-style: none;
+  }
+
+  .nav-links a {
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+
+  .nav-links a:hover { color: var(--accent); }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(232, 162, 53, 0.04);
+    padding: 20px 24px;
+    margin: 32px 0;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.7;
+  }
+
+  .callout.blue {
+    border-left-color: var(--accent2);
+    background: rgba(59, 142, 234, 0.04);
+  }
+
+  .callout strong {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    color: var(--heading);
+  }
+
+  @media (max-width: 900px) {
+    .stack-grid, .week-grid, .ai-grid, .principles-grid { grid-template-columns: 1fr; }
+    .milestone { grid-template-columns: 1fr; }
+    .hero-meta { grid-template-columns: repeat(2, 1fr); }
+    .section, .hero, .nav { padding-left: 24px; padding-right: 24px; }
+    .nav { padding: 0 24px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand"><span>Odyssey</span> — Project Bible</div>
+  <ul class="nav-links">
+    <li><a href="#stack">Stack</a></li>
+    <li><a href="#timeline">Timeline</a></li>
+    <li><a href="#costs">Costs</a></li>
+    <li><a href="#ai">AI Layer</a></li>
+    <li><a href="#schema">Schema</a></li>
+    <li><a href="#milestones">Milestones</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section class="hero" style="padding-top: 120px;">
+  <div class="hero-eyebrow">Project Document — Confidential — v1.0 — March 2026</div>
+  <h1 class="hero-title"><span>Odyssey</span></h1>
+  <p class="hero-subtitle">A unified project intelligence platform. One place for everything your team touches — and an AI that maps how it all came together.</p>
+  <div class="hero-meta">
+    <div class="meta-item">
+      <div class="meta-label">Team Size</div>
+      <div class="meta-value accent">2</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">Runway</div>
+      <div class="meta-value">3 Months</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">Month 1 Goal</div>
+      <div class="meta-value blue">UI Prototype</div>
+    </div>
+    <div class="meta-item">
+      <div class="meta-label">MVP Cost / Mo</div>
+      <div class="meta-value green">~$5</div>
+    </div>
+  </div>
+</section>
+
+<!-- STACK -->
+<section class="section" id="stack">
+  <div class="section-header">
+    <span class="section-num">01</span>
+    <h2 class="section-title">Technology Stack</h2>
+  </div>
+
+  <div class="callout">
+    <strong>Philosophy:</strong> One language end-to-end. Zero infrastructure complexity until we need it. Every choice optimizes for shipping speed and near-zero monthly cost during development.
+  </div>
+
+  <div class="stack-grid">
+    <div class="stack-card">
+      <div class="stack-layer">Frontend</div>
+      <div class="stack-tech">React + Vite</div>
+      <div class="stack-reason">TypeScript throughout. Vite's dev server is instant. Same codebase wraps into desktop via Tauri in Phase 3 — no rewrite needed.</div>
+      <span class="stack-tag tag-fast">Fast Dev</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Styling</div>
+      <div class="stack-tech">Tailwind CSS</div>
+      <div class="stack-reason">Utility-first means we build custom UI fast without fighting a component library. We control every pixel — important for Odyssey's design identity.</div>
+      <span class="stack-tag tag-fast">Ship Fast</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Backend API</div>
+      <div class="stack-tech">Node + Fastify</div>
+      <div class="stack-reason">TypeScript backend means one language everywhere. Fastify is 2x faster than Express with better schema validation. Handles webhooks from GitHub and Microsoft.</div>
+      <span class="stack-tag tag-critical">Core</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Database + Auth</div>
+      <div class="stack-tech">Supabase</div>
+      <div class="stack-reason">PostgreSQL + Auth + Realtime + file storage in one free tier. Handles GitHub OAuth and Microsoft OAuth out of the box. Scales to paid without migration.</div>
+      <span class="stack-tag tag-free">Free Tier</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">AI Intelligence</div>
+      <div class="stack-tech">Claude Sonnet</div>
+      <div class="stack-reason">claude-sonnet-4-5 via Anthropic API. Best intelligence-to-cost ratio for summarization, attribution, and deadline risk. ~$0.01 per project intelligence query.</div>
+      <span class="stack-tag tag-critical">Core Feature</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Hosting</div>
+      <div class="stack-tech">Vercel + Railway</div>
+      <div class="stack-reason">Vercel for the React frontend (free, instant deploys from GitHub). Railway for the Node API (~$5/mo). Both have zero-config deployments — no DevOps time wasted.</div>
+      <span class="stack-tag tag-free">~$5/mo</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Integrations</div>
+      <div class="stack-tech">GitHub API v3</div>
+      <div class="stack-reason">Mature REST + GraphQL APIs. Webhooks for real-time commit events. OAuth scopes let us read repos without storing credentials. Free for public and private repos.</div>
+      <span class="stack-tag tag-free">Free</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Microsoft 365</div>
+      <div class="stack-tech">Microsoft Graph</div>
+      <div class="stack-reason">Single API surface for Teams, OneDrive, SharePoint, OneNote, and Calendar. OAuth 2.0 delegated permissions. Free tier covers everything we need at MVP scale.</div>
+      <span class="stack-tag tag-fast">Phase 2</span>
+    </div>
+    <div class="stack-card">
+      <div class="stack-layer">Desktop (Phase 3)</div>
+      <div class="stack-tech">Tauri</div>
+      <div class="stack-reason">Rust-based Electron alternative. Same React frontend, native desktop wrapper, 10MB app size vs Electron's 150MB. We add this in Month 3 with zero frontend changes required.</div>
+      <span class="stack-tag tag-later">Month 3</span>
+    </div>
+  </div>
+</section>
+
+<!-- TIMELINE -->
+<section class="section" id="timeline">
+  <div class="section-header">
+    <span class="section-num">02</span>
+    <h2 class="section-title">Build Timeline</h2>
+  </div>
+
+  <div class="timeline">
+
+    <!-- PHASE 1 -->
+    <div class="timeline-phase">
+      <div class="phase-header">
+        <div class="phase-name">Phase 1 — Foundation & UI Prototype</div>
+        <span class="phase-duration">Weeks 1–4 · Month 1</span>
+      </div>
+      <div class="week-grid">
+        <div class="week-card">
+          <div class="week-num">Week 1</div>
+          <div class="week-title">Project Scaffolding</div>
+          <ul class="week-tasks">
+            <li>Init React + Vite + TypeScript repo</li>
+            <li>Supabase project setup + schema v1</li>
+            <li>GitHub OAuth login flow</li>
+            <li>Basic routing (dashboard, project, settings)</li>
+            <li>Deploy skeleton to Vercel</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 2</div>
+          <div class="week-title">Core UI Components</div>
+          <ul class="week-tasks">
+            <li>Design system: colors, typography, spacing tokens</li>
+            <li>Sidebar nav + project switcher</li>
+            <li>Project creation modal + member invite</li>
+            <li>Activity feed component (static data)</li>
+            <li>Timeline / Gantt skeleton component</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 3</div>
+          <div class="week-title">Dashboard & Project Views</div>
+          <ul class="week-tasks">
+            <li>Project overview page — goals, members, status</li>
+            <li>Contribution graph component (GitHub-style)</li>
+            <li>Deadline tracker widget with progress bars</li>
+            <li>Member contribution cards</li>
+            <li>Mock data layer so everything looks real</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 4</div>
+          <div class="week-title">AI Panel + First Integration</div>
+          <ul class="week-tasks">
+            <li>Connect GitHub repo to a project (real data)</li>
+            <li>Pull + display real commits in activity feed</li>
+            <li>AI summary panel — first Claude API call</li>
+            <li>Prompt: "Summarize recent project activity"</li>
+            <li>End-of-month: clickable prototype with real GitHub data</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- PHASE 2 -->
+    <div class="timeline-phase">
+      <div class="phase-header">
+        <div class="phase-name">Phase 2 — Intelligence & Microsoft Integration</div>
+        <span class="phase-duration blue">Weeks 5–8 · Month 2</span>
+      </div>
+      <div class="week-grid">
+        <div class="week-card">
+          <div class="week-num">Week 5</div>
+          <div class="week-title">Unified Event Schema</div>
+          <ul class="week-tasks">
+            <li>Build the central events table in Supabase</li>
+            <li>GitHub webhook → normalize to events</li>
+            <li>Event ingestion API endpoint</li>
+            <li>Realtime subscription on frontend</li>
+            <li>Live activity feed — commits appear instantly</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 6</div>
+          <div class="week-title">Microsoft Graph</div>
+          <ul class="week-tasks">
+            <li>Microsoft OAuth login + Graph permissions</li>
+            <li>Teams channel messages → events</li>
+            <li>OneDrive file change detection</li>
+            <li>OneNote section read + summarize</li>
+            <li>Meeting notes ingestion</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 7</div>
+          <div class="week-title">AI Contribution Mapping</div>
+          <ul class="week-tasks">
+            <li>Per-member contribution analysis via Claude</li>
+            <li>Claude maps who did what and when</li>
+            <li>Project area attribution (frontend, docs, meetings)</li>
+            <li>Timeline narrative: "Here's how the project evolved"</li>
+            <li>Contribution heatmap visualization</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 8</div>
+          <div class="week-title">Deadline Intelligence</div>
+          <ul class="week-tasks">
+            <li>Velocity calculation from historical event density</li>
+            <li>Claude: "Are we on track for this deadline?"</li>
+            <li>Risk score per goal (on track / at risk / behind)</li>
+            <li>Projected completion date based on pace</li>
+            <li>Deadline alert system</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- PHASE 3 -->
+    <div class="timeline-phase">
+      <div class="phase-header">
+        <div class="phase-name">Phase 3 — Polish, Desktop & Beta</div>
+        <span class="phase-duration green">Weeks 9–12 · Month 3</span>
+      </div>
+      <div class="week-grid">
+        <div class="week-card">
+          <div class="week-num">Week 9</div>
+          <div class="week-title">UI Polish</div>
+          <ul class="week-tasks">
+            <li>Animations + transitions throughout</li>
+            <li>Empty states, loading skeletons, error handling</li>
+            <li>Mobile responsiveness</li>
+            <li>Onboarding flow for new projects</li>
+            <li>Keyboard shortcuts</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 10</div>
+          <div class="week-title">Notifications + Settings</div>
+          <ul class="week-tasks">
+            <li>Email digests (weekly project summary from Claude)</li>
+            <li>In-app notifications for deadline risks</li>
+            <li>User settings + preferences</li>
+            <li>Integration management page</li>
+            <li>Project export (PDF report)</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 11</div>
+          <div class="week-title">Tauri Desktop Wrapper</div>
+          <ul class="week-tasks">
+            <li>Tauri setup + Rust backend scaffold</li>
+            <li>macOS + Windows build pipelines</li>
+            <li>System tray notifications</li>
+            <li>Native file system access for local docs</li>
+            <li>Auto-update mechanism</li>
+          </ul>
+        </div>
+        <div class="week-card">
+          <div class="week-num">Week 12</div>
+          <div class="week-title">Beta Launch</div>
+          <ul class="week-tasks">
+            <li>Performance audit + query optimization</li>
+            <li>Security review (auth flows, API keys)</li>
+            <li>First 5 real users onboarded</li>
+            <li>Feedback collection system</li>
+            <li>v1.0 tag + public landing page</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- COSTS -->
+<section class="section" id="costs">
+  <div class="section-header">
+    <span class="section-num">03</span>
+    <h2 class="section-title">Cost Model</h2>
+  </div>
+
+  <table class="cost-table">
+    <thead>
+      <tr>
+        <th>Service</th>
+        <th>What It Covers</th>
+        <th>Free Tier Limit</th>
+        <th>Monthly Cost (MVP)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Supabase</td>
+        <td>PostgreSQL, Auth, Realtime, Storage</td>
+        <td>500MB DB, 2GB storage, 50K MAUs</td>
+        <td class="cost-free">$0</td>
+      </tr>
+      <tr>
+        <td>Vercel</td>
+        <td>React frontend hosting, CDN, preview deploys</td>
+        <td>Unlimited personal projects</td>
+        <td class="cost-free">$0</td>
+      </tr>
+      <tr>
+        <td>Railway</td>
+        <td>Node API server</td>
+        <td>$5 credit/mo</td>
+        <td class="cost-low">~$0–5</td>
+      </tr>
+      <tr>
+        <td>GitHub API</td>
+        <td>Repo data, commits, webhooks</td>
+        <td>5,000 req/hr</td>
+        <td class="cost-free">$0</td>
+      </tr>
+      <tr>
+        <td>Microsoft Graph</td>
+        <td>Teams, OneDrive, OneNote, Calendar</td>
+        <td>Unlimited for delegated auth</td>
+        <td class="cost-free">$0</td>
+      </tr>
+      <tr>
+        <td>Anthropic API</td>
+        <td>Claude Sonnet — AI intelligence queries</td>
+        <td>Pay per use</td>
+        <td class="cost-low">~$1–5</td>
+      </tr>
+      <tr>
+        <td>Domain + SSL</td>
+        <td>odyssey.app or similar + HTTPS</td>
+        <td>Vercel provides free SSL</td>
+        <td class="cost-low">~$1 (domain)</td>
+      </tr>
+      <tr>
+        <td colspan="3" style="font-family: 'Syne', sans-serif; font-weight: 700; font-size: 13px; color: var(--heading);">Total During Development (1 active user)</td>
+        <td class="cost-total cost-green">$2–11 / mo</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout blue" style="margin-top: 32px;">
+    <strong>Scaling note:</strong> At 50 active users, costs rise to roughly $55–80/mo. At that point a $12–15/user/month subscription tier covers everything with margin. The unit economics are strong from day one.
+  </div>
+</section>
+
+<!-- AI LAYER -->
+<section class="section" id="ai">
+  <div class="section-header">
+    <span class="section-num">04</span>
+    <h2 class="section-title">AI Layer — Claude Integration</h2>
+  </div>
+
+  <div class="ai-grid">
+    <div class="ai-card">
+      <div class="ai-card-title">Token Budget Per Query</div>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px;">What gets sent to Claude for a typical "project status" request:</p>
+      <div class="token-breakdown">
+        <div class="token-row"><span>System prompt + project context</span><span>~500 tokens</span></div>
+        <div class="token-row"><span>Last 20 GitHub commits</span><span>~800 tokens</span></div>
+        <div class="token-row"><span>Recent Teams / doc events</span><span>~600 tokens</span></div>
+        <div class="token-row"><span>Goals + deadlines JSON</span><span>~400 tokens</span></div>
+        <div class="token-row"><span>User's question</span><span>~30 tokens</span></div>
+        <div class="token-row"><span>Claude's response (output)</span><span>~400 tokens</span></div>
+        <div class="token-row"><span>Total per query</span><span>~2,730 tokens</span></div>
+      </div>
+    </div>
+
+    <div class="ai-card">
+      <div class="ai-card-title">Cost Per User Per Month</div>
+      <p style="font-size: 12px; color: var(--muted); margin-bottom: 12px;">At claude-sonnet-4-5 pricing ($3/M input, $15/M output):</p>
+      <div class="token-breakdown">
+        <div class="token-row"><span>Cost per query (input)</span><span>~$0.007</span></div>
+        <div class="token-row"><span>Cost per query (output)</span><span>~$0.006</span></div>
+        <div class="token-row"><span>Cost per query (total)</span><span>~$0.013</span></div>
+        <div class="token-row"><span>3 queries/day × 30 days</span><span>~$1.17/mo</span></div>
+        <div class="token-row"><span>5 queries/day × 30 days</span><span>~$1.95/mo</span></div>
+        <div class="token-row"><span>Break-even at $15/mo subscription</span><span>> 750 queries</span></div>
+        <div class="token-row"><span>Margin at avg usage</span><span>> 85%</span></div>
+      </div>
+    </div>
+
+    <div class="ai-card">
+      <div class="ai-card-title">AI Query Types — Phase 1</div>
+      <ul class="week-tasks" style="list-style: none;">
+        <li style="padding-left: 16px; position: relative; margin-bottom: 8px; font-size: 12px; color: var(--muted);">
+          <span style="position: absolute; left: 0; color: var(--accent);">→</span>
+          <strong style="color: var(--text);">Activity Summary</strong> — "What happened on this project this week?"
+        </li>
+        <li style="padding-left: 16px; position: relative; margin-bottom: 8px; font-size: 12px; color: var(--muted);">
+          <span style="position: absolute; left: 0; color: var(--accent);">→</span>
+          <strong style="color: var(--text);">Deadline Risk</strong> — "Are we on track to hit our March 30 deadline?"
+        </li>
+        <li style="padding-left: 16px; position: relative; margin-bottom: 8px; font-size: 12px; color: var(--muted);">
+          <span style="position: absolute; left: 0; color: var(--accent);">→</span>
+          <strong style="color: var(--text);">Contribution Attribution</strong> — "Who drove the most progress on the backend?"
+        </li>
+        <li style="padding-left: 16px; position: relative; margin-bottom: 8px; font-size: 12px; color: var(--muted);">
+          <span style="position: absolute; left: 0; color: var(--accent);">→</span>
+          <strong style="color: var(--text);">Weekly Digest</strong> — Email narrative of the project's progress
+        </li>
+        <li style="padding-left: 16px; position: relative; margin-bottom: 8px; font-size: 12px; color: var(--muted);">
+          <span style="position: absolute; left: 0; color: var(--accent);">→</span>
+          <strong style="color: var(--text);">Project History</strong> — "Tell the story of how this project came together"
+        </li>
+      </ul>
+    </div>
+
+    <div class="ai-card">
+      <div class="ai-card-title">Prompt Architecture Strategy</div>
+      <p style="font-size: 12px; color: var(--muted); line-height: 1.7;">
+        Claude gets a structured JSON payload — never raw log data. We pre-process events into a normalized summary before sending. This keeps tokens low and responses sharp.<br><br>
+        Each query type has its own system prompt template. Project-level context is cached — we don't re-send the full project description on every query, only the delta since last call.<br><br>
+        <strong style="color: var(--text);">Key rule:</strong> Never send more than 4,000 input tokens per query during MVP. If the project is large, we summarize older events before including them. This caps worst-case cost at ~$0.10 per query.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- SCHEMA -->
+<section class="section" id="schema">
+  <div class="section-header">
+    <span class="section-num">05</span>
+    <h2 class="section-title">Core Database Schema</h2>
+  </div>
+
+  <div class="callout">
+    <strong>The most important decision in this entire codebase.</strong> A unified events table is what makes Odyssey work. Every source — GitHub, Teams, OneDrive, OneNote — normalizes into this one structure. The AI layer reads only from here.
+  </div>
+
+  <div class="schema-block">
+<span class="sql-comment">-- The unified event log. Every integration writes here.</span>
+<span class="sql-keyword">CREATE TABLE</span> events (
+  id          <span class="sql-type">UUID</span>        <span class="sql-keyword">PRIMARY KEY DEFAULT</span> gen_random_uuid(),
+  project_id  <span class="sql-type">UUID</span>        <span class="sql-keyword">REFERENCES</span> projects(id) <span class="sql-keyword">ON DELETE CASCADE</span>,
+  actor_id    <span class="sql-type">UUID</span>        <span class="sql-keyword">REFERENCES</span> users(id),
+  source      <span class="sql-type">TEXT</span>        <span class="sql-keyword">NOT NULL</span>, <span class="sql-comment">-- 'github' | 'teams' | 'onedrive' | 'onenote' | 'manual'</span>
+  event_type  <span class="sql-type">TEXT</span>        <span class="sql-keyword">NOT NULL</span>, <span class="sql-comment">-- 'commit' | 'message' | 'file_edit' | 'note' | 'meeting'</span>
+  title       <span class="sql-type">TEXT</span>,
+  summary     <span class="sql-type">TEXT</span>,                    <span class="sql-comment">-- pre-processed for AI context</span>
+  metadata    <span class="sql-type">JSONB</span>,                   <span class="sql-comment">-- source-specific raw data</span>
+  occurred_at <span class="sql-type">TIMESTAMPTZ</span> <span class="sql-keyword">NOT NULL</span>,
+  created_at  <span class="sql-type">TIMESTAMPTZ</span> <span class="sql-keyword">DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Projects</span>
+<span class="sql-keyword">CREATE TABLE</span> projects (
+  id          <span class="sql-type">UUID</span>  <span class="sql-keyword">PRIMARY KEY DEFAULT</span> gen_random_uuid(),
+  name        <span class="sql-type">TEXT</span>  <span class="sql-keyword">NOT NULL</span>,
+  description <span class="sql-type">TEXT</span>,
+  owner_id    <span class="sql-type">UUID</span>  <span class="sql-keyword">REFERENCES</span> users(id),
+  created_at  <span class="sql-type">TIMESTAMPTZ DEFAULT</span> now()
+);
+
+<span class="sql-comment">-- Goals with deadline tracking</span>
+<span class="sql-keyword">CREATE TABLE</span> goals (
+  id          <span class="sql-type">UUID</span>   <span class="sql-keyword">PRIMARY KEY DEFAULT</span> gen_random_uuid(),
+  project_id  <span class="sql-type">UUID</span>   <span class="sql-keyword">REFERENCES</span> projects(id),
+  title       <span class="sql-type">TEXT</span>   <span class="sql-keyword">NOT NULL</span>,
+  deadline    <span class="sql-type">DATE</span>,
+  status      <span class="sql-type">TEXT</span>   <span class="sql-keyword">DEFAULT</span> <span class="sql-string">'active'</span>, <span class="sql-comment">-- 'active' | 'at_risk' | 'complete' | 'missed'</span>
+  risk_score  <span class="sql-type">FLOAT</span>,                  <span class="sql-comment">-- 0.0–1.0, updated by AI analysis</span>
+  progress    <span class="sql-type">INT DEFAULT</span> 0          <span class="sql-comment">-- 0–100</span>
+);
+
+<span class="sql-comment">-- Connected integrations per project</span>
+<span class="sql-keyword">CREATE TABLE</span> integrations (
+  id          <span class="sql-type">UUID</span>  <span class="sql-keyword">PRIMARY KEY DEFAULT</span> gen_random_uuid(),
+  project_id  <span class="sql-type">UUID</span>  <span class="sql-keyword">REFERENCES</span> projects(id),
+  type        <span class="sql-type">TEXT</span>  <span class="sql-keyword">NOT NULL</span>, <span class="sql-comment">-- 'github' | 'teams' | 'onedrive'</span>
+  config      <span class="sql-type">JSONB</span>,          <span class="sql-comment">-- repo name, channel ID, folder path etc.</span>
+  token_ref   <span class="sql-type">TEXT</span>            <span class="sql-comment">-- reference to encrypted token in vault</span>
+);
+  </div>
+</section>
+
+<!-- MILESTONES -->
+<section class="section" id="milestones">
+  <div class="section-header">
+    <span class="section-num">06</span>
+    <h2 class="section-title">Key Milestones</h2>
+  </div>
+
+  <div class="milestone-list">
+    <div class="milestone">
+      <div class="milestone-date">Week 1</div>
+      <div class="milestone-name">Repo live, Supabase connected, GitHub login works</div>
+      <div class="milestone-status status-now">Start Here</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 2</div>
+      <div class="milestone-name">Design system established, core UI components built</div>
+      <div class="milestone-status status-next">Up Next</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 4</div>
+      <div class="milestone-name">✦ End of Month 1 — Clickable prototype + real GitHub data + first Claude query</div>
+      <div class="milestone-status status-next">Month 1 Goal</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 5</div>
+      <div class="milestone-name">Unified events table live — all sources normalize here</div>
+      <div class="milestone-status status-future">Phase 2</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 6</div>
+      <div class="milestone-name">Microsoft Graph connected — Teams + OneDrive flowing in</div>
+      <div class="milestone-status status-future">Phase 2</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 8</div>
+      <div class="milestone-name">✦ AI deadline risk scores live — Odyssey predicts project health</div>
+      <div class="milestone-status status-future">Phase 2</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 11</div>
+      <div class="milestone-name">Tauri desktop app — macOS + Windows builds shipping</div>
+      <div class="milestone-status status-stretch">Phase 3</div>
+    </div>
+    <div class="milestone">
+      <div class="milestone-date">Week 12</div>
+      <div class="milestone-name">✦ v1.0 Beta — first real users onboarded, public landing page live</div>
+      <div class="milestone-status status-stretch">Launch</div>
+    </div>
+  </div>
+</section>
+
+<!-- PRINCIPLES -->
+<section class="section">
+  <div class="section-header">
+    <span class="section-num">07</span>
+    <h2 class="section-title">Build Principles</h2>
+  </div>
+
+  <div class="principles-grid">
+    <div class="principle">
+      <div class="principle-num">01</div>
+      <div class="principle-title">Unified Event Schema First</div>
+      <div class="principle-body">Every integration — GitHub, Teams, OneDrive, OneNote — writes to one events table with a consistent shape. Don't let this slip. It's the foundation everything else is built on.</div>
+    </div>
+    <div class="principle">
+      <div class="principle-num">02</div>
+      <div class="principle-title">Ship Real Data Fast</div>
+      <div class="principle-body">Mock data is fine for UI weeks 1–2. But by Week 4, Claude must be looking at real GitHub commits. Fake data creates fake confidence. Real data reveals real problems early.</div>
+    </div>
+    <div class="principle">
+      <div class="principle-num">03</div>
+      <div class="principle-title">Cap AI Token Cost</div>
+      <div class="principle-body">Every Claude query gets a 4,000 input token budget. Pre-process and summarize before sending. Never stream raw event logs to the API. This keeps costs predictable at any scale.</div>
+    </div>
+    <div class="principle">
+      <div class="principle-num">04</div>
+      <div class="principle-title">Desktop is a Wrapper, Not a Rewrite</div>
+      <div class="principle-body">Tauri wraps the React frontend. No native-specific code in the UI layer. When we add the desktop build in Week 11, the frontend ships unchanged. This is why we choose Tauri over Electron alternatives.</div>
+    </div>
+    <div class="principle">
+      <div class="principle-num">05</div>
+      <div class="principle-title">Never Store OAuth Tokens in DB</div>
+      <div class="principle-body">GitHub and Microsoft access tokens go in Supabase Vault (encrypted secrets), never in the integrations table directly. token_ref holds a key name, not the token itself. Non-negotiable for security.</div>
+    </div>
+    <div class="principle">
+      <div class="principle-num">06</div>
+      <div class="principle-title">One Language Everywhere</div>
+      <div class="principle-body">TypeScript from the React component to the Fastify route to the Supabase type. No context switching. No Python microservices until we genuinely need heavy data science. Shipping speed over architectural elegance.</div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <strong>Odyssey</strong>
+  Project Bible v1.0 · Built by Kyle & Claude · March 2026<br>
+  <span style="color: var(--accent); margin-top: 8px; display: block;">Start with Week 1. Ship something real every Friday.</span>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,31 @@
+import { Github } from 'lucide-react';
+import { useAuth } from '../lib/auth';
+
+export default function LoginPage() {
+  const { signInWithGitHub } = useAuth();
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-6">
+      <div className="text-center max-w-md">
+        <h1 className="font-serif text-6xl font-bold italic text-heading mb-3">
+          <span className="text-accent">Odyssey</span>
+        </h1>
+        <p className="font-serif text-lg text-muted italic mb-12">
+          A unified project intelligence platform
+        </p>
+
+        <button
+          onClick={signInWithGitHub}
+          className="inline-flex items-center gap-3 px-8 py-3 border border-border bg-surface hover:bg-surface2 text-heading font-sans font-semibold text-sm tracking-wide transition-colors rounded-md"
+        >
+          <Github size={18} />
+          Sign in with GitHub
+        </button>
+
+        <p className="mt-8 text-xs text-muted tracking-wider">
+          ONE PLACE FOR EVERYTHING YOUR TEAM TOUCHES
+        </p>
+      </div>
+    </div>
+  );
+}
