@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { healthRoutes } from './routes/health.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { githubRoutes } from './routes/github.js';
+import { aiRoutes } from './routes/ai.js';
 
 const server = Fastify({ logger: true });
 
@@ -12,6 +14,8 @@ await server.register(cors, {
 // Routes
 await server.register(healthRoutes, { prefix: '/api' });
 await server.register(webhookRoutes, { prefix: '/api/webhooks' });
+await server.register(githubRoutes, { prefix: '/api' });
+await server.register(aiRoutes, { prefix: '/api' });
 
 const port = Number(process.env.PORT) || 3001;
 const host = process.env.HOST ?? '0.0.0.0';

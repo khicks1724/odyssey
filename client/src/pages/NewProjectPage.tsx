@@ -1,16 +1,26 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useProjects } from '../hooks/useProjects';
 
 export default function NewProjectPage() {
   const navigate = useNavigate();
+  const { createProject } = useProjects();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // TODO: Create project in Supabase
-    console.log('Creating project:', { name, description });
-    navigate('/projects');
+    setSaving(true);
+    setError(null);
+    try {
+      const project = await createProject(name, description);
+      navigate(`/projects/${project.id}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to create project');
+      setSaving(false);
+    }
   };
 
   return (
@@ -28,6 +38,11 @@ export default function NewProjectPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
+        {error && (
+          <div className="px-4 py-3 border border-danger/30 bg-danger/5 text-danger text-xs font-mono rounded">
+            {error}
+          </div>
+        )}
         <div>
           <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
             Project Name
@@ -58,9 +73,10 @@ export default function NewProjectPage() {
         <div className="flex gap-3 pt-4">
           <button
             type="submit"
-            className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md"
+            disabled={saving}
+            className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
           >
-            Create Project
+            {saving ? 'Creating…' : 'Create Project'}
           </button>
           <button
             type="button"

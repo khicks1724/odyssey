@@ -1,43 +1,33 @@
+import { useState } from 'react';
 import { useAuth } from '../lib/auth';
-import { Github, Monitor, Bell, Palette, Shield } from 'lucide-react';
-
-const settingSections = [
-  {
-    title: 'Account',
-    icon: Shield,
-    items: [
-      { label: 'Email', value: 'Loading...', editable: false },
-      { label: 'Display Name', value: '', editable: true },
-    ],
-  },
-  {
-    title: 'Integrations',
-    icon: Github,
-    items: [
-      { label: 'GitHub', value: 'Connected via OAuth', editable: false },
-      { label: 'Microsoft 365', value: 'Not connected', editable: false },
-    ],
-  },
-  {
-    title: 'Preferences',
-    icon: Palette,
-    items: [
-      { label: 'Theme', value: 'Dark (only option, obviously)', editable: false },
-      { label: 'Timezone', value: 'Auto-detect', editable: false },
-    ],
-  },
-  {
-    title: 'Notifications',
-    icon: Bell,
-    items: [
-      { label: 'Deadline Alerts', value: 'Enabled', editable: false },
-      { label: 'Weekly Digest', value: 'Enabled', editable: false },
-    ],
-  },
-];
+import { useProfile } from '../hooks/useProfile';
+import { Github, Monitor, Bell, Palette, Shield, Check } from 'lucide-react';
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const { profile, updateProfile } = useProfile();
+  const [displayName, setDisplayName] = useState('');
+  const [nameLoaded, setNameLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Load profile display name once
+  if (profile && !nameLoaded) {
+    setDisplayName(profile.display_name ?? '');
+    setNameLoaded(true);
+  }
+
+  const handleSaveName = async () => {
+    setSaving(true);
+    try {
+      await updateProfile({ display_name: displayName });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // silently fail for now
+    }
+    setSaving(false);
+  };
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
@@ -51,26 +41,92 @@ export default function SettingsPage() {
       </div>
 
       <div className="space-y-px border border-border bg-border">
-        {settingSections.map((section) => (
-          <div key={section.title} className="bg-surface p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <section.icon size={14} className="text-accent" />
-              <h2 className="font-sans text-sm font-bold text-heading">{section.title}</h2>
+        {/* Account */}
+        <div className="bg-surface p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Shield size={14} className="text-accent" />
+            <h2 className="font-sans text-sm font-bold text-heading">Account</h2>
+          </div>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">Email</span>
+              <span className="text-xs text-heading font-mono">{user?.email ?? 'Not signed in'}</span>
             </div>
-            <div className="space-y-4">
-              {section.items.map((item) => (
-                <div key={item.label} className="flex justify-between items-center">
-                  <span className="text-xs text-muted">{item.label}</span>
-                  <span className="text-xs text-heading font-mono">
-                    {section.title === 'Account' && item.label === 'Email'
-                      ? user?.email ?? 'Not signed in'
-                      : item.value}
-                  </span>
-                </div>
-              ))}
+            <div className="flex justify-between items-center gap-4">
+              <span className="text-xs text-muted shrink-0">Display Name</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  className="px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors w-48"
+                  placeholder="Your name"
+                />
+                <button
+                  onClick={handleSaveName}
+                  disabled={saving}
+                  className="px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-50"
+                >
+                  {saved ? <Check size={12} /> : saving ? '…' : 'Save'}
+                </button>
+              </div>
             </div>
           </div>
-        ))}
+        </div>
+
+        {/* Integrations */}
+        <div className="bg-surface p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Github size={14} className="text-accent" />
+            <h2 className="font-sans text-sm font-bold text-heading">Integrations</h2>
+          </div>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">GitHub</span>
+              <span className="text-xs text-accent3 font-mono">Connected via OAuth</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">Microsoft 365</span>
+              <span className="text-xs text-muted font-mono">Not connected</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Preferences */}
+        <div className="bg-surface p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Palette size={14} className="text-accent" />
+            <h2 className="font-sans text-sm font-bold text-heading">Preferences</h2>
+          </div>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">Theme</span>
+              <span className="text-xs text-heading font-mono">Dark</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">Timezone</span>
+              <span className="text-xs text-heading font-mono">{Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Notifications */}
+        <div className="bg-surface p-6">
+          <div className="flex items-center gap-2 mb-5">
+            <Bell size={14} className="text-accent" />
+            <h2 className="font-sans text-sm font-bold text-heading">Notifications</h2>
+          </div>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">Deadline Alerts</span>
+              <span className="text-xs text-heading font-mono">Enabled</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-muted">Weekly Digest</span>
+              <span className="text-xs text-heading font-mono">Enabled</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Danger Zone */}

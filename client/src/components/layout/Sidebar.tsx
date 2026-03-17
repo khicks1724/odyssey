@@ -5,9 +5,11 @@ import {
   LogOut,
   ChevronLeft,
   Plus,
+  ChevronsUpDown,
 } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
+import { useProjects } from '../../hooks/useProjects';
 import { useState } from 'react';
 
 const navItems = [
@@ -18,7 +20,16 @@ const navItems = [
 
 export default function Sidebar() {
   const { user, signOut } = useAuth();
+  const { projects } = useProjects();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  // Detect current project from URL
+  const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
+  const currentProjectId = projectMatch?.[1];
+  const currentProject = projects.find((p) => p.id === currentProjectId);
 
   return (
     <aside
@@ -54,6 +65,39 @@ export default function Sidebar() {
           {!collapsed && 'New Project'}
         </NavLink>
       </div>
+
+      {/* Project Switcher */}
+      {!collapsed && projects.length > 0 && (
+        <div className="px-3 pb-2 relative">
+          <button
+            onClick={() => setSwitcherOpen(!switcherOpen)}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md text-xs border border-border text-muted hover:text-heading hover:bg-surface2 transition-colors"
+          >
+            <span className="truncate">
+              {currentProject?.name ?? 'Select project…'}
+            </span>
+            <ChevronsUpDown size={12} />
+          </button>
+          {switcherOpen && (
+            <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-surface border border-border rounded-md shadow-xl max-h-48 overflow-y-auto">
+              {projects.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    navigate(`/projects/${p.id}`);
+                    setSwitcherOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-xs hover:bg-surface2 transition-colors truncate ${
+                    p.id === currentProjectId ? 'text-accent bg-surface2' : 'text-heading'
+                  }`}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Nav Links */}
       <nav className="flex-1 px-3 py-2 space-y-1">
