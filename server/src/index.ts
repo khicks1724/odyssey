@@ -6,6 +6,7 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { githubRoutes } from './routes/github.js';
 import { aiRoutes } from './routes/ai.js';
 import { microsoftRoutes } from './routes/microsoft.js';
+import { uploadRoutes } from './routes/uploads.js';
 import { getAvailableProviders } from './ai-providers.js';
 
 const server = Fastify({ logger: true });
@@ -20,6 +21,7 @@ await server.register(webhookRoutes, { prefix: '/api/webhooks' });
 await server.register(githubRoutes, { prefix: '/api' });
 await server.register(aiRoutes, { prefix: '/api' });
 await server.register(microsoftRoutes, { prefix: '/api' });
+await server.register(uploadRoutes, { prefix: '/api' });
 
 const port = Number(process.env.PORT) || 3001;
 const host = process.env.HOST ?? '0.0.0.0';

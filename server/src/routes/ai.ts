@@ -342,7 +342,7 @@ Analyze this document and extract structured insights.`,
         .from('events')
         .select('id, source, event_type, title, summary, metadata, occurred_at, created_by')
         .eq('project_id', projectId)
-        .in('source', ['onenote', 'onedrive'])
+        .in('source', ['onenote', 'onedrive', 'local'])
         .order('occurred_at', { ascending: false }),
       supabase.from('projects').select('name').eq('id', projectId).single(),
     ]);
@@ -485,7 +485,7 @@ Analyze which goals these documents show progress on, who did the work, and when
       .map((e) => {
         let line = `[${new Date(e.occurred_at).toLocaleDateString()}] ${e.source}/${e.event_type}: ${e.title ?? '(untitled)'}`;
         if (e.summary) line += `\n  Summary: ${e.summary}`;
-        if (e.source === 'onenote' || e.source === 'onedrive') {
+        if (e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local') {
           const meta = e.metadata as { content_preview?: string } | null;
           if (meta?.content_preview) line += `\n  Document Content: ${meta.content_preview.slice(0, 800)}`;
         }

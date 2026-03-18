@@ -89,6 +89,10 @@ export default function ProjectDetailPage() {
   const [newGoalCategory, setNewGoalCategory] = useState('');
   const [newGoalAssignee, setNewGoalAssignee] = useState('');
 
+  // Inline project name editing
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+
   // GitHub repo state
   const [repoInput, setRepoInput] = useState('');
   const [repoSaving, setRepoSaving] = useState(false);
@@ -443,9 +447,40 @@ export default function ProjectDetailPage() {
       {/* Project Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-1">
-          <h1 className="font-sans text-3xl font-extrabold text-heading tracking-tight">
-            {project.name}
-          </h1>
+          {editingName ? (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const trimmed = nameInput.trim();
+                if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
+                setEditingName(false);
+              }}
+              className="flex items-center gap-2"
+            >
+              <input
+                autoFocus
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setEditingName(false); }}
+                onBlur={async () => {
+                  const trimmed = nameInput.trim();
+                  if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
+                  setEditingName(false);
+                }}
+                title="Project name"
+                placeholder="Project name"
+                className="font-sans text-3xl font-extrabold text-heading tracking-tight bg-transparent border-b-2 border-accent focus:outline-none min-w-[8rem] max-w-xl"
+              />
+            </form>
+          ) : (
+            <h1
+              onClick={() => { setNameInput(project.name); setEditingName(true); }}
+              title="Click to rename"
+              className="font-sans text-3xl font-extrabold text-heading tracking-tight cursor-pointer hover:text-accent transition-colors"
+            >
+              {project.name}
+            </h1>
+          )}
           <StatusBadge status={projectStatus} size="md" />
         </div>
         {project.description && (
@@ -818,16 +853,54 @@ export default function ProjectDetailPage() {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-[11px] tracking-[0.2em] uppercase text-muted font-mono mb-1">Microsoft 365</p>
-              <h3 className="font-sans text-sm font-bold text-heading">Imported Documents</h3>
+              <h3 className="font-sans text-sm font-bold text-heading">Documents</h3>
+              <p className="text-[11px] text-muted font-mono mt-0.5">Imported files available to AI analysis</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setOfficePickerOpen(true)}
-              className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-            >
-              <Plus size={12} /> Import from Office 365
-            </button>
+            <div className="flex items-center gap-2">
+              <label
+                title="Upload local file"
+                className="flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md cursor-pointer"
+              >
+                <Plus size={12} /> Upload File
+                <input
+                  type="file"
+                  title="Upload local file"
+                  className="sr-only"
+                  multiple
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files ?? []);
+                    if (!files.length || !projectId) return;
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (!session) return;
+                    for (const file of files) {
+                      let content: string | undefined;
+                      const isText = file.type.startsWith('text/') || /\.(txt|md|csv|json|xml|log|yaml|yml|ts|js|py)$/i.test(file.name);
+                      if (isText) {
+                        content = await new Promise<string>((resolve) => {
+                          const reader = new FileReader();
+                          reader.onload = () => resolve(reader.result as string);
+                          reader.readAsText(file);
+                        });
+                      }
+                      await fetch('/api/uploads/local', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+                        body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, size: file.size, content }),
+                      });
+                    }
+                    e.target.value = '';
+                    window.location.reload();
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => setOfficePickerOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
+              >
+                <Plus size={12} /> Import from Office 365
+              </button>
+            </div>
           </div>
 
           {/* Imported Office events */}
@@ -836,12 +909,14 @@ export default function ProjectDetailPage() {
           ) : (
             <div className="space-y-px border border-border bg-border">
               {events
-                .filter((e) => e.source === 'onenote' || e.source === 'onedrive')
+                .filter((e) => e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local')
                 .map((e) => (
                   <div key={e.id} className="flex items-start gap-3 bg-surface px-4 py-3 group">
                     <div className="mt-0.5 shrink-0">
                       {e.source === 'onenote'
                         ? <span className="text-[10px] font-mono text-accent3 border border-accent3/30 px-1 py-0.5 rounded">NOTE</span>
+                        : e.source === 'local'
+                        ? <span className="text-[10px] font-mono text-accent border border-accent/30 px-1 py-0.5 rounded">LOCAL</span>
                         : <span className="text-[10px] font-mono text-accent2 border border-accent2/30 px-1 py-0.5 rounded">FILE</span>
                       }
                     </div>
@@ -881,16 +956,9 @@ export default function ProjectDetailPage() {
                     </div>
                   </div>
                 ))}
-              {events.filter((e) => e.source === 'onenote' || e.source === 'onedrive').length === 0 && (
+              {events.filter((e) => e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local').length === 0 && (
                 <div className="bg-surface px-4 py-8 text-center">
-                  <p className="text-xs text-muted mb-3">No documents imported yet.</p>
-                  <button
-                    type="button"
-                    onClick={() => setOfficePickerOpen(true)}
-                    className="text-xs text-accent hover:underline"
-                  >
-                    Browse Microsoft 365 files →
-                  </button>
+                  <p className="text-xs text-muted mb-3">No documents yet. Upload a local file or import from Microsoft 365.</p>
                 </div>
               )}
             </div>
@@ -1021,6 +1089,9 @@ export default function ProjectDetailPage() {
 
       {activeTab === 'settings' && (
         <div className="space-y-8">
+          {/* Project Name & Description */}
+          <ProjectNameForm project={project} updateProject={updateProject} />
+
           {/* Microsoft 365 / Teams Folder */}
           <div className="border border-border bg-surface p-6">
             <div className="flex items-center gap-2 mb-6">
@@ -1265,7 +1336,7 @@ function TeamsFolderPickerModal({
             <h2 className="font-sans text-sm font-bold text-heading">Select OneDrive / Teams Folder</h2>
             <p className="text-[11px] text-muted font-mono">Choose a folder to link to this project</p>
           </div>
-          <button type="button" onClick={onClose} className="text-muted hover:text-heading">
+          <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-heading">
             <X size={16} />
           </button>
         </div>
@@ -1328,6 +1399,73 @@ function TeamsFolderPickerModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Project name / description editor (used in Settings tab) ─────────────────
+function ProjectNameForm({
+  project,
+  updateProject,
+}: {
+  project: { name: string; description?: string | null };
+  updateProject: (updates: { name?: string; description?: string }) => Promise<unknown>;
+}) {
+  const [name, setName] = useState(project.name);
+  const [description, setDescription] = useState(project.description ?? '');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const dirty = name.trim() !== project.name || description.trim() !== (project.description ?? '');
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setSaving(true);
+    await updateProject({ name: name.trim(), description: description.trim() || undefined });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="border border-border bg-surface p-6">
+      <div className="flex items-center gap-2 mb-6">
+        <Settings size={14} className="text-heading" />
+        <h3 className="font-sans text-sm font-bold text-heading">Project Details</h3>
+      </div>
+      <form onSubmit={handleSave} className="space-y-4 max-w-lg">
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Project Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            title="Project name"
+            placeholder="Project name"
+            className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Description (optional)</label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            placeholder="What is this project about?"
+            className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={saving || !dirty || !name.trim()}
+          className="flex items-center gap-2 px-5 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
+        >
+          {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <CheckCircle size={12} /> : null}
+          {saved ? 'Saved' : 'Save Changes'}
+        </button>
+      </form>
     </div>
   );
 }

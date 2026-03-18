@@ -24,6 +24,30 @@ export function useProjects() {
     fetchProjects();
   }, [fetchProjects]);
 
+  // Real-time sync — update local state whenever any project row changes in DB
+  useEffect(() => {
+    if (!user) return;
+    const channel = supabase
+      .channel('projects-list')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'projects' },
+        (payload) => {
+          if (payload.eventType === 'UPDATE') {
+            setProjects((prev) =>
+              prev.map((p) => (p.id === (payload.new as Project).id ? (payload.new as Project) : p))
+            );
+          } else if (payload.eventType === 'INSERT') {
+            setProjects((prev) => [payload.new as Project, ...prev]);
+          } else if (payload.eventType === 'DELETE') {
+            setProjects((prev) => prev.filter((p) => p.id !== (payload.old as Project).id));
+          }
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
+
   const createProject = async (name: string, description: string) => {
     if (!user) throw new Error('Not authenticated');
     const { data, error } = await supabase
