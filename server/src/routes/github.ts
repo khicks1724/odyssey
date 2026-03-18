@@ -18,26 +18,22 @@ export async function githubRoutes(server: FastifyInstance) {
   }>('/github/:owner/:repo/commits', async (request, reply) => {
     const { owner, repo } = request.params;
     const perPage = Math.min(100, Number(request.query.per_page) || 30);
-    const token = request.headers['x-github-token'] as string;
-
-    if (!token) {
-      return reply.status(401).send({ error: 'GitHub token required' });
-    }
+    const token = request.headers['x-github-token'] as string | undefined;
 
     // Validate owner/repo format to prevent injection
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
       return reply.status(400).send({ error: 'Invalid owner or repo name' });
     }
 
+    const ghHeaders: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Odyssey-App',
+    };
+    if (token) ghHeaders.Authorization = `Bearer ${token}`;
+
     const res = await fetch(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?per_page=${perPage}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Odyssey-App',
-        },
-      },
+      { headers: ghHeaders },
     );
 
     if (!res.ok) {
@@ -71,25 +67,21 @@ export async function githubRoutes(server: FastifyInstance) {
     Params: { owner: string; repo: string };
   }>('/github/:owner/:repo', async (request, reply) => {
     const { owner, repo } = request.params;
-    const token = request.headers['x-github-token'] as string;
-
-    if (!token) {
-      return reply.status(401).send({ error: 'GitHub token required' });
-    }
+    const token = request.headers['x-github-token'] as string | undefined;
 
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
       return reply.status(400).send({ error: 'Invalid owner or repo name' });
     }
 
+    const ghHeaders: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Odyssey-App',
+    };
+    if (token) ghHeaders.Authorization = `Bearer ${token}`;
+
     const res = await fetch(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github.v3+json',
-          'User-Agent': 'Odyssey-App',
-        },
-      },
+      { headers: ghHeaders },
     );
 
     if (!res.ok) {
@@ -198,37 +190,27 @@ export async function githubRoutes(server: FastifyInstance) {
     Querystring: { per_page?: string };
   }>('/github/:owner/:repo/recent', async (request, reply) => {
     const { owner, repo } = request.params;
-    const token = request.headers['x-github-token'] as string;
-
-    if (!token) {
-      return reply.status(401).send({ error: 'GitHub token required' });
-    }
+    const token = request.headers['x-github-token'] as string | undefined;
 
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
       return reply.status(400).send({ error: 'Invalid owner or repo name' });
     }
 
+    const ghHeaders: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Odyssey-App',
+    };
+    if (token) ghHeaders.Authorization = `Bearer ${token}`;
+
     // Fetch commits + README in parallel
     const [commitsRes, readmeRes] = await Promise.all([
       fetch(
         `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?per_page=30`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'Odyssey-App',
-          },
-        },
+        { headers: ghHeaders },
       ),
       fetch(
         `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'Odyssey-App',
-          },
-        },
+        { headers: ghHeaders },
       ),
     ]);
 
