@@ -96,22 +96,70 @@ export async function fetchOneNoteNotebooks() {
   return data.notebooks;
 }
 
-export async function fetchOneNoteSections(notebookId: string) {
+export async function fetchOneNoteSections(notebookId: string, groupId?: string) {
   const headers = await getAuthHeader();
   if (!headers) return [];
-  const res = await fetch(`${API_BASE}/microsoft/onenote/notebooks/${encodeURIComponent(notebookId)}/sections`, { headers });
+  const params = groupId ? `?groupId=${encodeURIComponent(groupId)}` : '';
+  const res = await fetch(`${API_BASE}/microsoft/onenote/notebooks/${encodeURIComponent(notebookId)}/sections${params}`, { headers });
   if (!res.ok) return [];
   const data = await res.json() as { sections: unknown[] };
   return data.sections;
 }
 
-export async function fetchOneNotePages(sectionId: string) {
+export async function fetchOneNotePages(sectionId: string, groupId?: string) {
   const headers = await getAuthHeader();
   if (!headers) return [];
-  const res = await fetch(`${API_BASE}/microsoft/onenote/sections/${encodeURIComponent(sectionId)}/pages`, { headers });
+  const params = groupId ? `?groupId=${encodeURIComponent(groupId)}` : '';
+  const res = await fetch(`${API_BASE}/microsoft/onenote/sections/${encodeURIComponent(sectionId)}/pages${params}`, { headers });
   if (!res.ok) return [];
   const data = await res.json() as { pages: unknown[] };
   return data.pages;
+}
+
+export async function fetchTeams() {
+  const headers = await getAuthHeader();
+  if (!headers) return [];
+  const res = await fetch(`${API_BASE}/microsoft/teams`, { headers });
+  if (!res.ok) return [];
+  const data = await res.json() as { teams: unknown[] };
+  return data.teams;
+}
+
+export async function fetchTeamChannels(groupId: string) {
+  const headers = await getAuthHeader();
+  if (!headers) return [];
+  const res = await fetch(`${API_BASE}/microsoft/teams/${encodeURIComponent(groupId)}/channels`, { headers });
+  if (!res.ok) return [];
+  const data = await res.json() as { channels: unknown[] };
+  return data.channels;
+}
+
+export async function fetchTeamChannelFiles(groupId: string, channelId: string, opts: { folderId?: string; driveId?: string } = {}) {
+  const headers = await getAuthHeader();
+  if (!headers) return [];
+  const params = new URLSearchParams();
+  if (opts.folderId) params.set('folderId', opts.folderId);
+  if (opts.driveId) params.set('driveId', opts.driveId);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/microsoft/teams/${encodeURIComponent(groupId)}/channels/${encodeURIComponent(channelId)}/files${qs}`, { headers });
+  if (!res.ok) return [];
+  const data = await res.json() as { files: unknown[] };
+  return data.files;
+}
+
+export async function fetchTeamFileContent(driveId: string, itemId: string) {
+  const headers = await getAuthHeader();
+  if (!headers) return null;
+  const res = await fetch(`${API_BASE}/microsoft/teams/drives/${encodeURIComponent(driveId)}/files/${encodeURIComponent(itemId)}/content`, { headers });
+  if (!res.ok) return null;
+  return res.json() as Promise<{ name: string; mimeType: string; text: string }>;
+}
+
+export async function deleteImportedEvent(eventId: string) {
+  const headers = await getAuthHeader();
+  if (!headers) return false;
+  const res = await fetch(`${API_BASE}/microsoft/import/${encodeURIComponent(eventId)}`, { method: 'DELETE', headers });
+  return res.ok;
 }
 
 export async function fetchOneNotePageContent(pageId: string) {

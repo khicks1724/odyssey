@@ -44,7 +44,7 @@ const CLIENT_ID = process.env.MICROSOFT_CLIENT_ID ?? '';
 const CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET ?? '';
 const REDIRECT_URI =
   process.env.MICROSOFT_REDIRECT_URI ?? 'http://localhost:3001/api/microsoft/auth/callback';
-const SCOPES = 'openid profile email User.Read Notes.Read Files.Read offline_access';
+const SCOPES = 'openid profile email User.Read Notes.Read Notes.Read.All Files.Read Sites.Read.All Team.ReadBasic.All offline_access';
 const MS_AUTH_BASE = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 const GRAPH_URL = 'https://graph.microsoft.com/v1.0';
 
@@ -310,7 +310,7 @@ export async function microsoftRoutes(server: FastifyInstance) {
     };
   });
 
-  // ── 5. OneNote: list notebooks ─────────────────────────────────────────────
+  // ── 5. OneNote: list notebooks (personal + all joined Teams) ──────────────
   server.get('/microsoft/onenote/notebooks', async (request, reply) => {
     const userId = await getUserFromJWT(request.headers.authorization);
     if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
@@ -319,11 +319,40 @@ export async function microsoftRoutes(server: FastifyInstance) {
     if (!token) return reply.status(403).send({ error: 'Microsoft account not connected or token expired. Reconnect in Settings.' });
 
     try {
-      const data = (await graphGet(
-        token,
-        '/me/onenote/notebooks?$select=id,displayName,lastModifiedDateTime&$orderby=lastModifiedDateTime desc',
-      )) as { value?: unknown[] };
-      return { notebooks: data.value ?? [] };
+      // Fetch personal notebooks + team notebooks in parallel
+      const [personalData, teamsData] = await Promise.allSettled([
+        graphGet(token, '/me/onenote/notebooks?$select=id,displayName,lastModifiedDateTime&$orderby=lastModifiedDateTime desc'),
+        graphGet(token, '/me/joinedTeams?$select=id,displayName'),
+      ]);
+
+      const personal = (personalData.status === 'fulfilled' ? (personalData.value as { value?: unknown[] }).value ?? [] : [])
+        .map((nb: unknown) => ({ ...(nb as object), isTeam: false }));
+
+      // For each team, fetch its notebooks
+      const teamList = teamsData.status === 'fulfilled'
+        ? ((teamsData.value as { value?: { id: string; displayName: string }[] }).value ?? [])
+        : [];
+
+      const teamNotebookResults = await Promise.allSettled(
+        teamList.map((team) =>
+          graphGet(token, `/groups/${encodeURIComponent(team.id)}/onenote/notebooks?$select=id,displayName,lastModifiedDateTime`)
+            .then((d) => ({ team, notebooks: (d as { value?: unknown[] }).value ?? [] }))
+        )
+      );
+
+      const teamNotebooks = teamNotebookResults
+        .filter((r) => r.status === 'fulfilled')
+        .flatMap((r) => {
+          const { team, notebooks } = (r as PromiseFulfilledResult<{ team: { id: string; displayName: string }; notebooks: unknown[] }>).value;
+          return notebooks.map((nb: unknown) => ({
+            ...(nb as object),
+            isTeam: true,
+            groupId: team.id,
+            groupName: team.displayName,
+          }));
+        });
+
+      return { notebooks: [...personal, ...teamNotebooks] };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       server.log.error(err);
@@ -331,8 +360,8 @@ export async function microsoftRoutes(server: FastifyInstance) {
     }
   });
 
-  // ── 6. OneNote: list sections in a notebook ────────────────────────────────
-  server.get<{ Params: { notebookId: string } }>(
+  // ── 6. OneNote: list sections in a notebook (personal or team) ────────────
+  server.get<{ Params: { notebookId: string }; Querystring: { groupId?: string } }>(
     '/microsoft/onenote/notebooks/:notebookId/sections',
     async (request, reply) => {
       const userId = await getUserFromJWT(request.headers.authorization);
@@ -342,10 +371,13 @@ export async function microsoftRoutes(server: FastifyInstance) {
       if (!token) return reply.status(403).send({ error: 'Microsoft account not connected' });
 
       const { notebookId } = request.params;
+      const { groupId } = request.query;
+      const basePath = groupId ? `/groups/${encodeURIComponent(groupId)}` : '/me';
+
       try {
         const data = (await graphGet(
           token,
-          `/me/onenote/notebooks/${encodeURIComponent(notebookId)}/sections?$select=id,displayName,lastModifiedDateTime`,
+          `${basePath}/onenote/notebooks/${encodeURIComponent(notebookId)}/sections?$select=id,displayName,lastModifiedDateTime`,
         )) as { value?: unknown[] };
         return { sections: data.value ?? [] };
       } catch (err: unknown) {
@@ -355,8 +387,8 @@ export async function microsoftRoutes(server: FastifyInstance) {
     },
   );
 
-  // ── 7. OneNote: list pages in a section ────────────────────────────────────
-  server.get<{ Params: { sectionId: string } }>(
+  // ── 7. OneNote: list pages in a section (personal or team) ────────────────
+  server.get<{ Params: { sectionId: string }; Querystring: { groupId?: string } }>(
     '/microsoft/onenote/sections/:sectionId/pages',
     async (request, reply) => {
       const userId = await getUserFromJWT(request.headers.authorization);
@@ -366,14 +398,99 @@ export async function microsoftRoutes(server: FastifyInstance) {
       if (!token) return reply.status(403).send({ error: 'Microsoft account not connected' });
 
       const { sectionId } = request.params;
+      const { groupId } = request.query;
+      const basePath = groupId ? `/groups/${encodeURIComponent(groupId)}` : '/me';
+
       try {
         const data = (await graphGet(
           token,
-          `/me/onenote/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,lastModifiedDateTime&$orderby=lastModifiedDateTime desc`,
+          `${basePath}/onenote/sections/${encodeURIComponent(sectionId)}/pages?$select=id,title,lastModifiedDateTime,createdByAppId&$orderby=lastModifiedDateTime desc`,
         )) as { value?: unknown[] };
         return { pages: data.value ?? [] };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+        return reply.status(500).send({ error: msg });
+      }
+    },
+  );
+
+  // ── 5b. List joined Teams ─────────────────────────────────────────────────
+  server.get('/microsoft/teams', async (request, reply) => {
+    const userId = await getUserFromJWT(request.headers.authorization);
+    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const token = await getAccessToken(userId);
+    if (!token) return reply.status(403).send({ error: 'Microsoft account not connected' });
+
+    try {
+      const data = (await graphGet(token, '/me/joinedTeams?$select=id,displayName,description')) as { value?: unknown[] };
+      return { teams: data.value ?? [] };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
+  // ── 5c. List channels in a Team ──────────────────────────────────────────
+  server.get<{ Params: { groupId: string } }>(
+    '/microsoft/teams/:groupId/channels',
+    async (request, reply) => {
+      const userId = await getUserFromJWT(request.headers.authorization);
+      if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const token = await getAccessToken(userId);
+      if (!token) return reply.status(403).send({ error: 'Microsoft account not connected' });
+
+      const { groupId } = request.params;
+      try {
+        const data = (await graphGet(
+          token,
+          `/teams/${encodeURIComponent(groupId)}/channels?$select=id,displayName,description`,
+        )) as { value?: unknown[] };
+        return { channels: data.value ?? [] };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.status(500).send({ error: msg });
+      }
+    },
+  );
+
+  // ── 5d. List files in a Teams channel (SharePoint folder) ─────────────────
+  server.get<{ Params: { groupId: string; channelId: string }; Querystring: { folderId?: string; driveId?: string } }>(
+    '/microsoft/teams/:groupId/channels/:channelId/files',
+    async (request, reply) => {
+      const userId = await getUserFromJWT(request.headers.authorization);
+      if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const token = await getAccessToken(userId);
+      if (!token) return reply.status(403).send({ error: 'Microsoft account not connected' });
+
+      const { groupId, channelId } = request.params;
+      const { folderId, driveId } = request.query;
+      const fields = '$select=id,name,file,folder,size,lastModifiedDateTime,webUrl,lastModifiedBy';
+
+      try {
+        let path: string;
+        if (folderId && driveId) {
+          // Navigate into a subfolder
+          path = `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(folderId)}/children?${fields}`;
+        } else {
+          // Get the channel's root files folder first, then list children
+          const folderInfo = (await graphGet(
+            token,
+            `/teams/${encodeURIComponent(groupId)}/channels/${encodeURIComponent(channelId)}/filesFolder`,
+          )) as { id?: string; parentReference?: { driveId?: string } };
+
+          const rootFolderId = folderInfo.id ?? '';
+          const rootDriveId = folderInfo.parentReference?.driveId ?? '';
+          path = `/drives/${encodeURIComponent(rootDriveId)}/items/${encodeURIComponent(rootFolderId)}/children?${fields}&$orderby=lastModifiedDateTime desc`;
+        }
+
+        const data = (await graphGet(token, path)) as { value?: unknown[] };
+        return { files: data.value ?? [] };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        server.log.error(err);
         return reply.status(500).send({ error: msg });
       }
     },
@@ -428,6 +545,45 @@ export async function microsoftRoutes(server: FastifyInstance) {
 
         const data = (await graphGet(token, path)) as { value?: unknown[] };
         return { files: data.value ?? [] };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return reply.status(500).send({ error: msg });
+      }
+    },
+  );
+
+  // ── 9b. Teams: get file text content via driveId ──────────────────────────
+  server.get<{ Params: { driveId: string; itemId: string } }>(
+    '/microsoft/teams/drives/:driveId/files/:itemId/content',
+    async (request, reply) => {
+      const userId = await getUserFromJWT(request.headers.authorization);
+      if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const token = await getAccessToken(userId);
+      if (!token) return reply.status(403).send({ error: 'Microsoft account not connected' });
+
+      const { driveId, itemId } = request.params;
+      try {
+        const meta = (await graphGet(
+          token,
+          `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=name,file`,
+        )) as { name?: string; file?: { mimeType?: string } };
+
+        const mimeType = meta.file?.mimeType ?? '';
+        const name = meta.name ?? 'file';
+        const isText = mimeType.startsWith('text/') || name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.csv') || name.endsWith('.json');
+
+        let text = '';
+        if (isText) {
+          const res = await fetch(`${GRAPH_URL}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) text = await res.text();
+        } else {
+          text = `[${name}] This file type (${mimeType || 'binary'}) must be opened in Microsoft Office. Use the web URL to view it.`;
+        }
+
+        return { name, mimeType, text: text.slice(0, 50_000) };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         return reply.status(500).send({ error: msg });
@@ -538,4 +694,34 @@ export async function microsoftRoutes(server: FastifyInstance) {
     if (dbErr) return reply.status(500).send({ error: dbErr.message });
     return { event: data };
   });
+
+  // ── 12. Delete an imported event from project context ─────────────────────
+  server.delete<{ Params: { eventId: string } }>(
+    '/microsoft/import/:eventId',
+    async (request, reply) => {
+      const userId = await getUserFromJWT(request.headers.authorization);
+      if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const { eventId } = request.params;
+
+      // Verify ownership — user must be project owner or member
+      const { data: event } = await supabase
+        .from('events')
+        .select('project_id, actor_id')
+        .eq('id', eventId)
+        .single();
+
+      if (!event) return reply.status(404).send({ error: 'Event not found' });
+
+      const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', event.project_id).single();
+      const { data: membership } = await supabase.from('project_members').select('user_id').eq('project_id', event.project_id).eq('user_id', userId).single();
+
+      if (proj?.owner_id !== userId && !membership) {
+        return reply.status(403).send({ error: 'Not authorized' });
+      }
+
+      await supabase.from('events').delete().eq('id', eventId);
+      return { deleted: true };
+    },
+  );
 }

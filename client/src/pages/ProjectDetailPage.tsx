@@ -26,7 +26,7 @@ import GoalMetrics from '../components/GoalMetrics';
 import OfficeFilePicker from '../components/OfficeFilePicker';
 import ProjectChat from '../components/ProjectChat';
 import { useProject } from '../hooks/useProjects';
-import { fetchOneDriveFiles, useMicrosoftIntegration } from '../hooks/useMicrosoftIntegration';
+import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
 import { useAuth } from '../lib/auth';
@@ -109,6 +109,9 @@ export default function ProjectDetailPage() {
   const [syncingProgress, setSyncingProgress] = useState(false);
   const [syncResult, setSyncResult] = useState<{ summary: string; applied: number; provider?: string } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+
+  // Deleting imported docs
+  const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
 
   // Teams folder integration (project-level)
   const [teamsFolder, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
@@ -835,8 +838,8 @@ export default function ProjectDetailPage() {
               {events
                 .filter((e) => e.source === 'onenote' || e.source === 'onedrive')
                 .map((e) => (
-                  <div key={e.id} className="flex items-start gap-3 bg-surface px-4 py-3">
-                    <div className="mt-0.5">
+                  <div key={e.id} className="flex items-start gap-3 bg-surface px-4 py-3 group">
+                    <div className="mt-0.5 shrink-0">
                       {e.source === 'onenote'
                         ? <span className="text-[10px] font-mono text-accent3 border border-accent3/30 px-1 py-0.5 rounded">NOTE</span>
                         : <span className="text-[10px] font-mono text-accent2 border border-accent2/30 px-1 py-0.5 rounded">FILE</span>
@@ -849,16 +852,33 @@ export default function ProjectDetailPage() {
                         {new Date(e.occurred_at).toLocaleDateString()} · {e.source}
                       </div>
                     </div>
-                    {(e.metadata as { web_url?: string })?.web_url && (
-                      <a
-                        href={(e.metadata as { web_url: string }).web_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[10px] text-accent hover:underline shrink-0 mt-0.5"
+                    <div className="flex items-center gap-2 shrink-0">
+                      {(e.metadata as { web_url?: string })?.web_url && (
+                        <a
+                          href={(e.metadata as { web_url: string }).web_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-accent hover:underline"
+                        >
+                          Open
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        title="Remove from context"
+                        disabled={deletingEventId === e.id}
+                        onClick={async () => {
+                          setDeletingEventId(e.id);
+                          await deleteImportedEvent(e.id);
+                          setDeletingEventId(null);
+                          // events list will re-fetch via useEvents subscription
+                          window.location.reload();
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all disabled:opacity-40"
                       >
-                        Open
-                      </a>
-                    )}
+                        {deletingEventId === e.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      </button>
+                    </div>
                   </div>
                 ))}
               {events.filter((e) => e.source === 'onenote' || e.source === 'onedrive').length === 0 && (
