@@ -1828,7 +1828,8 @@ function buildTree(files: FileEntry[]): TreeNode[] {
 }
 
 function TreeNodeRow({ node, depth = 0, onOpenFile }: { node: TreeNode; depth?: number; onOpenFile?: (path: string) => void }) {
-  const [open, setOpen] = useState(false);
+  // Root folders (depth 0) start open so structure is visible; subfolders start collapsed
+  const [open, setOpen] = useState(depth === 0);
   // Pre-defined Tailwind padding classes per depth (up to 8 levels)
   const filePl  = ['pl-4',  'pl-7',  'pl-10', 'pl-14', 'pl-[68px]', 'pl-20', 'pl-24', 'pl-28'][Math.min(depth, 7)];
   const dirPl   = ['pl-1',  'pl-4',  'pl-7',  'pl-10', 'pl-14',     'pl-16', 'pl-20', 'pl-24'][Math.min(depth, 7)];
