@@ -1,0 +1,63 @@
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Build React frontend ──────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build client
+        working-directory: client
+        run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      # ── Build Fastify server ──────────────────────────────────────────
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Build server
+        working-directory: server
+        run: npm run build
+
+      # ── Bundle for deployment ─────────────────────────────────────────
+      # Copy client/dist into server/dist so one App Service serves both
+      - name: Copy client build into server dist
+        run: cp -r client/dist server/dist-client
+
+      - name: Create deployment package
+        run: |
+          mkdir deploy
+          cp -r server/dist deploy/dist
+          cp -r server/dist-client deploy/client
+          cp server/package.json deploy/package.json
+          cp server/package-lock.json deploy/package-lock.json
+          cd deploy && npm ci --omit=dev
+
+      # ── Deploy to Azure ───────────────────────────────────────────────
+      - name: Deploy to Azure App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ secrets.AZURE_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          package: ./deploy
