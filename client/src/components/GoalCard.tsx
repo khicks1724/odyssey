@@ -1,12 +1,17 @@
+import { useState, useRef, useEffect } from 'react';
 import type { Goal } from '../../types';
-import { Target, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { Target, AlertTriangle, CheckCircle, XCircle, Circle, Loader, ChevronDown } from 'lucide-react';
 
 const statusConfig = {
+  not_started: { icon: Circle, color: 'text-muted', bg: 'bg-muted/10', label: 'Not Started' },
   active: { icon: Target, color: 'text-accent2', bg: 'bg-accent2/10', label: 'Active' },
+  in_progress: { icon: Loader, color: 'text-accent2', bg: 'bg-accent2/10', label: 'In Progress' },
   at_risk: { icon: AlertTriangle, color: 'text-accent', bg: 'bg-accent/10', label: 'At Risk' },
   complete: { icon: CheckCircle, color: 'text-accent3', bg: 'bg-accent3/10', label: 'Complete' },
   missed: { icon: XCircle, color: 'text-danger', bg: 'bg-danger/10', label: 'Missed' },
 };
+
+const STATUS_ORDER: Goal['status'][] = ['not_started', 'in_progress', 'active', 'at_risk', 'complete', 'missed'];
 
 interface GoalCardProps {
   goal: Goal;
@@ -15,11 +20,22 @@ interface GoalCardProps {
 }
 
 export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus }: GoalCardProps) {
-  const config = statusConfig[goal.status];
+  const config = statusConfig[goal.status] || statusConfig.active;
   const Icon = config.icon;
   const daysLeft = goal.deadline
     ? Math.ceil((new Date(goal.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
     : null;
+
+  const [statusOpen, setStatusOpen] = useState(false);
+  const statusRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (statusRef.current && !statusRef.current.contains(e.target as Node)) setStatusOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   return (
     <div className="bg-surface border border-border p-4 hover:bg-surface2 transition-colors group">
@@ -28,9 +44,35 @@ export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus }: Goa
           <Icon size={14} className={config.color} />
           <h4 className="text-sm font-sans font-semibold text-heading">{goal.title}</h4>
         </div>
-        <span className={`text-[10px] tracking-[0.15em] uppercase px-2 py-0.5 rounded ${config.bg} ${config.color}`}>
-          {config.label}
-        </span>
+        <div ref={statusRef} className="relative">
+          <button
+            onClick={() => setStatusOpen(!statusOpen)}
+            className={`flex items-center gap-1 text-[10px] tracking-[0.15em] uppercase px-2 py-0.5 rounded cursor-pointer ${config.bg} ${config.color} hover:opacity-80 transition-opacity`}
+          >
+            {config.label}
+            <ChevronDown size={10} />
+          </button>
+          {statusOpen && onUpdateStatus && (
+            <div className="absolute right-0 top-full mt-1 w-36 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-xl z-50 py-1">
+              {STATUS_ORDER.map((s) => {
+                const sc = statusConfig[s];
+                const SIcon = sc.icon;
+                return (
+                  <button
+                    key={s}
+                    onClick={() => { onUpdateStatus(goal.id, s); setStatusOpen(false); }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] tracking-wider uppercase text-left transition-colors cursor-pointer ${
+                      s === goal.status ? 'bg-[var(--color-surface2)]' : 'hover:bg-[var(--color-surface2)]'
+                    }`}
+                  >
+                    <SIcon size={11} className={sc.color} />
+                    <span className={sc.color}>{sc.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Progress bar */}

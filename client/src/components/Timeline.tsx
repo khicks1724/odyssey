@@ -71,7 +71,7 @@ export default function Timeline({ goals }: TimelineProps) {
 
             return (
               <div key={goal.id} className="flex items-center gap-3">
-                <span className="text-[10px] text-muted font-mono w-20 truncate shrink-0">
+                <span className="text-[10px] text-muted font-mono shrink-0 whitespace-nowrap">
                   {goal.title}
                 </span>
                 <div className="flex-1 relative h-5">

@@ -43,7 +43,7 @@ export function useProjects() {
     return data;
   };
 
-  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description'>>) => {
+  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo'>>) => {
     const { data, error } = await supabase
       .from('projects')
       .update(updates)
@@ -69,19 +69,34 @@ export function useProject(id: string | undefined) {
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const fetchProject = useCallback(async () => {
     if (!id) return;
     setLoading(true);
-    supabase
+    const { data, error } = await supabase
       .from('projects')
       .select('*')
       .eq('id', id)
-      .single()
-      .then(({ data, error }) => {
-        if (!error && data) setProject(data);
-        setLoading(false);
-      });
+      .single();
+    if (!error && data) setProject(data);
+    setLoading(false);
   }, [id]);
 
-  return { project, loading };
+  useEffect(() => {
+    fetchProject();
+  }, [fetchProject]);
+
+  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo'>>) => {
+    if (!id) throw new Error('No project');
+    const { data, error } = await supabase
+      .from('projects')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    setProject(data);
+    return data;
+  };
+
+  return { project, loading, updateProject, refetch: fetchProject };
 }

@@ -108,4 +108,102 @@ export async function githubRoutes(server: FastifyInstance) {
       html_url: data.html_url,
     };
   });
+
+  // Search GitHub users
+  server.get<{
+    Querystring: { q: string };
+  }>('/github/search/users', async (request, reply) => {
+    const { q } = request.query;
+    const token = request.headers['x-github-token'] as string;
+
+    if (!q || q.length < 2) {
+      return reply.status(400).send({ error: 'Query must be at least 2 characters' });
+    }
+
+    if (!token) {
+      return reply.status(401).send({ error: 'GitHub token required' });
+    }
+
+    const res = await fetch(
+      `https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=8`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'User-Agent': 'Odyssey-App',
+        },
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      return reply.status(res.status).send({ error: 'GitHub API error', details: body });
+    }
+
+    const data = await res.json();
+    return {
+      users: (data.items || []).map((u: { login: string; avatar_url: string; html_url: string; id: number }) => ({
+        login: u.login,
+        avatar_url: u.avatar_url,
+        html_url: u.html_url,
+        github_id: u.id,
+      })),
+    };
+  });
+
+  // Get recent commits (for AI repo scan)
+  server.get<{
+    Params: { owner: string; repo: string };
+    Querystring: { per_page?: string };
+  }>('/github/:owner/:repo/recent', async (request, reply) => {
+    const { owner, repo } = request.params;
+    const token = request.headers['x-github-token'] as string;
+
+    if (!token) {
+      return reply.status(401).send({ error: 'GitHub token required' });
+    }
+
+    if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
+      return reply.status(400).send({ error: 'Invalid owner or repo name' });
+    }
+
+    // Fetch commits + README in parallel
+    const [commitsRes, readmeRes] = await Promise.all([
+      fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?per_page=30`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'Odyssey-App',
+          },
+        },
+      ),
+      fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'Odyssey-App',
+          },
+        },
+      ),
+    ]);
+
+    const commits = commitsRes.ok ? await commitsRes.json() : [];
+    let readme = '';
+    if (readmeRes.ok) {
+      const readmeData = await readmeRes.json();
+      if (readmeData.content) {
+        readme = Buffer.from(readmeData.content, 'base64').toString('utf-8').slice(0, 3000);
+      }
+    }
+
+    const commitSummaries = (commits as GitHubCommit[]).slice(0, 30).map((c) =>
+      `[${c.commit.author.date}] ${c.commit.message.split('\n')[0]}`
+    );
+
+    return { commits: commitSummaries, readme };
+  });
 }

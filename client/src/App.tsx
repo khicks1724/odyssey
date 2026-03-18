@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth, AuthProvider } from './lib/auth';
+import { ThemeProvider } from './lib/theme';
+import { AIAgentProvider } from './lib/ai-agent';
 import AppLayout from './components/layout/AppLayout';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
@@ -39,9 +41,13 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <ThemeProvider>
+        <AIAgentProvider>
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        </AIAgentProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

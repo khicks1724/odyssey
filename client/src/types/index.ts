@@ -3,6 +3,7 @@ export interface Project {
   name: string;
   description: string | null;
   owner_id: string;
+  github_repo: string | null;
   created_at: string;
 }
 
@@ -11,7 +12,7 @@ export interface Goal {
   project_id: string;
   title: string;
   deadline: string | null;
-  status: 'active' | 'at_risk' | 'complete' | 'missed';
+  status: 'not_started' | 'active' | 'in_progress' | 'at_risk' | 'complete' | 'missed';
   risk_score: number | null;
   progress: number;
 }
