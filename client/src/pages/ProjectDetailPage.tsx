@@ -1828,7 +1828,7 @@ function buildTree(files: FileEntry[]): TreeNode[] {
 }
 
 function TreeNodeRow({ node, depth = 0, onOpenFile }: { node: TreeNode; depth?: number; onOpenFile?: (path: string) => void }) {
-  const [open, setOpen] = useState(depth < 1);
+  const [open, setOpen] = useState(false);
   // Pre-defined Tailwind padding classes per depth (up to 8 levels)
   const filePl  = ['pl-4',  'pl-7',  'pl-10', 'pl-14', 'pl-[68px]', 'pl-20', 'pl-24', 'pl-28'][Math.min(depth, 7)];
   const dirPl   = ['pl-1',  'pl-4',  'pl-7',  'pl-10', 'pl-14',     'pl-16', 'pl-20', 'pl-24'][Math.min(depth, 7)];
@@ -1906,7 +1906,7 @@ function RepoPanel({
   onNavigateSettings: () => void;
   scanButton?: React.ReactNode;
 }) {
-  const [view, setView] = useState<'commits' | 'files' | 'readme'>('commits');
+  const [view, setView] = useState<'commits' | 'files' | 'readme'>('files');
   const [fileSearch, setFileSearch] = useState('');
   const [openFile, setOpenFile] = useState<string | null>(null);
 
@@ -1966,7 +1966,7 @@ function RepoPanel({
           <>
             {/* Sub-tabs */}
             <div className="flex border-b border-border">
-              {(['commits', 'files', 'readme'] as const).map((t) => (
+              {(['files', 'commits', 'readme'] as const).map((t) => (
                 <button key={t} type="button" onClick={() => setView(t)}
                   className={`px-5 py-2 text-[10px] uppercase tracking-wider transition-colors ${
                     view === t ? 'text-heading border-b-2 border-accent font-medium' : 'text-muted hover:text-heading'
