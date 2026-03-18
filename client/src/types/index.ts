@@ -12,7 +12,7 @@ export interface Goal {
   project_id: string;
   title: string;
   deadline: string | null;
-  status: 'not_started' | 'active' | 'in_progress' | 'at_risk' | 'complete' | 'missed';
+  status: 'not_started' | 'in_progress' | 'in_review' | 'complete';
   risk_score: number | null;
   progress: number;
   completed_at: string | null;
@@ -25,7 +25,7 @@ export interface OdysseyEvent {
   id: string;
   project_id: string;
   actor_id: string | null;
-  source: 'github' | 'teams' | 'onedrive' | 'onenote' | 'manual';
+  source: 'github' | 'teams' | 'onedrive' | 'onenote' | 'local' | 'gitlab' | 'manual';
   event_type: 'commit' | 'message' | 'file_edit' | 'note' | 'meeting';
   title: string | null;
   summary: string | null;

@@ -6,16 +6,23 @@ const GITLAB_HOST = process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
 
 async function glGet(repo: string, path: string): Promise<unknown> {
   const encoded = encodeURIComponent(repo);
-  const res = await fetch(`${GITLAB_HOST}/api/v4/projects/${encoded}${path}`, {
-    headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`GitLab ${res.status}: ${body.slice(0, 300)}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(`${GITLAB_HOST}/api/v4/projects/${encoded}${path}`, {
+      headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`GitLab ${res.status}: ${body.slice(0, 300)}`);
+    }
+    // README comes back as plain text; everything else is JSON
+    const ct = res.headers.get('content-type') ?? '';
+    return ct.includes('application/json') ? res.json() : res.text();
+  } finally {
+    clearTimeout(timeout);
   }
-  // README comes back as plain text; everything else is JSON
-  const ct = res.headers.get('content-type') ?? '';
-  return ct.includes('application/json') ? res.json() : res.text();
 }
 
 export async function gitlabRoutes(server: FastifyInstance) {
@@ -76,6 +83,27 @@ export async function gitlabRoutes(server: FastifyInstance) {
     }
   });
 
+  // ── Repo file tree ─────────────────────────────────────────────────────────
+  server.get<{ Querystring: { repo: string } }>('/gitlab/tree', async (request, reply) => {
+    const { repo } = request.query;
+    if (!repo) return reply.status(400).send({ error: 'repo required' });
+    if (!GITLAB_TOKEN) return reply.status(503).send({ error: 'GitLab token not configured on server' });
+
+    try {
+      type GLTree = { id: string; name: string; type: string; path: string; mode: string }[];
+      // Fetch up to 500 files recursively
+      const data = await glGet(repo, '/repository/tree?recursive=true&per_page=100') as GLTree;
+      return {
+        files: data
+          .filter((f) => f.type === 'blob')
+          .map((f) => ({ path: f.path })),
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
   // ── Link a GitLab repo to a project ───────────────────────────────────────
   server.post<{ Body: { projectId: string; repo: string } }>('/gitlab/link', async (request, reply) => {
     const authHeader = request.headers.authorization;
@@ -106,6 +134,37 @@ export async function gitlabRoutes(server: FastifyInstance) {
     );
     if (dbErr) return reply.status(500).send({ error: dbErr.message });
     return { linked: true, repo, host: GITLAB_HOST };
+  });
+
+  // ── Fetch raw file content ─────────────────────────────────────────────────
+  server.get<{ Querystring: { repo: string; path: string } }>('/gitlab/file', async (request, reply) => {
+    const { repo, path } = request.query;
+    if (!repo || !path) return reply.status(400).send({ error: 'repo and path required' });
+    if (!GITLAB_TOKEN) return reply.status(503).send({ error: 'GitLab token not configured on server' });
+
+    try {
+      const encoded = encodeURIComponent(repo);
+      const fileEncoded = encodeURIComponent(path);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const res = await fetch(
+          `${GITLAB_HOST}/api/v4/projects/${encoded}/repository/files/${fileEncoded}/raw?ref=HEAD`,
+          { headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN }, signal: controller.signal },
+        );
+        if (!res.ok) return reply.status(res.status).send({ error: 'File not found' });
+        const contentLength = Number(res.headers.get('content-length') ?? 0);
+        if (contentLength > 512_000) return reply.status(413).send({ error: 'File too large to preview (>512 KB)' });
+        const content = await res.text();
+        if (content.length > 512_000) return reply.status(413).send({ error: 'File too large to preview (>512 KB)' });
+        return { content, name: path.split('/').pop() ?? path };
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: msg });
+    }
   });
 
   // ── Unlink GitLab repo from a project ─────────────────────────────────────

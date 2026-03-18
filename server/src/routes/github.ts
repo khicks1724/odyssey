@@ -151,6 +151,47 @@ export async function githubRoutes(server: FastifyInstance) {
     };
   });
 
+  // Get repo file tree
+  server.get<{
+    Params: { owner: string; repo: string };
+  }>('/github/:owner/:repo/tree', async (request, reply) => {
+    const { owner, repo } = request.params;
+    const token = request.headers['x-github-token'] as string | undefined;
+
+    if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
+      return reply.status(400).send({ error: 'Invalid owner or repo name' });
+    }
+
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Odyssey-App',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    // Get default branch first
+    const infoRes = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+      { headers },
+    );
+    if (!infoRes.ok) return reply.status(infoRes.status).send({ error: 'Repo not found' });
+    const info = await infoRes.json() as { default_branch: string };
+
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${info.default_branch}?recursive=1`,
+      { headers },
+    );
+    if (!treeRes.ok) return reply.status(treeRes.status).send({ error: 'Tree fetch failed' });
+    const treeData = await treeRes.json() as { tree: { path: string; type: string; size?: number }[] };
+
+    return {
+      branch: info.default_branch,
+      files: treeData.tree
+        .filter((f) => f.type === 'blob')
+        .map((f) => ({ path: f.path, size: f.size ?? 0 }))
+        .slice(0, 500),
+    };
+  });
+
   // Get recent commits (for AI repo scan)
   server.get<{
     Params: { owner: string; repo: string };
@@ -205,5 +246,45 @@ export async function githubRoutes(server: FastifyInstance) {
     );
 
     return { commits: commitSummaries, readme };
+  });
+
+  // Fetch raw file content
+  server.get<{
+    Params: { owner: string; repo: string };
+    Querystring: { path: string };
+  }>('/github/:owner/:repo/file', async (request, reply) => {
+    const { owner, repo } = request.params;
+    const { path } = request.query;
+    const token = request.headers['x-github-token'] as string | undefined;
+
+    if (!path) return reply.status(400).send({ error: 'path required' });
+    if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
+      return reply.status(400).send({ error: 'Invalid owner or repo name' });
+    }
+
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'Odyssey-App',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const res = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${path}`,
+      { headers },
+    );
+    if (!res.ok) return reply.status(res.status).send({ error: 'File not found' });
+
+    const data = await res.json() as { content?: string; encoding?: string; size?: number; name?: string };
+    if (!data.content || data.encoding !== 'base64') {
+      return reply.status(422).send({ error: 'Cannot decode file content' });
+    }
+
+    // Cap at 500 KB to avoid flooding the client
+    if ((data.size ?? 0) > 512_000) {
+      return reply.status(413).send({ error: 'File too large to preview (>512 KB)' });
+    }
+
+    const content = Buffer.from(data.content, 'base64').toString('utf-8');
+    return { content, name: data.name ?? path.split('/').pop() };
   });
 }

@@ -101,6 +101,48 @@ export function useUpcomingDeadlines() {
   return { deadlines, loading };
 }
 
+export interface LatestInsight {
+  status: string;
+  next_steps: string[];
+  future_features: string[];
+  provider: string;
+  generated_at: string;
+  project_name: string;
+  project_id: string;
+}
+
+export function useLatestInsight() {
+  const { user } = useAuth();
+  const [insight, setInsight] = useState<LatestInsight | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    supabase
+      .from('project_insights')
+      .select('status, next_steps, future_features, provider, generated_at, project_id, projects(name)')
+      .order('generated_at', { ascending: false })
+      .limit(1)
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          setInsight({
+            status: data.status,
+            next_steps: (data.next_steps ?? []) as string[],
+            future_features: (data.future_features ?? []) as string[],
+            provider: data.provider,
+            generated_at: data.generated_at,
+            project_name: (data.projects as unknown as { name: string } | null)?.name ?? 'Unknown',
+            project_id: data.project_id,
+          });
+        }
+        setLoading(false);
+      });
+  }, [user]);
+
+  return { insight, loading };
+}
+
 export function useActivityByDate() {
   const { user } = useAuth();
   const [data, setData] = useState<{ date: string; count: number }[]>([]);

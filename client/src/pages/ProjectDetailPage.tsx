@@ -21,8 +21,14 @@ import {
   TrendingUp,
   Folder,
   ChevronRight,
+  Plug,
+  GitBranch,
+  FileText,
+  ExternalLink,
+  Clock,
 } from 'lucide-react';
 import GoalMetrics from '../components/GoalMetrics';
+import FileViewerLazy from '../components/FileViewer';
 import OfficeFilePicker from '../components/OfficeFilePicker';
 import ProjectChat from '../components/ProjectChat';
 import { useProject } from '../hooks/useProjects';
@@ -46,7 +52,7 @@ const tabs = [
   { id: 'goals', label: 'Goals', icon: Target },
   { id: 'metrics', label: 'Metrics', icon: TrendingUp },
   { id: 'documents', label: 'Documents', icon: Link },
-  { id: 'members', label: 'Members', icon: Users },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
 
@@ -80,7 +86,7 @@ export default function ProjectDetailPage() {
   const { agent } = useAIAgent();
   const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
   const { goals, createGoal, updateGoal, deleteGoal } = useGoals(projectId);
-  const { events, loading: eventsLoading } = useEvents(projectId);
+  const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
   const { status: msStatus } = useMicrosoftIntegration();
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const goalModal = useModal();
@@ -117,6 +123,14 @@ export default function ProjectDetailPage() {
   // Deleting imported docs
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
 
+  // Document edit/select mode
+  const [docEditMode, setDocEditMode] = useState(false);
+  const [docSelected, setDocSelected] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // GitLab linked repo (for overview panel)
+  const [gitlabRepo, setGitlabRepo] = useState<string | null>(null);
+
   // Teams folder integration (project-level)
   const [teamsFolder, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
   const [teamsFolderPickerOpen, setTeamsFolderPickerOpen] = useState(false);
@@ -147,6 +161,20 @@ export default function ProjectDetailPage() {
             futureFeatures: data.future_features as string[],
             provider: data.provider,
           });
+        }
+      });
+
+    // Load GitLab integration
+    supabase
+      .from('integrations')
+      .select('config')
+      .eq('project_id', projectId)
+      .eq('type', 'gitlab')
+      .single()
+      .then(({ data }) => {
+        if (data?.config) {
+          const cfg = data.config as { repo: string };
+          setGitlabRepo(cfg.repo);
         }
       });
 
@@ -376,6 +404,12 @@ export default function ProjectDetailPage() {
     await fetchMembers();
   };
 
+  const handlePromoteMember = async (userId: string) => {
+    if (!projectId) return;
+    await supabase.from('project_members').update({ role: 'owner' }).eq('project_id', projectId).eq('user_id', userId);
+    await fetchMembers();
+  };
+
   if (projectLoading) {
     return (
       <div className="p-8 max-w-6xl mx-auto animate-pulse">
@@ -494,7 +528,7 @@ export default function ProjectDetailPage() {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-5 py-3 bg-surface text-xs tracking-wider uppercase transition-colors first:rounded-tl last:rounded-tr ${
+            className={`flex flex-1 items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors first:rounded-tl last:rounded-tr ${
               activeTab === tab.id
                 ? 'text-heading bg-surface2 font-medium'
                 : 'text-muted hover:text-heading hover:bg-surface2'
@@ -521,29 +555,52 @@ export default function ProjectDetailPage() {
             </div>
             <div className="bg-surface p-6">
               <h3 className="font-sans text-sm font-bold text-heading mb-4">Integrations</h3>
-              <div className="flex items-center gap-3 p-3 border border-border rounded">
-                <Github size={16} className={project.github_repo ? 'text-accent' : 'text-muted'} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-heading font-medium">GitHub</div>
-                  {project.github_repo ? (
-                    <a
-                      href={`https://github.com/${project.github_repo}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[10px] text-accent hover:underline truncate block"
-                    >
-                      {project.github_repo}
-                    </a>
-                  ) : (
-                    <div className="text-[10px] text-muted">Not connected</div>
-                  )}
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 p-3 border border-border rounded">
+                  <Github size={16} className={project.github_repo ? 'text-accent' : 'text-muted'} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-heading font-medium">GitHub</div>
+                    {project.github_repo ? (
+                      <a
+                        href={`https://github.com/${project.github_repo}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-accent hover:underline truncate block"
+                      >
+                        {project.github_repo}
+                      </a>
+                    ) : (
+                      <div className="text-[10px] text-muted">Not connected</div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    className="text-[10px] text-accent hover:underline"
+                  >
+                    {project.github_repo ? 'Manage' : 'Connect'}
+                  </button>
                 </div>
-                <button
-                  onClick={() => setActiveTab('settings')}
-                  className="text-[10px] text-accent hover:underline"
-                >
-                  {project.github_repo ? 'Manage' : 'Connect'}
-                </button>
+                <div className="flex items-center gap-3 p-3 border border-border rounded">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" className={gitlabRepo ? 'text-[#FC6D26]' : 'text-muted'}>
+                    <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
+                  </svg>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-heading font-medium">GitLab <span className="text-[9px] text-muted font-mono">NPS</span></div>
+                    {gitlabRepo ? (
+                      <div className="text-[10px] text-muted truncate">{gitlabRepo}</div>
+                    ) : (
+                      <div className="text-[10px] text-muted">Not connected</div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    className="text-[10px] text-accent hover:underline"
+                  >
+                    {gitlabRepo ? 'Manage' : 'Connect'}
+                  </button>
+                </div>
               </div>
             </div>
             <div className="bg-surface p-6">
@@ -668,6 +725,60 @@ export default function ProjectDetailPage() {
               emptyMessage="No activity yet. Connect a GitHub repo to start."
             />
           </div>
+
+          {/* Team Members */}
+          <div className="border border-border bg-surface p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Users size={14} className="text-accent2" />
+                <h3 className="font-sans text-sm font-bold text-heading">Team Members</h3>
+                <span className="text-[10px] text-muted font-mono bg-surface2 px-1.5 py-0.5 rounded">{members.length + 1}</span>
+              </div>
+              <button type="button" onClick={() => setActiveTab('settings')}
+                className="text-[10px] text-accent hover:underline">
+                Manage →
+              </button>
+            </div>
+            <div className="space-y-px border border-border bg-border">
+              {/* Owner row — current user */}
+              <div className="flex items-center gap-3 bg-surface px-4 py-2.5">
+                {user?.user_metadata?.avatar_url
+                  ? <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                  : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center"><span className="text-[10px] text-accent font-bold">You</span></div>
+                }
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-heading font-medium truncate">{user?.user_metadata?.user_name ?? user?.email ?? 'You'}</div>
+                </div>
+                <span className="text-[9px] px-1.5 py-0.5 border border-accent3/30 text-accent3 rounded uppercase font-mono">Owner</span>
+              </div>
+              {members.map((m) => (
+                <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-2.5 group">
+                  {m.profile?.avatar_url
+                    ? <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                    : <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
+                        <span className="text-[10px] text-accent2 font-bold uppercase">{(m.profile?.display_name ?? '?')[0]}</span>
+                      </div>
+                  }
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-heading font-medium truncate">{m.profile?.display_name ?? m.user_id}</div>
+                  </div>
+                  <span className={`text-[9px] px-1.5 py-0.5 border rounded uppercase font-mono ${
+                    m.role === 'owner' ? 'border-accent3/30 text-accent3' : 'border-border text-muted'
+                  }`}>{m.role}</span>
+                  {m.role !== 'owner' && (
+                    <button
+                      type="button"
+                      title="Promote to owner"
+                      onClick={() => handlePromoteMember(m.user_id)}
+                      className="opacity-0 group-hover:opacity-100 text-[9px] px-2 py-0.5 border border-accent3/30 text-accent3 rounded hover:bg-accent3/10 transition-all"
+                    >
+                      Make Owner
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </>
       )}
 
@@ -688,11 +799,10 @@ export default function ProjectDetailPage() {
       {activeTab === 'goals' && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-sans text-sm font-bold text-heading">
-              Goals ({goals.length})
-            </h3>
+            <h3 className="font-sans text-sm font-bold text-heading">Goals ({goals.length})</h3>
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={handleSyncOfficeProgress}
                 disabled={syncingProgress}
                 title="Analyze imported Office documents and auto-update goal progress using AI"
@@ -702,16 +812,15 @@ export default function ProjectDetailPage() {
                 Sync from Office
               </button>
               <button
+                type="button"
                 onClick={goalModal.onOpen}
                 className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
               >
-                <Plus size={14} />
-                Add Goal
+                <Plus size={14} /> Add Goal
               </button>
             </div>
           </div>
 
-          {/* Office sync result */}
           {syncResult && (
             <div className="mb-4 border border-accent/20 bg-accent/5 rounded p-4 text-xs">
               <div className="flex items-center justify-between mb-1">
@@ -725,47 +834,23 @@ export default function ProjectDetailPage() {
             </div>
           )}
           {syncError && (
-            <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono">
-              {syncError}
-            </div>
+            <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono">{syncError}</div>
           )}
 
-          {goals.length === 0 ? (
-            <div className="border border-border bg-surface p-12 text-center">
-              <Target size={32} className="text-border mx-auto mb-3" />
-              <p className="text-sm text-muted mb-4">No goals yet. Add your first goal to start tracking progress.</p>
-              <button
-                onClick={goalModal.onOpen}
-                className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-              >
-                <Plus size={14} />
-                Add Goal
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-px border border-border bg-border">
-              {goals.map((goal) => (
-                <div key={goal.id} className="relative group">
-                  <GoalCard
-                    goal={goal}
-                    onUpdateProgress={(id, progress) => updateGoal(id, { progress })}
-                    onUpdateStatus={(id, status) => updateGoal(id, { status })}
-                    assigneeName={getAssignee(goal.assigned_to)?.display_name ?? undefined}
-                    assigneeAvatar={getAssignee(goal.assigned_to)?.avatar_url ?? undefined}
-                  />
-                  <button
-                    onClick={() => deleteGoal(goal.id)}
-                    className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
-                    title="Delete goal"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          <GoalsKanban
+            goals={goals}
+            onUpdateStatus={(id, status) => {
+              const progressMap: Record<GoalStatus, number> = {
+                not_started: 0, in_progress: 40, in_review: 75, complete: 100,
+              };
+              updateGoal(id, { status, progress: progressMap[status] });
+            }}
 
-          {/* Add Goal Modal */}
+            onDelete={deleteGoal}
+            onAdd={goalModal.onOpen}
+            getAssignee={getAssignee}
+          />
+
           <Modal open={goalModal.open} onClose={goalModal.onClose} title="Add Goal">
             <form onSubmit={handleCreateGoal} className="space-y-4">
               <div>
@@ -790,14 +875,20 @@ export default function ProjectDetailPage() {
                 />
               </div>
               <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category (optional)</label>
-                <input
-                  type="text"
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category</label>
+                <select
                   value={newGoalCategory}
                   onChange={(e) => setNewGoalCategory(e.target.value)}
-                  placeholder="e.g. Frontend, Backend, Design…"
-                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
-                />
+                  title="Goal category"
+                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+                >
+                  <option value="">— Select category —</option>
+                  <option value="Testing">Testing</option>
+                  <option value="Seeker">Seeker</option>
+                  <option value="Missile">Missile</option>
+                  <option value="Admin">Admin</option>
+                  <option value="Simulation">Simulation</option>
+                </select>
               </div>
               <div>
                 <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Assign to (optional)</label>
@@ -809,24 +900,15 @@ export default function ProjectDetailPage() {
                 >
                   <option value="">Unassigned</option>
                   {allMembers.map((m) => (
-                    <option key={m.user_id} value={m.user_id}>
-                      {m.display_name}
-                    </option>
+                    <option key={m.user_id} value={m.user_id}>{m.display_name}</option>
                   ))}
                 </select>
               </div>
               <div className="flex gap-3 pt-2">
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md"
-                >
+                <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
                   Create Goal
                 </button>
-                <button
-                  type="button"
-                  onClick={goalModal.onClose}
-                  className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md"
-                >
+                <button type="button" onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md">
                   Cancel
                 </button>
               </div>
@@ -850,245 +932,147 @@ export default function ProjectDetailPage() {
       )}
 
       {activeTab === 'documents' && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="font-sans text-sm font-bold text-heading">Documents</h3>
-              <p className="text-[11px] text-muted font-mono mt-0.5">Imported files available to AI analysis</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <label
-                title="Upload local file"
-                className="flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md cursor-pointer"
-              >
-                <Plus size={12} /> Upload File
-                <input
-                  type="file"
-                  title="Upload local file"
-                  className="sr-only"
-                  multiple
-                  onChange={async (e) => {
-                    const files = Array.from(e.target.files ?? []);
-                    if (!files.length || !projectId) return;
-                    const { data: { session } } = await supabase.auth.getSession();
-                    if (!session) return;
-                    for (const file of files) {
-                      let content: string | undefined;
-                      const isText = file.type.startsWith('text/') || /\.(txt|md|csv|json|xml|log|yaml|yml|ts|js|py)$/i.test(file.name);
-                      if (isText) {
-                        content = await new Promise<string>((resolve) => {
-                          const reader = new FileReader();
-                          reader.onload = () => resolve(reader.result as string);
-                          reader.readAsText(file);
-                        });
-                      }
-                      await fetch('/api/uploads/local', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-                        body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, size: file.size, content }),
-                      });
-                    }
-                    e.target.value = '';
-                    window.location.reload();
-                  }}
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => setOfficePickerOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-              >
-                <Plus size={12} /> Import from Office 365
-              </button>
-            </div>
-          </div>
-
-          {/* Imported Office events */}
-          {eventsLoading ? (
-            <div className="text-xs text-muted py-4">Loading…</div>
-          ) : (
-            <div className="space-y-px border border-border bg-border">
-              {events
-                .filter((e) => e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local')
-                .map((e) => (
-                  <div key={e.id} className="flex items-start gap-3 bg-surface px-4 py-3 group">
-                    <div className="mt-0.5 shrink-0">
-                      {e.source === 'onenote'
-                        ? <span className="text-[10px] font-mono text-accent3 border border-accent3/30 px-1 py-0.5 rounded">NOTE</span>
-                        : e.source === 'local'
-                        ? <span className="text-[10px] font-mono text-accent border border-accent/30 px-1 py-0.5 rounded">LOCAL</span>
-                        : <span className="text-[10px] font-mono text-accent2 border border-accent2/30 px-1 py-0.5 rounded">FILE</span>
-                      }
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs text-heading font-medium truncate">{e.title}</div>
-                      {e.summary && <div className="text-[11px] text-muted mt-0.5 line-clamp-2">{e.summary}</div>}
-                      <div className="text-[10px] text-muted mt-1 font-mono">
-                        {new Date(e.occurred_at).toLocaleDateString()} · {e.source}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {(e.metadata as { web_url?: string })?.web_url && (
-                        <a
-                          href={(e.metadata as { web_url: string }).web_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[10px] text-accent hover:underline"
-                        >
-                          Open
-                        </a>
-                      )}
-                      <button
-                        type="button"
-                        title="Remove from context"
-                        disabled={deletingEventId === e.id}
-                        onClick={async () => {
-                          setDeletingEventId(e.id);
-                          await deleteImportedEvent(e.id);
-                          setDeletingEventId(null);
-                          // events list will re-fetch via useEvents subscription
-                          window.location.reload();
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all disabled:opacity-40"
-                      >
-                        {deletingEventId === e.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              {events.filter((e) => e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local').length === 0 && (
-                <div className="bg-surface px-4 py-8 text-center">
-                  <p className="text-xs text-muted mb-3">No documents yet. Upload a local file or import from Microsoft 365.</p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        <DocumentsTab
+          events={events}
+          eventsLoading={eventsLoading}
+          projectId={projectId!}
+          docEditMode={docEditMode}
+          setDocEditMode={setDocEditMode}
+          docSelected={docSelected}
+          setDocSelected={setDocSelected}
+          bulkDeleting={bulkDeleting}
+          setBulkDeleting={setBulkDeleting}
+          deletingEventId={deletingEventId}
+          setDeletingEventId={setDeletingEventId}
+          onOpenOfficePicker={() => setOfficePickerOpen(true)}
+          onRefresh={refetchEvents}
+        />
       )}
 
-      {activeTab === 'members' && (
-        <div className="space-y-6">
-          {/* Current Members */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-6">
-              <Users size={14} className="text-accent2" />
-              <h3 className="font-sans text-sm font-bold text-heading">
-                Team Members ({members.length + 1})
-              </h3>
-            </div>
-            <div className="space-y-px border border-border bg-border">
-              {/* Owner (current user) */}
-              <div className="flex items-center gap-3 bg-surface px-4 py-3">
-                {user?.user_metadata?.avatar_url ? (
-                  <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
-                    <span className="text-[10px] text-accent font-bold">You</span>
-                  </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-heading font-medium truncate">
-                    {user?.user_metadata?.user_name ?? user?.email ?? 'You'}
-                  </div>
-                  <div className="text-[10px] text-muted">Owner</div>
-                </div>
-              </div>
-              {/* Other members */}
-              {members.map((m) => (
-                <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
-                  {m.profile?.avatar_url ? (
-                    <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                  ) : (
-                    <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
-                      <span className="text-[10px] text-accent2 font-bold uppercase">
-                        {(m.profile?.display_name ?? '?')[0]}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-heading font-medium truncate">
-                      {m.profile?.display_name ?? m.user_id}
-                    </div>
-                    <div className="text-[10px] text-muted capitalize">{m.role}</div>
-                  </div>
-                  {m.user_id !== user?.id && (
-                    <button
-                      onClick={() => handleRemoveMember(m.user_id)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
-                      title="Remove member"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Invite Members */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <UserPlus size={14} className="text-accent" />
-              <h3 className="font-sans text-sm font-bold text-heading">Invite by GitHub Username</h3>
-            </div>
-            <p className="text-[11px] text-muted mb-4">
-              Search for a GitHub user — they must have signed into Odyssey at least once.
-            </p>
-            <div className="flex gap-2 max-w-md mb-4">
-              <input
-                value={memberSearch}
-                onChange={(e) => setMemberSearch(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
-                placeholder="GitHub username…"
-                className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
-              <button
-                onClick={handleMemberSearch}
-                disabled={memberSearching || memberSearch.trim().length < 2}
-                className="px-4 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
-              >
-                {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-                Search
-              </button>
-            </div>
-
-            {memberResults.length > 0 && (
-              <div className="space-y-px border border-border bg-border max-w-md">
-                {memberResults.map((u) => (
-                  <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
-                    <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                    <div className="flex-1 min-w-0">
-                      <a
-                        href={u.html_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-heading font-medium hover:text-accent transition-colors"
-                      >
-                        {u.login}
-                      </a>
-                    </div>
-                    <button
-                      onClick={() => handleInviteMember(u)}
-                      disabled={inviting === u.login}
-                      className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5"
-                    >
-                      {inviting === u.login ? (
-                        <Loader2 size={10} className="animate-spin" />
-                      ) : (
-                        <UserPlus size={10} />
-                      )}
-                      {inviting === u.login ? 'Adding…' : 'Add'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+      {activeTab === 'integrations' && (
+        <IntegrationsPreviewTab
+          projectId={projectId!}
+          project={project ? { name: project.name, github_repo: project.github_repo } : null}
+          githubRepo={project?.github_repo ?? null}
+          gitlabRepo={gitlabRepo}
+          goals={goals.map((g) => ({ id: g.id, title: g.title, status: g.status, progress: g.progress ?? 0 }))}
+          o365Docs={events.filter((e) => ['onenote', 'onedrive', 'teams', 'local'].includes(e.source))}
+          onNavigateSettings={() => setActiveTab('settings')}
+        />
       )}
 
       {activeTab === 'settings' && (
         <div className="space-y-8">
+          {/* Team Members */}
+          <div className="space-y-4">
+            <div className="border border-border bg-surface p-6">
+              <div className="flex items-center gap-2 mb-6">
+                <Users size={14} className="text-accent2" />
+                <h3 className="font-sans text-sm font-bold text-heading">
+                  Team Members ({members.length + 1})
+                </h3>
+              </div>
+              <div className="space-y-px border border-border bg-border">
+                <div className="flex items-center gap-3 bg-surface px-4 py-3">
+                  {user?.user_metadata?.avatar_url ? (
+                    <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
+                      <span className="text-[10px] text-accent font-bold">You</span>
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-heading font-medium truncate">
+                      {user?.user_metadata?.user_name ?? user?.email ?? 'You'}
+                    </div>
+                    <div className="text-[10px] text-muted">Owner</div>
+                  </div>
+                </div>
+                {members.map((m) => (
+                  <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
+                    {m.profile?.avatar_url ? (
+                      <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                    ) : (
+                      <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
+                        <span className="text-[10px] text-accent2 font-bold uppercase">
+                          {(m.profile?.display_name ?? '?')[0]}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-heading font-medium truncate">
+                        {m.profile?.display_name ?? m.user_id}
+                      </div>
+                      <div className="text-[10px] text-muted capitalize">{m.role}</div>
+                    </div>
+                    {m.user_id !== user?.id && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(m.user_id)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
+                        title="Remove member"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border border-border bg-surface p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <UserPlus size={14} className="text-accent" />
+                <h3 className="font-sans text-sm font-bold text-heading">Invite by GitHub Username</h3>
+              </div>
+              <p className="text-[11px] text-muted mb-4">
+                Search for a GitHub user — they must have signed into Odyssey at least once.
+              </p>
+              <div className="flex gap-2 max-w-md mb-4">
+                <input
+                  value={memberSearch}
+                  onChange={(e) => setMemberSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
+                  placeholder="GitHub username…"
+                  className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+                />
+                <button
+                  type="button"
+                  onClick={handleMemberSearch}
+                  disabled={memberSearching || memberSearch.trim().length < 2}
+                  className="px-4 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
+                >
+                  {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                  Search
+                </button>
+              </div>
+              {memberResults.length > 0 && (
+                <div className="space-y-px border border-border bg-border max-w-md">
+                  {memberResults.map((u) => (
+                    <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
+                      <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                      <div className="flex-1 min-w-0">
+                        <a href={u.html_url} target="_blank" rel="noopener noreferrer"
+                          className="text-xs text-heading font-medium hover:text-accent transition-colors">
+                          {u.login}
+                        </a>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleInviteMember(u)}
+                        disabled={inviting === u.login}
+                        className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        {inviting === u.login ? <Loader2 size={10} className="animate-spin" /> : <UserPlus size={10} />}
+                        {inviting === u.login ? 'Adding…' : 'Add'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Project Name & Description */}
           <ProjectNameForm project={project} updateProject={updateProject} />
 
@@ -1268,7 +1252,7 @@ export default function ProjectDetailPage() {
           </div>
 
           {/* GitLab Repository */}
-          <GitLabSection projectId={projectId!} />
+          <GitLabSection projectId={projectId!} onLinked={(repo) => setGitlabRepo(repo)} />
         </div>
       )}
     </div>
@@ -1406,8 +1390,874 @@ function TeamsFolderPickerModal({
   );
 }
 
+// ── Goals Kanban Board ───────────────────────────────────────────────────────
+type GoalStatus = import('../types').Goal['status'];
+
+const KANBAN_COLUMNS: { status: GoalStatus; label: string; color: string; accent: string }[] = [
+  { status: 'not_started', label: 'Not Started', color: 'text-muted',        accent: 'border-border' },
+  { status: 'in_progress', label: 'In Progress', color: 'text-accent2',      accent: 'border-accent2/40' },
+  { status: 'in_review',   label: 'In Review',   color: 'text-yellow-400',   accent: 'border-yellow-400/40' },
+  { status: 'complete',    label: 'Complete',     color: 'text-accent3',      accent: 'border-accent3/40' },
+];
+
+interface GoalsKanbanProps {
+  goals: import('../types').Goal[];
+  onUpdateStatus: (id: string, status: GoalStatus) => void;
+
+  onDelete: (id: string) => void;
+  onAdd: () => void;
+  getAssignee: (userId: string | null | undefined) => { display_name: string | null; avatar_url: string | null } | null;
+}
+
+function GoalsKanban({ goals, onUpdateStatus, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverCol, setDragOverCol] = useState<GoalStatus | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, goalId: string) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('goalId', goalId);
+    setDraggingId(goalId);
+  };
+
+  const handleDragEnd = () => {
+    setDraggingId(null);
+    setDragOverCol(null);
+  };
+
+  const handleDragOver = (e: React.DragEvent, status: GoalStatus) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverCol(status);
+  };
+
+  const handleDrop = (e: React.DragEvent, status: GoalStatus) => {
+    e.preventDefault();
+    const goalId = e.dataTransfer.getData('goalId');
+    if (goalId) onUpdateStatus(goalId, status);
+    setDraggingId(null);
+    setDragOverCol(null);
+  };
+
+  if (goals.length === 0) {
+    return (
+      <div className="border border-border bg-surface p-12 text-center">
+        <Target size={32} className="text-border mx-auto mb-3" />
+        <p className="text-sm text-muted mb-4">No goals yet. Add your first goal to start tracking progress.</p>
+        <button type="button" onClick={onAdd}
+          className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md">
+          <Plus size={14} /> Add Goal
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-4 min-h-[60vh]">
+      {KANBAN_COLUMNS.map((col) => {
+        const colGoals = goals.filter((g) => g.status === col.status);
+        const isOver = dragOverCol === col.status;
+        return (
+          <div
+            key={col.status}
+            className={`flex flex-col flex-1 min-w-0 border rounded transition-colors ${
+              isOver ? `${col.accent} bg-surface2` : 'border-border bg-surface'
+            }`}
+            onDragOver={(e) => handleDragOver(e, col.status)}
+            onDragLeave={() => setDragOverCol(null)}
+            onDrop={(e) => handleDrop(e, col.status)}
+          >
+            {/* Column header */}
+            <div className={`flex items-center justify-between px-3 py-2.5 border-b border-border`}>
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] font-bold uppercase tracking-wider ${col.color}`}>{col.label}</span>
+                <span className="text-[10px] text-muted bg-surface2 px-1.5 py-0.5 rounded font-mono">{colGoals.length}</span>
+              </div>
+            </div>
+
+            {/* Cards */}
+            <div className="flex flex-col gap-2 p-2 flex-1 overflow-y-auto">
+              {colGoals.map((goal) => {
+                const assignee = getAssignee(goal.assigned_to);
+                const isDragging = draggingId === goal.id;
+                return (
+                  <div
+                    key={goal.id}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, goal.id)}
+                    onDragEnd={handleDragEnd}
+                    className={`group bg-surface2 border border-border rounded p-3 cursor-grab active:cursor-grabbing select-none transition-opacity ${
+                      isDragging ? 'opacity-30' : 'hover:border-border/80 hover:shadow-sm'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-1 mb-2">
+                      <p className="text-xs text-heading font-medium leading-snug flex-1">{goal.title}</p>
+                      <button
+                        type="button"
+                        title="Delete goal"
+                        onClick={() => onDelete(goal.id)}
+                        className="opacity-0 group-hover:opacity-100 p-0.5 text-muted hover:text-danger transition-all shrink-0"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+
+                    {/* Progress bar — driven by status */}
+                    {(() => {
+                      const barMeta: Record<GoalStatus, { pct: number; cls: string }> = {
+                        not_started: { pct: 0,   cls: 'bg-muted/40' },
+                        in_progress: { pct: 40,  cls: 'bg-accent2' },
+                        in_review:   { pct: 75,  cls: 'bg-yellow-400' },
+                        complete:    { pct: 100, cls: 'bg-accent3' },
+                      };
+                      const bar = barMeta[col.status];
+                      return (
+                        <div className="mb-2">
+                          <div className="h-1.5 bg-border rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${bar.cls} w-[var(--p)]`}
+                              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                              {...({ style: { '--p': `${bar.pct}%` } } as any)}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="flex items-center justify-between gap-1 flex-wrap">
+                      {goal.deadline && (
+                        <span className="text-[9px] text-muted font-mono">{new Date(goal.deadline).toLocaleDateString()}</span>
+                      )}
+                      {goal.category && (
+                        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
+                      )}
+                      {assignee && (
+                        <span className="text-[9px] text-muted truncate max-w-[80px]">{assignee.display_name}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Drop target hint when dragging */}
+              {isOver && draggingId && (
+                <div className={`border-2 border-dashed ${col.accent} rounded p-3 text-center text-[10px] text-muted`}>
+                  Drop here
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Documents Tab ────────────────────────────────────────────────────────────
+interface DocumentsTabProps {
+  events: import('../types').OdysseyEvent[];
+  eventsLoading: boolean;
+  projectId: string;
+  docEditMode: boolean;
+  setDocEditMode: (v: boolean) => void;
+  docSelected: Set<string>;
+  setDocSelected: (v: Set<string>) => void;
+  bulkDeleting: boolean;
+  setBulkDeleting: (v: boolean) => void;
+  deletingEventId: string | null;
+  setDeletingEventId: (v: string | null) => void;
+  onOpenOfficePicker: () => void;
+  onRefresh: () => void;
+}
+
+function DocumentsTab({
+  events, eventsLoading, projectId,
+  docEditMode, setDocEditMode,
+  docSelected, setDocSelected,
+  bulkDeleting, setBulkDeleting,
+  deletingEventId, setDeletingEventId,
+  onOpenOfficePicker, onRefresh,
+}: DocumentsTabProps) {
+  const docs = events.filter((e) =>
+    e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local' || e.source === 'teams'
+  );
+  const allSelected = docSelected.size === docs.length && docs.length > 0;
+
+  const toggleRow = (id: string) => {
+    const next = new Set(docSelected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setDocSelected(next);
+  };
+
+  const handleBulkDelete = async () => {
+    setBulkDeleting(true);
+    const ids = Array.from(docSelected);
+    await Promise.all(ids.map((id) => deleteImportedEvent(id)));
+    setDocSelected(new Set());
+    setDocEditMode(false);
+    setBulkDeleting(false);
+    onRefresh();
+  };
+
+  const handleSingleDelete = async (id: string) => {
+    setDeletingEventId(id);
+    await deleteImportedEvent(id);
+    setDeletingEventId(null);
+    onRefresh();
+  };
+
+  const handleUpload = async (files: File[]) => {
+    if (!files.length) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    for (const file of files) {
+      let content: string | undefined;
+      const isText = file.type.startsWith('text/') || /\.(txt|md|csv|json|xml|log|yaml|yml|ts|js|py)$/i.test(file.name);
+      if (isText) {
+        content = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsText(file);
+        });
+      }
+      await fetch('/api/uploads/local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, size: file.size, content }),
+      });
+    }
+    onRefresh();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-sans text-sm font-bold text-heading">Documents</h3>
+          <p className="text-[11px] text-muted font-mono mt-0.5">Imported files available to AI analysis</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {docEditMode ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setDocSelected(allSelected ? new Set() : new Set(docs.map((d) => d.id)))}
+                className="text-xs text-muted hover:text-heading border border-border px-3 py-1.5 rounded transition-colors"
+              >
+                {allSelected ? 'Deselect All' : 'Select All'}
+              </button>
+              {docSelected.size > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBulkDelete}
+                  disabled={bulkDeleting}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500/10 border border-red-400/30 text-red-400 text-xs font-semibold uppercase tracking-wider rounded hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {bulkDeleting
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : <Trash2 size={11} />}
+                  {bulkDeleting ? 'Deleting…' : `Delete ${docSelected.size} file${docSelected.size !== 1 ? 's' : ''}`}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => { setDocEditMode(false); setDocSelected(new Set()); }}
+                className="text-xs text-muted hover:text-heading border border-border px-3 py-1.5 rounded transition-colors"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              {docs.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setDocEditMode(true)}
+                  className="text-xs text-muted hover:text-heading border border-border px-3 py-1.5 rounded transition-colors"
+                >
+                  Edit
+                </button>
+              )}
+              <label
+                title="Upload local file"
+                className="flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md cursor-pointer"
+              >
+                <Plus size={12} /> Upload File
+                <input
+                  type="file"
+                  title="Upload local file"
+                  className="sr-only"
+                  multiple
+                  onChange={async (e) => {
+                    await handleUpload(Array.from(e.target.files ?? []));
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={onOpenOfficePicker}
+                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
+              >
+                <Plus size={12} /> Import from Office 365
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {eventsLoading ? (
+        <div className="text-xs text-muted py-4">Loading…</div>
+      ) : (
+        <div className="space-y-px border border-border bg-border">
+          {docs.map((e) => (
+            <div
+              key={e.id}
+              className={`flex items-start gap-3 bg-surface px-4 py-3 group transition-colors ${docEditMode ? 'cursor-pointer hover:bg-surface2' : ''} ${docEditMode && docSelected.has(e.id) ? '!bg-accent/5' : ''}`}
+              onClick={docEditMode ? () => toggleRow(e.id) : undefined}
+            >
+              {docEditMode && (
+                <div className="mt-1 shrink-0">
+                  <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
+                    docSelected.has(e.id) ? 'bg-accent border-accent' : 'border-border bg-surface'
+                  }`}>
+                    {docSelected.has(e.id) && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
+                  </div>
+                </div>
+              )}
+              <div className="mt-0.5 shrink-0">
+                {e.source === 'onenote'
+                  ? <span className="text-[10px] font-mono text-accent3 border border-accent3/30 px-1 py-0.5 rounded">NOTE</span>
+                  : e.source === 'local'
+                  ? <span className="text-[10px] font-mono text-accent border border-accent/30 px-1 py-0.5 rounded">LOCAL</span>
+                  : e.source === 'teams'
+                  ? <span className="text-[10px] font-mono text-purple-400 border border-purple-400/30 px-1 py-0.5 rounded">TEAMS</span>
+                  : <span className="text-[10px] font-mono text-accent2 border border-accent2/30 px-1 py-0.5 rounded">FILE</span>
+                }
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-heading font-medium truncate">{e.title}</div>
+                {e.summary && <div className="text-[11px] text-muted mt-0.5 line-clamp-2">{e.summary}</div>}
+                <div className="text-[10px] text-muted mt-1 font-mono">
+                  {new Date(e.occurred_at).toLocaleDateString()} · {e.source}
+                </div>
+              </div>
+              {!docEditMode && (
+                <div className="flex items-center gap-2 shrink-0">
+                  {(e.metadata as { web_url?: string })?.web_url && (
+                    <a
+                      href={(e.metadata as { web_url: string }).web_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-accent hover:underline"
+                    >
+                      Open
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    title="Remove from context"
+                    disabled={deletingEventId === e.id}
+                    onClick={() => handleSingleDelete(e.id)}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all disabled:opacity-40"
+                  >
+                    {deletingEventId === e.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {docs.length === 0 && (
+            <div className="bg-surface px-4 py-8 text-center">
+              <p className="text-xs text-muted">No documents yet. Upload a local file or import from Microsoft 365.</p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Integrations Preview Tab ─────────────────────────────────────────────────
+interface CommitEntry { date: string; message: string; author: string }
+interface FileEntry { path: string; size?: number }
+
+interface IntegrationsPreviewTabProps {
+  projectId: string;
+  project: { name: string; github_repo?: string | null } | null;
+  githubRepo: string | null;
+  gitlabRepo: string | null;
+  goals: { id: string; title: string; status: string; progress: number }[];
+  o365Docs: import('../types').OdysseyEvent[];
+  onNavigateSettings: () => void;
+}
+
+// ── Collapsible folder tree ───────────────────────────────────────────────────
+interface TreeNode {
+  name: string;
+  path: string;
+  children: TreeNode[];
+  isFile: boolean;
+}
+
+function buildTree(files: FileEntry[]): TreeNode[] {
+  const root: TreeNode[] = [];
+  for (const f of files) {
+    const parts = f.path.split('/');
+    let nodes = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isFile = i === parts.length - 1;
+      let node = nodes.find((n) => n.name === part);
+      if (!node) {
+        node = { name: part, path: parts.slice(0, i + 1).join('/'), children: [], isFile };
+        nodes.push(node);
+      }
+      nodes = node.children;
+    }
+  }
+  // Sort: folders first, then files, both alphabetical
+  const sort = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((n) => sort(n.children));
+  };
+  sort(root);
+  return root;
+}
+
+function TreeNodeRow({ node, depth = 0, onOpenFile }: { node: TreeNode; depth?: number; onOpenFile?: (path: string) => void }) {
+  const [open, setOpen] = useState(depth < 1);
+  // Pre-defined Tailwind padding classes per depth (up to 8 levels)
+  const filePl  = ['pl-4',  'pl-7',  'pl-10', 'pl-14', 'pl-[68px]', 'pl-20', 'pl-24', 'pl-28'][Math.min(depth, 7)];
+  const dirPl   = ['pl-1',  'pl-4',  'pl-7',  'pl-10', 'pl-14',     'pl-16', 'pl-20', 'pl-24'][Math.min(depth, 7)];
+
+  if (node.isFile) {
+    const ext = node.name.includes('.') ? node.name.split('.').pop() : '';
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenFile?.(node.path)}
+        className={`flex items-center gap-1.5 py-1 pr-4 w-full text-left hover:bg-surface2 cursor-pointer ${filePl}`}
+      >
+        <FileText size={10} className="text-muted shrink-0" />
+        <span className="text-[11px] text-heading font-mono truncate flex-1 hover:text-accent transition-colors">{node.name}</span>
+        {ext && <span className="text-[9px] text-muted/50 font-mono shrink-0">.{ext}</span>}
+      </button>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`flex items-center gap-1.5 w-full py-1 hover:bg-surface2 pr-4 text-left ${dirPl}`}
+      >
+        <ChevronRight size={11} className={`text-muted shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <Folder size={11} className="text-accent/70 shrink-0" />
+        <span className="text-[11px] text-heading font-mono font-medium truncate flex-1">{node.name}</span>
+        <span className="text-[9px] text-muted/50 font-mono shrink-0">{node.children.length}</span>
+      </button>
+      {open && node.children.map((child) => (
+        <TreeNodeRow key={child.path} node={child} depth={depth + 1} onOpenFile={onOpenFile} />
+      ))}
+    </div>
+  );
+}
+
+function FolderTree({ files, onOpenFile }: { files: FileEntry[]; onOpenFile?: (path: string) => void }) {
+  const tree = buildTree(files);
+  if (tree.length === 0) return <div className="px-6 py-6 text-xs text-muted text-center">No files found.</div>;
+  return (
+    <div className="py-1">
+      {tree.map((node) => <TreeNodeRow key={node.path} node={node} onOpenFile={onOpenFile} />)}
+    </div>
+  );
+}
+
+function RepoPanel({
+  title,
+  icon,
+  source,
+  repoId,
+  repoLabel,
+  repoUrl,
+  commits,
+  readme,
+  files,
+  loading,
+  connected,
+  onNavigateSettings,
+  scanButton,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  source: 'github' | 'gitlab';
+  repoId: string;
+  repoLabel?: string;
+  repoUrl?: string;
+  commits: CommitEntry[];
+  readme: string | null;
+  files: FileEntry[];
+  loading: boolean;
+  connected: boolean;
+  onNavigateSettings: () => void;
+  scanButton?: React.ReactNode;
+}) {
+  const [view, setView] = useState<'commits' | 'files' | 'readme'>('commits');
+  const [fileSearch, setFileSearch] = useState('');
+  const [openFile, setOpenFile] = useState<string | null>(null);
+
+  const filteredFiles = fileSearch
+    ? files.filter((f) => f.path.toLowerCase().includes(fileSearch.toLowerCase()))
+    : files;
+
+  const externalFileUrl = (path: string) => {
+    if (source === 'github') return `https://github.com/${repoId}/blob/HEAD/${path}`;
+    return undefined; // GitLab host is env-specific; skip for now
+  };
+
+  return (
+    <>
+      {openFile && (
+        <FileViewerLazy
+          source={source}
+          repo={repoId}
+          path={openFile}
+          externalUrl={externalFileUrl(openFile)}
+          onClose={() => setOpenFile(null)}
+        />
+      )}
+
+      <div className="border border-border bg-surface">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2 min-w-0">
+            {icon}
+            <span className="font-sans text-sm font-bold text-heading">{title}</span>
+            {repoLabel && repoUrl && (
+              <a href={repoUrl} target="_blank" rel="noopener noreferrer"
+                className="text-[10px] text-accent hover:underline flex items-center gap-0.5 truncate max-w-[240px]">
+                {repoLabel} <ExternalLink size={9} />
+              </a>
+            )}
+            {repoLabel && !repoUrl && (
+              <span className="text-[10px] text-muted truncate max-w-[240px]">{repoLabel}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {scanButton}
+            {!connected && (
+              <button type="button" onClick={onNavigateSettings} className="text-[10px] text-accent hover:underline">
+                Connect in Settings →
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!connected ? (
+          <div className="px-6 py-8 text-center text-xs text-muted">No repository linked.</div>
+        ) : loading ? (
+          <div className="px-6 py-8 flex items-center justify-center gap-2 text-xs text-muted">
+            <Loader2 size={12} className="animate-spin" /> Loading…
+          </div>
+        ) : (
+          <>
+            {/* Sub-tabs */}
+            <div className="flex border-b border-border">
+              {(['commits', 'files', 'readme'] as const).map((t) => (
+                <button key={t} type="button" onClick={() => setView(t)}
+                  className={`px-5 py-2 text-[10px] uppercase tracking-wider transition-colors ${
+                    view === t ? 'text-heading border-b-2 border-accent font-medium' : 'text-muted hover:text-heading'
+                  }`}>
+                  {t === 'commits' ? `Commits (${commits.length})` : t === 'files' ? `Files (${files.length})` : 'README'}
+                </button>
+              ))}
+            </div>
+
+            {/* Commits view */}
+            {view === 'commits' && (
+              <div className="divide-y divide-border max-h-80 overflow-y-auto">
+                {commits.length === 0 && (
+                  <div className="px-6 py-6 text-xs text-muted text-center">No commits found.</div>
+                )}
+                {commits.map((c, i) => (
+                  <div key={i} className="flex items-start gap-3 px-6 py-3">
+                    <GitBranch size={11} className="text-muted mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-heading truncate">{c.message}</p>
+                      <p className="text-[10px] text-muted">{c.author}{c.date ? ` · ${c.date}` : ''}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Files view */}
+            {view === 'files' && (
+              <div>
+                <div className="px-4 py-2 border-b border-border">
+                  <input
+                    value={fileSearch}
+                    onChange={(e) => setFileSearch(e.target.value)}
+                    placeholder="Filter files…"
+                    className="w-full px-3 py-1.5 bg-surface2 border border-border text-xs text-heading placeholder:text-muted focus:outline-none focus:border-accent/50 rounded font-mono"
+                  />
+                </div>
+                <div className="max-h-[480px] overflow-y-auto">
+                  {fileSearch ? (
+                    <div className="divide-y divide-border/50">
+                      {filteredFiles.length === 0 && (
+                        <div className="px-6 py-6 text-xs text-muted text-center">No files match.</div>
+                      )}
+                      {filteredFiles.slice(0, 200).map((f) => {
+                        const parts = f.path.split('/');
+                        const name = parts[parts.length - 1];
+                        const dir = parts.slice(0, -1).join('/');
+                        return (
+                          <button
+                            key={f.path}
+                            type="button"
+                            onClick={() => setOpenFile(f.path)}
+                            className="flex items-center gap-2 px-4 py-1.5 w-full text-left hover:bg-surface2 cursor-pointer"
+                          >
+                            <FileText size={10} className="text-muted shrink-0" />
+                            <span className="text-[11px] text-heading font-mono truncate flex-1 hover:text-accent transition-colors">{name}</span>
+                            {dir && <span className="text-[9px] text-muted/50 truncate shrink-0 max-w-[180px] font-mono">{dir}</span>}
+                          </button>
+                        );
+                      })}
+                      {filteredFiles.length > 200 && (
+                        <div className="px-6 py-2 text-center text-[10px] text-muted">Showing 200 of {filteredFiles.length} files</div>
+                      )}
+                    </div>
+                  ) : (
+                    <FolderTree files={files} onOpenFile={setOpenFile} />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* README view */}
+            {view === 'readme' && (
+              <div className="px-6 py-4 max-h-96 overflow-y-auto">
+                {readme ? (
+                  <pre className="text-[11px] text-muted whitespace-pre-wrap font-mono leading-relaxed">{readme}</pre>
+                ) : (
+                  <p className="text-xs text-muted text-center py-6">No README found.</p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gitlabRepo, goals, o365Docs, onNavigateSettings }: IntegrationsPreviewTabProps) {
+  const { agent } = useAIAgent();
+  const [ghCommits, setGhCommits] = useState<CommitEntry[]>([]);
+  const [ghReadme, setGhReadme] = useState<string | null>(null);
+  const [ghFiles, setGhFiles] = useState<FileEntry[]>([]);
+  const [ghLoading, setGhLoading] = useState(false);
+  const [glCommits, setGlCommits] = useState<CommitEntry[]>([]);
+  const [glReadme, setGlReadme] = useState<string | null>(null);
+  const [glFiles, setGlFiles] = useState<FileEntry[]>([]);
+  const [glLoading, setGlLoading] = useState(false);
+  const [glScanLoading, setGlScanLoading] = useState(false);
+  const [glScanResults, setGlScanResults] = useState<{ completed: string[]; suggested: { title: string; reason: string }[]; provider?: string } | null>(null);
+
+  const parseCommits = (raw: string[]): CommitEntry[] =>
+    raw.slice(0, 30).map((c) => {
+      const match = c.match(/^\[(.+?)\] (.+?) — (.+)$/);
+      return match ? { date: match[1], message: match[2], author: match[3] } : { date: '', message: c, author: '' };
+    });
+
+  useEffect(() => {
+    if (!githubRepo) return;
+    setGhLoading(true);
+    const [owner, repo] = githubRepo.split('/');
+    Promise.all([
+      fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`).then((r) => r.ok ? r.json() : null),
+      fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree`).then((r) => r.ok ? r.json() : null),
+    ]).then(([recent, tree]) => {
+      if (recent) {
+        setGhCommits(parseCommits(recent.commits ?? []));
+        if (recent.readme) setGhReadme(recent.readme);
+      }
+      if (tree?.files) setGhFiles(tree.files);
+    }).catch(() => {}).finally(() => setGhLoading(false));
+  }, [githubRepo]);
+
+  useEffect(() => {
+    if (!gitlabRepo) return;
+    setGlLoading(true);
+    Promise.all([
+      fetch(`/api/gitlab/recent?repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
+      fetch(`/api/gitlab/tree?repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
+    ]).then(([recent, tree]) => {
+      if (recent) {
+        setGlCommits(parseCommits(recent.commits ?? []));
+        if (recent.readme) setGlReadme(recent.readme);
+      }
+      if (tree?.files) setGlFiles(tree.files);
+    }).catch(() => {}).finally(() => setGlLoading(false));
+  }, [gitlabRepo]);
+
+  const handleGitLabScan = async () => {
+    if (!gitlabRepo || !project) return;
+    setGlScanLoading(true);
+    setGlScanResults(null);
+    try {
+      const recentRes = await fetch(`/api/gitlab/recent?repo=${encodeURIComponent(gitlabRepo)}`);
+      const recentData = recentRes.ok ? await recentRes.json() : {};
+      const scanRes = await fetch('/api/ai/repo-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent,
+          projectName: project.name,
+          goals: goals.map((g) => ({ id: g.id, title: g.title, status: g.status, progress: g.progress })),
+          commits: recentData.commits ?? [],
+          readme: recentData.readme ?? '',
+        }),
+      });
+      if (scanRes.ok) setGlScanResults(await scanRes.json());
+    } catch { /* ignore */ } finally {
+      setGlScanLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <RepoPanel
+        title="GitHub"
+        icon={<Github size={14} className={githubRepo ? 'text-heading' : 'text-muted'} />}
+        source="github"
+        repoId={githubRepo ?? ''}
+        repoLabel={githubRepo ?? undefined}
+        repoUrl={githubRepo ? `https://github.com/${githubRepo}` : undefined}
+        commits={ghCommits}
+        readme={ghReadme}
+        files={ghFiles}
+        loading={ghLoading}
+        connected={!!githubRepo}
+        onNavigateSettings={onNavigateSettings}
+      />
+
+      <RepoPanel
+        title="GitLab (NPS)"
+        icon={
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className={gitlabRepo ? 'text-[#FC6D26]' : 'text-muted'}>
+            <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
+          </svg>
+        }
+        source="gitlab"
+        repoId={gitlabRepo ?? ''}
+        repoLabel={gitlabRepo ?? undefined}
+        commits={glCommits}
+        readme={glReadme}
+        files={glFiles}
+        loading={glLoading}
+        connected={!!gitlabRepo}
+        onNavigateSettings={onNavigateSettings}
+        scanButton={gitlabRepo ? (
+          <button
+            type="button"
+            onClick={handleGitLabScan}
+            disabled={glScanLoading}
+            className="flex items-center gap-1.5 px-3 py-1 text-[10px] tracking-wider uppercase font-medium bg-[#FC6D26]/10 text-[#FC6D26] border border-[#FC6D26]/20 rounded hover:bg-[#FC6D26]/20 transition-colors disabled:opacity-50"
+          >
+            {glScanLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+            {glScanLoading ? 'Scanning…' : 'Scan with AI'}
+          </button>
+        ) : undefined}
+      />
+
+      {/* GitLab scan results */}
+      {glScanResults && (
+        <div className="border border-border bg-surface p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <Sparkles size={13} className="text-[#FC6D26]" />
+            <h3 className="text-sm font-bold text-heading">GitLab AI Scan Results</h3>
+            {glScanResults.provider && <span className="text-[9px] text-muted font-mono">{glScanResults.provider}</span>}
+          </div>
+          {glScanResults.completed.length > 0 && (
+            <div>
+              <p className="text-[10px] text-muted uppercase tracking-wider mb-2 font-medium">Looks Completed</p>
+              <div className="space-y-1">
+                {glScanResults.completed.map((id) => {
+                  const g = goals.find((g) => g.id === id);
+                  return g ? (
+                    <div key={id} className="flex items-center gap-2 text-xs">
+                      <CheckCircle size={11} className="text-green-500 shrink-0" />
+                      <span className="text-heading">{g.title}</span>
+                    </div>
+                  ) : null;
+                })}
+              </div>
+            </div>
+          )}
+          {glScanResults.suggested.length > 0 && (
+            <div>
+              <p className="text-[10px] text-muted uppercase tracking-wider mb-2 font-medium">Suggested Goals</p>
+              <div className="space-y-2">
+                {glScanResults.suggested.map((s, i) => (
+                  <div key={i} className="border border-border rounded p-3">
+                    <p className="text-xs font-medium text-heading">{s.title}</p>
+                    <p className="text-[11px] text-muted mt-0.5">{s.reason}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Office 365 / Local Files */}
+      <div className="border border-border bg-surface">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <FileText size={14} className={o365Docs.length > 0 ? 'text-[#0078D4]' : 'text-muted'} />
+            <span className="font-sans text-sm font-bold text-heading">Office 365 / Local Files</span>
+            <span className="text-[10px] text-muted">{o365Docs.length} file{o365Docs.length !== 1 ? 's' : ''} imported</span>
+          </div>
+        </div>
+        {o365Docs.length === 0 ? (
+          <div className="px-6 py-8 text-center text-xs text-muted">No files imported yet. Use the Documents tab to import from Office 365.</div>
+        ) : (
+          <div className="divide-y divide-border max-h-80 overflow-y-auto">
+            {o365Docs.map((doc) => (
+              <div key={doc.id} className="flex items-start gap-3 px-6 py-3">
+                <FileText size={11} className="text-muted mt-0.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-heading truncate">{doc.title ?? doc.summary}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[9px] px-1 py-0.5 border border-border text-muted rounded uppercase font-mono">{doc.source}</span>
+                    <span className="text-[10px] text-muted flex items-center gap-0.5">
+                      <Clock size={9} /> {new Date(doc.occurred_at).toLocaleDateString()}
+                    </span>
+                    {(doc.metadata as Record<string, unknown>)?.url && (
+                      <a href={String((doc.metadata as Record<string, unknown>).url)} target="_blank" rel="noopener noreferrer"
+                        className="text-[10px] text-accent hover:underline flex items-center gap-0.5">
+                        Open <ExternalLink size={9} />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── GitLab repo section (Settings tab) ───────────────────────────────────────
-function GitLabSection({ projectId }: { projectId: string }) {
+function GitLabSection({ projectId, onLinked }: { projectId: string; onLinked?: (repo: string | null) => void }) {
   const [linkedRepo, setLinkedRepo] = useState<string | null>(null);
   const [repoInput, setRepoInput] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1435,36 +2285,44 @@ function GitLabSection({ projectId }: { projectId: string }) {
   const handleLink = async () => {
     const raw = repoInput.trim();
     if (!raw) return;
-    // Accept full URL or just the path
     const path = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
     setSaving(true);
     setError(null);
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) { setSaving(false); return; }
-    const res = await fetch('/api/gitlab/link', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-      body: JSON.stringify({ projectId, repo: path }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setError(data.error ?? 'Failed to link repo');
-    } else {
-      setLinkedRepo(path);
-      setRepoInput('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { setError('Not signed in — please refresh.'); return; }
+      const res = await fetch('/api/gitlab/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ projectId, repo: path }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? 'Failed to link repo');
+      } else {
+        setLinkedRepo(path);
+        setRepoInput('');
+        onLinked?.(path);
+      }
+    } catch {
+      setError('Network error — check server is running');
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleUnlink = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
-    await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    });
-    setLinkedRepo(null);
-    setInfo(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      setLinkedRepo(null);
+      setInfo(null);
+      onLinked?.(null);
+    } catch { /* ignore */ }
   };
 
   return (

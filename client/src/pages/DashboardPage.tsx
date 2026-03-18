@@ -10,10 +10,8 @@ import {
   Circle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { useDashboardStats, useUpcomingDeadlines, useActivityByDate } from '../hooks/useDashboard';
-import { useRecentEvents } from '../hooks/useEvents';
+import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
-import ActivityFeed from '../components/ActivityFeed';
 import ContributionGraph from '../components/ContributionGraph';
 
 const statusColors: Record<string, string> = {
@@ -30,10 +28,10 @@ const statusIcons: Record<string, typeof Circle> = {
 
 export default function DashboardPage() {
   const { stats, loading: statsLoading } = useDashboardStats();
-  const { events, loading: eventsLoading } = useRecentEvents(15);
   const { projects } = useProjects();
   const { deadlines, loading: deadlinesLoading } = useUpcomingDeadlines();
   const { data: activityData } = useActivityByDate();
+  const { insight, loading: insightLoading } = useLatestInsight();
 
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
@@ -72,17 +70,6 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Activity Graph */}
-      {activityData.length > 0 && (
-        <div className="border border-border bg-surface p-6 mb-10">
-          <div className="flex items-center gap-2 mb-4">
-            <Activity size={14} className="text-accent3" />
-            <h2 className="font-sans text-base font-bold text-heading">Activity — Last 12 Weeks</h2>
-          </div>
-          <ContributionGraph data={activityData} />
-        </div>
-      )}
-
       {/* Quick Project Access */}
       {projects.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-border border border-border mb-10">
@@ -105,32 +92,76 @@ export default function DashboardPage() {
 
       {/* Recent Activity + AI Panel */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-px bg-border border border-border mb-px">
-        {/* Activity Feed */}
+        {/* Contribution heatmap */}
         <div className="lg:col-span-2 bg-surface p-6">
           <div className="flex items-center gap-2 mb-6">
             <Clock size={14} className="text-accent" />
             <h2 className="font-sans text-base font-bold text-heading">Recent Activity</h2>
           </div>
-          <ActivityFeed
-            events={events}
-            loading={eventsLoading}
-            emptyMessage="Connect a GitHub repo to see activity here"
-          />
+          {activityData.length > 0 ? (
+            <ContributionGraph data={activityData} />
+          ) : (
+            <div className="py-8 text-center">
+              <p className="text-xs text-muted tracking-wide">
+                Import commits or events from a connected repo to see activity here.
+              </p>
+            </div>
+          )}
         </div>
 
-        {/* AI Summary placeholder */}
+        {/* AI Summary */}
         <div className="bg-surface p-6 border-l border-border">
           <div className="flex items-center gap-2 mb-6">
             <Sparkles size={14} className="text-accent" />
             <h2 className="font-sans text-base font-bold text-heading">AI Summary</h2>
           </div>
-          <div className="text-xs text-muted leading-relaxed">
+
+          {insightLoading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-3 bg-border/50 rounded animate-pulse" />
+              ))}
+            </div>
+          ) : insight ? (
+            <div className="space-y-4">
+              {/* Project label */}
+              <Link
+                to={`/projects/${insight.project_id}`}
+                className="text-[10px] tracking-widest uppercase text-accent hover:underline font-mono"
+              >
+                {insight.project_name}
+              </Link>
+
+              {/* Status */}
+              <p className="text-xs text-heading leading-relaxed">{insight.status}</p>
+
+              {/* Next Steps */}
+              {insight.next_steps.length > 0 && (
+                <div>
+                  <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1.5">Next Steps</p>
+                  <ul className="space-y-1">
+                    {insight.next_steps.slice(0, 3).map((step, i) => (
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span className="text-accent2 mt-0.5 shrink-0">›</span>
+                        <span className="text-[11px] text-muted leading-snug">{step}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Generated at + provider */}
+              <p className="text-[9px] text-muted/50 font-mono pt-1">
+                {new Date(insight.generated_at).toLocaleDateString()} · {insight.provider}
+              </p>
+            </div>
+          ) : (
             <div className="py-8 text-center">
               <p className="text-xs text-muted tracking-wide">
                 Open a project and click "Generate" in the AI Insights panel for analysis.
               </p>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
