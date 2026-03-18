@@ -7,6 +7,7 @@ import { githubRoutes } from './routes/github.js';
 import { aiRoutes } from './routes/ai.js';
 import { microsoftRoutes } from './routes/microsoft.js';
 import { uploadRoutes } from './routes/uploads.js';
+import { gitlabRoutes } from './routes/gitlab.js';
 import { getAvailableProviders } from './ai-providers.js';
 
 const server = Fastify({ logger: true });
@@ -22,6 +23,7 @@ await server.register(githubRoutes, { prefix: '/api' });
 await server.register(aiRoutes, { prefix: '/api' });
 await server.register(microsoftRoutes, { prefix: '/api' });
 await server.register(uploadRoutes, { prefix: '/api' });
+await server.register(gitlabRoutes, { prefix: '/api' });
 
 const port = Number(process.env.PORT) || 3001;
 const host = process.env.HOST ?? '0.0.0.0';
@@ -39,6 +41,8 @@ try {
   if (!process.env.GITHUB_WEBHOOK_SECRET) console.warn('WARNING: GITHUB_WEBHOOK_SECRET not set — webhook signature verification disabled');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
+  if (process.env.GITLAB_NPS_TOKEN) console.log('GitLab (NPS) integration active');
+  else console.warn('WARNING: GITLAB_NPS_TOKEN not set — GitLab integration disabled');
   console.log(`Supabase service key loaded: ${process.env.SUPABASE_SERVICE_KEY ? 'YES' : 'NO'}`);
 } catch (err) {
   server.log.error(err);

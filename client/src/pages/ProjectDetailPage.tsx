@@ -1266,6 +1266,9 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </div>
+
+          {/* GitLab Repository */}
+          <GitLabSection projectId={projectId!} />
         </div>
       )}
     </div>
@@ -1399,6 +1402,133 @@ function TeamsFolderPickerModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── GitLab repo section (Settings tab) ───────────────────────────────────────
+function GitLabSection({ projectId }: { projectId: string }) {
+  const [linkedRepo, setLinkedRepo] = useState<string | null>(null);
+  const [repoInput, setRepoInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<{ name: string; web_url: string; last_activity: string; visibility: string } | null>(null);
+
+  useEffect(() => {
+    supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').single()
+      .then(({ data }) => {
+        if (data?.config) {
+          const cfg = data.config as { repo: string };
+          setLinkedRepo(cfg.repo);
+        }
+      });
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!linkedRepo) { setInfo(null); return; }
+    fetch(`/api/gitlab/info?repo=${encodeURIComponent(linkedRepo)}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setInfo(d); })
+      .catch(() => {});
+  }, [linkedRepo]);
+
+  const handleLink = async () => {
+    const raw = repoInput.trim();
+    if (!raw) return;
+    // Accept full URL or just the path
+    const path = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
+    setSaving(true);
+    setError(null);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setSaving(false); return; }
+    const res = await fetch('/api/gitlab/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ projectId, repo: path }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data.error ?? 'Failed to link repo');
+    } else {
+      setLinkedRepo(path);
+      setRepoInput('');
+    }
+    setSaving(false);
+  };
+
+  const handleUnlink = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    setLinkedRepo(null);
+    setInfo(null);
+  };
+
+  return (
+    <div className="border border-border bg-surface p-6">
+      <div className="flex items-center gap-2 mb-6">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-[#FC6D26]">
+          <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
+        </svg>
+        <h3 className="font-sans text-sm font-bold text-heading">GitLab Repository</h3>
+        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">NPS</span>
+      </div>
+
+      {linkedRepo ? (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-4 border border-[#FC6D26]/20 bg-[#FC6D26]/5 rounded">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-heading font-mono truncate">{linkedRepo}</div>
+              {info && (
+                <div className="mt-1 space-y-0.5">
+                  <div className="text-[10px] text-muted">{info.name}</div>
+                  <div className="text-[10px] text-muted">
+                    Last activity {new Date(info.last_activity).toLocaleDateString()} · {info.visibility}
+                  </div>
+                </div>
+              )}
+              {info?.web_url && (
+                <a href={info.web_url} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-[#FC6D26] hover:underline mt-1 inline-block">
+                  Open in GitLab →
+                </a>
+              )}
+            </div>
+            <button type="button" onClick={handleUnlink}
+              className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded shrink-0">
+              Disconnect
+            </button>
+          </div>
+          <p className="text-[11px] text-muted">Commits and README from this repo are included in AI insights and chat context.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-xs text-muted">
+            Link your NPS GitLab repository. Paste the full URL or just the project path.
+          </p>
+          <div className="flex gap-2 max-w-lg">
+            <input
+              type="text"
+              value={repoInput}
+              onChange={(e) => setRepoInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleLink()}
+              placeholder="usmc-capability-development/digital-trident-ir-camera-suite"
+              title="GitLab repository path or URL"
+              className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-[#FC6D26]/50 transition-colors rounded"
+            />
+            <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
+              className="px-4 py-3 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2">
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
+              Connect
+            </button>
+          </div>
+          {error && <p className="text-xs text-danger font-mono">{error}</p>}
+          <p className="text-[10px] text-muted">Must be on the NPS network or VPN for the server to reach gitlab.nps.edu</p>
+        </div>
+      )}
     </div>
   );
 }

@@ -469,10 +469,11 @@ Analyze which goals these documents show progress on, who did the work, and when
     }
 
     // Gather project context from DB
-    const [{ data: project }, { data: goals }, { data: events }] = await Promise.all([
+    const [{ data: project }, { data: goals }, { data: events }, { data: gitlabInteg }] = await Promise.all([
       supabase.from('projects').select('name, description, github_repo').eq('id', projectId).single(),
       supabase.from('goals').select('title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(40),
+      supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').single(),
     ]);
 
     // Format goals
@@ -497,15 +498,34 @@ Analyze which goals these documents show progress on, who did the work, and when
     let githubContext = '';
     if (project?.github_repo) {
       try {
+        const [owner, repo] = project.github_repo.split('/');
         const recentRes = await fetch(
-          `http://localhost:${process.env.PORT ?? 3001}/api/github/${project.github_repo.replace('/', '/')}/recent`,
+          `http://localhost:${process.env.PORT ?? 3001}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`,
         );
         if (recentRes.ok) {
           const rd = await recentRes.json() as { commits?: string[]; readme?: string };
-          if (rd.commits?.length) githubContext += `\nRecent commits:\n${rd.commits.slice(0, 15).join('\n')}`;
-          if (rd.readme) githubContext += `\n\nREADME (excerpt):\n${rd.readme.slice(0, 1500)}`;
+          if (rd.commits?.length) githubContext += `\nGitHub — Recent commits:\n${rd.commits.slice(0, 15).join('\n')}`;
+          if (rd.readme) githubContext += `\n\nGitHub README (excerpt):\n${rd.readme.slice(0, 1500)}`;
         }
-      } catch { /* GitHub fetch is best-effort */ }
+      } catch { /* best-effort */ }
+    }
+
+    // Optional: fetch GitLab commits + README if a GitLab repo is linked
+    let gitlabContext = '';
+    if (gitlabInteg?.config) {
+      const cfg = gitlabInteg.config as { repo?: string; host?: string };
+      if (cfg.repo) {
+        try {
+          const glRes = await fetch(
+            `http://localhost:${process.env.PORT ?? 3001}/api/gitlab/recent?repo=${encodeURIComponent(cfg.repo)}`,
+          );
+          if (glRes.ok) {
+            const rd = await glRes.json() as { commits?: string[]; readme?: string };
+            if (rd.commits?.length) gitlabContext += `\nGitLab (${cfg.host ?? 'self-hosted'}) — Recent commits:\n${rd.commits.slice(0, 15).join('\n')}`;
+            if (rd.readme) gitlabContext += `\n\nGitLab README (excerpt):\n${rd.readme.slice(0, 1500)}`;
+          }
+        } catch { /* best-effort */ }
+      }
     }
 
     const completedCount = (goals ?? []).filter((g) => g.status === 'complete').length;
@@ -519,7 +539,7 @@ GOALS SUMMARY: ${(goals ?? []).length} total — ${completedCount} complete, ${a
 ${goalsSummary}
 
 RECENT ACTIVITY & IMPORTED DOCUMENTS (newest first):
-${eventsSummary}${githubContext ? `\n\nGITHUB DATA:\n${githubContext}` : ''}
+${eventsSummary}${githubContext ? `\n\nGITHUB DATA:\n${githubContext}` : ''}${gitlabContext ? `\n\nGITLAB DATA:\n${gitlabContext}` : ''}
 
 INSTRUCTIONS:
 - Be specific and always reference actual project data in your answers
