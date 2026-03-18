@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { chat, getAvailableProviders, type AIProvider } from '../ai-providers.js';
+import { supabase } from '../lib/supabase.js';
 
 function resolveProvider(body: { agent?: string }): AIProvider {
   const agent = body.agent as AIProvider | undefined;
@@ -94,7 +95,7 @@ ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.repla
       const result = await chat(provider, {
         system: systemPrompts[queryType] || systemPrompts.activity_summary,
         user: userContent,
-        maxTokens: 500,
+        maxTokens: 1024,
       });
 
       return {
@@ -130,7 +131,7 @@ ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.repla
       const result = await chat(provider, {
         system: `You categorize project goals into topic categories. Respond ONLY with valid JSON — no markdown, no explanation. The JSON should be an object mapping goal IDs to category names.`,
         user: `Project: ${projectName}\n\nGoals:\n${goalsList}\n\nAvailable categories: ${categories.join(', ')}\n\nAssign each goal to the single most relevant category. Return JSON like: {"goal-id-1": "Category", "goal-id-2": "Category"}`,
-        maxTokens: 300,
+        maxTokens: 512,
       });
 
       const parsed = JSON.parse(result.text);
@@ -186,7 +187,7 @@ README (excerpt):
 ${readme || 'No README found'}
 
 Analyze which goals are completed and suggest new goals.`,
-        maxTokens: 800,
+        maxTokens: 1200,
       });
 
       const parsed = JSON.parse(result.text);
@@ -248,7 +249,7 @@ ${commitsList ? `Recent Commits:\n${commitsList}` : ''}
 ${readme ? `README (excerpt):\n${readme.slice(0, 2000)}` : ''}
 
 Analyze this project and provide insights.`,
-        maxTokens: 600,
+        maxTokens: 1024,
       });
 
       const parsed = JSON.parse(result.text);
@@ -267,6 +268,292 @@ Analyze this project and provide insights.`,
       if (msg.includes('quota') || msg.includes('429') || msg.includes('rate limit') || err?.status === 429) {
         return reply.status(429).send({ error: 'Rate limit hit — wait a minute and try again, or switch to a different model.' });
       }
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
+  // ── Analyze a document (OneNote page, OneDrive file, etc.) ──────────────
+  interface AnalyzeDocumentBody {
+    agent?: string;
+    title: string;
+    content: string;        // Plain text content of the document
+    projectName?: string;   // Optional project context
+  }
+
+  server.post<{ Body: AnalyzeDocumentBody }>('/ai/analyze-document', async (request, reply) => {
+    const provider = resolveProvider(request.body);
+    const { title, content, projectName } = request.body;
+
+    if (!title || !content) {
+      return reply.status(400).send({ error: 'title and content are required' });
+    }
+
+    // Cap input to keep within token budget (~8k chars ≈ 2k tokens)
+    const truncated = content.slice(0, 8000);
+
+    try {
+      const result = await chat(provider, {
+        system: `You are Odyssey's document intelligence engine. Analyze documents and extract structured insights for a project management context. Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
+
+Return an object with exactly four keys:
+- "summary": A 2-3 sentence summary of what the document is about.
+- "keyPoints": An array of 4-6 strings, each a key insight or important point from the document.
+- "actionItems": An array of 0-5 strings, each a concrete action item or task mentioned or implied by the document.
+- "projectRelevance": A 1-2 sentence note on how this document could inform project decisions or progress.`,
+        user: `Document Title: ${title}
+${projectName ? `Project Context: ${projectName}\n` : ''}
+Document Content:
+${truncated}
+
+Analyze this document and extract structured insights.`,
+        maxTokens: 1024,
+      });
+
+      const parsed = JSON.parse(result.text);
+      return {
+        summary: parsed.summary || '',
+        keyPoints: parsed.keyPoints || [],
+        actionItems: parsed.actionItems || [],
+        projectRelevance: parsed.projectRelevance || '',
+        provider: result.provider,
+      };
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: 'Failed to analyze document' });
+    }
+  });
+
+  // ── Analyze office files → update goal progress ───────────────────────────
+  interface OfficeProgressBody {
+    agent?: string;
+    projectId: string;
+  }
+
+  server.post<{ Body: OfficeProgressBody }>('/ai/analyze-office-progress', async (request, reply) => {
+    const provider = resolveProvider(request.body);
+    const { projectId } = request.body;
+
+    if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+
+    // Fetch goals + onenote/onedrive events
+    const [{ data: goals }, { data: events }, { data: project }] = await Promise.all([
+      supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
+      supabase
+        .from('events')
+        .select('id, source, event_type, title, summary, metadata, occurred_at, created_by')
+        .eq('project_id', projectId)
+        .in('source', ['onenote', 'onedrive'])
+        .order('occurred_at', { ascending: false }),
+      supabase.from('projects').select('name').eq('id', projectId).single(),
+    ]);
+
+    if (!goals?.length) return reply.status(400).send({ error: 'No goals found for this project' });
+    if (!events?.length) return reply.status(400).send({ error: 'No imported Office documents found. Import some OneNote pages or OneDrive files first.' });
+
+    // Build document context — include content previews from metadata
+    const docsContext = events.map((e) => {
+      const meta = e.metadata as { content_preview?: string; modified_by?: string; last_modified?: string; author?: string } | null;
+      const modifiedBy = meta?.modified_by ?? meta?.author ?? (e.created_by ? `User ${e.created_by}` : 'Unknown');
+      const modifiedAt = meta?.last_modified ?? e.occurred_at;
+      let doc = `Document: "${e.title ?? '(untitled)'}"\n`;
+      doc += `  Source: ${e.source} | Imported: ${new Date(e.occurred_at).toLocaleDateString()} | Modified by: ${modifiedBy} | Modified at: ${new Date(modifiedAt).toLocaleDateString()}\n`;
+      if (e.summary) doc += `  Summary: ${e.summary}\n`;
+      if (meta?.content_preview) doc += `  Content: ${meta.content_preview.slice(0, 1200)}\n`;
+      return doc;
+    }).join('\n---\n');
+
+    const goalsContext = goals.map((g) =>
+      `Goal ID: ${g.id}\n  Title: "${g.title}"\n  Status: ${g.status} | Progress: ${g.progress}%${g.deadline ? ` | Deadline: ${g.deadline}` : ''}${g.category ? ` | Category: ${g.category}` : ''}${g.assigned_to ? ` | Assigned to: ${g.assigned_to}` : ''}`
+    ).join('\n\n');
+
+    try {
+      const result = await chat(provider, {
+        system: `You are an AI progress tracker for a project management platform. Analyze imported documents (from OneNote and OneDrive) to determine which project goals they represent progress on, estimate completion percentages, and identify who did the work based on document metadata.
+
+Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
+
+Return an object with two keys:
+- "updates": Array of goal progress updates. Each item must have:
+  - "goalId": string (exact goal ID from the input)
+  - "progress": number 0–100 (estimated completion %)
+  - "status": "active" | "complete" | "at_risk" (infer from content)
+  - "completedBy": string or null (person who contributed most, from document metadata)
+  - "evidence": string (1-2 sentence explanation of what document content indicates this progress)
+  - "lastActivityDate": string ISO date (when this work occurred, from doc modification dates)
+- "summary": string (2-3 sentences summarizing what the documents collectively reveal about team progress)
+
+Rules:
+- Only include goals that clearly relate to the document content
+- Use document modification history (modified_by, last_modified) to determine who did the work
+- Be conservative: only mark goals as "complete" if documents strongly indicate all work is done
+- If a document shows partial work, estimate a realistic percentage
+- If multiple documents relate to the same goal, synthesize them together
+- "at_risk" means the work seems stalled, overdue, or has blockers mentioned`,
+        user: `Project: ${project?.name ?? 'Unknown'}
+
+GOALS TO EVALUATE:
+${goalsContext}
+
+IMPORTED OFFICE DOCUMENTS:
+${docsContext}
+
+Analyze which goals these documents show progress on, who did the work, and when.`,
+        maxTokens: 2000,
+      });
+
+      const parsed = JSON.parse(result.text);
+      const updates = parsed.updates ?? [];
+
+      // Apply goal updates to DB
+      const applied: string[] = [];
+      for (const u of updates) {
+        const goal = goals.find((g) => g.id === u.goalId);
+        if (!goal) continue;
+        const newProgress = Math.min(100, Math.max(0, Math.round(u.progress)));
+        // Only update if AI suggests meaningful change or status change
+        if (newProgress !== goal.progress || u.status !== goal.status) {
+          await supabase.from('goals').update({
+            progress: newProgress,
+            status: u.status,
+            updated_at: new Date().toISOString(),
+          }).eq('id', u.goalId);
+          applied.push(u.goalId);
+
+          // Log an event for the progress update
+          await supabase.from('events').insert({
+            project_id: projectId,
+            source: 'ai',
+            event_type: 'goal_progress_updated',
+            title: `AI updated goal: "${goal.title}" → ${newProgress}%`,
+            summary: u.evidence,
+            metadata: {
+              goal_id: u.goalId,
+              old_progress: goal.progress,
+              new_progress: newProgress,
+              completed_by: u.completedBy ?? null,
+              last_activity_date: u.lastActivityDate ?? null,
+              analyzed_by: provider,
+            },
+            occurred_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      return {
+        updates,
+        applied: applied.length,
+        summary: parsed.summary ?? '',
+        provider: result.provider,
+      };
+    } catch (err: any) {
+      server.log.error(err);
+      const msg = err?.message ?? 'Failed to analyze office progress';
+      if (msg.includes('credit') || msg.includes('billing')) return reply.status(402).send({ error: 'API key has no credits.' });
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
+  // ── Project chat: multi-turn conversation with full project context ────────
+  interface ChatBody {
+    agent?: string;
+    projectId: string;
+    messages: { role: 'user' | 'assistant'; content: string }[];
+  }
+
+  server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
+    const provider = resolveProvider(request.body);
+    const { projectId, messages } = request.body;
+
+    if (!projectId || !messages?.length) {
+      return reply.status(400).send({ error: 'projectId and messages are required' });
+    }
+
+    // Gather project context from DB
+    const [{ data: project }, { data: goals }, { data: events }] = await Promise.all([
+      supabase.from('projects').select('name, description, github_repo').eq('id', projectId).single(),
+      supabase.from('goals').select('title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
+      supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(40),
+    ]);
+
+    // Format goals
+    const goalsSummary = (goals ?? [])
+      .map((g) => `- [${g.status.toUpperCase()}] ${g.title} — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [${g.category}]` : ''}`)
+      .join('\n') || 'No goals set';
+
+    // Format events — include MS document previews
+    const eventsSummary = (events ?? [])
+      .map((e) => {
+        let line = `[${new Date(e.occurred_at).toLocaleDateString()}] ${e.source}/${e.event_type}: ${e.title ?? '(untitled)'}`;
+        if (e.summary) line += `\n  Summary: ${e.summary}`;
+        if (e.source === 'onenote' || e.source === 'onedrive') {
+          const meta = e.metadata as { content_preview?: string } | null;
+          if (meta?.content_preview) line += `\n  Document Content: ${meta.content_preview.slice(0, 800)}`;
+        }
+        return line;
+      })
+      .join('\n\n') || 'No activity recorded yet';
+
+    // Optional: fetch GitHub commits + README if repo is linked
+    let githubContext = '';
+    if (project?.github_repo) {
+      try {
+        const recentRes = await fetch(
+          `http://localhost:${process.env.PORT ?? 3001}/api/github/${project.github_repo.replace('/', '/')}/recent`,
+        );
+        if (recentRes.ok) {
+          const rd = await recentRes.json() as { commits?: string[]; readme?: string };
+          if (rd.commits?.length) githubContext += `\nRecent commits:\n${rd.commits.slice(0, 15).join('\n')}`;
+          if (rd.readme) githubContext += `\n\nREADME (excerpt):\n${rd.readme.slice(0, 1500)}`;
+        }
+      } catch { /* GitHub fetch is best-effort */ }
+    }
+
+    const completedCount = (goals ?? []).filter((g) => g.status === 'complete').length;
+    const atRiskCount = (goals ?? []).filter((g) => g.status === 'at_risk').length;
+
+    const systemPrompt = `You are an AI assistant embedded in Odyssey, a project intelligence platform. You have full real-time context about this project and can answer questions, analyze progress, review documents, and give recommendations.
+
+PROJECT: ${project?.name ?? 'Unknown'}${project?.description ? `\nDescription: ${project.description}` : ''}${project?.github_repo ? `\nGitHub Repository: github.com/${project.github_repo}` : ''}
+
+GOALS SUMMARY: ${(goals ?? []).length} total — ${completedCount} complete, ${atRiskCount} at risk
+${goalsSummary}
+
+RECENT ACTIVITY & IMPORTED DOCUMENTS (newest first):
+${eventsSummary}${githubContext ? `\n\nGITHUB DATA:\n${githubContext}` : ''}
+
+INSTRUCTIONS:
+- Be specific and always reference actual project data in your answers
+- When discussing goals, mention their exact status and progress %
+- When discussing documents, reference their actual content
+- Keep responses concise but thorough
+- If asked something you don't have data for, say so clearly
+- You can suggest creating goals, importing documents, or other Odyssey actions`;
+
+    // Build conversation — keep last 20 messages for token budget
+    const history = messages.slice(-20);
+    const lastUserMessage = history[history.length - 1]?.content ?? '';
+
+    // Build conversation transcript for context (everything except the last user message)
+    const transcript = history.slice(0, -1)
+      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+      .join('\n\n');
+
+    const userContent = transcript
+      ? `${transcript}\n\nUser: ${lastUserMessage}`
+      : lastUserMessage;
+
+    try {
+      const result = await chat(provider, {
+        system: systemPrompt,
+        user: userContent,
+        maxTokens: 1500,
+      });
+      return { message: result.text, provider: result.provider };
+    } catch (err: any) {
+      server.log.error(err);
+      const msg = err?.message ?? 'Failed';
+      if (msg.includes('credit') || msg.includes('billing')) return reply.status(402).send({ error: 'API key has no credits.' });
+      if (msg.includes('rate') || msg.includes('429')) return reply.status(429).send({ error: 'Rate limit — try again shortly.' });
       return reply.status(500).send({ error: msg });
     }
   });

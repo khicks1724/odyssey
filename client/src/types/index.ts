@@ -15,6 +15,10 @@ export interface Goal {
   status: 'not_started' | 'active' | 'in_progress' | 'at_risk' | 'complete' | 'missed';
   risk_score: number | null;
   progress: number;
+  completed_at: string | null;
+  assigned_to: string | null;
+  category: string | null;
+  created_at: string;
 }
 
 export interface OdysseyEvent {
@@ -43,4 +47,54 @@ export interface User {
   email: string;
   display_name: string | null;
   avatar_url: string | null;
+}
+
+export interface UserConnection {
+  id: string;
+  user_id: string;
+  provider: 'microsoft';
+  ms_user_id: string | null;
+  ms_email: string | null;
+  ms_display_name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Microsoft Graph API types (returned from backend)
+export interface OneNoteNotebook {
+  id: string;
+  displayName: string;
+  lastModifiedDateTime: string;
+}
+
+export interface OneNoteSection {
+  id: string;
+  displayName: string;
+  lastModifiedDateTime: string;
+}
+
+export interface OneNotePage {
+  id: string;
+  title: string;
+  lastModifiedDateTime: string;
+}
+
+export interface OneDriveItem {
+  id: string;
+  name: string;
+  size?: number;
+  lastModifiedDateTime: string;
+  webUrl?: string;
+  file?: { mimeType: string };
+  folder?: { childCount: number };
+}
+
+export interface ProjectInsight {
+  id: string;
+  project_id: string;
+  status: string;
+  next_steps: string[];
+  future_features: string[];
+  provider: string;
+  generated_at: string;
 }

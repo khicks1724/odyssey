@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { useProfile } from '../hooks/useProfile';
-import { Github, Monitor, Bell, Palette, Shield, Check } from 'lucide-react';
+import { useMicrosoftIntegration } from '../hooks/useMicrosoftIntegration';
+import { Github, Monitor, Bell, Palette, Shield, Check, Loader2, Link, Unlink } from 'lucide-react';
 
 export default function SettingsPage() {
   const { user } = useAuth();
   const { profile, updateProfile } = useProfile();
+  const { status: msStatus, loading: msLoading, connecting: msConnecting, connectError: msError, connect: msConnect, disconnect: msDisconnect } = useMicrosoftIntegration();
   const [displayName, setDisplayName] = useState('');
   const [nameLoaded, setNameLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,8 +88,41 @@ export default function SettingsPage() {
               <span className="text-xs text-accent3 font-mono">Connected via OAuth</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-xs text-muted">Microsoft 365</span>
-              <span className="text-xs text-muted font-mono">Not connected</span>
+              <div>
+                <span className="text-xs text-muted block">Microsoft 365</span>
+                {msStatus?.connected && (
+                  <span className="text-[10px] text-muted font-mono">{msStatus.email}</span>
+                )}
+              </div>
+              {msLoading ? (
+                <Loader2 size={12} className="animate-spin text-muted" />
+              ) : msStatus?.connected ? (
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] text-accent3 font-mono">Connected</span>
+                  <button
+                    type="button"
+                    onClick={msDisconnect}
+                    className="flex items-center gap-1 text-[10px] text-danger hover:underline"
+                  >
+                    <Unlink size={10} /> Disconnect
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    type="button"
+                    onClick={msConnect}
+                    disabled={msConnecting}
+                    className="flex items-center gap-1 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-50"
+                  >
+                    {msConnecting ? <Loader2 size={10} className="animate-spin" /> : <Link size={10} />}
+                    {msConnecting ? 'Redirecting…' : 'Connect'}
+                  </button>
+                  {msError && (
+                    <span className="text-[10px] text-danger font-mono max-w-[240px] text-right">{msError}</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

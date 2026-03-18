@@ -28,7 +28,7 @@ async function callClaude(msg: ChatMessage): Promise<ChatResult> {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: msg.maxTokens || 500,
       system: msg.system,
       messages: [{ role: 'user', content: msg.user }],

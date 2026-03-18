@@ -23,11 +23,17 @@ export function useGoals(projectId: string | undefined) {
     fetchGoals();
   }, [fetchGoals]);
 
-  const createGoal = async (goal: { title: string; deadline?: string }) => {
+  const createGoal = async (goal: { title: string; deadline?: string; category?: string; assigned_to?: string }) => {
     if (!projectId) throw new Error('No project');
     const { data, error } = await supabase
       .from('goals')
-      .insert({ project_id: projectId, title: goal.title, deadline: goal.deadline || null })
+      .insert({
+        project_id: projectId,
+        title: goal.title,
+        deadline: goal.deadline || null,
+        category: goal.category || 'General',
+        assigned_to: goal.assigned_to || null,
+      })
       .select()
       .single();
 
@@ -36,10 +42,16 @@ export function useGoals(projectId: string | undefined) {
     return data;
   };
 
-  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress'>>) => {
+  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'category' | 'completed_at'>>) => {
+    const enriched: typeof updates = { ...updates };
+    if (updates.status === 'complete' && !updates.completed_at) {
+      enriched.completed_at = new Date().toISOString();
+    } else if (updates.status && updates.status !== 'complete') {
+      enriched.completed_at = null;
+    }
     const { data, error } = await supabase
       .from('goals')
-      .update(updates)
+      .update(enriched)
       .eq('id', id)
       .select()
       .single();

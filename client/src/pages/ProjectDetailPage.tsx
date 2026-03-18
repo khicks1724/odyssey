@@ -18,8 +18,15 @@ import {
   UserPlus,
   X,
   Settings,
+  TrendingUp,
+  Folder,
+  ChevronRight,
 } from 'lucide-react';
+import GoalMetrics from '../components/GoalMetrics';
+import OfficeFilePicker from '../components/OfficeFilePicker';
+import ProjectChat from '../components/ProjectChat';
 import { useProject } from '../hooks/useProjects';
+import { fetchOneDriveFiles, useMicrosoftIntegration } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
 import { useAuth } from '../lib/auth';
@@ -37,6 +44,8 @@ const tabs = [
   { id: 'timeline', label: 'Timeline', icon: GanttChart },
   { id: 'activity', label: 'Activity', icon: Activity },
   { id: 'goals', label: 'Goals', icon: Target },
+  { id: 'metrics', label: 'Metrics', icon: TrendingUp },
+  { id: 'documents', label: 'Documents', icon: Link },
   { id: 'members', label: 'Members', icon: Users },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const;
@@ -72,10 +81,13 @@ export default function ProjectDetailPage() {
   const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
   const { goals, createGoal, updateGoal, deleteGoal } = useGoals(projectId);
   const { events, loading: eventsLoading } = useEvents(projectId);
+  const { status: msStatus } = useMicrosoftIntegration();
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const goalModal = useModal();
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDeadline, setNewGoalDeadline] = useState('');
+  const [newGoalCategory, setNewGoalCategory] = useState('');
+  const [newGoalAssignee, setNewGoalAssignee] = useState('');
 
   // GitHub repo state
   const [repoInput, setRepoInput] = useState('');
@@ -90,12 +102,61 @@ export default function ProjectDetailPage() {
   const [insights, setInsights] = useState<{ status: string; nextSteps: string[]; futureFeatures: string[]; provider?: string } | null>(null);
   const [insightsError, setInsightsError] = useState<string | null>(null);
 
+  // Documents / Office file picker
+  const [officePickerOpen, setOfficePickerOpen] = useState(false);
+
+  // Office progress sync
+  const [syncingProgress, setSyncingProgress] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ summary: string; applied: number; provider?: string } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  // Teams folder integration (project-level)
+  const [teamsFolder, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
+  const [teamsFolderPickerOpen, setTeamsFolderPickerOpen] = useState(false);
+  const [teamsFolderSaving, setTeamsFolderSaving] = useState(false);
+
   // Members state
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [memberSearch, setMemberSearch] = useState('');
   const [memberResults, setMemberResults] = useState<GitHubUser[]>([]);
   const [memberSearching, setMemberSearching] = useState(false);
   const [inviting, setInviting] = useState<string | null>(null);
+
+  // Load persisted insights + Teams folder on mount
+  useEffect(() => {
+    if (!projectId) return;
+
+    // Load saved AI insights
+    supabase
+      .from('project_insights')
+      .select('status, next_steps, future_features, provider, generated_at')
+      .eq('project_id', projectId)
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          setInsights({
+            status: data.status,
+            nextSteps: data.next_steps as string[],
+            futureFeatures: data.future_features as string[],
+            provider: data.provider,
+          });
+        }
+      });
+
+    // Load Teams folder integration
+    supabase
+      .from('integrations')
+      .select('config')
+      .eq('project_id', projectId)
+      .eq('type', 'teams')
+      .single()
+      .then(({ data }) => {
+        if (data?.config) {
+          const cfg = data.config as { folder_id: string; folder_name: string };
+          setTeamsFolder({ id: cfg.folder_id, name: cfg.folder_name });
+        }
+      });
+  }, [projectId]);
 
   // Fetch members
   const fetchMembers = useCallback(async () => {
@@ -197,12 +258,55 @@ export default function ProjectDetailPage() {
         setInsightsError('AI returned an empty response. Try a different model.');
       } else {
         setInsights(data);
+        // Persist insights so they survive page changes and server restarts
+        if (projectId) {
+          supabase.from('project_insights').upsert(
+            {
+              project_id: projectId,
+              status: data.status,
+              next_steps: data.nextSteps,
+              future_features: data.futureFeatures,
+              provider: data.provider ?? agent,
+              generated_at: new Date().toISOString(),
+            },
+            { onConflict: 'project_id' },
+          );
+        }
       }
     } catch (err) {
       console.error('Insights failed:', err);
       setInsightsError('Network error — is the server running?');
     }
     setInsightsLoading(false);
+  };
+
+  // Sync goal progress from imported Office documents using AI
+  const handleSyncOfficeProgress = async () => {
+    if (!projectId) return;
+    setSyncingProgress(true);
+    setSyncResult(null);
+    setSyncError(null);
+    try {
+      const res = await fetch(`${API_BASE}/ai/analyze-office-progress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent, projectId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncError(data.error ?? `Error ${res.status}`);
+      } else {
+        setSyncResult({ summary: data.summary, applied: data.applied, provider: data.provider });
+        // Refresh goals so UI reflects DB updates
+        if (data.applied > 0) {
+          // useGoals auto-refreshes via subscription, but trigger refetch via a tiny delay
+          setTimeout(() => window.location.reload(), 1200);
+        }
+      }
+    } catch {
+      setSyncError('Network error — is the server running?');
+    }
+    setSyncingProgress(false);
   };
 
   // Search GitHub users
@@ -299,13 +403,31 @@ export default function ProjectDetailPage() {
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGoalTitle.trim()) return;
-    await createGoal({ title: newGoalTitle, deadline: newGoalDeadline || undefined });
+    await createGoal({
+      title: newGoalTitle,
+      deadline: newGoalDeadline || undefined,
+      category: newGoalCategory.trim() || 'General',
+      assigned_to: newGoalAssignee || undefined,
+    });
     setNewGoalTitle('');
     setNewGoalDeadline('');
+    setNewGoalCategory('');
+    setNewGoalAssignee('');
     goalModal.onClose();
   };
 
+  // Build assignee lookup from members + current user
+  const allMembers = [
+    { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You', avatar_url: user?.user_metadata?.avatar_url ?? null },
+    ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? m.user_id, avatar_url: m.profile?.avatar_url ?? null })),
+  ];
+  function getAssignee(userId: string | null) {
+    if (!userId) return null;
+    return allMembers.find((m) => m.user_id === userId) ?? null;
+  }
+
   return (
+    <>
     <div className="p-8 max-w-6xl mx-auto">
       {/* Back button */}
       <button
@@ -527,18 +649,48 @@ export default function ProjectDetailPage() {
 
       {activeTab === 'goals' && (
         <div>
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-4">
             <h3 className="font-sans text-sm font-bold text-heading">
               Goals ({goals.length})
             </h3>
-            <button
-              onClick={goalModal.onOpen}
-              className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-            >
-              <Plus size={14} />
-              Add Goal
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSyncOfficeProgress}
+                disabled={syncingProgress}
+                title="Analyze imported Office documents and auto-update goal progress using AI"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50"
+              >
+                {syncingProgress ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                Sync from Office
+              </button>
+              <button
+                onClick={goalModal.onOpen}
+                className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
+              >
+                <Plus size={14} />
+                Add Goal
+              </button>
+            </div>
           </div>
+
+          {/* Office sync result */}
+          {syncResult && (
+            <div className="mb-4 border border-accent/20 bg-accent/5 rounded p-4 text-xs">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-accent">
+                  {syncResult.applied > 0 ? `Updated ${syncResult.applied} goal${syncResult.applied > 1 ? 's' : ''} from Office documents` : 'Analysis complete — no changes needed'}
+                </span>
+                <button type="button" title="Dismiss" onClick={() => setSyncResult(null)} className="text-muted hover:text-heading"><X size={12} /></button>
+              </div>
+              <p className="text-muted leading-relaxed">{syncResult.summary}</p>
+              {syncResult.provider && <p className="text-[10px] text-muted/60 mt-1">via {syncResult.provider}</p>}
+            </div>
+          )}
+          {syncError && (
+            <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono">
+              {syncError}
+            </div>
+          )}
 
           {goals.length === 0 ? (
             <div className="border border-border bg-surface p-12 text-center">
@@ -560,6 +712,8 @@ export default function ProjectDetailPage() {
                     goal={goal}
                     onUpdateProgress={(id, progress) => updateGoal(id, { progress })}
                     onUpdateStatus={(id, status) => updateGoal(id, { status })}
+                    assigneeName={getAssignee(goal.assigned_to)?.display_name ?? undefined}
+                    assigneeAvatar={getAssignee(goal.assigned_to)?.avatar_url ?? undefined}
                   />
                   <button
                     onClick={() => deleteGoal(goal.id)}
@@ -593,8 +747,35 @@ export default function ProjectDetailPage() {
                   type="date"
                   value={newGoalDeadline}
                   onChange={(e) => setNewGoalDeadline(e.target.value)}
+                  title="Goal deadline"
                   className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
                 />
+              </div>
+              <div>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category (optional)</label>
+                <input
+                  type="text"
+                  value={newGoalCategory}
+                  onChange={(e) => setNewGoalCategory(e.target.value)}
+                  placeholder="e.g. Frontend, Backend, Design…"
+                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Assign to (optional)</label>
+                <select
+                  value={newGoalAssignee}
+                  onChange={(e) => setNewGoalAssignee(e.target.value)}
+                  title="Assign goal to team member"
+                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+                >
+                  <option value="">Unassigned</option>
+                  {allMembers.map((m) => (
+                    <option key={m.user_id} value={m.user_id}>
+                      {m.display_name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="flex gap-3 pt-2">
                 <button
@@ -616,31 +797,267 @@ export default function ProjectDetailPage() {
         </div>
       )}
 
-      {activeTab === 'members' && (
-        <div className="border border-border bg-surface p-6">
-          <div className="flex items-center gap-2 mb-6">
-            <Users size={14} className="text-accent2" />
-            <h3 className="font-sans text-sm font-bold text-heading">Team Members</h3>
+      {activeTab === 'metrics' && (
+        <GoalMetrics
+          goals={goals}
+          members={members.map((m) => ({
+            user_id: m.user_id,
+            display_name: m.profile?.display_name ?? null,
+            avatar_url: m.profile?.avatar_url ?? null,
+          }))}
+          currentUserId={user?.id ?? ''}
+          currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
+          currentUserAvatar={user?.user_metadata?.avatar_url}
+        />
+      )}
+
+      {activeTab === 'documents' && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[11px] tracking-[0.2em] uppercase text-muted font-mono mb-1">Microsoft 365</p>
+              <h3 className="font-sans text-sm font-bold text-heading">Imported Documents</h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOfficePickerOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
+            >
+              <Plus size={12} /> Import from Office 365
+            </button>
           </div>
-          <div className="py-4">
-            <div className="flex items-center gap-3 p-3 border border-border rounded">
-              <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center">
-                <span className="text-xs text-accent font-bold">You</span>
+
+          {/* Imported Office events */}
+          {eventsLoading ? (
+            <div className="text-xs text-muted py-4">Loading…</div>
+          ) : (
+            <div className="space-y-px border border-border bg-border">
+              {events
+                .filter((e) => e.source === 'onenote' || e.source === 'onedrive')
+                .map((e) => (
+                  <div key={e.id} className="flex items-start gap-3 bg-surface px-4 py-3">
+                    <div className="mt-0.5">
+                      {e.source === 'onenote'
+                        ? <span className="text-[10px] font-mono text-accent3 border border-accent3/30 px-1 py-0.5 rounded">NOTE</span>
+                        : <span className="text-[10px] font-mono text-accent2 border border-accent2/30 px-1 py-0.5 rounded">FILE</span>
+                      }
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-heading font-medium truncate">{e.title}</div>
+                      {e.summary && <div className="text-[11px] text-muted mt-0.5 line-clamp-2">{e.summary}</div>}
+                      <div className="text-[10px] text-muted mt-1 font-mono">
+                        {new Date(e.occurred_at).toLocaleDateString()} · {e.source}
+                      </div>
+                    </div>
+                    {(e.metadata as { web_url?: string })?.web_url && (
+                      <a
+                        href={(e.metadata as { web_url: string }).web_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-accent hover:underline shrink-0 mt-0.5"
+                      >
+                        Open
+                      </a>
+                    )}
+                  </div>
+                ))}
+              {events.filter((e) => e.source === 'onenote' || e.source === 'onedrive').length === 0 && (
+                <div className="bg-surface px-4 py-8 text-center">
+                  <p className="text-xs text-muted mb-3">No documents imported yet.</p>
+                  <button
+                    type="button"
+                    onClick={() => setOfficePickerOpen(true)}
+                    className="text-xs text-accent hover:underline"
+                  >
+                    Browse Microsoft 365 files →
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'members' && (
+        <div className="space-y-6">
+          {/* Current Members */}
+          <div className="border border-border bg-surface p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Users size={14} className="text-accent2" />
+              <h3 className="font-sans text-sm font-bold text-heading">
+                Team Members ({members.length + 1})
+              </h3>
+            </div>
+            <div className="space-y-px border border-border bg-border">
+              {/* Owner (current user) */}
+              <div className="flex items-center gap-3 bg-surface px-4 py-3">
+                {user?.user_metadata?.avatar_url ? (
+                  <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
+                    <span className="text-[10px] text-accent font-bold">You</span>
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-heading font-medium truncate">
+                    {user?.user_metadata?.user_name ?? user?.email ?? 'You'}
+                  </div>
+                  <div className="text-[10px] text-muted">Owner</div>
+                </div>
               </div>
-              <div>
-                <div className="text-xs text-heading font-medium">Project Owner</div>
-                <div className="text-[10px] text-muted">Member since project creation</div>
-              </div>
+              {/* Other members */}
+              {members.map((m) => (
+                <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
+                  {m.profile?.avatar_url ? (
+                    <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
+                      <span className="text-[10px] text-accent2 font-bold uppercase">
+                        {(m.profile?.display_name ?? '?')[0]}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-heading font-medium truncate">
+                      {m.profile?.display_name ?? m.user_id}
+                    </div>
+                    <div className="text-[10px] text-muted capitalize">{m.role}</div>
+                  </div>
+                  {m.user_id !== user?.id && (
+                    <button
+                      onClick={() => handleRemoveMember(m.user_id)}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
+                      title="Remove member"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
-          <p className="text-[10px] text-muted mt-4">
-            Member invitation will be available in a future update.
-          </p>
+
+          {/* Invite Members */}
+          <div className="border border-border bg-surface p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <UserPlus size={14} className="text-accent" />
+              <h3 className="font-sans text-sm font-bold text-heading">Invite by GitHub Username</h3>
+            </div>
+            <p className="text-[11px] text-muted mb-4">
+              Search for a GitHub user — they must have signed into Odyssey at least once.
+            </p>
+            <div className="flex gap-2 max-w-md mb-4">
+              <input
+                value={memberSearch}
+                onChange={(e) => setMemberSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
+                placeholder="GitHub username…"
+                className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+              <button
+                onClick={handleMemberSearch}
+                disabled={memberSearching || memberSearch.trim().length < 2}
+                className="px-4 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
+              >
+                {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                Search
+              </button>
+            </div>
+
+            {memberResults.length > 0 && (
+              <div className="space-y-px border border-border bg-border max-w-md">
+                {memberResults.map((u) => (
+                  <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
+                    <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                    <div className="flex-1 min-w-0">
+                      <a
+                        href={u.html_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-heading font-medium hover:text-accent transition-colors"
+                      >
+                        {u.login}
+                      </a>
+                    </div>
+                    <button
+                      onClick={() => handleInviteMember(u)}
+                      disabled={inviting === u.login}
+                      className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {inviting === u.login ? (
+                        <Loader2 size={10} className="animate-spin" />
+                      ) : (
+                        <UserPlus size={10} />
+                      )}
+                      {inviting === u.login ? 'Adding…' : 'Add'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {activeTab === 'settings' && (
         <div className="space-y-8">
+          {/* Microsoft 365 / Teams Folder */}
+          <div className="border border-border bg-surface p-6">
+            <div className="flex items-center gap-2 mb-6">
+              <Link size={14} className="text-heading" />
+              <h3 className="font-sans text-sm font-bold text-heading">Microsoft 365 / Teams Folder</h3>
+            </div>
+            <p className="text-xs text-muted mb-5">
+              Link a OneDrive or Teams channel folder. Files from this folder will be included in AI insights generation.
+            </p>
+
+            {teamsFolder ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 p-4 border border-accent/20 bg-accent/5 rounded">
+                  <Folder size={18} className="text-accent" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-heading font-medium truncate">{teamsFolder.name}</div>
+                    <div className="text-[10px] text-muted mt-0.5">Linked OneDrive folder</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await supabase.from('integrations').delete()
+                        .eq('project_id', projectId!).eq('type', 'teams');
+                      setTeamsFolder(null);
+                    }}
+                    className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
+                  >
+                    Unlink
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTeamsFolderPickerOpen(true)}
+                  className="text-xs text-accent hover:underline"
+                >
+                  Change folder →
+                </button>
+              </div>
+            ) : msStatus?.connected ? (
+              <button
+                type="button"
+                onClick={() => setTeamsFolderPickerOpen(true)}
+                disabled={teamsFolderSaving}
+                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md disabled:opacity-50"
+              >
+                {teamsFolderSaving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                Select Folder
+              </button>
+            ) : (
+              <p className="text-xs text-muted">
+                Connect your Microsoft 365 account in{' '}
+                <a href="/settings" className="text-accent hover:underline">Settings</a>{' '}
+                first, then come back to link a folder.
+              </p>
+            )}
+          </div>
+
           {/* GitHub Repository */}
           <div className="border border-border bg-surface p-6">
             <div className="flex items-center gap-2 mb-6">
@@ -664,6 +1081,7 @@ export default function ProjectDetailPage() {
                     <div className="text-[10px] text-muted mt-0.5">Connected repository</div>
                   </div>
                   <button
+                    type="button"
                     onClick={() => updateProject({ github_repo: null })}
                     className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
                   >
@@ -672,6 +1090,7 @@ export default function ProjectDetailPage() {
                 </div>
 
                 <button
+                  type="button"
                   onClick={handleRepoScan}
                   disabled={scanLoading}
                   className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md disabled:opacity-50"
@@ -693,6 +1112,7 @@ export default function ProjectDetailPage() {
                                 <CheckCircle size={12} className="text-accent3" />
                                 <span>{g.title}</span>
                                 <button
+                                  type="button"
                                   onClick={() => updateGoal(id, { status: 'complete', progress: 100 })}
                                   className="ml-auto text-[10px] text-accent3 hover:underline"
                                 >
@@ -716,6 +1136,7 @@ export default function ProjectDetailPage() {
                                 <span className="text-[10px] text-muted ml-2">— {s.reason}</span>
                               </div>
                               <button
+                                type="button"
                                 onClick={() => createGoal({ title: s.title })}
                                 className="text-[10px] text-accent2 hover:underline"
                               >
@@ -742,6 +1163,7 @@ export default function ProjectDetailPage() {
                     className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
                   />
                   <button
+                    type="button"
                     onClick={handleSaveRepo}
                     disabled={repoSaving || !repoInput.trim()}
                     className="px-4 py-3 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
@@ -755,6 +1177,137 @@ export default function ProjectDetailPage() {
           </div>
         </div>
       )}
+    </div>
+
+    {/* Office File Picker modal */}
+    {officePickerOpen && project && (
+      <OfficeFilePicker
+        projectId={project.id}
+        projectName={project.name}
+        onClose={() => setOfficePickerOpen(false)}
+        onImported={() => { /* events list refreshes automatically via useEvents */ }}
+      />
+    )}
+
+    {/* Project AI Chat */}
+    <ProjectChat projectId={project.id} projectName={project.name} />
+
+    {/* Teams Folder Picker modal */}
+    {teamsFolderPickerOpen && (
+      <TeamsFolderPickerModal
+        onSelect={async (folder) => {
+          setTeamsFolderSaving(true);
+          setTeamsFolderPickerOpen(false);
+          await supabase.from('integrations').upsert(
+            {
+              project_id: projectId,
+              type: 'teams',
+              config: { folder_id: folder.id, folder_name: folder.name },
+            },
+            { onConflict: 'project_id,type' },
+          );
+          setTeamsFolder(folder);
+          setTeamsFolderSaving(false);
+        }}
+        onClose={() => setTeamsFolderPickerOpen(false)}
+      />
+    )}
+    </>
+  );
+}
+
+// ── Teams folder picker modal ─────────────────────────────────────────────────
+function TeamsFolderPickerModal({
+  onSelect,
+  onClose,
+}: {
+  onSelect: (folder: { id: string; name: string }) => void;
+  onClose: () => void;
+}) {
+  const [files, setFiles] = useState<Array<{ id: string; name: string; folder?: unknown; lastModifiedDateTime: string }>>([]);
+  const [folderStack, setFolderStack] = useState<{ id: string; name: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const current = folderStack[folderStack.length - 1];
+    setLoading(true);
+    fetchOneDriveFiles({ folderId: current?.id }).then((data) => {
+      setFiles(data as Array<{ id: string; name: string; folder?: unknown; lastModifiedDateTime: string }>);
+      setLoading(false);
+    });
+  }, [folderStack]);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-surface border border-border w-full max-w-lg max-h-[70vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div>
+            <h2 className="font-sans text-sm font-bold text-heading">Select OneDrive / Teams Folder</h2>
+            <p className="text-[11px] text-muted font-mono">Choose a folder to link to this project</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-muted hover:text-heading">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-1 px-5 py-2 border-b border-border text-[11px] text-muted font-mono">
+          <button type="button" onClick={() => setFolderStack([])} className="hover:text-heading">My Drive</button>
+          {folderStack.map((f, i) => (
+            <span key={f.id} className="flex items-center gap-1">
+              <ChevronRight size={10} />
+              <button type="button" onClick={() => setFolderStack((p) => p.slice(0, i + 1))} className="hover:text-heading">
+                {f.name}
+              </button>
+            </span>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-px bg-border">
+          {loading ? (
+            <div className="bg-surface flex items-center gap-2 p-4 text-xs text-muted">
+              <Loader2 size={12} className="animate-spin" /> Loading…
+            </div>
+          ) : (
+            <>
+              {/* Link current folder */}
+              {folderStack.length > 0 && (
+                <div className="bg-surface px-4 py-2 flex items-center justify-between mb-2 border border-accent/20">
+                  <span className="text-xs text-accent font-medium">
+                    Link "{folderStack[folderStack.length - 1].name}"
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(folderStack[folderStack.length - 1])}
+                    className="px-3 py-1 border border-accent/30 text-accent text-[10px] tracking-wider uppercase hover:bg-accent/5 rounded"
+                  >
+                    Select this folder
+                  </button>
+                </div>
+              )}
+              {files.filter((f) => !!f.folder).map((item) => (
+                <div key={item.id} className="bg-surface flex items-center gap-3 px-4 py-3 hover:bg-surface2 cursor-pointer group"
+                  onClick={() => setFolderStack((p) => [...p, { id: item.id, name: item.name }])}
+                >
+                  <Folder size={13} className="text-accent shrink-0" />
+                  <span className="text-xs text-heading flex-1 truncate">{item.name}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onSelect({ id: item.id, name: item.name }); }}
+                    className="opacity-0 group-hover:opacity-100 px-2 py-0.5 border border-accent/30 text-accent text-[10px] tracking-wider uppercase hover:bg-accent/5 rounded transition-opacity"
+                  >
+                    Link
+                  </button>
+                  <ChevronRight size={12} className="text-muted" />
+                </div>
+              ))}
+              {files.filter((f) => !!f.folder).length === 0 && (
+                <div className="bg-surface px-4 py-6 text-center text-xs text-muted">No folders here</div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

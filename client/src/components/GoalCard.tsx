@@ -17,9 +17,11 @@ interface GoalCardProps {
   goal: Goal;
   onUpdateProgress?: (id: string, progress: number) => void;
   onUpdateStatus?: (id: string, status: Goal['status']) => void;
+  assigneeName?: string;
+  assigneeAvatar?: string;
 }
 
-export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus }: GoalCardProps) {
+export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus, assigneeName, assigneeAvatar }: GoalCardProps) {
   const config = statusConfig[goal.status] || statusConfig.active;
   const Icon = config.icon;
   const daysLeft = goal.deadline
@@ -91,6 +93,27 @@ export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus }: Goa
             style={{ width: `${goal.progress}%` }}
           />
         </div>
+      </div>
+
+      {/* Category + Assignee */}
+      <div className="flex items-center gap-2 mb-2">
+        {goal.category && goal.category !== 'General' && (
+          <span className="text-[9px] tracking-wider uppercase px-1.5 py-0.5 bg-accent2/10 text-accent2 rounded">
+            {goal.category}
+          </span>
+        )}
+        {assigneeName && (
+          <div className="flex items-center gap-1 ml-auto">
+            {assigneeAvatar ? (
+              <img src={assigneeAvatar} alt="" className="w-4 h-4 rounded-full" />
+            ) : (
+              <div className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center">
+                <span className="text-[7px] text-accent font-bold uppercase">{assigneeName[0]}</span>
+              </div>
+            )}
+            <span className="text-[10px] text-muted">{assigneeName}</span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between">

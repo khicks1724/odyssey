@@ -50,3 +50,81 @@ export function useDashboardStats() {
 
   return { stats, loading };
 }
+
+export interface UpcomingDeadline {
+  id: string;
+  title: string;
+  deadline: string;
+  status: string;
+  progress: number;
+  project_id: string;
+  projectName: string;
+}
+
+export function useUpcomingDeadlines() {
+  const { user } = useAuth();
+  const [deadlines, setDeadlines] = useState<UpcomingDeadline[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() + 21); // next 3 weeks
+
+    supabase
+      .from('goals')
+      .select('id, title, deadline, status, progress, project_id, projects(name)')
+      .not('deadline', 'is', null)
+      .not('status', 'in', '("complete","missed")')
+      .lte('deadline', cutoff.toISOString().slice(0, 10))
+      .order('deadline', { ascending: true })
+      .limit(6)
+      .then(({ data, error }) => {
+        if (!error && data) {
+          setDeadlines(
+            data.map((g: any) => ({
+              id: g.id,
+              title: g.title,
+              deadline: g.deadline,
+              status: g.status,
+              progress: g.progress,
+              project_id: g.project_id,
+              projectName: g.projects?.name ?? 'Unknown project',
+            })),
+          );
+        }
+        setLoading(false);
+      });
+  }, [user]);
+
+  return { deadlines, loading };
+}
+
+export function useActivityByDate() {
+  const { user } = useAuth();
+  const [data, setData] = useState<{ date: string; count: number }[]>([]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const since = new Date();
+    since.setDate(since.getDate() - 84); // 12 weeks
+
+    supabase
+      .from('events')
+      .select('occurred_at')
+      .gte('occurred_at', since.toISOString())
+      .then(({ data: events, error }) => {
+        if (error || !events) return;
+        const counts = new Map<string, number>();
+        events.forEach((e) => {
+          const date = (e.occurred_at as string).slice(0, 10);
+          counts.set(date, (counts.get(date) ?? 0) + 1);
+        });
+        setData(Array.from(counts.entries()).map(([date, count]) => ({ date, count })));
+      });
+  }, [user]);
+
+  return { data };
+}
