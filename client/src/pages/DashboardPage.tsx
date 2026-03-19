@@ -143,7 +143,7 @@ export default function DashboardPage() {
         </div>
 
         {/* AI Summary */}
-        <div className="bg-surface p-6 border-l border-border">
+        <div className="bg-surface p-6 border-l border-border overflow-hidden min-w-0">
           <div className="flex items-center gap-2 mb-6">
             <Sparkles size={14} className="text-accent" />
             <h2 className="font-sans text-base font-bold text-heading">AI Summary</h2>
@@ -166,7 +166,7 @@ export default function DashboardPage() {
               </Link>
 
               {/* Status */}
-              <p className="text-xs text-heading leading-relaxed">{insight.status}</p>
+              <p className="text-xs text-heading leading-relaxed break-words">{insight.status}</p>
 
               {/* Next Steps */}
               {insight.next_steps.length > 0 && (
@@ -176,7 +176,7 @@ export default function DashboardPage() {
                     {insight.next_steps.slice(0, 3).map((step, i) => (
                       <li key={i} className="flex items-start gap-1.5">
                         <span className="text-accent2 mt-0.5 shrink-0">›</span>
-                        <span className="text-[11px] text-muted leading-snug">{step}</span>
+                        <span className="text-[11px] text-muted leading-snug break-words min-w-0">{step}</span>
                       </li>
                     ))}
                   </ul>
