@@ -1,9 +1,13 @@
 name: Deploy to Azure App Service
 
+# Azure deployment is disabled until App Service permissions are provisioned.
+# To re-enable: restore "push: branches: [main]" under the "on:" block.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY to confirm Azure deployment is ready'
+        required: true
 
 jobs:
   build-and-deploy:
