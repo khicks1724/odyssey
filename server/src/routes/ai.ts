@@ -89,16 +89,24 @@ export async function aiRoutes(server: FastifyInstance) {
       rm.set(date, (rm.get(date) ?? 0) + 1);
     }
 
-    // GitHub commits — fetch up to 3 pages (300 commits) to cover ~1 year
+    // 52-week lookback window
+    const oneYearAgo = new Date();
+    oneYearAgo.setDate(oneYearAgo.getDate() - 364);
+    const sinceIso = oneYearAgo.toISOString();
+
+    // GitHub commits — paginate until we've covered a full year
     if (githubRepo) {
       const [owner, repo] = githubRepo.split('/');
       const token = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
       if (token) ghHeaders.Authorization = `Bearer ${token}`;
       const repoKey = `github:${githubRepo}`;
-      for (let page = 1; page <= 3; page++) {
+      for (let page = 1; page <= 13; page++) {
         try {
-          const r = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?per_page=100&page=${page}`, { headers: ghHeaders });
+          const r = await fetch(
+            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?since=${sinceIso}&per_page=100&page=${page}`,
+            { headers: ghHeaders }
+          );
           if (!r.ok) break;
           const commits: { sha: string; commit: { author: { name: string; date: string }; message: string } }[] = await r.json();
           if (!commits.length) break;
@@ -121,17 +129,18 @@ export async function aiRoutes(server: FastifyInstance) {
       }
     }
 
-    // GitLab commits — fetch up to 3 pages per repo
+    // GitLab commits — paginate with since filter, up to 13 pages per repo
     const gitlabToken = process.env.GITLAB_NPS_TOKEN;
     for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const repoKey = `gitlab:${repo}`;
       const repoLabel = repo.includes('/') ? repo.split('/').slice(-2).join('/') : repo;
-      for (let page = 1; page <= 3; page++) {
+      for (let page = 1; page <= 13; page++) {
         try {
-          const r = await fetch(`${gitlabHost}/api/v4/projects/${encoded}/repository/commits?per_page=100&page=${page}&order_by=created_at&sort=desc`, {
-            headers: { 'PRIVATE-TOKEN': gitlabToken ?? '' },
-          });
+          const r = await fetch(
+            `${gitlabHost}/api/v4/projects/${encoded}/repository/commits?since=${sinceIso}&per_page=100&page=${page}&order_by=created_at&sort=desc`,
+            { headers: gitlabToken ? { 'PRIVATE-TOKEN': gitlabToken } : {} }
+          );
           if (!r.ok) break;
           const commits: { id: string; created_at: string; author_name: string; title: string }[] = await r.json();
           if (!commits.length) break;

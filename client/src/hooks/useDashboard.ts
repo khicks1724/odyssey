@@ -221,8 +221,10 @@ export function useActivityByDate() {
       const projectIds = (memberships ?? []).map((m: any) => m.project_id);
       if (projectIds.length === 0) return;
 
+      // 52 weeks = 364 days — match the heatmap display range
       const since = new Date();
-      since.setDate(since.getDate() - 84);
+      since.setDate(since.getDate() - 364);
+      const sinceIso = since.toISOString();
 
       const counts = new Map<string, number>();
 
@@ -231,7 +233,7 @@ export function useActivityByDate() {
         .from('events')
         .select('occurred_at')
         .in('project_id', projectIds)
-        .gte('occurred_at', since.toISOString());
+        .gte('occurred_at', sinceIso);
 
       (events ?? []).forEach((e: any) => {
         const date = (e.occurred_at as string).slice(0, 10);
@@ -243,7 +245,7 @@ export function useActivityByDate() {
         .from('goals')
         .select('created_at')
         .in('project_id', projectIds)
-        .gte('created_at', since.toISOString());
+        .gte('created_at', sinceIso);
 
       (goals ?? []).forEach((g: any) => {
         const date = (g.created_at as string).slice(0, 10);
@@ -258,8 +260,8 @@ export function useActivityByDate() {
             if (!r.ok) return;
             const json: { commits: { date: string; count: number }[] } = await r.json();
             for (const { date, count } of json.commits ?? []) {
-              const d = new Date(date);
-              if (d >= since) {
+              // include all commits within the 52-week window
+              if (date >= since.toISOString().slice(0, 10)) {
                 counts.set(date, (counts.get(date) ?? 0) + count);
               }
             }
