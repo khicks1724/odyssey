@@ -1360,7 +1360,7 @@ Generate the standup summary.`,
   }
 
   server.post<{ Body: IntelligentUpdateBody }>('/ai/intelligent-update', async (request, reply) => {
-    const provider = resolveProvider(request.body);
+    const provider = resolveProvider(request.body, 'claude-sonnet');
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
