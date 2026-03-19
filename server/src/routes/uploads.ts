@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { supabase } from '../lib/supabase.js';
 import { randomUUID } from 'crypto';
+// Import from lib directly to avoid pdf-parse's test-file side-effect on module load
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
+import mammoth from 'mammoth';
 
 const BUCKET = 'project-documents';
 
@@ -18,10 +21,42 @@ const ALLOWED_MIME = new Set([
 ]);
 
 const TEXT_EXTS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.html', '.log', '.yaml', '.yml']);
+const MAX_EXTRACTED_CHARS = 50_000; // ~12k tokens
 
 function isTextFile(name: string, mimeType: string) {
   const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
   return mimeType.startsWith('text/') || TEXT_EXTS.has(ext);
+}
+
+async function extractText(buffer: Buffer, filename: string, mimeType: string): Promise<string | null> {
+  const lower = filename.toLowerCase();
+
+  // PDF
+  if (mimeType === 'application/pdf' || lower.endsWith('.pdf')) {
+    try {
+      const data = await pdfParse(buffer);
+      return data.text?.trim().slice(0, MAX_EXTRACTED_CHARS) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // DOCX
+  if (mimeType.includes('wordprocessingml') || lower.endsWith('.docx')) {
+    try {
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value?.trim().slice(0, MAX_EXTRACTED_CHARS) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Plain text formats
+  if (isTextFile(filename, mimeType)) {
+    return buffer.toString('utf8').slice(0, MAX_EXTRACTED_CHARS);
+  }
+
+  return null;
 }
 
 export async function uploadRoutes(server: FastifyInstance) {
@@ -82,11 +117,9 @@ export async function uploadRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: `Storage upload failed: ${storageErr.message}` });
     }
 
-    // Extract text preview for AI if it's a readable text format
-    let textPreview: string | null = null;
-    if (isTextFile(filename, inferredMime)) {
-      textPreview = fileBuffer.toString('utf8').slice(0, 2000);
-    }
+    // Extract text from PDF, DOCX, and plain-text formats for AI context
+    const extractedText = await extractText(fileBuffer, filename, inferredMime);
+    const contentPreview = extractedText?.slice(0, 2000) ?? null;
 
     const sizeKb = (fileBuffer.byteLength / 1024).toFixed(1);
     const summary = `${filename} (${sizeKb} KB) — uploaded to project storage`;
@@ -104,8 +137,9 @@ export async function uploadRoutes(server: FastifyInstance) {
         size_bytes: fileBuffer.byteLength,
         storage_path: storagePath,
         storage_bucket: BUCKET,
-        content_preview: textPreview,
-        readable: isTextFile(filename, inferredMime),
+        extracted_text: extractedText,  // full text for AI context (up to 50k chars)
+        content_preview: contentPreview, // short preview for UI display
+        readable: extractedText !== null,
       },
       occurred_at: new Date().toISOString(),
     }).select().single();

@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 
-export type AIProvider = 'claude-sonnet' | 'gpt-4o' | 'gemini-pro';
+export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'gpt-4o' | 'gemini-pro';
 
 interface ProviderInfo {
   id: AIProvider;
@@ -27,7 +27,7 @@ const STORAGE_KEY = 'odyssey-ai-agent';
 export function AIAgentProvider({ children }: { children: ReactNode }) {
   const [agent, setAgentState] = useState<AIProvider>(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && ['claude-sonnet', 'gpt-4o', 'gemini-pro'].includes(stored)) return stored as AIProvider;
+    if (stored && ['claude-haiku', 'claude-sonnet', 'gpt-4o', 'gemini-pro'].includes(stored)) return stored as AIProvider;
     return 'claude-sonnet';
   });
   const [providers, setProviders] = useState<ProviderInfo[]>([]);

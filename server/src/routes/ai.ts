@@ -2,10 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { chat, getAvailableProviders, type AIProvider } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 
-function resolveProvider(body: { agent?: string }): AIProvider {
+const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'gpt-4o', 'gemini-pro'];
+
+
+function resolveProvider(body: { agent?: string }, fallback: AIProvider = 'claude-haiku'): AIProvider {
   const agent = body.agent as AIProvider | undefined;
-  if (agent && ['claude-sonnet', 'gpt-4o', 'gemini-pro'].includes(agent)) return agent;
-  return 'claude-sonnet';
+  if (agent && ALL_PROVIDERS.includes(agent)) return agent;
+  return fallback;
 }
 
 interface AISummarizeBody {
@@ -191,7 +194,7 @@ export async function aiRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Missing required fields' });
     }
 
-    // Build context within 4000 token budget (~16000 chars)
+    // Build context within ~16000 chars
     const eventsSummary = events
       .slice(0, 20)
       .map((e) => `[${e.occurred_at}] ${e.source}/${e.event_type}: ${e.title}`)
@@ -203,13 +206,25 @@ export async function aiRoutes(server: FastifyInstance) {
           .join('\n')
       : 'No goals set';
 
+    // Include extracted text from uploaded documents
+    const docEvents = events.filter((e) => e.event_type === 'file_upload');
+    const docsSection = docEvents.length > 0
+      ? '\n\nUPLOADED DOCUMENTS:\n' + docEvents.map((e) => {
+          const meta = e.metadata as { extracted_text?: string; filename?: string } | null;
+          const text = meta?.extracted_text;
+          if (!text) return null;
+          const fname = meta?.filename || e.title;
+          return `[${fname}]\n${text.slice(0, 10_000)}`;
+        }).filter(Boolean).join('\n\n')
+      : '';
+
     const userContent = `Project: ${projectName}
 
 Recent Events (newest first):
 ${eventsSummary || 'No events yet'}
 
 Goals:
-${goalsSummary}
+${goalsSummary}${docsSection}
 
 ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.replace('_', ' ')} analysis.`}`;
 
@@ -331,14 +346,14 @@ Analyze which goals are completed and suggest new goals.`,
   }
 
   server.post<{ Body: ProjectInsightsBody }>('/ai/project-insights', async (request, reply) => {
-    const provider = resolveProvider(request.body);
+    const provider = resolveProvider(request.body, 'claude-sonnet');
     const { projectId } = request.body;
 
     if (!projectId) {
       return reply.status(400).send({ error: 'projectId is required' });
     }
 
-    const ctx = await buildProjectContext(projectId);
+    const ctx = await getCachedContext(projectId);
 
     const codeBlock = [
       ctx.githubContext ? `GITHUB (commits + diffs + source):\n${ctx.githubContext.slice(0, 35_000)}` : '',
@@ -609,8 +624,13 @@ Analyze which goals these documents show progress on, who did the work, and when
     const eventsText = (events ?? []).map((e) => {
       let line = `[${new Date(e.occurred_at).toLocaleDateString()}] ${e.source}/${e.event_type}: ${e.title ?? '(untitled)'}`;
       if (e.summary) line += `\n  Summary: ${e.summary}`;
-      const meta = e.metadata as { content_preview?: string } | null;
-      if (meta?.content_preview) line += `\n  Content: ${meta.content_preview.slice(0, 600)}`;
+      const meta = e.metadata as { content_preview?: string; extracted_text?: string; filename?: string } | null;
+      // For uploaded files, prefer full extracted text; fall back to content_preview
+      if (e.event_type === 'file_upload' && meta?.extracted_text) {
+        line += `\n  Document text: ${meta.extracted_text.slice(0, 5_000)}`;
+      } else if (meta?.content_preview) {
+        line += `\n  Content: ${meta.content_preview.slice(0, 600)}`;
+      }
       return line;
     }).join('\n\n') || 'No activity yet';
 
@@ -828,6 +848,17 @@ Analyze which goals these documents show progress on, who did the work, and when
     return { project, goals: goals ?? [], members: members ?? [], goalsText, membersText, eventsText, githubContext, gitlabContext };
   }
 
+  // Cache project context for 5 min to avoid re-fetching GitHub/GitLab on every chat message
+  type ProjectCtx = Awaited<ReturnType<typeof buildProjectContext>>;
+  const ctxCache = new Map<string, { data: ProjectCtx; expiresAt: number }>();
+  async function getCachedContext(projectId: string): Promise<ProjectCtx> {
+    const cached = ctxCache.get(projectId);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    const data = await buildProjectContext(projectId);
+    ctxCache.set(projectId, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return data;
+  }
+
   // ── Project chat: multi-turn conversation with action proposals ──────────
   interface ChatBody {
     agent?: string;
@@ -844,7 +875,7 @@ Analyze which goals these documents show progress on, who did the work, and when
       return reply.status(400).send({ error: 'projectId and messages are required' });
     }
 
-    const ctx = await buildProjectContext(projectId);
+    const ctx = await getCachedContext(projectId);
 
     const systemPrompt = reportMode
       ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual goals, code files, and activity from the project data below. You have full access to the actual source code files from every linked GitLab repository.
@@ -925,7 +956,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     try {
       send({ type: 'status', text: 'Loading project context…' });
-      const ctx = await buildProjectContext(projectId);
+      const ctx = await getCachedContext(projectId);
 
       send({ type: 'status', text: 'Consulting AI…' });
 
@@ -984,7 +1015,7 @@ RECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGIT
     const { projectId, prompt, dateFrom, dateTo } = request.body;
     if (!projectId || !prompt) return reply.status(400).send({ error: 'projectId and prompt are required' });
 
-    const ctx = await buildProjectContext(projectId);
+    const ctx = await getCachedContext(projectId);
 
     const dateFilter = dateFrom || dateTo
       ? `\nDate range filter: ${dateFrom ?? 'beginning'} → ${dateTo ?? 'today'}`
@@ -1253,7 +1284,7 @@ Generate the standup summary.`,
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
-    const ctx = await buildProjectContext(projectId);
+    const ctx = await getCachedContext(projectId);
 
     try {
       const result = await chat(provider, {

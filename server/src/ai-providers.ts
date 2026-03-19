@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-export type AIProvider = 'claude-sonnet' | 'gpt-4o' | 'gemini-pro';
+export type AIProvider = 'claude-sonnet' | 'claude-haiku' | 'gpt-4o' | 'gemini-pro';
 
 interface ChatMessage {
   system: string;
@@ -16,7 +16,7 @@ interface ChatResult {
 
 // ── Claude (Anthropic) ──────────────────────────────────────────
 
-async function callClaude(msg: ChatMessage): Promise<ChatResult> {
+async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIProvider): Promise<ChatResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
 
@@ -28,7 +28,7 @@ async function callClaude(msg: ChatMessage): Promise<ChatResult> {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model,
       max_tokens: msg.maxTokens || 500,
       system: msg.system,
       messages: [{ role: 'user', content: msg.user }],
@@ -41,7 +41,15 @@ async function callClaude(msg: ChatMessage): Promise<ChatResult> {
   }
 
   const result = await response.json();
-  return { text: result.content?.[0]?.text || '', provider: 'claude-sonnet' };
+  return { text: result.content?.[0]?.text || '', provider };
+}
+
+async function callClaude(msg: ChatMessage): Promise<ChatResult> {
+  return callAnthropicModel(msg, 'claude-sonnet-4-6', 'claude-sonnet');
+}
+
+async function callClaudeHaiku(msg: ChatMessage): Promise<ChatResult> {
+  return callAnthropicModel(msg, 'claude-haiku-4-5-20251001', 'claude-haiku');
 }
 
 // ── GPT-4o (OpenAI) ─────────────────────────────────────────────
@@ -85,12 +93,14 @@ async function callGemini(msg: ChatMessage): Promise<ChatResult> {
 
 const providers: Record<AIProvider, (msg: ChatMessage) => Promise<ChatResult>> = {
   'claude-sonnet': callClaude,
+  'claude-haiku': callClaudeHaiku,
   'gpt-4o': callGPT,
   'gemini-pro': callGemini,
 };
 
 export function getAvailableProviders(): { id: AIProvider; name: string; available: boolean }[] {
   return [
+    { id: 'claude-haiku', name: 'Claude Haiku (Fast)', available: !!process.env.ANTHROPIC_API_KEY },
     { id: 'claude-sonnet', name: 'Claude Sonnet', available: !!process.env.ANTHROPIC_API_KEY },
     { id: 'gpt-4o', name: 'GPT-4o', available: !!process.env.OPENAI_API_KEY },
     { id: 'gemini-pro', name: 'Gemini Pro', available: !!process.env.GOOGLE_AI_API_KEY },
