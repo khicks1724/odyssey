@@ -46,7 +46,8 @@ export function useGoals(projectId: string | undefined) {
   };
 
   const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'assignees' | 'category' | 'loe' | 'completed_at'>>) => {
-    const enriched: typeof updates = { ...updates };
+    const { data: { user } } = await supabase.auth.getUser();
+    const enriched: typeof updates & { updated_by?: string | null } = { ...updates, updated_by: user?.id ?? null };
     // Keep assigned_to in sync with first assignee
     if (updates.assignees !== undefined) {
       enriched.assigned_to = updates.assignees[0] ?? null;

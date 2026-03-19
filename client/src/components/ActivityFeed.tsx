@@ -1,20 +1,26 @@
 import type { OdysseyEvent } from '../../types';
-import { GitCommit, MessageSquare, FileEdit, StickyNote, Video } from 'lucide-react';
+import './ActivityFeed.css';
+import { GitCommit, MessageSquare, FileEdit, StickyNote, Video, Upload, TrendingUp, File } from 'lucide-react';
 
-const eventIcons = {
+const eventIcons: Record<string, React.ComponentType<{ size?: number }>> = {
   commit: GitCommit,
   message: MessageSquare,
   file_edit: FileEdit,
   note: StickyNote,
   meeting: Video,
+  file_upload: Upload,
+  goal_progress_updated: TrendingUp,
 };
 
 const sourceColors: Record<string, string> = {
   github: 'text-heading',
+  gitlab: 'text-accent',
   teams: 'text-accent2',
   onedrive: 'text-accent2',
   onenote: 'text-accent3',
   manual: 'text-muted',
+  local: 'text-accent3',
+  ai: 'text-accent',
 };
 
 interface ActivityFeedProps {
@@ -52,9 +58,16 @@ export default function ActivityFeed({ events, loading, emptyMessage }: Activity
   return (
     <div className="space-y-1">
       {events.map((event) => {
-        const Icon = eventIcons[event.event_type] || GitCommit;
+        const Icon = eventIcons[event.event_type] ?? File;
         const color = sourceColors[event.source] || 'text-muted';
         const timeAgo = getTimeAgo(event.occurred_at);
+        const meta = event.metadata as Record<string, unknown> | null;
+
+        // Goal progress update: show before → after
+        const isGoalProgress = event.event_type === 'goal_progress_updated';
+        const oldPct = isGoalProgress ? (meta?.old_progress as number | undefined) : undefined;
+        const newPct = isGoalProgress ? (meta?.new_progress as number | undefined) : undefined;
+        const completedBy = isGoalProgress ? (meta?.completed_by as string | null | undefined) : undefined;
 
         return (
           <div
@@ -71,7 +84,28 @@ export default function ActivityFeed({ events, loading, emptyMessage }: Activity
                 </span>
                 <span className="text-[10px] text-muted font-mono shrink-0">{event.source}</span>
               </div>
-              {event.summary && (
+              {isGoalProgress && oldPct !== undefined && newPct !== undefined && (
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[10px] font-mono text-muted">{oldPct}%</span>
+                  <div className="flex items-center gap-1">
+                    <div className="w-16 h-1 rounded-full bg-border overflow-hidden">
+                      <div className="af-progress-bar af-progress-bar--before" style={{ '--af-pct': `${oldPct}%` } as React.CSSProperties} />
+                    </div>
+                    <span className="text-[10px] text-muted">→</span>
+                    <div className="w-16 h-1 rounded-full bg-border overflow-hidden">
+                      <div className="af-progress-bar af-progress-bar--after" style={{ '--af-pct': `${newPct}%` } as React.CSSProperties} />
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-accent">{newPct}%</span>
+                  {completedBy && (
+                    <span className="text-[10px] text-muted">by {completedBy}</span>
+                  )}
+                </div>
+              )}
+              {event.summary && !isGoalProgress && (
+                <p className="text-[11px] text-muted mt-0.5 line-clamp-2">{event.summary}</p>
+              )}
+              {isGoalProgress && event.summary && (
                 <p className="text-[11px] text-muted mt-0.5 line-clamp-2">{event.summary}</p>
               )}
             </div>

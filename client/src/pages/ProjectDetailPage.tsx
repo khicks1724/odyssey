@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import './ProjectDetailPage.css';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Activity,
@@ -1066,13 +1067,119 @@ export default function ProjectDetailPage() {
       )}
 
       {activeTab === 'activity' && (
-        <div className="border border-border bg-surface p-6">
+        <div className="border border-border bg-surface p-6 space-y-8">
           <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
-          <ActivityFeed
-            events={events}
-            loading={eventsLoading}
-            emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub or GitLab repo to start tracking."}
-          />
+
+          {/* ── Recent Goal Progress ────────────────────────────────── */}
+          {(() => {
+            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+            const recentGoals = goals
+              .filter((g) => g.updated_at && g.updated_at > thirtyDaysAgo && g.status !== 'not_started')
+              .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
+              .slice(0, 8);
+
+            if (recentGoals.length === 0) return null;
+
+            const statusLabel: Record<string, string> = {
+              in_progress: 'In Progress',
+              in_review: 'In Review',
+              complete: 'Complete',
+              at_risk: 'At Risk',
+            };
+            const statusColor: Record<string, string> = {
+              in_progress: 'text-accent',
+              in_review: 'text-accent2',
+              complete: 'text-accent3',
+              at_risk: 'text-danger',
+            };
+
+            return (
+              <section>
+                <h4 className="text-[10px] tracking-[0.2em] uppercase text-muted font-semibold mb-3">
+                  Recent Goal Progress
+                </h4>
+                <div className="space-y-3">
+                  {recentGoals.map((g) => {
+                    const assignee = getAssignee(g.updated_by ?? g.assigned_to);
+                    const updatedBy = getAssignee(g.updated_by);
+                    const assignedTo = getAssignee(g.assigned_to);
+                    const actor = updatedBy ?? assignedTo;
+
+                    // Look for a matching goal_progress_updated event for action detail
+                    const relatedEvent = events.find(
+                      (e) => e.event_type === 'goal_progress_updated' &&
+                        (e.metadata as Record<string, unknown> | null)?.goal_id === g.id
+                    );
+                    const relatedMeta = relatedEvent?.metadata as Record<string, unknown> | null;
+                    const evidence = relatedMeta?.evidence as string | undefined;
+                    const completedBy = relatedMeta?.completed_by as string | undefined;
+
+                    const daysAgo = Math.floor(
+                      (Date.now() - new Date(g.updated_at).getTime()) / (1000 * 60 * 60 * 24)
+                    );
+                    const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
+
+                    return (
+                      <div key={g.id} className="flex items-start gap-3 px-3 py-3 rounded border border-border/50 bg-surface2/30 hover:bg-surface2 transition-colors">
+                        {/* Progress ring / number */}
+                        <div className="shrink-0 w-10 h-10 rounded-full border-2 border-border flex items-center justify-center relative">
+                          <span className="text-[10px] font-mono font-bold text-heading">{g.progress}%</span>
+                          {g.status === 'complete' && (
+                            <CheckCircle size={10} className="absolute -top-1 -right-1 text-accent3" />
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="text-xs text-heading font-medium truncate">{g.title}</span>
+                            <span className="text-[10px] text-muted font-mono shrink-0">{timeStr}</span>
+                          </div>
+
+                          {/* Progress bar */}
+                          <div className="mt-1.5 h-1 rounded-full bg-border overflow-hidden w-full">
+                            <div className={`h-full rounded-full bg-accent transition-all w-[${g.progress}%]`} />
+                          </div>
+
+                          <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                            <span className={`text-[10px] font-semibold ${statusColor[g.status] ?? 'text-muted'}`}>
+                              {statusLabel[g.status] ?? g.status}
+                            </span>
+                            {g.category && (
+                              <span className="text-[10px] text-muted font-mono">{g.category}</span>
+                            )}
+                            {(actor ?? assignee) && (
+                              <span className="text-[10px] text-muted">
+                                {updatedBy ? `updated by ${updatedBy.display_name}` : assignedTo ? `assigned to ${assignedTo.display_name}` : ''}
+                              </span>
+                            )}
+                            {completedBy && (
+                              <span className="text-[10px] text-muted">work by {completedBy}</span>
+                            )}
+                          </div>
+
+                          {evidence && (
+                            <p className="text-[11px] text-muted mt-1 line-clamp-2 italic">{evidence}</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })()}
+
+          {/* ── Event Feed ───────────────────────────────────────────── */}
+          <section>
+            <h4 className="text-[10px] tracking-[0.2em] uppercase text-muted font-semibold mb-3">
+              All Activity
+            </h4>
+            <ActivityFeed
+              events={events}
+              loading={eventsLoading}
+              emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub or GitLab repo to start tracking."}
+            />
+          </section>
         </div>
       )}
 

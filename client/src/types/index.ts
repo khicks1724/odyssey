@@ -22,6 +22,8 @@ export interface Goal {
   category: string | null;
   loe: string | null;
   created_at: string;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface OdysseyEvent {
@@ -29,7 +31,7 @@ export interface OdysseyEvent {
   project_id: string;
   actor_id: string | null;
   source: 'github' | 'teams' | 'onedrive' | 'onenote' | 'local' | 'gitlab' | 'manual';
-  event_type: 'commit' | 'message' | 'file_edit' | 'note' | 'meeting';
+  event_type: 'commit' | 'message' | 'file_edit' | 'note' | 'meeting' | 'file_upload' | 'goal_progress_updated' | string;
   title: string | null;
   summary: string | null;
   metadata: Record<string, unknown> | null;

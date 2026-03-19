@@ -1,0 +1,13 @@
+.af-progress-bar {
+  height: 100%;
+  border-radius: 9999px;
+  width: var(--af-pct, 0%);
+}
+
+.af-progress-bar--before {
+  background-color: color-mix(in srgb, var(--color-accent3, #a78bfa) 50%, transparent);
+}
+
+.af-progress-bar--after {
+  background-color: var(--color-accent, #6366f1);
+}
