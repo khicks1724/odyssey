@@ -1,0 +1,3 @@
+.chat-panel {
+  width: var(--chat-panel-w, 380px);
+}

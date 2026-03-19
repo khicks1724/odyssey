@@ -107,9 +107,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
   const acceptedCount = suggestions.filter((s) => states[s.id] === 'accepted').length;
 
   return (
-    <>
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-      <div className="fixed inset-y-0 right-0 w-[520px] z-50 bg-surface border-l border-border flex flex-col shadow-2xl">
+      <div className="flex flex-col h-full overflow-hidden bg-surface">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
@@ -120,7 +118,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
               <div className="text-[10px] text-muted font-mono">AI-powered goal suggestions</div>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="text-muted hover:text-heading transition-colors">
+          <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-heading transition-colors">
             <X size={16} />
           </button>
         </div>
@@ -293,6 +291,5 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
           </div>
         )}
       </div>
-    </>
   );
 }

@@ -36,7 +36,7 @@ export default function ThemeSwitcher() {
       {open && (
         <div
           className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-[var(--color-border)]
-                     bg-[var(--color-surface)] shadow-xl z-50 py-1 max-h-80 overflow-y-auto"
+                     bg-[var(--color-surface)] shadow-xl z-50 py-1"
         >
           {themes.map((t) => (
             <button

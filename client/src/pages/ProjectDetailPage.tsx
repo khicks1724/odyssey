@@ -33,17 +33,16 @@ import {
 import GoalMetrics from '../components/GoalMetrics';
 import FileViewerLazy from '../components/FileViewer';
 import OfficeFilePicker from '../components/OfficeFilePicker';
-import ProjectChat from '../components/ProjectChat';
 import GoalEditModal from '../components/GoalEditModal';
 import GoalReportModal from '../components/GoalReportModal';
 import ReportsTab from '../components/ReportsTab';
-import IntelligentUpdatePanel from '../components/IntelligentUpdatePanel';
 import { useProject } from '../hooks/useProjects';
 import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
+import { useChatPanel } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
 import GoalCard from '../components/GoalCard';
 import ActivityFeed from '../components/ActivityFeed';
@@ -94,10 +93,20 @@ export default function ProjectDetailPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { agent } = useAIAgent();
+  const { register, unregister, setIuOpen } = useChatPanel();
   const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
   const { goals, createGoal, updateGoal, deleteGoal, refetch: refetchGoals } = useGoals(projectId);
   const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
   const { status: msStatus } = useMicrosoftIntegration();
+
+  // Register this project with the global chat panel; unregister on unmount or project change
+  useEffect(() => {
+    if (project?.id && project?.name) {
+      register(project.id, project.name, refetchGoals);
+    }
+    return () => { unregister(); };
+  }, [project?.id, project?.name, register, unregister, refetchGoals]);
+
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const goalModal = useModal();
   const [newGoalTitle, setNewGoalTitle] = useState('');
@@ -173,8 +182,7 @@ export default function ProjectDetailPage() {
   const [reportMessages, setReportMessages] = useState<{ role: 'user' | 'assistant'; content: string; provider?: string }[]>([]);
   const [hasCommitData, setHasCommitData] = useState(false);
 
-  // Intelligent Update panel
-  const [intelligentUpdateOpen, setIntelligentUpdateOpen] = useState(false);
+  // Intelligent Update panel — now lives in the layout right panel via context
   const [memberSearch, setMemberSearch] = useState('');
   const [memberResults, setMemberResults] = useState<GitHubUser[]>([]);
   const [memberSearching, setMemberSearching] = useState(false);
@@ -566,7 +574,7 @@ export default function ProjectDetailPage() {
           <div className="relative group shrink-0">
             <button
               type="button"
-              onClick={() => setIntelligentUpdateOpen(true)}
+              onClick={() => setIuOpen(true)}
               className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
             >
               <Sparkles size={13} /> Intelligent Update
@@ -1088,10 +1096,11 @@ export default function ProjectDetailPage() {
               at_risk: 'At Risk',
             };
             const statusColor: Record<string, string> = {
-              in_progress: 'text-accent',
-              in_review: 'text-yellow-400',
-              complete: 'text-accent3',
-              at_risk: 'text-danger',
+              not_started: 'text-[#D94F4F]',
+              in_progress:  'text-[#D97E2A]',
+              in_review:    'text-[#facc15]',
+              complete:     'text-[#6DBE7D]',
+              at_risk:      'text-[#D94F4F]',
             };
 
             return (
@@ -1685,13 +1694,6 @@ export default function ProjectDetailPage() {
       />
     )}
 
-    {/* Project AI Chat */}
-    <ProjectChat
-      projectId={project.id}
-      projectName={project.name}
-      onGoalMutated={refetchGoals}
-    />
-
     {/* Goal Edit Modal */}
     {editGoal && (
       <GoalEditModal
@@ -1708,15 +1710,6 @@ export default function ProjectDetailPage() {
         goal={reportGoal}
         projectId={project.id}
         onClose={() => setReportGoal(null)}
-      />
-    )}
-
-    {/* Intelligent Update Panel */}
-    {intelligentUpdateOpen && (
-      <IntelligentUpdatePanel
-        projectId={project.id}
-        onClose={() => setIntelligentUpdateOpen(false)}
-        onGoalMutated={refetchGoals}
       />
     )}
 
@@ -1859,9 +1852,18 @@ interface GoalsKanbanProps {
   getAssignee: (userId: string | null | undefined) => { display_name: string | null; avatar_url: string | null } | null;
 }
 
+const STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function isStaleComplete(goal: import('../types').Goal): boolean {
+  if (goal.status !== 'complete') return false;
+  const updated = goal.updated_at ? new Date(goal.updated_at).getTime() : 0;
+  return Date.now() - updated > STALE_MS;
+}
+
 function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<GoalStatus | null>(null);
+  const [showStale, setShowStale] = useState(false);
 
   const handleDragStart = (e: React.DragEvent, goalId: string) => {
     e.dataTransfer.effectAllowed = 'move';
@@ -1901,11 +1903,85 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssign
     );
   }
 
+  const barMeta: Record<GoalStatus, { pct: number; cls: string }> = {
+    not_started: { pct: 0,   cls: 'bg-[#D94F4F]/50' },
+    in_progress: { pct: 40,  cls: 'bg-[#D97E2A]/70' },
+    in_review:   { pct: 75,  cls: 'bg-[#facc15]/70' },
+    complete:    { pct: 100, cls: 'bg-[#6DBE7D]/70' },
+  };
+
+  const renderCard = (goal: import('../types').Goal, colStatus: GoalStatus, stale = false) => {
+    const assigneeList = (goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : [])).map(getAssignee).filter(Boolean);
+    const isDragging = draggingId === goal.id;
+    const bar = barMeta[colStatus];
+    return (
+      <div
+        key={goal.id}
+        draggable
+        onDragStart={(e) => handleDragStart(e, goal.id)}
+        onDragEnd={handleDragEnd}
+        className={`group border rounded p-3 cursor-grab active:cursor-grabbing select-none transition-all ${
+          isDragging ? 'opacity-30' : 'hover:border-border/80 hover:shadow-sm'
+        } ${stale ? 'bg-surface border-border/30 opacity-40 saturate-0' : 'bg-surface2 border-border'}`}
+      >
+        <div className="flex items-start justify-between gap-1 mb-1.5">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-heading font-medium leading-snug">{goal.title}</p>
+            {goal.loe && <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>}
+          </div>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button type="button" title="Expand goal" onClick={() => onEdit(goal.id)}
+              className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
+              <ExternalLink size={11} />
+            </button>
+            <button type="button" title="Delete goal" onClick={() => onDelete(goal.id)}
+              className="p-0.5 text-muted hover:text-danger transition-colors">
+              <Trash2 size={11} />
+            </button>
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <div className="h-1.5 bg-border rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${bar.cls} w-[var(--p)]`}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              {...({ style: { '--p': `${bar.pct}%` } } as any)}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-1 flex-wrap">
+          {goal.deadline && (
+            <span className="text-[9px] text-muted font-mono">{new Date(goal.deadline).toLocaleDateString()}</span>
+          )}
+          {goal.category && (
+            <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
+          )}
+          {assigneeList.length > 0 && (
+            <div className="flex items-center gap-0.5 flex-wrap">
+              {assigneeList.slice(0, 2).map((a) => (
+                <span key={a!.user_id} className="text-[9px] text-muted truncate max-w-[70px]">{a!.display_name}</span>
+              ))}
+              {assigneeList.length > 2 && (
+                <span className="text-[9px] text-muted font-mono">+{assigneeList.length - 2}</span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex gap-3 overflow-x-auto pb-4 min-h-[60vh]">
       {KANBAN_COLUMNS.map((col) => {
-        const colGoals = goals.filter((g) => g.status === col.status);
+        const allColGoals = goals.filter((g) => g.status === col.status);
+        const isComplete = col.status === 'complete';
+        const freshGoals = isComplete ? allColGoals.filter((g) => !isStaleComplete(g)) : allColGoals;
+        const staleGoals = isComplete ? allColGoals.filter((g) => isStaleComplete(g)) : [];
         const isOver = dragOverCol === col.status;
+
         return (
           <div
             key={col.status}
@@ -1917,98 +1993,33 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssign
             onDrop={(e) => handleDrop(e, col.status)}
           >
             {/* Column header */}
-            <div className={`flex items-center justify-between px-3 py-2.5 border-b border-border`}>
+            <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
               <div className="flex items-center gap-2">
                 <span className={`text-[10px] font-bold uppercase tracking-wider ${col.color}`}>{col.label}</span>
-                <span className="text-[10px] text-muted bg-surface2 px-1.5 py-0.5 rounded font-mono">{colGoals.length}</span>
+                <span className="text-[10px] text-muted bg-surface2 px-1.5 py-0.5 rounded font-mono">
+                  {freshGoals.length}{staleGoals.length > 0 ? `+${staleGoals.length}` : ''}
+                </span>
               </div>
             </div>
 
             {/* Cards */}
             <div className="flex flex-col gap-2 p-2 flex-1 overflow-y-auto">
-              {colGoals.map((goal) => {
-                const assigneeList = (goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : [])).map(getAssignee).filter(Boolean);
-                const isDragging = draggingId === goal.id;
-                return (
-                  <div
-                    key={goal.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, goal.id)}
-                    onDragEnd={handleDragEnd}
-                    className={`group bg-surface2 border border-border rounded p-3 cursor-grab active:cursor-grabbing select-none transition-opacity ${
-                      isDragging ? 'opacity-30' : 'hover:border-border/80 hover:shadow-sm'
-                    }`}
+              {freshGoals.map((goal) => renderCard(goal, col.status, false))}
+
+              {/* Stale completed goals */}
+              {isComplete && staleGoals.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowStale((v) => !v)}
+                    className="flex items-center gap-1.5 px-2 py-1.5 text-[10px] text-muted hover:text-heading border border-dashed border-border/50 rounded transition-colors mt-1"
                   >
-                    <div className="flex items-start justify-between gap-1 mb-1.5">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs text-heading font-medium leading-snug">{goal.title}</p>
-                        {goal.loe && (
-                          <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-0.5 shrink-0">
-                        <button
-                          type="button"
-                          title="Expand goal"
-                          onClick={() => onEdit(goal.id)}
-                          className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
-                        >
-                          <ExternalLink size={11} />
-                        </button>
-                        <button
-                          type="button"
-                          title="Delete goal"
-                          onClick={() => onDelete(goal.id)}
-                          className="p-0.5 text-muted hover:text-danger transition-colors"
-                        >
-                          <Trash2 size={11} />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Progress bar — driven by status */}
-                    {(() => {
-                      const barMeta: Record<GoalStatus, { pct: number; cls: string }> = {
-                        not_started: { pct: 0,   cls: 'bg-[#D94F4F]/50' },
-                        in_progress: { pct: 40,  cls: 'bg-[#D97E2A]/70' },
-                        in_review:   { pct: 75,  cls: 'bg-[#facc15]/70' },
-                        complete:    { pct: 100, cls: 'bg-[#6DBE7D]/70' },
-                      };
-                      const bar = barMeta[col.status];
-                      return (
-                        <div className="mb-2">
-                          <div className="h-1.5 bg-border rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-500 ${bar.cls} w-[var(--p)]`}
-                              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                              {...({ style: { '--p': `${bar.pct}%` } } as any)}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    <div className="flex items-center justify-between gap-1 flex-wrap">
-                      {goal.deadline && (
-                        <span className="text-[9px] text-muted font-mono">{new Date(goal.deadline).toLocaleDateString()}</span>
-                      )}
-                      {goal.category && (
-                        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
-                      )}
-                      {assigneeList.length > 0 && (
-                        <div className="flex items-center gap-0.5 flex-wrap">
-                          {assigneeList.slice(0, 2).map((a) => (
-                            <span key={a!.user_id} className="text-[9px] text-muted truncate max-w-[70px]">{a!.display_name}</span>
-                          ))}
-                          {assigneeList.length > 2 && (
-                            <span className="text-[9px] text-muted font-mono">+{assigneeList.length - 2}</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+                    <span className={`transition-transform ${showStale ? 'rotate-90' : ''}`}>▶</span>
+                    {showStale ? 'Hide' : 'Show'} {staleGoals.length} archived goal{staleGoals.length !== 1 ? 's' : ''}
+                  </button>
+                  {showStale && staleGoals.map((goal) => renderCard(goal, col.status, true))}
+                </>
+              )}
 
               {/* Drop target hint when dragging */}
               {isOver && draggingId && (

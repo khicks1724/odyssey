@@ -864,14 +864,57 @@ Analyze which goals these documents show progress on, who did the work, and when
     return { project, goals: goals ?? [], members: members ?? [], goalsText, membersText, eventsText, githubContext, gitlabContext };
   }
 
+  // Light context: DB-only (no GitHub/GitLab API calls) — used for haiku/simple chat messages
+  async function buildLightContext(projectId: string) {
+    const [
+      { data: project },
+      { data: goals },
+      { data: events },
+      { data: members },
+    ] = await Promise.all([
+      supabase.from('projects').select('name, description, github_repo').eq('id', projectId).single(),
+      supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
+      supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(30),
+      supabase.from('project_members').select('user_id, role, profiles:user_id(display_name)').eq('project_id', projectId),
+    ]);
+
+    const goalsText = (goals ?? []).map((g) =>
+      `- [ID:${g.id}] [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [${g.category}]` : ''}`
+    ).join('\n') || 'No goals set';
+
+    const membersText = (members ?? []).map((m) => {
+      const p = m.profiles as { display_name?: string | null } | null;
+      return `- ${p?.display_name ?? m.user_id} (${m.role})`;
+    }).join('\n') || 'No members';
+
+    const eventsText = (events ?? []).map((e) => {
+      let line = `[${new Date(e.occurred_at).toLocaleDateString()}] ${e.source}/${e.event_type}: ${e.title ?? '(untitled)'}`;
+      if (e.summary) line += ` — ${e.summary}`;
+      return line;
+    }).join('\n') || 'No activity yet';
+
+    return { project, goals: goals ?? [], members: members ?? [], goalsText, membersText, eventsText };
+  }
+
   // Cache project context for 5 min to avoid re-fetching GitHub/GitLab on every chat message
   type ProjectCtx = Awaited<ReturnType<typeof buildProjectContext>>;
+  type LightCtx = Awaited<ReturnType<typeof buildLightContext>>;
   const ctxCache = new Map<string, { data: ProjectCtx; expiresAt: number }>();
+  const lightCtxCache = new Map<string, { data: LightCtx; expiresAt: number }>();
+
   async function getCachedContext(projectId: string): Promise<ProjectCtx> {
     const cached = ctxCache.get(projectId);
     if (cached && cached.expiresAt > Date.now()) return cached.data;
     const data = await buildProjectContext(projectId);
     ctxCache.set(projectId, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
+    return data;
+  }
+
+  async function getCachedLightContext(projectId: string): Promise<LightCtx> {
+    const cached = lightCtxCache.get(projectId);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    const data = await buildLightContext(projectId);
+    lightCtxCache.set(projectId, { data, expiresAt: Date.now() + 2 * 60 * 1000 });
     return data;
   }
 
@@ -882,6 +925,8 @@ Analyze which goals these documents show progress on, who did the work, and when
     messages: { role: 'user' | 'assistant'; content: string }[];
     reportMode?: boolean;
   }
+
+  const CHAT_STYLE = `\n\nRESPONSE STYLE: Do not use emojis. Use clean markdown (headers, bold, bullet points) only where it genuinely aids clarity. Prefer concise prose for simple answers. Never pad responses with decorative symbols or filler phrases.`;
 
   server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
     const { projectId, messages, reportMode } = request.body;
@@ -894,17 +939,20 @@ Analyze which goals these documents show progress on, who did the work, and when
       return reply.status(400).send({ error: 'projectId and messages are required' });
     }
 
-    const ctx = await getCachedContext(projectId);
+    // Use lightweight DB-only context for haiku (simple) messages to avoid GitHub/GitLab latency
+    const useLight = provider === 'claude-haiku' && !reportMode;
+    const ctx = useLight ? await getCachedLightContext(projectId) : await getCachedContext(projectId);
+    const fullCtx = ctx as ProjectCtx;
 
     const systemPrompt = reportMode
-      ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual goals, code files, and activity from the project data below. You have full access to the actual source code files from every linked GitLab repository.
+      ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual goals, code files, and activity from the project data below.${CHAT_STYLE}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}
 GOALS:\n${ctx.goalsText}
-ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}`
-      : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on goals.
+ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${fullCtx.githubContext ? `\n\nGITHUB:\n${fullCtx.githubContext.slice(0, 2000)}` : ''}${fullCtx.gitlabContext ? `\n\nGITLAB REPOS (commits + full source code):\n${fullCtx.gitlabContext.slice(0, 60_000)}` : ''}`
+      : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on goals.${CHAT_STYLE}
 
-PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project.github_repo}` : ''}
+PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project?.github_repo}` : ''}
 
 GOALS (${ctx.goals.length} total):
 ${ctx.goalsText}
@@ -913,7 +961,7 @@ TEAM MEMBERS:
 ${ctx.membersText}
 
 RECENT ACTIVITY & DOCUMENTS:
-${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + source code):\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}
+${ctx.eventsText.slice(0, 3000)}${!useLight && fullCtx.githubContext ? `\n\nGITHUB:\n${fullCtx.githubContext.slice(0, 2000)}` : ''}${!useLight && fullCtx.gitlabContext ? `\n\nGITLAB REPOS (commits + source code):\n${fullCtx.gitlabContext.slice(0, 60_000)}` : ''}
 
 CAPABILITIES: When appropriate, you may propose ONE action on goals. Include it at the end of your message using this exact format:
 <action>{"type":"create_goal","description":"Human-readable description of what you'll do","args":{"title":"...","deadline":"YYYY-MM-DD","category":"...","assignedTo":"user_id_or_null"}}</action>
@@ -978,22 +1026,24 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     try {
       send({ type: 'status', text: 'Loading project context…' });
-      const ctx = await getCachedContext(projectId);
+      const useLight2 = provider === 'claude-haiku' && !reportMode;
+      const ctx = useLight2 ? await getCachedLightContext(projectId) : await getCachedContext(projectId);
+      const fullCtx2 = ctx as ProjectCtx;
 
       send({ type: 'status', text: 'Consulting AI…' });
 
       const systemPrompt = reportMode
-        ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual goals, code files, and activity from the project data below. You have full access to the actual source code files from every linked GitLab repository.
+        ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific.${CHAT_STYLE}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}
 GOALS:\n${ctx.goalsText}
-ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project.
+ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${fullCtx2.githubContext ? `\n\nGITHUB:\n${fullCtx2.githubContext.slice(0, 2000)}` : ''}${fullCtx2.gitlabContext ? `\n\nGITLAB REPOS (commits + full source code):\n${fullCtx2.gitlabContext.slice(0, 60_000)}` : ''}`
+        : `You are an AI assistant embedded in Odyssey with full read and write access to this project.${CHAT_STYLE}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}
 GOALS (${ctx.goals.length} total):\n${ctx.goalsText}
 TEAM MEMBERS:\n${ctx.membersText}
-RECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS:\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}`;
+RECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${!useLight2 && fullCtx2.githubContext ? `\n\nGITHUB:\n${fullCtx2.githubContext.slice(0, 2000)}` : ''}${!useLight2 && fullCtx2.gitlabContext ? `\n\nGITLAB REPOS:\n${fullCtx2.gitlabContext.slice(0, 60_000)}` : ''}`;
 
       const history = messages.slice(-20);
       const lastMsg = history[history.length - 1]?.content ?? '';

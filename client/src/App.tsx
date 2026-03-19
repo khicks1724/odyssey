@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth, AuthProvider } from './lib/auth';
 import { ThemeProvider } from './lib/theme';
 import { AIAgentProvider } from './lib/ai-agent';
+import { ChatPanelProvider } from './lib/chat-panel';
 import AppLayout from './components/layout/AppLayout';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
@@ -43,9 +44,11 @@ export default function App() {
     <BrowserRouter>
       <ThemeProvider>
         <AIAgentProvider>
-          <AuthProvider>
-            <AppRoutes />
-          </AuthProvider>
+          <ChatPanelProvider>
+            <AuthProvider>
+              <AppRoutes />
+            </AuthProvider>
+          </ChatPanelProvider>
         </AIAgentProvider>
       </ThemeProvider>
     </BrowserRouter>

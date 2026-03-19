@@ -1,4 +1,24 @@
-/* ProjectChat textarea auto-resize */
+/* Panel container — fills the right-side slot in AppLayout */
+.pc-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Header */
+.pc-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface2, var(--color-surface));
+  flex-shrink: 0;
+}
+
+/* Textarea auto-resize */
 .pc-input {
   min-height: 36px;
   max-height: 90px;
@@ -6,60 +26,54 @@
   resize: none;
 }
 
-/* Floating chat window */
-.pc-window {
-  position: fixed;
-  left: var(--pc-x, 16px);
-  top: var(--pc-y, 200px);
-  width: var(--pc-w, 400px);
-  height: var(--pc-h, 560px);
-  z-index: 9999;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.10);
-  border-radius: 10px;
+/* Message bubbles — prevent overflow in both directions */
+.pc-bubble {
+  min-width: 0;
+  max-width: 92%;
+  overflow-wrap: break-word;
+  word-break: break-word;
   overflow: hidden;
 }
 
-/* Header — drag handle */
-.pc-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface2, var(--color-surface));
-  cursor: grab;
-  flex-shrink: 0;
-  -webkit-user-select: none;
-  user-select: none;
+/* Markdown rendered inside assistant bubbles */
+.pc-md {
+  min-width: 0;
+  overflow: hidden;
 }
 
-.pc-header:active {
-  cursor: grabbing;
+.pc-md pre {
+  overflow-x: auto;
+  max-width: 100%;
 }
 
-/* Resize handle — bottom-right corner */
-.pc-resize-handle {
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
-  z-index: 10;
+.pc-md code {
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-width: 100%;
+  display: inline-block;
 }
 
-.pc-resize-handle::after {
-  content: '';
-  position: absolute;
-  bottom: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid var(--color-border);
-  border-bottom: 2px solid var(--color-border);
-  border-radius: 1px;
+.pc-md pre code {
+  display: block;
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
+}
+
+.pc-md p,
+.pc-md li,
+.pc-md blockquote {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.pc-md a {
+  word-break: break-all;
+}
+
+/* Scroll area — no horizontal scroll ever */
+.pc-messages {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
 }
