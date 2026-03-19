@@ -27,7 +27,7 @@ const AIAgentContext = createContext<AIAgentContextType>({
   notifyModelUsed: () => {},
 });
 
-const STORAGE_KEY = 'odyssey-ai-agent';
+const STORAGE_KEY = 'odyssey-ai-agent-v2'; // v2 = auto default; bumped to clear old stored model
 const ALL_VALUES: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
 
 export function AIAgentProvider({ children }: { children: ReactNode }) {
