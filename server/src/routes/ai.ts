@@ -2,13 +2,29 @@ import type { FastifyInstance } from 'fastify';
 import { chat, getAvailableProviders, type AIProvider } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 
-const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'gpt-4o', 'gemini-pro'];
+const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
 
-
+// Resolve the provider from the request body.
+// When agent === 'auto' or is unset, the caller's `fallback` is used —
+// each endpoint passes the tier appropriate for its task complexity.
 function resolveProvider(body: { agent?: string }, fallback: AIProvider = 'claude-haiku'): AIProvider {
-  const agent = body.agent as AIProvider | undefined;
-  if (agent && ALL_PROVIDERS.includes(agent)) return agent;
+  const agent = body.agent;
+  if (agent && agent !== 'auto' && ALL_PROVIDERS.includes(agent as AIProvider)) {
+    return agent as AIProvider;
+  }
   return fallback;
+}
+
+// Chat-specific auto-routing: choose model based on message complexity
+function resolveProviderForChat(body: { agent?: string }, lastMessage: string): AIProvider {
+  if (body.agent && body.agent !== 'auto' && ALL_PROVIDERS.includes(body.agent as AIProvider)) {
+    return body.agent as AIProvider;
+  }
+  const words = lastMessage.trim().split(/\s+/).length;
+  const deepKeywords = /analyz|comprehensive|deep dive|explain in detail|walk me through|compare|evaluate|assess|design|architect/i;
+  if (words > 80 || deepKeywords.test(lastMessage)) return 'claude-sonnet';
+  if (words > 20) return 'claude-sonnet';
+  return 'claude-haiku';
 }
 
 interface AISummarizeBody {
@@ -346,7 +362,7 @@ Analyze which goals are completed and suggest new goals.`,
   }
 
   server.post<{ Body: ProjectInsightsBody }>('/ai/project-insights', async (request, reply) => {
-    const provider = resolveProvider(request.body, 'claude-sonnet');
+    const provider = resolveProvider(request.body, 'claude-opus');
     const { projectId } = request.body;
 
     if (!projectId) {
@@ -868,8 +884,11 @@ Analyze which goals these documents show progress on, who did the work, and when
   }
 
   server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
-    const provider = resolveProvider(request.body);
     const { projectId, messages, reportMode } = request.body;
+    const lastMessage = messages?.[messages.length - 1]?.content ?? '';
+    const provider = reportMode
+      ? resolveProvider(request.body, 'claude-sonnet')
+      : resolveProviderForChat(request.body, lastMessage);
 
     if (!projectId || !messages?.length) {
       return reply.status(400).send({ error: 'projectId and messages are required' });
@@ -945,8 +964,11 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-    const provider = resolveProvider(request.body);
     const { projectId, messages, reportMode } = request.body;
+    const lastMessage = messages?.[messages.length - 1]?.content ?? '';
+    const provider = reportMode
+      ? resolveProvider(request.body, 'claude-sonnet')
+      : resolveProviderForChat(request.body, lastMessage);
 
     if (!projectId || !messages?.length) {
       send({ type: 'error', message: 'projectId and messages are required' });
@@ -1011,7 +1033,7 @@ RECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGIT
   }
 
   server.post<{ Body: GenerateReportBody }>('/ai/generate-report', async (request, reply) => {
-    const provider = resolveProvider(request.body);
+    const provider = resolveProvider(request.body, 'claude-sonnet');
     const { projectId, prompt, dateFrom, dateTo } = request.body;
     if (!projectId || !prompt) return reply.status(400).send({ error: 'projectId and prompt are required' });
 

@@ -1,7 +1,10 @@
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-export type AIProvider = 'claude-sonnet' | 'claude-haiku' | 'gpt-4o' | 'gemini-pro';
+export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro';
+
+// 'auto' is a client-side concept — server resolves it per endpoint before calling chat()
+export type AIProviderOrAuto = AIProvider | 'auto';
 
 interface ChatMessage {
   system: string;
@@ -52,6 +55,10 @@ async function callClaudeHaiku(msg: ChatMessage): Promise<ChatResult> {
   return callAnthropicModel(msg, 'claude-haiku-4-5-20251001', 'claude-haiku');
 }
 
+async function callClaudeOpus(msg: ChatMessage): Promise<ChatResult> {
+  return callAnthropicModel(msg, 'claude-opus-4-6', 'claude-opus');
+}
+
 // ── GPT-4o (OpenAI) ─────────────────────────────────────────────
 
 async function callGPT(msg: ChatMessage): Promise<ChatResult> {
@@ -92,18 +99,20 @@ async function callGemini(msg: ChatMessage): Promise<ChatResult> {
 // ── Router ──────────────────────────────────────────────────────
 
 const providers: Record<AIProvider, (msg: ChatMessage) => Promise<ChatResult>> = {
-  'claude-sonnet': callClaude,
   'claude-haiku': callClaudeHaiku,
+  'claude-sonnet': callClaude,
+  'claude-opus': callClaudeOpus,
   'gpt-4o': callGPT,
   'gemini-pro': callGemini,
 };
 
 export function getAvailableProviders(): { id: AIProvider; name: string; available: boolean }[] {
   return [
-    { id: 'claude-haiku', name: 'Claude Haiku (Fast)', available: !!process.env.ANTHROPIC_API_KEY },
-    { id: 'claude-sonnet', name: 'Claude Sonnet', available: !!process.env.ANTHROPIC_API_KEY },
-    { id: 'gpt-4o', name: 'GPT-4o', available: !!process.env.OPENAI_API_KEY },
-    { id: 'gemini-pro', name: 'Gemini Pro', available: !!process.env.GOOGLE_AI_API_KEY },
+    { id: 'claude-haiku',  name: 'Claude Haiku',  available: !!process.env.ANTHROPIC_API_KEY },
+    { id: 'claude-sonnet', name: 'Claude Sonnet',  available: !!process.env.ANTHROPIC_API_KEY },
+    { id: 'claude-opus',   name: 'Claude Opus',    available: !!process.env.ANTHROPIC_API_KEY },
+    { id: 'gpt-4o',        name: 'GPT-4o',         available: !!process.env.OPENAI_API_KEY },
+    { id: 'gemini-pro',    name: 'Gemini Pro',      available: !!process.env.GOOGLE_AI_API_KEY },
   ];
 }
 

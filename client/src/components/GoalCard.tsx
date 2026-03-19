@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import type { Goal } from '../../types';
 import { CheckCircle, Circle, Loader, ChevronDown, AlertTriangle } from 'lucide-react';
+import ProgressRing from './ProgressRing';
 
 const statusConfig = {
   not_started: { icon: Circle,        color: 'text-[#D94F4F]', bg: 'bg-[#D94F4F]/10', label: 'Not Started' },
   in_progress: { icon: Loader,        color: 'text-[#D97E2A]', bg: 'bg-[#D97E2A]/10', label: 'In Progress' },
-  in_review:   { icon: AlertTriangle, color: 'text-[#B89820]', bg: 'bg-[#B89820]/10', label: 'In Review' },
+  in_review:   { icon: AlertTriangle, color: 'text-[#facc15]', bg: 'bg-[#facc15]/10', label: 'In Review' },
   complete:    { icon: CheckCircle,   color: 'text-[#6DBE7D]', bg: 'bg-[#6DBE7D]/10', label: 'Complete' },
 };
 
@@ -75,18 +76,10 @@ export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus, assig
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div className="mb-2">
-        <div className="flex justify-between text-[10px] text-muted mb-1">
-          <span>Progress</span>
-          <span className="text-heading font-mono">{goal.progress}%</span>
-        </div>
-        <div className="h-1.5 bg-border rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-300"
-            style={{ width: `${goal.progress}%`, backgroundColor: goal.status === 'complete' ? '#6DBE7D' : goal.status === 'in_review' ? '#B89820' : goal.status === 'in_progress' ? '#D97E2A' : '#D94F4F' }}
-          />
-        </div>
+      {/* Progress ring */}
+      <div className="flex items-center gap-3 mb-2">
+        <ProgressRing progress={goal.progress} size={36} strokeWidth={3} />
+        <span className="text-[10px] text-muted">Progress</span>
       </div>
 
       {/* Category + LOE + Assignee */}

@@ -44,7 +44,7 @@ const DEFAULT_W = 400;
 const DEFAULT_H = 560;
 
 export default function ProjectChat({ projectId, projectName, onGoalMutated }: Props) {
-  const { agent } = useAIAgent();
+  const { agent, notifyModelUsed } = useAIAgent();
   const [open,     setOpen]     = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input,    setInput]    = useState('');
@@ -161,6 +161,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
       if (!res.ok) {
         setError(data.error ?? `Error ${res.status}`);
       } else {
+        if (data.provider) notifyModelUsed(data.provider);
         setMessages((prev) => [
           ...prev,
           {

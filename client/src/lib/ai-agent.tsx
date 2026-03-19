@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 
-export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'gpt-4o' | 'gemini-pro';
+export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro';
+export type AIAgentValue = AIProvider | 'auto';
 
 interface ProviderInfo {
   id: AIProvider;
@@ -9,29 +10,35 @@ interface ProviderInfo {
 }
 
 interface AIAgentContextType {
-  agent: AIProvider;
-  setAgent: (agent: AIProvider) => void;
+  agent: AIAgentValue;
+  setAgent: (agent: AIAgentValue) => void;
   providers: ProviderInfo[];
   loading: boolean;
+  lastUsed: AIProvider | null;
+  notifyModelUsed: (provider: AIProvider) => void;
 }
 
 const AIAgentContext = createContext<AIAgentContextType>({
-  agent: 'claude-sonnet',
+  agent: 'auto',
   setAgent: () => {},
   providers: [],
   loading: true,
+  lastUsed: null,
+  notifyModelUsed: () => {},
 });
 
 const STORAGE_KEY = 'odyssey-ai-agent';
+const ALL_VALUES: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
 
 export function AIAgentProvider({ children }: { children: ReactNode }) {
-  const [agent, setAgentState] = useState<AIProvider>(() => {
+  const [agent, setAgentState] = useState<AIAgentValue>(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && ['claude-haiku', 'claude-sonnet', 'gpt-4o', 'gemini-pro'].includes(stored)) return stored as AIProvider;
-    return 'claude-sonnet';
+    if (stored && ALL_VALUES.includes(stored as AIAgentValue)) return stored as AIAgentValue;
+    return 'auto';
   });
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lastUsed, setLastUsed] = useState<AIProvider | null>(null);
 
   useEffect(() => {
     fetch('/api/ai/providers')
@@ -42,13 +49,12 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       .then((data) => {
         const list: ProviderInfo[] = data.providers || [];
         setProviders(list);
-        // If the stored agent isn't available, auto-select the first available one
-        const current = list.find((p) => p.id === agent);
-        if (!current?.available) {
-          const first = list.find((p) => p.available);
-          if (first) {
-            setAgentState(first.id);
-            localStorage.setItem(STORAGE_KEY, first.id);
+        // If the stored agent is a specific model that isn't available, switch to auto
+        if (agent !== 'auto') {
+          const current = list.find((p) => p.id === agent);
+          if (!current?.available) {
+            setAgentState('auto');
+            localStorage.setItem(STORAGE_KEY, 'auto');
           }
         }
       })
@@ -56,13 +62,17 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const setAgent = useCallback((a: AIProvider) => {
+  const setAgent = useCallback((a: AIAgentValue) => {
     setAgentState(a);
     localStorage.setItem(STORAGE_KEY, a);
   }, []);
 
+  const notifyModelUsed = useCallback((provider: AIProvider) => {
+    setLastUsed(provider);
+  }, []);
+
   return (
-    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading }}>
+    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, lastUsed, notifyModelUsed }}>
       {children}
     </AIAgentContext.Provider>
   );

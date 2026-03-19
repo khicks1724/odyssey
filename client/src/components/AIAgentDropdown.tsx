@@ -1,14 +1,21 @@
 import { useState, useRef, useEffect } from 'react';
-import { useAIAgent, type AIProvider } from '../lib/ai-agent';
+import { Zap } from 'lucide-react';
+import { useAIAgent, type AIAgentValue } from '../lib/ai-agent';
+import './AIAgentDropdown.css';
 
-const agentMeta: Record<AIProvider, { name: string; provider: string; color: string }> = {
-  'claude-sonnet': { name: 'Claude Sonnet 4.6', provider: 'Anthropic', color: '#d97706' },
-  'gpt-4o': { name: 'GPT-4o', provider: 'OpenAI', color: '#10b981' },
-  'gemini-pro': { name: 'Gemini Pro', provider: 'Google', color: '#6366f1' },
+const agentMeta: Record<AIAgentValue, { name: string; shortName: string; description: string; colorClass: string }> = {
+  'auto':          { name: 'Auto',              shortName: 'Auto',   description: 'Picks the fastest model for each task automatically', colorClass: 'aid-auto'   },
+  'claude-haiku':  { name: 'Claude Haiku',      shortName: 'Haiku',  description: 'Fastest · ideal for quick questions & summaries',     colorClass: 'aid-haiku'  },
+  'claude-sonnet': { name: 'Claude Sonnet 4.6', shortName: 'Sonnet', description: 'Balanced · great for analysis & chat',                colorClass: 'aid-sonnet' },
+  'claude-opus':   { name: 'Claude Opus 4.6',   shortName: 'Opus',   description: 'Most capable · used for deep project insights',       colorClass: 'aid-opus'   },
+  'gpt-4o':        { name: 'GPT-4o',            shortName: 'GPT-4o', description: 'OpenAI flagship model',                               colorClass: 'aid-gpt4o'  },
+  'gemini-pro':    { name: 'Gemini Pro',         shortName: 'Gemini', description: 'Google Gemini 2.0 Flash',                            colorClass: 'aid-gemini' },
 };
 
+const DISPLAY_ORDER: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
+
 export default function AIAgentDropdown() {
-  const { agent, setAgent, providers, loading } = useAIAgent();
+  const { agent, setAgent, providers, loading, lastUsed } = useAIAgent();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -20,9 +27,13 @@ export default function AIAgentDropdown() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  const activeMeta = agentMeta[agent];
-  const activeProvider = providers.find((p) => p.id === agent);
-  const connectedCount = providers.filter((p) => p.available).length;
+  const buttonMeta = agentMeta[agent];
+  const lastUsedMeta = lastUsed ? agentMeta[lastUsed] : null;
+  // Button dot uses last-used color when in Auto mode
+  const buttonColorClass = agent === 'auto' ? (lastUsedMeta?.colorClass ?? 'aid-auto') : buttonMeta.colorClass;
+
+  const isAvailable = (id: AIAgentValue) =>
+    id === 'auto' || (providers.find((p) => p.id === id)?.available ?? false);
 
   return (
     <div ref={ref} className="relative">
@@ -32,103 +43,94 @@ export default function AIAgentDropdown() {
                    bg-[var(--color-surface)] border border-[var(--color-border)]
                    text-[var(--color-text)] hover:bg-[var(--color-surface2)] transition-colors cursor-pointer"
       >
-        <span className="relative flex items-center justify-center w-4 h-4">
-          <span
-            className="w-2.5 h-2.5 rounded-full"
-            style={{ backgroundColor: activeMeta?.color ?? 'var(--color-muted)' }}
-          />
-          {activeProvider?.available && (
-            <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-500" />
-          )}
+        <span className={`relative flex items-center justify-center w-4 h-4 ${buttonColorClass}`}>
+          {agent === 'auto'
+            ? <Zap size={12} className="aid-icon" />
+            : <span className="aid-dot aid-dot--active" />
+          }
         </span>
-        <span className="font-medium">{activeMeta?.name ?? agent}</span>
+
+        <span className="font-medium">
+          {agent === 'auto'
+            ? lastUsedMeta ? `Auto · ${lastUsedMeta.shortName}` : 'Auto'
+            : buttonMeta.name}
+        </span>
+
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-[var(--color-muted)]">
           <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
       {open && (
-        <div
-          className="absolute right-0 top-full mt-1 w-72 rounded-lg border border-[var(--color-border)]
-                     bg-[var(--color-surface)] shadow-xl z-50 overflow-hidden"
-        >
-          {/* Header */}
+        <div className="absolute right-0 top-full mt-1 w-80 rounded-lg border border-[var(--color-border)]
+                        bg-[var(--color-surface)] shadow-xl z-50 overflow-hidden">
           <div className="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between">
-            <span className="text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted)] font-semibold">
-              Select AI Model
-            </span>
-            <span className="text-[10px] text-[var(--color-muted)]">
-              {connectedCount}/{providers.length} connected
-            </span>
+            <span className="text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted)] font-semibold">AI Model</span>
+            {agent === 'auto' && lastUsedMeta && (
+              <span className="text-[10px] text-[var(--color-muted)]">
+                last: <span className={`aid-last-used ${lastUsedMeta.colorClass}`}>{lastUsedMeta.shortName}</span>
+              </span>
+            )}
           </div>
 
           {loading ? (
-            <div className="px-3 py-6 text-center text-xs text-[var(--color-muted)]">
-              Loading providers…
-            </div>
-          ) : providers.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-[var(--color-muted)]">
-              No AI providers configured
-            </div>
+            <div className="px-3 py-6 text-center text-xs text-[var(--color-muted)]">Loading…</div>
           ) : (
             <div className="py-1">
-              {providers.map((p) => {
-                const meta = agentMeta[p.id];
-                const isActive = p.id === agent;
+              {DISPLAY_ORDER.map((id) => {
+                const meta = agentMeta[id];
+                const available = isAvailable(id);
+                const isActive = id === agent;
+                const isNonClaude = id === 'gpt-4o' || id === 'gemini-pro';
+                if (isNonClaude && !available) return null;
+
                 return (
                   <button
-                    key={p.id}
-                    onClick={() => { if (p.available) { setAgent(p.id); setOpen(false); } }}
-                    disabled={!p.available}
+                    key={id}
+                    onClick={() => { if (available) { setAgent(id); setOpen(false); } }}
+                    disabled={!available}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left transition-colors
-                      ${isActive
-                        ? 'bg-[var(--color-surface2)]'
-                        : p.available
-                          ? 'hover:bg-[var(--color-surface2)] cursor-pointer'
-                          : 'opacity-40 cursor-not-allowed'
-                      }`}
+                      ${isActive ? 'bg-[var(--color-surface2)]'
+                        : available ? 'hover:bg-[var(--color-surface2)] cursor-pointer'
+                        : 'opacity-40 cursor-not-allowed'}`}
                   >
-                    {/* Color dot */}
-                    <span className="flex items-center justify-center w-5 h-5 shrink-0">
-                      <span
-                        className="w-3 h-3 rounded-full border-2"
-                        style={{
-                          backgroundColor: isActive ? meta?.color : 'transparent',
-                          borderColor: meta?.color ?? 'var(--color-muted)',
-                        }}
-                      />
+                    <span className={`flex items-center justify-center w-5 h-5 shrink-0 ${meta.colorClass}`}>
+                      {id === 'auto'
+                        ? <Zap size={14} className="aid-icon" />
+                        : <span className={`aid-dot ${isActive ? 'aid-dot--active' : ''}`} />
+                      }
                     </span>
 
-                    {/* Name & provider */}
                     <div className="flex-1 min-w-0">
-                      <div className={`text-xs font-medium ${isActive ? 'text-[var(--color-heading)]' : ''}`}>
-                        {meta?.name ?? p.id}
+                      <div className={`text-xs font-medium ${isActive ? 'text-[var(--color-heading)]' : 'text-[var(--color-text)]'}`}>
+                        {meta.name}
                       </div>
-                      <div className="text-[10px] text-[var(--color-muted)]">{meta?.provider}</div>
+                      <div className="text-[10px] text-[var(--color-muted)] truncate">{meta.description}</div>
                     </div>
 
-                    {/* Status badge */}
                     {isActive ? (
-                      <span className="flex items-center gap-1 text-[10px] tracking-[0.08em] uppercase font-medium text-green-500">
+                      <span className="flex items-center gap-1 text-[10px] tracking-[0.08em] uppercase font-medium text-green-500 shrink-0">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="20 6 9 17 4 12" />
                         </svg>
-                        In Use
+                        Active
                       </span>
-                    ) : p.available ? (
-                      <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-accent)]">
-                        Ready
-                      </span>
+                    ) : available ? (
+                      <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-muted)] shrink-0">Ready</span>
                     ) : (
-                      <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-muted)]">
-                        No Key
-                      </span>
+                      <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-muted)] shrink-0">No Key</span>
                     )}
                   </button>
                 );
               })}
             </div>
           )}
+
+          <div className="px-3 py-2 border-t border-[var(--color-border)]">
+            <p className="text-[10px] text-[var(--color-muted)] leading-relaxed">
+              <strong>Auto</strong> routes Haiku → fast tasks · Sonnet → analysis · Opus → deep insights
+            </p>
+          </div>
         </div>
       )}
     </div>

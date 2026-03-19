@@ -47,6 +47,7 @@ import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
 import GoalCard from '../components/GoalCard';
 import ActivityFeed from '../components/ActivityFeed';
+import ProgressRing from '../components/ProgressRing';
 import CommitActivityCharts from '../components/CommitActivityCharts';
 import Timeline from '../components/Timeline';
 import TimelinePage from '../components/TimelinePage';
@@ -1088,7 +1089,7 @@ export default function ProjectDetailPage() {
             };
             const statusColor: Record<string, string> = {
               in_progress: 'text-accent',
-              in_review: 'text-accent2',
+              in_review: 'text-yellow-400',
               complete: 'text-accent3',
               at_risk: 'text-danger',
             };
@@ -1121,11 +1122,11 @@ export default function ProjectDetailPage() {
 
                     return (
                       <div key={g.id} className="flex items-start gap-3 px-3 py-3 rounded border border-border/50 bg-surface2/30 hover:bg-surface2 transition-colors">
-                        {/* Progress ring / number */}
-                        <div className="shrink-0 w-10 h-10 rounded-full border-2 border-border flex items-center justify-center relative">
-                          <span className="text-[10px] font-mono font-bold text-heading">{g.progress}%</span>
+                        {/* Gradient progress ring */}
+                        <div className="relative shrink-0">
+                          <ProgressRing progress={g.progress} size={44} />
                           {g.status === 'complete' && (
-                            <CheckCircle size={10} className="absolute -top-1 -right-1 text-accent3" />
+                            <CheckCircle size={10} className="absolute -top-0.5 -right-0.5 text-accent3" />
                           )}
                         </div>
 
@@ -1845,7 +1846,7 @@ type GoalStatus = import('../types').Goal['status'];
 const KANBAN_COLUMNS: { status: GoalStatus; label: string; color: string; accent: string }[] = [
   { status: 'not_started', label: 'Not Started', color: 'text-[#D94F4F]', accent: 'border-[#D94F4F]/40' },
   { status: 'in_progress', label: 'In Progress', color: 'text-[#D97E2A]', accent: 'border-[#D97E2A]/40' },
-  { status: 'in_review',   label: 'In Review',   color: 'text-[#B89820]', accent: 'border-[#B89820]/40' },
+  { status: 'in_review',   label: 'In Review',   color: 'text-[#facc15]', accent: 'border-[#facc15]/40' },
   { status: 'complete',    label: 'Complete',     color: 'text-[#6DBE7D]', accent: 'border-[#6DBE7D]/40' },
 ];
 
@@ -1970,7 +1971,7 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssign
                       const barMeta: Record<GoalStatus, { pct: number; cls: string }> = {
                         not_started: { pct: 0,   cls: 'bg-[#D94F4F]/50' },
                         in_progress: { pct: 40,  cls: 'bg-[#D97E2A]/70' },
-                        in_review:   { pct: 75,  cls: 'bg-[#B89820]/70' },
+                        in_review:   { pct: 75,  cls: 'bg-[#facc15]/70' },
                         complete:    { pct: 100, cls: 'bg-[#6DBE7D]/70' },
                       };
                       const bar = barMeta[col.status];

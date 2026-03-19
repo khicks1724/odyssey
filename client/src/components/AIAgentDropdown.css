@@ -1,0 +1,30 @@
+/* Per-provider color tokens — no inline styles needed */
+.aid-auto   { --aid-color: #94a3b8; }
+.aid-haiku  { --aid-color: #fdba74; }
+.aid-sonnet { --aid-color: #f97316; }
+.aid-opus   { --aid-color: #9a3412; }
+.aid-gpt4o  { --aid-color: #10b981; }
+.aid-gemini { --aid-color: #6366f1; }
+
+.aid-dot {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 9999px;
+  border-width: 2px;
+  border-style: solid;
+  border-color: var(--aid-color, var(--color-muted));
+  background-color: transparent;
+  transition: background-color 0.15s;
+}
+
+.aid-dot--active {
+  background-color: var(--aid-color, var(--color-muted));
+}
+
+.aid-icon {
+  color: var(--aid-color, var(--color-muted));
+}
+
+.aid-last-used {
+  color: var(--aid-color, var(--color-muted));
+}
