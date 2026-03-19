@@ -4,6 +4,14 @@ import { supabase } from '../lib/supabase.js';
 
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
 
+// Strip markdown code fences that models sometimes wrap JSON responses in.
+// e.g. ```json { ... } ``` → { ... }
+function extractJson(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) return fenced[1].trim();
+  return text.trim();
+}
+
 // Resolve the provider from the request body.
 // When agent === 'auto' or is unset, the caller's `fallback` is used —
 // each endpoint passes the tier appropriate for its task complexity.
@@ -1394,7 +1402,7 @@ Analyze everything and suggest specific improvements to the goal structure and d
         maxTokens: 2000,
       });
 
-      const parsed = JSON.parse(result.text);
+      const parsed = JSON.parse(extractJson(result.text));
       return { suggestions: parsed.suggestions ?? [], provider: result.provider };
     } catch (err: any) {
       server.log.error(err);
