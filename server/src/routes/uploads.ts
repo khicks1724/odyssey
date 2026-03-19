@@ -1,45 +1,95 @@
 import type { FastifyInstance } from 'fastify';
+import multipart from '@fastify/multipart';
 import { supabase } from '../lib/supabase.js';
+import { randomUUID } from 'crypto';
 
-// Text-readable MIME types / extensions
-const TEXT_TYPES = new Set([
-  'text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/xml',
-  'application/json', 'application/xml', 'application/csv',
+const BUCKET = 'project-documents';
+
+const ALLOWED_MIME = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'application/json',
 ]);
-const TEXT_EXTS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.html', '.log', '.yaml', '.yml', '.ts', '.js', '.py', '.rs', '.go', '.java', '.cpp', '.c', '.h']);
+
+const TEXT_EXTS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.html', '.log', '.yaml', '.yml']);
 
 function isTextFile(name: string, mimeType: string) {
   const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
-  return TEXT_TYPES.has(mimeType) || mimeType.startsWith('text/') || TEXT_EXTS.has(ext);
-}
-
-interface LocalUploadBody {
-  projectId: string;
-  filename: string;
-  mimeType: string;
-  size: number;
-  content?: string; // plain text, sent from client FileReader
+  return mimeType.startsWith('text/') || TEXT_EXTS.has(ext);
 }
 
 export async function uploadRoutes(server: FastifyInstance) {
-  server.post<{ Body: LocalUploadBody }>('/uploads/local', async (request, reply) => {
+  await server.register(multipart, {
+    limits: { fileSize: 52_428_800 }, // 50 MB
+  });
+
+  // ── Upload a file (PDF, DOCX, TXT, etc.) ──────────────────────────────────
+  server.post('/uploads/local', async (request, reply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
     const token = authHeader.slice(7);
     const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
     if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
 
-    const { projectId, filename, mimeType, size, content } = request.body;
-    if (!projectId || !filename) return reply.status(400).send({ error: 'projectId and filename are required' });
+    const parts = request.parts();
+    let projectId = '';
+    let filename = '';
+    let mimeType = '';
+    let fileBuffer: Buffer | null = null;
+
+    for await (const part of parts) {
+      if (part.type === 'field') {
+        if (part.fieldname === 'projectId') projectId = part.value as string;
+        if (part.fieldname === 'filename') filename = part.value as string;
+      } else if (part.type === 'file') {
+        filename = filename || part.filename;
+        mimeType = part.mimetype;
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) chunks.push(chunk as Buffer);
+        fileBuffer = Buffer.concat(chunks);
+      }
+    }
+
+    if (!projectId || !filename || !fileBuffer) {
+      return reply.status(400).send({ error: 'projectId, filename, and file are required' });
+    }
 
     // Membership check
     const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase.from('project_members').select('user_id').eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) return reply.status(403).send({ error: 'Not a member of this project' });
+    const { data: membership } = await supabase
+      .from('project_members').select('user_id')
+      .eq('project_id', projectId).eq('user_id', user.id).single();
+    if (proj?.owner_id !== user.id && !membership) {
+      return reply.status(403).send({ error: 'Not a member of this project' });
+    }
 
-    const canReadText = isTextFile(filename, mimeType);
-    const preview = content ? content.slice(0, 2000) : null;
-    const summary = content ? content.slice(0, 500) : `Local file: ${filename} (${(size / 1024).toFixed(1)} KB)`;
+    // Validate MIME type (be lenient — browsers sometimes report wrong types)
+    const inferredMime = mimeType || 'application/octet-stream';
+
+    // Upload to Supabase Storage: project-documents/{projectId}/{uuid}-{filename}
+    const storagePath = `${projectId}/${randomUUID()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const { error: storageErr } = await supabase.storage
+      .from(BUCKET)
+      .upload(storagePath, fileBuffer, { contentType: inferredMime, upsert: false });
+
+    if (storageErr) {
+      return reply.status(500).send({ error: `Storage upload failed: ${storageErr.message}` });
+    }
+
+    // Extract text preview for AI if it's a readable text format
+    let textPreview: string | null = null;
+    if (isTextFile(filename, inferredMime)) {
+      textPreview = fileBuffer.toString('utf8').slice(0, 2000);
+    }
+
+    const sizeKb = (fileBuffer.byteLength / 1024).toFixed(1);
+    const summary = `${filename} (${sizeKb} KB) — uploaded to project storage`;
 
     const { data, error: dbErr } = await supabase.from('events').insert({
       project_id: projectId,
@@ -50,15 +100,76 @@ export async function uploadRoutes(server: FastifyInstance) {
       summary,
       metadata: {
         filename,
-        mime_type: mimeType,
-        size_bytes: size,
-        content_preview: preview,
-        readable: canReadText,
+        mime_type: inferredMime,
+        size_bytes: fileBuffer.byteLength,
+        storage_path: storagePath,
+        storage_bucket: BUCKET,
+        content_preview: textPreview,
+        readable: isTextFile(filename, inferredMime),
       },
       occurred_at: new Date().toISOString(),
     }).select().single();
 
-    if (dbErr) return reply.status(500).send({ error: dbErr.message });
+    if (dbErr) {
+      // Clean up storage if DB insert fails
+      await supabase.storage.from(BUCKET).remove([storagePath]);
+      return reply.status(500).send({ error: dbErr.message });
+    }
+
     return { event: data };
+  });
+
+  // ── Generate a signed download URL ─────────────────────────────────────────
+  server.post<{ Body: { storagePath: string } }>('/uploads/sign', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
+    const token = authHeader.slice(7);
+    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const { storagePath } = request.body;
+    if (!storagePath) return reply.status(400).send({ error: 'storagePath required' });
+
+    // Verify membership: project ID is the first path segment
+    const projectId = storagePath.split('/')[0];
+    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
+    const { data: membership } = await supabase
+      .from('project_members').select('user_id')
+      .eq('project_id', projectId).eq('user_id', user.id).single();
+    if (proj?.owner_id !== user.id && !membership) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+
+    const { data, error } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUrl(storagePath, 3600); // 1-hour expiry
+
+    if (error || !data) return reply.status(500).send({ error: error?.message ?? 'Could not sign URL' });
+    return { url: data.signedUrl };
+  });
+
+  // ── Delete a file from storage (called when event is deleted) ──────────────
+  server.delete<{ Body: { storagePath: string } }>('/uploads/file', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
+    const token = authHeader.slice(7);
+    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const { storagePath } = request.body;
+    if (!storagePath) return reply.status(400).send({ error: 'storagePath required' });
+
+    const projectId = storagePath.split('/')[0];
+    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
+    const { data: membership } = await supabase
+      .from('project_members').select('user_id')
+      .eq('project_id', projectId).eq('user_id', user.id).single();
+    if (proj?.owner_id !== user.id && !membership) {
+      return reply.status(403).send({ error: 'Forbidden' });
+    }
+
+    const { error } = await supabase.storage.from(BUCKET).remove([storagePath]);
+    if (error) return reply.status(500).send({ error: error.message });
+    return { ok: true };
   });
 }

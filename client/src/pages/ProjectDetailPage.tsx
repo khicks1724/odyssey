@@ -1945,6 +1945,8 @@ function DocumentsTab({
     e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local' || e.source === 'teams'
   );
   const allSelected = docSelected.size === docs.length && docs.length > 0;
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const toggleRow = (id: string) => {
     const next = new Set(docSelected);
@@ -1955,7 +1957,22 @@ function DocumentsTab({
   const handleBulkDelete = async () => {
     setBulkDeleting(true);
     const ids = Array.from(docSelected);
-    await Promise.all(ids.map((id) => deleteImportedEvent(id)));
+    // Also delete from storage for any files that have a storage_path
+    await Promise.all(ids.map(async (id) => {
+      const ev = docs.find((d) => d.id === id);
+      const meta = ev?.metadata as { storage_path?: string } | undefined;
+      if (meta?.storage_path) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          await fetch('/api/uploads/file', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+            body: JSON.stringify({ storagePath: meta.storage_path }),
+          });
+        }
+      }
+      return deleteImportedEvent(id);
+    }));
     setDocSelected(new Set());
     setDocEditMode(false);
     setBulkDeleting(false);
@@ -1964,31 +1981,65 @@ function DocumentsTab({
 
   const handleSingleDelete = async (id: string) => {
     setDeletingEventId(id);
+    const ev = docs.find((d) => d.id === id);
+    const meta = ev?.metadata as { storage_path?: string } | undefined;
+    if (meta?.storage_path) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await fetch('/api/uploads/file', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ storagePath: meta.storage_path }),
+        });
+      }
+    }
     await deleteImportedEvent(id);
     setDeletingEventId(null);
     onRefresh();
   };
 
-  const handleUpload = async (files: File[]) => {
-    if (!files.length) return;
+  const handleDownload = async (e: import('../types').OdysseyEvent) => {
+    const meta = e.metadata as { storage_path?: string; filename?: string } | undefined;
+    if (!meta?.storage_path) return;
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
+    const res = await fetch('/api/uploads/sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ storagePath: meta.storage_path }),
+    });
+    if (!res.ok) return;
+    const { url } = await res.json();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = meta.filename ?? e.title;
+    a.click();
+  };
+
+  const handleUpload = async (files: File[]) => {
+    if (!files.length) return;
+    setUploading(true);
+    setUploadError(null);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setUploading(false); return; }
     for (const file of files) {
-      let content: string | undefined;
-      const isText = file.type.startsWith('text/') || /\.(txt|md|csv|json|xml|log|yaml|yml|ts|js|py)$/i.test(file.name);
-      if (isText) {
-        content = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.readAsText(file);
-        });
-      }
-      await fetch('/api/uploads/local', {
+      const form = new FormData();
+      form.append('projectId', projectId);
+      form.append('filename', file.name);
+      form.append('file', file);
+      const res = await fetch('/api/uploads/local', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, size: file.size, content }),
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: form,
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Upload failed' }));
+        setUploadError(err.error ?? 'Upload failed');
+        setUploading(false);
+        return;
+      }
     }
+    setUploading(false);
     onRefresh();
   };
 
@@ -2042,15 +2093,17 @@ function DocumentsTab({
                 </button>
               )}
               <label
-                title="Upload local file"
-                className="flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md cursor-pointer"
+                title="Upload PDF, DOCX, or text file"
+                className={`flex items-center gap-2 px-4 py-2 border border-border text-xs font-sans font-semibold tracking-wider uppercase transition-colors rounded-md cursor-pointer ${uploading ? 'opacity-50 pointer-events-none text-muted' : 'text-muted hover:text-heading hover:bg-surface2'}`}
               >
-                <Plus size={12} /> Upload File
+                {uploading ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                {uploading ? 'Uploading…' : 'Upload File'}
                 <input
                   type="file"
-                  title="Upload local file"
+                  title="Upload PDF, DOCX, or text file"
                   className="sr-only"
                   multiple
+                  accept=".pdf,.docx,.doc,.pptx,.xlsx,.txt,.md,.csv,.json"
                   onChange={async (e) => {
                     await handleUpload(Array.from(e.target.files ?? []));
                     e.target.value = '';
@@ -2068,6 +2121,10 @@ function DocumentsTab({
           )}
         </div>
       </div>
+
+      {uploadError && (
+        <div className="text-xs text-danger bg-danger/10 border border-danger/30 rounded px-3 py-2">{uploadError}</div>
+      )}
 
       {eventsLoading ? (
         <div className="text-xs text-muted py-4">Loading…</div>
@@ -2103,6 +2160,9 @@ function DocumentsTab({
                 {e.summary && <div className="text-[11px] text-muted mt-0.5 line-clamp-2">{e.summary}</div>}
                 <div className="text-[10px] text-muted mt-1 font-mono">
                   {new Date(e.occurred_at).toLocaleDateString()} · {e.source}
+                  {(e.metadata as { size_bytes?: number })?.size_bytes
+                    ? ` · ${((e.metadata as { size_bytes: number }).size_bytes / 1024).toFixed(0)} KB`
+                    : ''}
                 </div>
               </div>
               {!docEditMode && (
@@ -2116,6 +2176,16 @@ function DocumentsTab({
                     >
                       Open
                     </a>
+                  )}
+                  {(e.metadata as { storage_path?: string })?.storage_path && (
+                    <button
+                      type="button"
+                      title="Download file"
+                      onClick={() => handleDownload(e)}
+                      className="text-[10px] text-accent hover:underline"
+                    >
+                      Download
+                    </button>
                   )}
                   <button
                     type="button"
