@@ -92,7 +92,7 @@ export async function aiRoutes(server: FastifyInstance) {
     const githubRepo: string | null = projectRes.data?.github_repo ?? null;
     const gitlabCfg = gitlabRes.data?.config as { repos?: string[]; repo?: string; host?: string } | null;
     const gitlabRepos: string[] = gitlabCfg?.repos ?? (gitlabCfg?.repo ? [gitlabCfg.repo] : []);
-    const gitlabHost: string = gitlabCfg?.host ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+    const gitlabHost: string = gitlabCfg?.host ?? process.env.GITLAB_HOST ?? '';
 
     const countByDate = new Map<string, number>();
     // repoKey -> date -> count, for per-repo tooltip breakdown
@@ -149,7 +149,7 @@ export async function aiRoutes(server: FastifyInstance) {
     }
 
     // GitLab commits — paginate with since filter, up to 13 pages per repo
-    const gitlabToken = process.env.GITLAB_NPS_TOKEN;
+    const gitlabToken = process.env.GITLAB_TOKEN;
     for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const repoKey = `gitlab:${repo}`;
@@ -770,8 +770,8 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1b. Recent commit diffs
           try {
-            const gitlabToken = process.env.GITLAB_NPS_TOKEN;
-            const gitlabHost = (gitlabInteg?.config as { host?: string } | null)?.host ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+            const gitlabToken = process.env.GITLAB_TOKEN;
+            const gitlabHost = (gitlabInteg?.config as { host?: string } | null)?.host ?? process.env.GITLAB_HOST ?? '';
             const encoded = encodeURIComponent(repo);
             const commitsRes = await fetch(
               `${gitlabHost}/api/v4/projects/${encoded}/repository/commits?per_page=6&order_by=created_at&sort=desc`,
@@ -1233,7 +1233,7 @@ Write the section titled: "${sectionTitle}"`,
     const githubRepo: string | null = project?.github_repo ?? null;
     const gitlabCfg = gitlabRes.data?.config as { repos?: string[]; repo?: string; host?: string } | null;
     const gitlabRepos: string[] = gitlabCfg?.repos ?? (gitlabCfg?.repo ? [gitlabCfg.repo] : []);
-    const gitlabHost: string = gitlabCfg?.host ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+    const gitlabHost: string = gitlabCfg?.host ?? process.env.GITLAB_HOST ?? '';
 
     const commitsByRepo: { source: 'github' | 'gitlab'; repo: string; commits: string[]; count: number }[] = [];
 
@@ -1259,7 +1259,7 @@ Write the section titled: "${sectionTitle}"`,
       if (msgs.length > 0) commitsByRepo.push({ source: 'github', repo: githubRepo, commits: msgs.slice(0, 50), count: msgs.length });
     }
 
-    const gitlabToken = process.env.GITLAB_NPS_TOKEN;
+    const gitlabToken = process.env.GITLAB_TOKEN;
     for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const msgs: string[] = [];

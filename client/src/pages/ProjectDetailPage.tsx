@@ -693,7 +693,7 @@ export default function ProjectDetailPage() {
                     <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
                   </svg>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-heading font-medium">GitLab <span className="text-[9px] text-muted font-mono">NPS</span></div>
+                    <div className="text-xs text-heading font-medium">GitLab</div>
                     {gitlabRepos.length > 0 ? (
                       <div className="text-[10px] text-muted truncate">
                         {gitlabRepos.length === 1 ? gitlabRepos[0] : `${gitlabRepos.length} repos linked`}
@@ -2707,7 +2707,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
       />
 
       <RepoPanel
-        title="GitLab (NPS)"
+        title="GitLab"
         icon={
           <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className={gitlabRepo ? 'text-[#FC6D26]' : 'text-muted'}>
             <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
@@ -2889,7 +2889,6 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
           <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
         </svg>
         <h3 className="font-sans text-sm font-bold text-heading">GitLab Repositories</h3>
-        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">NPS</span>
         {linkedRepos.length > 0 && (
           <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">{linkedRepos.length} linked</span>
         )}
@@ -2916,7 +2915,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
       {/* Add repo input — always visible */}
       <div className="space-y-3">
         {linkedRepos.length === 0 && (
-          <p className="text-xs text-muted">Link your NPS GitLab repositories. Paste a full URL or project path.</p>
+          <p className="text-xs text-muted">Link your GitLab repositories. Paste a full URL or project path.</p>
         )}
         <div className="flex gap-2 max-w-lg">
           <input
@@ -2935,7 +2934,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
           </button>
         </div>
         {error && <p className="text-xs text-danger font-mono">{error}</p>}
-        <p className="text-[10px] text-muted">Must be on the NPS network or VPN for the server to reach gitlab.nps.edu</p>
+        <p className="text-[10px] text-muted">Make sure the server can reach your GitLab host (check VPN if self-hosted).</p>
       </div>
     </div>
   );

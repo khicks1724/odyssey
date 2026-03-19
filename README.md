@@ -226,7 +226,7 @@ Supported events: `push`, `pull_request`, `issues`, `issue_comment`, `create`, `
 
 ### GitLab (Self-Hosted)
 
-Connect to a self-hosted GitLab instance (defaults to `https://gitlab.nps.edu`).
+Connect to a self-hosted GitLab instance (configured via `GITLAB_HOST` env var).
 
 - Fetch commits, README, and repo metadata
 - Browse file trees and preview raw files
@@ -339,8 +339,8 @@ MICROSOFT_REDIRECT_URI=http://localhost:3001/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=           # 64-char hex string (see below)
 
 # GitLab (optional — for self-hosted instances)
-GITLAB_NPS_HOST=https://gitlab.nps.edu
-GITLAB_NPS_TOKEN=glpat-...
+GITLAB_HOST=https://your-gitlab-instance.com
+GITLAB_TOKEN=glpat-...
 ```
 
 **Generate a Microsoft token encryption key:**
