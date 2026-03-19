@@ -62,7 +62,7 @@ export default function AIAgentDropdown() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-80 rounded-lg border border-[var(--color-border)]
+        <div className="absolute right-0 top-full mt-1 w-96 rounded-lg border border-[var(--color-border)]
                         bg-[var(--color-surface)] shadow-xl z-50 overflow-hidden">
           <div className="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between">
             <span className="text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted)] font-semibold">AI Model</span>
@@ -105,7 +105,7 @@ export default function AIAgentDropdown() {
                       <div className={`text-xs font-medium ${isActive ? 'text-[var(--color-heading)]' : 'text-[var(--color-text)]'}`}>
                         {meta.name}
                       </div>
-                      <div className="text-[10px] text-[var(--color-muted)] truncate">{meta.description}</div>
+                      <div className="text-[10px] text-[var(--color-muted)]">{meta.description}</div>
                     </div>
 
                     {isActive ? (
