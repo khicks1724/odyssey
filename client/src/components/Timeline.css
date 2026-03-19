@@ -1,0 +1,70 @@
+/* Typed custom properties — enables CSS transitions on percentage values */
+@property --tlo-deadline  { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
+@property --tlo-progress  { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
+@property --tlo-now       { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
+
+/* Timeline overview component */
+.tlo-header      { padding-left: 160px; }
+.tlo-date-row    { display: flex; justify-content: space-between; width: 100%; padding: 0 4px; }
+
+.tlo-track-outer { overflow: visible; }
+.tlo-row         { display: flex; align-items: center; position: relative; }
+.tlo-row-border  { border-bottom: 1px solid var(--color-border); }
+
+/* Fixed-width label bin */
+.tlo-label       { width: 160px; height: 40px; flex-shrink: 0;
+                   display: flex; align-items: center; gap: 8px;
+                   padding: 0 12px; border-right: 1px solid var(--color-border);
+                   background: var(--color-surface); }
+
+/* Chart area — today line and bars live here only */
+.tlo-chart       { flex: 1; position: relative; height: 40px; }
+
+/* Today line — scoped to chart area via CSS custom property */
+.tlo-today       { position: absolute; top: 0; bottom: 0; width: 1px;
+                   background: var(--color-accent); opacity: 0.4; z-index: 10;
+                   left: var(--tlo-now, 0%);
+                   transition: left 0.4s ease; }
+.tlo-today-lbl   { position: absolute; bottom: 100%; left: 50%;
+                   transform: translateX(-50%); padding-bottom: 2px;
+                   white-space: nowrap; }
+
+/* Bar elements */
+.tlo-track       { position: absolute; left: 0; height: 8px;
+                   top: 50%; transform: translateY(-50%);
+                   border-radius: 9999px; width: var(--tlo-deadline, 0%);
+                   background: var(--tlo-track, rgba(150,150,150,0.2));
+                   transition: width 0.4s ease; }
+.tlo-fill        { position: absolute; left: 0; height: 8px;
+                   top: 50%; transform: translateY(-50%);
+                   border-radius: 9999px; opacity: 0.75;
+                   width: var(--tlo-progress, 0%);
+                   background: var(--tlo-color, var(--color-accent2));
+                   transition: width 0.4s ease; }
+.tlo-dot         { position: absolute; width: 10px; height: 10px;
+                   border-radius: 9999px; border-width: 2px; border-style: solid;
+                   background: var(--color-surface);
+                   border-color: var(--tlo-color, var(--color-accent2));
+                   top: 50%; left: var(--tlo-deadline, 0%);
+                   transform: translate(-50%, -50%);
+                   transition: left 0.4s ease; }
+.tlo-pct         { position: absolute; right: 8px;
+                   top: 50%; transform: translateY(-50%); }
+
+/* Category dot + label in the label column */
+.tlo-cat-dot     { width: 6px; height: 6px; border-radius: 9999px; flex-shrink: 0;
+                   background: var(--tlo-color, var(--color-accent2)); }
+.tlo-cat-text    { color: var(--tlo-color, var(--color-muted)); }
+
+/* Label hover state */
+.tlo-label-hover { cursor: default; }
+.tlo-label-hover:hover .tlo-cat-text { opacity: 0.85; }
+
+/* Goal hover tooltip — anchored to tlo-row (position: relative) */
+.tlo-tooltip     { position: absolute; left: 164px; top: 50%; transform: translateY(-50%);
+                   z-index: 200; min-width: 230px; max-width: 300px;
+                   background: var(--color-surface); border: 1px solid var(--color-border);
+                   box-shadow: 0 8px 24px rgba(0,0,0,0.22); border-radius: 6px;
+                   overflow: hidden; pointer-events: none; }
+.tlo-tooltip-bar { height: 3px; background: var(--tlo-color, var(--color-accent2)); }
+.tlo-tooltip-body { padding: 10px 12px; }

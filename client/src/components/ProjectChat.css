@@ -1,0 +1,65 @@
+/* ProjectChat textarea auto-resize */
+.pc-input {
+  min-height: 36px;
+  max-height: 90px;
+  overflow-y: auto;
+  resize: none;
+}
+
+/* Floating chat window */
+.pc-window {
+  position: fixed;
+  left: var(--pc-x, 16px);
+  top: var(--pc-y, 200px);
+  width: var(--pc-w, 400px);
+  height: var(--pc-h, 560px);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.10);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* Header — drag handle */
+.pc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface2, var(--color-surface));
+  cursor: grab;
+  flex-shrink: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.pc-header:active {
+  cursor: grabbing;
+}
+
+/* Resize handle — bottom-right corner */
+.pc-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 10;
+}
+
+.pc-resize-handle::after {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--color-border);
+  border-bottom: 2px solid var(--color-border);
+  border-radius: 1px;
+}

@@ -3,10 +3,10 @@ import type { Goal } from '../../types';
 import { CheckCircle, Circle, Loader, ChevronDown, AlertTriangle } from 'lucide-react';
 
 const statusConfig = {
-  not_started: { icon: Circle,       color: 'text-muted',          bg: 'bg-muted/10',          label: 'Not Started' },
-  in_progress: { icon: Loader,       color: 'text-accent2',        bg: 'bg-accent2/10',        label: 'In Progress' },
-  in_review:   { icon: AlertTriangle, color: 'text-yellow-400',    bg: 'bg-yellow-400/10',     label: 'In Review' },
-  complete:    { icon: CheckCircle,  color: 'text-accent3',        bg: 'bg-accent3/10',        label: 'Complete' },
+  not_started: { icon: Circle,        color: 'text-[#D94F4F]', bg: 'bg-[#D94F4F]/10', label: 'Not Started' },
+  in_progress: { icon: Loader,        color: 'text-[#D97E2A]', bg: 'bg-[#D97E2A]/10', label: 'In Progress' },
+  in_review:   { icon: AlertTriangle, color: 'text-[#B89820]', bg: 'bg-[#B89820]/10', label: 'In Review' },
+  complete:    { icon: CheckCircle,   color: 'text-[#6DBE7D]', bg: 'bg-[#6DBE7D]/10', label: 'Complete' },
 };
 
 const STATUS_ORDER = ['not_started', 'in_progress', 'in_review', 'complete'] as const satisfies Goal['status'][];
@@ -83,19 +83,22 @@ export default function GoalCard({ goal, onUpdateProgress, onUpdateStatus, assig
         </div>
         <div className="h-1.5 bg-border rounded-full overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all duration-300 ${
-              goal.status === 'complete' ? 'bg-accent3' : 'bg-accent2'
-            }`}
-            style={{ width: `${goal.progress}%` }}
+            className="h-full rounded-full transition-all duration-300"
+            style={{ width: `${goal.progress}%`, backgroundColor: goal.status === 'complete' ? '#6DBE7D' : goal.status === 'in_review' ? '#B89820' : goal.status === 'in_progress' ? '#D97E2A' : '#D94F4F' }}
           />
         </div>
       </div>
 
-      {/* Category + Assignee */}
+      {/* Category + LOE + Assignee */}
       <div className="flex items-center gap-2 mb-2">
         {goal.category && goal.category !== 'General' && (
           <span className="text-[9px] tracking-wider uppercase px-1.5 py-0.5 bg-accent2/10 text-accent2 rounded">
             {goal.category}
+          </span>
+        )}
+        {goal.loe && (
+          <span className="text-[9px] tracking-wider uppercase px-1.5 py-0.5 bg-accent3/10 text-accent3 rounded">
+            {goal.loe}
           </span>
         )}
         {assigneeName && (

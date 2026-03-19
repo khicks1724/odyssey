@@ -8,9 +8,10 @@ import {
   AlertTriangle,
   CheckCircle,
   Circle,
+  GitCommitHorizontal,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight } from '../hooks/useDashboard';
+import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight, useRecentCommits } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
 import ContributionGraph from '../components/ContributionGraph';
 
@@ -32,6 +33,7 @@ export default function DashboardPage() {
   const { deadlines, loading: deadlinesLoading } = useUpcomingDeadlines();
   const { data: activityData } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
+  const { commits: recentCommits, loading: commitsLoading } = useRecentCommits();
 
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
@@ -92,21 +94,52 @@ export default function DashboardPage() {
 
       {/* Recent Activity + AI Panel */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-px bg-border border border-border mb-px">
-        {/* Contribution heatmap */}
-        <div className="lg:col-span-2 bg-surface p-6">
+        {/* Contribution heatmap + recent commits */}
+        <div className="lg:col-span-2 bg-surface p-6 overflow-hidden">
           <div className="flex items-center gap-2 mb-6">
             <Clock size={14} className="text-accent" />
             <h2 className="font-sans text-base font-bold text-heading">Recent Activity</h2>
           </div>
-          {activityData.length > 0 ? (
+          <div className="pr-6">
             <ContributionGraph data={activityData} />
-          ) : (
-            <div className="py-8 text-center">
-              <p className="text-xs text-muted tracking-wide">
-                Import commits or events from a connected repo to see activity here.
-              </p>
+          </div>
+
+          {/* Recent commits feed */}
+          <div className="mt-6">
+            <div className="flex items-center gap-2 mb-3">
+              <GitCommitHorizontal size={12} className="text-muted" />
+              <span className="text-[10px] tracking-[0.2em] uppercase text-muted">Recent Commits</span>
             </div>
-          )}
+            {commitsLoading ? (
+              <div className="space-y-2">
+                {[1, 2, 3].map((i) => <div key={i} className="h-8 bg-border/40 rounded animate-pulse" />)}
+              </div>
+            ) : recentCommits.length === 0 ? (
+              <p className="text-xs text-muted/60 py-2">No commits found. Connect a GitHub or GitLab repo in project settings.</p>
+            ) : (
+              <div className="space-y-px">
+                {recentCommits.slice(0, 12).map((c, i) => {
+                  const ago = (() => {
+                    const ms = Date.now() - new Date(c.date).getTime();
+                    const h = Math.floor(ms / 3600000);
+                    const d = Math.floor(h / 24);
+                    if (d > 0) return `${d}d ago`;
+                    if (h > 0) return `${h}h ago`;
+                    return 'just now';
+                  })();
+                  return (
+                    <div key={i} className="flex items-center gap-3 py-1.5 border-b border-border/50 last:border-0 group">
+                      <span className="font-mono text-[9px] text-accent/70 shrink-0 w-12">{c.sha}</span>
+                      <span className="text-[11px] text-heading truncate flex-1">{c.message}</span>
+                      <span className="text-[10px] text-muted/70 shrink-0 truncate max-w-[90px] hidden sm:block">{c.repo}</span>
+                      <span className="text-[10px] text-muted shrink-0 truncate max-w-[70px] hidden md:block">{c.author}</span>
+                      <span className="text-[9px] font-mono text-muted/60 shrink-0">{ago}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* AI Summary */}

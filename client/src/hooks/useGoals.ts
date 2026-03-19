@@ -23,16 +23,19 @@ export function useGoals(projectId: string | undefined) {
     fetchGoals();
   }, [fetchGoals]);
 
-  const createGoal = async (goal: { title: string; deadline?: string; category?: string; assigned_to?: string }) => {
+  const createGoal = async (goal: { title: string; deadline?: string; category?: string; loe?: string; assigned_to?: string; assignees?: string[] }) => {
     if (!projectId) throw new Error('No project');
+    const assignees = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
     const { data, error } = await supabase
       .from('goals')
       .insert({
         project_id: projectId,
         title: goal.title,
         deadline: goal.deadline || null,
-        category: goal.category || 'General',
-        assigned_to: goal.assigned_to || null,
+        category: goal.category || null,
+        loe: goal.loe || null,
+        assigned_to: assignees[0] ?? null,
+        assignees,
       })
       .select()
       .single();
@@ -42,8 +45,12 @@ export function useGoals(projectId: string | undefined) {
     return data;
   };
 
-  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'category' | 'completed_at'>>) => {
+  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'assignees' | 'category' | 'loe' | 'completed_at'>>) => {
     const enriched: typeof updates = { ...updates };
+    // Keep assigned_to in sync with first assignee
+    if (updates.assignees !== undefined) {
+      enriched.assigned_to = updates.assignees[0] ?? null;
+    }
     if (updates.status === 'complete' && !updates.completed_at) {
       enriched.completed_at = new Date().toISOString();
     } else if (updates.status && updates.status !== 'complete') {

@@ -38,15 +38,15 @@ export default function Sidebar() {
       }`}
     >
       {/* Brand */}
-      <div className="flex items-center justify-between px-4 h-14 border-b border-border">
+      <div className={`flex items-center border-b border-border h-16 px-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
         {!collapsed && (
-          <span className="font-serif text-2xl font-bold italic text-heading">
+          <span className="font-serif text-3xl font-bold italic text-heading flex-1 text-center">
             <span className="text-accent">Odyssey</span>
           </span>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="p-1 rounded hover:bg-surface2 text-muted hover:text-heading transition-colors"
+          className="p-1 rounded hover:bg-surface2 text-muted hover:text-heading transition-colors shrink-0"
         >
           <ChevronLeft
             size={16}

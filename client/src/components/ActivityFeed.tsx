@@ -41,6 +41,7 @@ export default function ActivityFeed({ events, loading, emptyMessage }: Activity
   }
 
   if (events.length === 0) {
+    if (emptyMessage === undefined) return null;
     return (
       <div className="py-8 text-center">
         <p className="text-xs text-muted tracking-wide">{emptyMessage || 'No activity yet'}</p>

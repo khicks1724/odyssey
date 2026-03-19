@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useAIAgent, type AIProvider } from '../lib/ai-agent';
 
 const agentMeta: Record<AIProvider, { name: string; provider: string; color: string }> = {
-  'claude-sonnet': { name: 'Claude Sonnet', provider: 'Anthropic', color: '#d97706' },
+  'claude-sonnet': { name: 'Claude Sonnet 4.6', provider: 'Anthropic', color: '#d97706' },
   'gpt-4o': { name: 'GPT-4o', provider: 'OpenAI', color: '#10b981' },
   'gemini-pro': { name: 'Gemini Pro', provider: 'Google', color: '#6366f1' },
 };

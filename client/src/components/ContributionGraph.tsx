@@ -1,100 +1,161 @@
+import { useState, useCallback } from 'react';
+import './ContributionGraph.css';
+
 interface ContributionGraphProps {
   data: { date: string; count: number }[];
 }
 
+const CELL = 13;
+const GAP  = 2;
+const STEP = CELL + GAP;
+const WEEKS = 52;
+const DAYS  = 7;
+const DAY_LABELS = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(d: Date, n: number): Date {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+
+function cellColor(count: number): string {
+  if (count === 0) return 'var(--commit-0)';
+  if (count <= 2)  return 'var(--commit-1)';
+  if (count <= 5)  return 'var(--commit-2)';
+  if (count <= 10) return 'var(--commit-3)';
+  return 'var(--commit-4)';
+}
+
+interface TooltipState {
+  date: string;
+  count: number;
+  x: number;
+  y: number;
+}
+
 export default function ContributionGraph({ data }: ContributionGraphProps) {
-  // Build a 12-week × 7-day grid (last ~3 months)
-  const weeks = 12;
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+
   const today = new Date();
-  const grid: { date: string; count: number; level: number }[][] = [];
-
-  // Build date lookup
   const countMap = new Map(data.map((d) => [d.date, d.count]));
+  const totalCount = data.reduce((s, d) => s + d.count, 0);
 
-  // Find max for level scaling
-  const maxCount = Math.max(1, ...data.map((d) => d.count));
+  // Start on the Sunday 52 full weeks ago
+  const startDate = new Date(today);
+  startDate.setDate(startDate.getDate() - (WEEKS - 1) * 7 - startDate.getDay());
 
-  for (let w = weeks - 1; w >= 0; w--) {
-    const week: { date: string; count: number; level: number }[] = [];
-    for (let d = 0; d < 7; d++) {
-      const date = new Date(today);
-      date.setDate(date.getDate() - (w * 7 + (6 - d)));
-      const key = date.toISOString().slice(0, 10);
-      const count = countMap.get(key) ?? 0;
-      const level = count === 0 ? 0 : Math.min(4, Math.ceil((count / maxCount) * 4));
-      week.push({ date: key, count, level });
-    }
-    grid.push(week);
-  }
+  // Build grid[week][day]
+  const grid = Array.from({ length: WEEKS }, (_, w) =>
+    Array.from({ length: DAYS }, (_, d) => {
+      const cell = addDays(startDate, w * 7 + d);
+      const ds = isoDate(cell);
+      return { date: ds, count: countMap.get(ds) ?? 0, future: cell > today };
+    })
+  );
 
-  const levelColors = [
-    'bg-border/40',
-    'bg-accent3/20',
-    'bg-accent3/40',
-    'bg-accent3/60',
-    'bg-accent3/80',
-  ];
-
-  const monthLabels: { label: string; col: number }[] = [];
-  let lastMonth = -1;
-  grid.forEach((week, i) => {
-    const month = new Date(week[0].date).getMonth();
-    if (month !== lastMonth) {
-      monthLabels.push({
-        label: new Date(week[0].date).toLocaleDateString('en-US', { month: 'short' }),
-        col: i,
-      });
-      lastMonth = month;
-    }
+  // Month labels
+  const monthLabels: { label: string; x: number }[] = [];
+  let lastMonth = '';
+  grid.forEach((col, w) => {
+    const d = addDays(startDate, w * 7);
+    const m = d.toLocaleDateString('en-US', { month: 'short' });
+    if (m !== lastMonth) { monthLabels.push({ label: m, x: w * STEP }); lastMonth = m; }
+    void col; // suppress unused variable warning
   });
 
+  const svgW = WEEKS * STEP;
+  const svgH = 20 + DAYS * STEP;
+
+  const handleEnter = useCallback((e: React.MouseEvent<SVGRectElement>, cell: { date: string; count: number }) => {
+    if (cell.count === 0) { setTooltip(null); return; }
+    setTooltip({ date: cell.date, count: cell.count, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleMove = useCallback((e: React.MouseEvent<SVGRectElement>) => {
+    setTooltip((prev) => prev ? { ...prev, x: e.clientX, y: e.clientY } : null);
+  }, []);
+
   return (
-    <div>
-      {/* Month labels */}
-      <div className="flex mb-1" style={{ paddingLeft: '28px' }}>
-        {monthLabels.map((m) => (
-          <span
-            key={m.col}
-            className="text-[9px] text-muted font-mono"
-            style={{ position: 'relative', left: `${m.col * 14}px` }}
-          >
-            {m.label}
-          </span>
-        ))}
+    <div className="w-full">
+      {/* Header */}
+      <div className="flex items-baseline gap-3 mb-3">
+        <span className="text-[10px] font-mono text-muted">
+          {totalCount.toLocaleString()} contributions · last 12 months
+        </span>
       </div>
 
-      <div className="flex gap-0.5">
+      <div className="flex items-start gap-1.5 w-full">
         {/* Day labels */}
-        <div className="flex flex-col gap-0.5 mr-1">
-          {['', 'Mon', '', 'Wed', '', 'Fri', ''].map((d, i) => (
-            <div key={i} className="h-[10px] text-[8px] text-muted font-mono leading-[10px]">
-              {d}
+        <div className="flex flex-col shrink-0 pt-5">
+          {DAY_LABELS.map((l, i) => (
+            <div key={i} style={{ height: STEP, lineHeight: `${STEP}px` }} className="cg-day-label">
+              {l}
             </div>
           ))}
         </div>
 
-        {/* Grid */}
-        {grid.map((week, wi) => (
-          <div key={wi} className="flex flex-col gap-0.5">
-            {week.map((day) => (
-              <div
-                key={day.date}
-                className={`w-[10px] h-[10px] rounded-[2px] ${levelColors[day.level]}`}
-                title={`${day.date}: ${day.count} events`}
+        {/* SVG heatmap — scales to fill container */}
+        <svg
+          viewBox={`0 0 ${svgW} ${svgH}`}
+          width="100%"
+          style={{ display: 'block' }}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          {/* Month labels */}
+          {monthLabels.map(({ label, x }) => (
+            <text key={label + x} x={x} y={12} className="cg-month-label">
+              {label}
+            </text>
+          ))}
+
+          {/* Cells */}
+          {grid.map((col, w) =>
+            col.map((cell, d) => (
+              <rect
+                key={cell.date}
+                x={w * STEP}
+                y={20 + d * STEP}
+                width={CELL}
+                height={CELL}
+                rx={2}
+                fill={cell.future ? 'transparent' : cellColor(cell.count)}
+                style={{ cursor: cell.count > 0 ? 'default' : undefined, transition: 'opacity 0.1s' }}
+                onMouseEnter={(e) => handleEnter(e, cell)}
+                onMouseMove={handleMove}
+                onMouseLeave={() => setTooltip(null)}
               />
-            ))}
-          </div>
-        ))}
+            ))
+          )}
+        </svg>
       </div>
 
       {/* Legend */}
       <div className="flex items-center gap-1 mt-2 justify-end">
         <span className="text-[9px] text-muted font-mono mr-1">Less</span>
-        {levelColors.map((c, i) => (
-          <div key={i} className={`w-[10px] h-[10px] rounded-[2px] ${c}`} />
+        {(['var(--commit-0)', 'var(--commit-1)', 'var(--commit-2)', 'var(--commit-3)', 'var(--commit-4)'] as const).map((c, i) => (
+          <svg key={i} width={CELL} height={CELL} style={{ display: 'block' }}>
+            <rect width={CELL} height={CELL} rx={2} fill={c} />
+          </svg>
         ))}
         <span className="text-[9px] text-muted font-mono ml-1">More</span>
       </div>
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div
+          className="cg-tooltip"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 8 }}
+        >
+          <div className="cg-tooltip-date">{tooltip.date}</div>
+          <div className="cg-tooltip-count">
+            {tooltip.count} contribution{tooltip.count !== 1 ? 's' : ''}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

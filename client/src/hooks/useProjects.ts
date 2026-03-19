@@ -67,7 +67,7 @@ export function useProjects() {
     return data;
   };
 
-  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo'>>) => {
+  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date'>>) => {
     const { data, error } = await supabase
       .from('projects')
       .update(updates)
@@ -109,7 +109,7 @@ export function useProject(id: string | undefined) {
     fetchProject();
   }, [fetchProject]);
 
-  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo'>>) => {
+  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date'>>) => {
     if (!id) throw new Error('No project');
     const { data, error } = await supabase
       .from('projects')

@@ -128,12 +128,18 @@ export async function gitlabRoutes(server: FastifyInstance) {
       }
     }
 
+    // Read existing repos (support old single-repo format)
+    const { data: existing } = await supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle();
+    const existingCfg = existing?.config as { repos?: string[]; repo?: string } | null;
+    const existingRepos: string[] = existingCfg?.repos ?? (existingCfg?.repo ? [existingCfg.repo] : []);
+    if (!existingRepos.includes(repo)) existingRepos.push(repo);
+
     const { error: dbErr } = await supabase.from('integrations').upsert(
-      { project_id: projectId, type: 'gitlab', config: { repo, host: GITLAB_HOST } },
+      { project_id: projectId, type: 'gitlab', config: { repos: existingRepos, host: GITLAB_HOST } },
       { onConflict: 'project_id,type' },
     );
     if (dbErr) return reply.status(500).send({ error: dbErr.message });
-    return { linked: true, repo, host: GITLAB_HOST };
+    return { linked: true, repos: existingRepos, host: GITLAB_HOST };
   });
 
   // ── Fetch raw file content ─────────────────────────────────────────────────
@@ -167,17 +173,34 @@ export async function gitlabRoutes(server: FastifyInstance) {
     }
   });
 
-  // ── Unlink GitLab repo from a project ─────────────────────────────────────
-  server.delete<{ Querystring: { projectId: string } }>('/gitlab/link', async (request, reply) => {
+  // ── Unlink a GitLab repo (or all) from a project ──────────────────────────
+  server.delete<{ Querystring: { projectId: string; repo?: string } }>('/gitlab/link', async (request, reply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
     const { data: { user }, error: authErr } = await supabase.auth.getUser(authHeader.slice(7));
     if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
 
-    const { projectId } = request.query;
+    const { projectId, repo } = request.query;
     if (!projectId) return reply.status(400).send({ error: 'projectId required' });
 
-    await supabase.from('integrations').delete().eq('project_id', projectId).eq('type', 'gitlab');
-    return { unlinked: true };
+    if (repo) {
+      // Remove just this repo from the array
+      const { data: existing } = await supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle();
+      const cfg = existing?.config as { repos?: string[]; repo?: string } | null;
+      const repos: string[] = cfg?.repos ?? (cfg?.repo ? [cfg.repo] : []);
+      const updated = repos.filter((r) => r !== repo);
+      if (updated.length === 0) {
+        await supabase.from('integrations').delete().eq('project_id', projectId).eq('type', 'gitlab');
+      } else {
+        await supabase.from('integrations').upsert(
+          { project_id: projectId, type: 'gitlab', config: { repos: updated, host: GITLAB_HOST } },
+          { onConflict: 'project_id,type' },
+        );
+      }
+      return { unlinked: true, repos: updated };
+    } else {
+      await supabase.from('integrations').delete().eq('project_id', projectId).eq('type', 'gitlab');
+      return { unlinked: true, repos: [] };
+    }
   });
 }

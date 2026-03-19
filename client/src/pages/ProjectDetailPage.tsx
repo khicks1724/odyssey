@@ -26,11 +26,17 @@ import {
   FileText,
   ExternalLink,
   Clock,
+  Pencil,
+  ClipboardList,
 } from 'lucide-react';
 import GoalMetrics from '../components/GoalMetrics';
 import FileViewerLazy from '../components/FileViewer';
 import OfficeFilePicker from '../components/OfficeFilePicker';
 import ProjectChat from '../components/ProjectChat';
+import GoalEditModal from '../components/GoalEditModal';
+import GoalReportModal from '../components/GoalReportModal';
+import ReportsTab from '../components/ReportsTab';
+import IntelligentUpdatePanel from '../components/IntelligentUpdatePanel';
 import { useProject } from '../hooks/useProjects';
 import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
@@ -40,20 +46,22 @@ import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
 import GoalCard from '../components/GoalCard';
 import ActivityFeed from '../components/ActivityFeed';
+import CommitActivityCharts from '../components/CommitActivityCharts';
 import Timeline from '../components/Timeline';
 import TimelinePage from '../components/TimelinePage';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
 
 const tabs = [
-  { id: 'overview', label: 'Overview', icon: BarChart3 },
-  { id: 'timeline', label: 'Timeline', icon: GanttChart },
-  { id: 'activity', label: 'Activity', icon: Activity },
-  { id: 'goals', label: 'Goals', icon: Target },
-  { id: 'metrics', label: 'Metrics', icon: TrendingUp },
-  { id: 'documents', label: 'Documents', icon: Link },
-  { id: 'integrations', label: 'Integrations', icon: Plug },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'overview',      label: 'Overview',      icon: BarChart3 },
+  { id: 'timeline',      label: 'Timeline',      icon: GanttChart },
+  { id: 'activity',      label: 'Activity',      icon: Activity },
+  { id: 'goals',         label: 'Goals',         icon: Target },
+  { id: 'metrics',       label: 'Metrics',       icon: TrendingUp },
+  { id: 'reports',       label: 'Reports',       icon: ClipboardList },
+  { id: 'documents',     label: 'Documents',     icon: Link },
+  { id: 'integrations',  label: 'Integrations',  icon: Plug },
+  { id: 'settings',      label: 'Settings',      icon: Settings },
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
@@ -85,7 +93,7 @@ export default function ProjectDetailPage() {
   const { user } = useAuth();
   const { agent } = useAIAgent();
   const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
-  const { goals, createGoal, updateGoal, deleteGoal } = useGoals(projectId);
+  const { goals, createGoal, updateGoal, deleteGoal, refetch: refetchGoals } = useGoals(projectId);
   const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
   const { status: msStatus } = useMicrosoftIntegration();
   const [activeTab, setActiveTab] = useState<TabId>('overview');
@@ -93,7 +101,8 @@ export default function ProjectDetailPage() {
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDeadline, setNewGoalDeadline] = useState('');
   const [newGoalCategory, setNewGoalCategory] = useState('');
-  const [newGoalAssignee, setNewGoalAssignee] = useState('');
+  const [newGoalLoe, setNewGoalLoe] = useState('');
+  const [newGoalAssignees, setNewGoalAssignees] = useState<string[]>([]);
 
   // Inline project name editing
   const [editingName, setEditingName] = useState(false);
@@ -109,8 +118,23 @@ export default function ProjectDetailPage() {
 
   // AI insights state
   const [insightsLoading, setInsightsLoading] = useState(false);
-  const [insights, setInsights] = useState<{ status: string; nextSteps: string[]; futureFeatures: string[]; provider?: string } | null>(null);
+  const [insights, setInsights] = useState<{ status: string; nextSteps: string[]; futureFeatures: string[]; codeInsights?: string[]; provider?: string; generatedAt?: string } | null>(null);
   const [insightsError, setInsightsError] = useState<string | null>(null);
+
+  // Standup generator state
+  type StandupData = {
+    highlights: string;
+    accomplished: string[];
+    inProgress: string[];
+    blockers: string[];
+    period: { from: string; to: string };
+    commitSummary: { source: 'github' | 'gitlab'; repo: string; count: number }[];
+    totalCommits: number;
+    provider?: string;
+  };
+  const [standupLoading, setStandupLoading] = useState(false);
+  const [standup, setStandup] = useState<StandupData | null>(null);
+  const [standupError, setStandupError] = useState<string | null>(null);
 
   // Documents / Office file picker
   const [officePickerOpen, setOfficePickerOpen] = useState(false);
@@ -128,8 +152,8 @@ export default function ProjectDetailPage() {
   const [docSelected, setDocSelected] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  // GitLab linked repo (for overview panel)
-  const [gitlabRepo, setGitlabRepo] = useState<string | null>(null);
+  // GitLab linked repos (for overview panel)
+  const [gitlabRepos, setGitlabRepos] = useState<string[]>([]);
 
   // Teams folder integration (project-level)
   const [teamsFolder, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
@@ -138,6 +162,17 @@ export default function ProjectDetailPage() {
 
   // Members state
   const [members, setMembers] = useState<MemberRow[]>([]);
+
+  // Goal edit / report modals
+  const [editGoal,   setEditGoal]   = useState<import('../types').Goal | null>(null);
+  const [reportGoal, setReportGoal] = useState<import('../types').Goal | null>(null);
+
+  // Report chat history — persists across tab switches
+  const [reportMessages, setReportMessages] = useState<{ role: 'user' | 'assistant'; content: string; provider?: string }[]>([]);
+  const [hasCommitData, setHasCommitData] = useState(false);
+
+  // Intelligent Update panel
+  const [intelligentUpdateOpen, setIntelligentUpdateOpen] = useState(false);
   const [memberSearch, setMemberSearch] = useState('');
   const [memberResults, setMemberResults] = useState<GitHubUser[]>([]);
   const [memberSearching, setMemberSearching] = useState(false);
@@ -152,29 +187,31 @@ export default function ProjectDetailPage() {
       .from('project_insights')
       .select('status, next_steps, future_features, provider, generated_at')
       .eq('project_id', projectId)
-      .single()
-      .then(({ data }) => {
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error) console.error('Failed to load insights:', error);
         if (data) {
           setInsights({
             status: data.status,
             nextSteps: data.next_steps as string[],
             futureFeatures: data.future_features as string[],
             provider: data.provider,
+            generatedAt: data.generated_at,
           });
         }
       });
 
-    // Load GitLab integration
+    // Load GitLab integration (multi-repo)
     supabase
       .from('integrations')
       .select('config')
       .eq('project_id', projectId)
       .eq('type', 'gitlab')
-      .single()
+      .maybeSingle()
       .then(({ data }) => {
         if (data?.config) {
-          const cfg = data.config as { repo: string };
-          setGitlabRepo(cfg.repo);
+          const cfg = data.config as { repos?: string[]; repo?: string };
+          setGitlabRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
         }
       });
 
@@ -257,34 +294,15 @@ export default function ProjectDetailPage() {
 
   // Generate AI project insights
   const handleGenerateInsights = async () => {
-    if (!project) return;
+    if (!projectId) return;
     setInsightsLoading(true);
     setInsights(null);
     setInsightsError(null);
     try {
-      let commits: string[] = [];
-      let readme = '';
-      if (project.github_repo) {
-        const [owner, repo] = project.github_repo.split('/');
-        try {
-          const recentRes = await fetch(`${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`);
-          const recentData = await recentRes.json();
-          commits = recentData.commits || [];
-          readme = recentData.readme || '';
-        } catch { /* repo fetch optional */ }
-      }
       const res = await fetch(`${API_BASE}/ai/project-insights`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agent,
-          projectName: project.name,
-          projectDescription: project.description,
-          githubRepo: project.github_repo,
-          goals: goals.map((g) => ({ title: g.title, status: g.status, progress: g.progress, deadline: g.deadline })),
-          commits,
-          readme,
-        }),
+        body: JSON.stringify({ agent, projectId }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -292,27 +310,50 @@ export default function ProjectDetailPage() {
       } else if (!data.status && !data.nextSteps?.length) {
         setInsightsError('AI returned an empty response. Try a different model.');
       } else {
-        setInsights(data);
-        // Persist insights so they survive page changes and server restarts
-        if (projectId) {
-          supabase.from('project_insights').upsert(
-            {
-              project_id: projectId,
-              status: data.status,
-              next_steps: data.nextSteps,
-              future_features: data.futureFeatures,
-              provider: data.provider ?? agent,
-              generated_at: new Date().toISOString(),
-            },
-            { onConflict: 'project_id' },
-          );
-        }
+        const generatedAt = new Date().toISOString();
+        setInsights({ ...data, generatedAt });
+        const { error: upsertErr } = await supabase.from('project_insights').upsert(
+          {
+            project_id: projectId,
+            status: data.status,
+            next_steps: data.nextSteps,
+            future_features: data.futureFeatures,
+            provider: data.provider ?? agent,
+            generated_at: generatedAt,
+          },
+          { onConflict: 'project_id' },
+        );
+        if (upsertErr) console.error('Failed to save insights:', upsertErr);
       }
     } catch (err) {
       console.error('Insights failed:', err);
       setInsightsError('Network error — is the server running?');
     }
     setInsightsLoading(false);
+  };
+
+  // Generate 2-week standup
+  const handleGenerateStandup = async () => {
+    if (!projectId) return;
+    setStandupLoading(true);
+    setStandup(null);
+    setStandupError(null);
+    try {
+      const res = await fetch(`${API_BASE}/ai/standup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent, projectId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStandupError(data.error || `Failed (${res.status})`);
+      } else {
+        setStandup(data);
+      }
+    } catch {
+      setStandupError('Network error — is the server running?');
+    }
+    setStandupLoading(false);
   };
 
   // Sync goal progress from imported Office documents using AI
@@ -447,13 +488,15 @@ export default function ProjectDetailPage() {
     await createGoal({
       title: newGoalTitle,
       deadline: newGoalDeadline || undefined,
-      category: newGoalCategory.trim() || 'General',
-      assigned_to: newGoalAssignee || undefined,
+      category: newGoalCategory.trim() || undefined,
+      loe: newGoalLoe || undefined,
+      assignees: newGoalAssignees,
     });
     setNewGoalTitle('');
     setNewGoalDeadline('');
     setNewGoalCategory('');
-    setNewGoalAssignee('');
+    setNewGoalLoe('');
+    setNewGoalAssignees([]);
     goalModal.onClose();
   };
 
@@ -480,42 +523,57 @@ export default function ProjectDetailPage() {
 
       {/* Project Header */}
       <div className="mb-8">
-        <div className="flex items-center gap-3 mb-1">
-          {editingName ? (
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const trimmed = nameInput.trim();
-                if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
-                setEditingName(false);
-              }}
-              className="flex items-center gap-2"
-            >
-              <input
-                autoFocus
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') setEditingName(false); }}
-                onBlur={async () => {
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <div className="flex items-center gap-3">
+            {editingName ? (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
                   const trimmed = nameInput.trim();
                   if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
                   setEditingName(false);
                 }}
-                title="Project name"
-                placeholder="Project name"
-                className="font-sans text-3xl font-extrabold text-heading tracking-tight bg-transparent border-b-2 border-accent focus:outline-none min-w-[8rem] max-w-xl"
-              />
-            </form>
-          ) : (
-            <h1
-              onClick={() => { setNameInput(project.name); setEditingName(true); }}
-              title="Click to rename"
-              className="font-sans text-3xl font-extrabold text-heading tracking-tight cursor-pointer hover:text-accent transition-colors"
+                className="flex items-center gap-2"
+              >
+                <input
+                  autoFocus
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape') setEditingName(false); }}
+                  onBlur={async () => {
+                    const trimmed = nameInput.trim();
+                    if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
+                    setEditingName(false);
+                  }}
+                  title="Project name"
+                  placeholder="Project name"
+                  className="font-sans text-3xl font-extrabold text-heading tracking-tight bg-transparent border-b-2 border-accent focus:outline-none min-w-[8rem] max-w-xl"
+                />
+              </form>
+            ) : (
+              <h1
+                onClick={() => { setNameInput(project.name); setEditingName(true); }}
+                title="Click to rename"
+                className="font-sans text-3xl font-extrabold text-heading tracking-tight cursor-pointer hover:text-accent transition-colors"
+              >
+                {project.name}
+              </h1>
+            )}
+            <StatusBadge status={projectStatus} size="md" />
+          </div>
+          <div className="relative group shrink-0">
+            <button
+              type="button"
+              onClick={() => setIntelligentUpdateOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
             >
-              {project.name}
-            </h1>
-          )}
-          <StatusBadge status={projectStatus} size="md" />
+              <Sparkles size={13} /> Intelligent Update
+            </button>
+            <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-surface border border-border rounded-lg shadow-xl text-xs font-sans leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 z-50">
+              <p className="text-heading font-semibold mb-1">Intelligent Update</p>
+              <p className="text-muted">Analyzes your goals, commits, and activity across all linked repos, then proposes specific changes — new goals, deadline shifts, and priority updates — based on what's actually happening in the project.</p>
+            </div>
+          </div>
         </div>
         {project.description && (
           <p className="text-sm text-muted">{project.description}</p>
@@ -526,9 +584,10 @@ export default function ProjectDetailPage() {
       <div className="flex gap-px border border-border bg-border mb-8">
         {tabs.map((tab) => (
           <button
+            type="button"
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex flex-1 items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors first:rounded-tl last:rounded-tr ${
+            className={`flex-1 flex items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors whitespace-nowrap first:rounded-tl last:rounded-tr ${
               activeTab === tab.id
                 ? 'text-heading bg-surface2 font-medium'
                 : 'text-muted hover:text-heading hover:bg-surface2'
@@ -550,7 +609,45 @@ export default function ProjectDetailPage() {
               <div className="space-y-3">
                 <StatRow label="Goals" value={`${completedGoals.length} / ${goals.length}`} />
                 <StatRow label="Overall Progress" value={`${overallProgress}%`} />
+                <StatRow label="Members" value={String(members.length || 1)} />
                 <StatRow label="Events" value={String(events.length)} />
+                {(() => {
+                  const now = Date.now();
+                  const overdueCount = goals.filter(
+                    (g) => g.deadline && new Date(g.deadline).getTime() < now && g.status !== 'complete'
+                  ).length;
+                  const soonCount = goals.filter((g) => {
+                    if (!g.deadline || g.status === 'complete') return false;
+                    const ms = new Date(g.deadline).getTime() - now;
+                    return ms > 0 && ms < 14 * 86_400_000 && g.progress < 75;
+                  }).length;
+                  const completionRate = goals.length > 0 ? completedGoals.length / goals.length : 0;
+
+                  let label: string;
+                  let color: string;
+                  if (overdueCount > 0) {
+                    label = `At Risk · ${overdueCount} overdue`;
+                    color = 'text-red-400';
+                  } else if (soonCount > 0) {
+                    label = `Caution · ${soonCount} due soon`;
+                    color = 'text-yellow-400';
+                  } else if (completionRate >= 0.5 || overallProgress >= 60) {
+                    label = 'On Track';
+                    color = 'text-green-500';
+                  } else if (goals.length === 0) {
+                    label = 'No goals yet';
+                    color = 'text-muted';
+                  } else {
+                    label = 'Early Stage';
+                    color = 'text-muted';
+                  }
+                  return (
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono text-muted">Trajectory</span>
+                      <span className={`text-xs font-mono font-medium ${color}`}>{label}</span>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
             <div className="bg-surface p-6">
@@ -582,13 +679,15 @@ export default function ProjectDetailPage() {
                   </button>
                 </div>
                 <div className="flex items-center gap-3 p-3 border border-border rounded">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" className={gitlabRepo ? 'text-[#FC6D26]' : 'text-muted'}>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" className={gitlabRepos.length > 0 ? 'text-[#FC6D26]' : 'text-muted'}>
                     <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
                   </svg>
                   <div className="flex-1 min-w-0">
                     <div className="text-xs text-heading font-medium">GitLab <span className="text-[9px] text-muted font-mono">NPS</span></div>
-                    {gitlabRepo ? (
-                      <div className="text-[10px] text-muted truncate">{gitlabRepo}</div>
+                    {gitlabRepos.length > 0 ? (
+                      <div className="text-[10px] text-muted truncate">
+                        {gitlabRepos.length === 1 ? gitlabRepos[0] : `${gitlabRepos.length} repos linked`}
+                      </div>
                     ) : (
                       <div className="text-[10px] text-muted">Not connected</div>
                     )}
@@ -598,39 +697,91 @@ export default function ProjectDetailPage() {
                     onClick={() => setActiveTab('settings')}
                     className="text-[10px] text-accent hover:underline"
                   >
-                    {gitlabRepo ? 'Manage' : 'Connect'}
+                    {gitlabRepos.length > 0 ? 'Manage' : 'Connect'}
                   </button>
                 </div>
               </div>
             </div>
-            <div className="bg-surface p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Sparkles size={14} className="text-accent" />
-                  <h3 className="font-sans text-sm font-bold text-heading">AI Insights</h3>
+            <div className="bg-surface p-6 flex flex-col gap-5">
+              {/* AI Insights */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles size={14} className="text-accent" />
+                    <h3 className="font-sans text-sm font-bold text-heading">AI Insights</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGenerateInsights}
+                    disabled={insightsLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
+                               bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
+                               disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {insightsLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+                    {insightsLoading ? 'Analyzing…' : insights ? 'Regenerate' : 'Generate'}
+                  </button>
                 </div>
-                <button
-                  onClick={handleGenerateInsights}
-                  disabled={insightsLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
-                             bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
-                             disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  {insightsLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-                  {insightsLoading ? 'Analyzing…' : 'Generate'}
-                </button>
-              </div>
-              {!insights && !insightsLoading && !insightsError && (
-                <p className="text-xs text-muted leading-relaxed">
-                  Click Generate to analyze your project with AI.
+                <p className="text-[11px] text-muted leading-relaxed">
+                  {insights ? `Last run ${new Date(insights.generatedAt ?? '').toLocaleDateString()}` : 'Project status, next steps, and feature ideas.'}
                 </p>
-              )}
+              </div>
+
+              <div className="border-t border-border" />
+
+              {/* 2-Week Standup */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <ClipboardList size={14} className="text-accent" />
+                    <h3 className="font-sans text-sm font-bold text-heading">2-Week Standup</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGenerateStandup}
+                    disabled={standupLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
+                               bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
+                               disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {standupLoading ? <Loader2 size={10} className="animate-spin" /> : <ClipboardList size={10} />}
+                    {standupLoading ? 'Generating…' : standup ? 'Regenerate' : 'Generate'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted leading-relaxed">
+                  {standup ? `${standup.totalCommits} commits · ${standup.period.from} → ${standup.period.to}` : 'Summarizes commits, goals, and activity from the last 14 days.'}
+                </p>
+              </div>
             </div>
           </div>
 
           {/* AI Insights Results */}
           {(insights || insightsLoading || insightsError) && (
             <div className="border border-border bg-surface p-6 mb-8">
+              {/* Header row — always visible */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={14} className="text-accent" />
+                  <h3 className="font-sans text-sm font-bold text-heading">AI Insights</h3>
+                </div>
+                {insights && (
+                  <div className="flex flex-col items-end gap-0.5">
+                    {insights.generatedAt && (
+                      <div className="flex items-center gap-1 text-[10px] text-muted">
+                        <Clock size={9} />
+                        {new Date(insights.generatedAt).toLocaleString()}
+                      </div>
+                    )}
+                    {insights.provider && (
+                      <div className="flex items-center gap-1 text-[10px] text-muted">
+                        <CheckCircle size={9} className="text-green-500" />
+                        <span>{insights.provider}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {insightsLoading ? (
                 <div className="flex items-center justify-center gap-3 py-12">
                   <Loader2 size={20} className="animate-spin text-accent" />
@@ -647,19 +798,12 @@ export default function ProjectDetailPage() {
                 </div>
               ) : insights && (
                 <div className="space-y-6">
-                  {/* Provider badge */}
-                  {insights.provider && (
-                    <div className="flex items-center gap-1.5 text-[10px] text-muted">
-                      <CheckCircle size={10} className="text-green-500" />
-                      Generated by <span className="font-medium text-heading">{insights.provider}</span>
-                    </div>
-                  )}
 
                   {/* Project Status */}
                   <div>
                     <div className="flex items-center gap-2 mb-2">
                       <BarChart3 size={14} className="text-accent" />
-                      <h4 className="font-sans text-sm font-bold text-heading">Project Status</h4>
+                      <h4 className="font-sans text-base font-bold text-heading">Project Status</h4>
                     </div>
                     <p className="text-xs text-muted leading-relaxed pl-5">{insights.status}</p>
                   </div>
@@ -669,7 +813,7 @@ export default function ProjectDetailPage() {
                     <div>
                       <div className="flex items-center gap-2 mb-2">
                         <Target size={14} className="text-accent2" />
-                        <h4 className="font-sans text-sm font-bold text-heading">What to Work on Next</h4>
+                        <h4 className="font-sans text-base font-bold text-heading">What to Work on Next</h4>
                       </div>
                       <ul className="space-y-1.5 pl-5">
                         {insights.nextSteps.map((step: string, i: number) => (
@@ -687,13 +831,137 @@ export default function ProjectDetailPage() {
                     <div>
                       <div className="flex items-center gap-2 mb-2">
                         <Sparkles size={14} className="text-yellow-500" />
-                        <h4 className="font-sans text-sm font-bold text-heading">Future Feature Ideas</h4>
+                        <h4 className="font-sans text-base font-bold text-heading">Future Feature Ideas</h4>
                       </div>
                       <ul className="space-y-1.5 pl-5">
                         {insights.futureFeatures.map((feat: string, i: number) => (
                           <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
                             <span className="text-yellow-500">◆</span>
                             {feat}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Code Insights */}
+                  {insights.codeInsights && insights.codeInsights.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <GitBranch size={14} className="text-accent3" />
+                        <h4 className="font-sans text-base font-bold text-heading">Codebase Analysis</h4>
+                      </div>
+                      <ul className="space-y-1.5 pl-5">
+                        {insights.codeInsights.map((obs: string, i: number) => (
+                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
+                            <span className="text-accent3 font-mono text-[10px] mt-0.5 shrink-0">{'</>'}</span>
+                            {obs}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Standup Results */}
+          {(standup || standupLoading || standupError) && (
+            <div className="border border-border bg-surface p-6 mb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <ClipboardList size={14} className="text-accent" />
+                <h3 className="font-sans text-sm font-bold text-heading">2-Week Standup</h3>
+              </div>
+
+              {standupLoading && (
+                <div className="flex items-center gap-3 py-8 justify-center">
+                  <Loader2 size={18} className="animate-spin text-accent" />
+                  <span className="text-sm text-muted">Analyzing 14 days of activity…</span>
+                </div>
+              )}
+
+              {standupError && (
+                <div className="flex items-center gap-3 p-4 border border-red-300/30 bg-red-500/5 rounded">
+                  <X size={16} className="text-red-400 shrink-0" />
+                  <div>
+                    <p className="text-xs font-medium text-heading mb-0.5">Standup generation failed</p>
+                    <p className="text-[11px] text-muted">{standupError}</p>
+                  </div>
+                </div>
+              )}
+
+              {standup && (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-mono text-muted">
+                      {standup.period.from} → {standup.period.to}
+                    </span>
+                    {standup.commitSummary.map((r) => (
+                      <span
+                        key={r.repo}
+                        className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-border/60 text-muted"
+                      >
+                        <GitBranch size={9} />
+                        {r.repo.split('/').pop()} · {r.count}
+                      </span>
+                    ))}
+                    {standup.provider && (
+                      <span className="ml-auto text-[10px] text-muted font-mono">{standup.provider}</span>
+                    )}
+                  </div>
+
+                  {standup.highlights && (
+                    <div className="px-4 py-3 rounded bg-accent/8 border border-accent/15">
+                      <p className="text-xs text-heading leading-relaxed">{standup.highlights}</p>
+                    </div>
+                  )}
+
+                  {standup.accomplished.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <CheckCircle size={13} className="text-green-500" />
+                        <h4 className="font-sans text-base font-bold text-heading">Accomplished</h4>
+                      </div>
+                      <ul className="space-y-1.5 pl-5">
+                        {standup.accomplished.map((item, i) => (
+                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
+                            <span className="text-green-500 shrink-0 mt-0.5">✓</span>
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {standup.inProgress.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <TrendingUp size={13} className="text-accent" />
+                        <h4 className="font-sans text-base font-bold text-heading">In Progress</h4>
+                      </div>
+                      <ul className="space-y-1.5 pl-5">
+                        {standup.inProgress.map((item, i) => (
+                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
+                            <span className="text-accent shrink-0 mt-0.5">→</span>
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {standup.blockers.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <X size={13} className="text-red-400" />
+                        <h4 className="font-sans text-base font-bold text-heading">Blockers / Risks</h4>
+                      </div>
+                      <ul className="space-y-1.5 pl-5">
+                        {standup.blockers.map((item, i) => (
+                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
+                            <span className="text-red-400 shrink-0 mt-0.5">⚠</span>
+                            {item}
                           </li>
                         ))}
                       </ul>
@@ -710,19 +978,26 @@ export default function ProjectDetailPage() {
               <Target size={14} className="text-accent2" />
               <h3 className="font-sans text-sm font-bold text-heading">Timeline</h3>
             </div>
-            <Timeline goals={goals} />
+            <Timeline
+              goals={goals}
+              members={[
+                { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You' },
+                ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
+              ]}
+            />
           </div>
 
           {/* Recent Activity */}
           <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-6">
+            <div className="flex items-center gap-2 mb-4">
               <Activity size={14} className="text-accent" />
               <h3 className="font-sans text-sm font-bold text-heading">Recent Activity</h3>
             </div>
+            <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
             <ActivityFeed
               events={events.slice(0, 10)}
               loading={eventsLoading}
-              emptyMessage="No activity yet. Connect a GitHub repo to start."
+              emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub repo to start."}
             />
           </div>
 
@@ -783,15 +1058,20 @@ export default function ProjectDetailPage() {
       )}
 
       {activeTab === 'timeline' && (
-        <TimelinePage goals={goals} projectName={project.name} />
+        <TimelinePage
+          goals={goals}
+          projectName={project.name}
+          members={members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null }))}
+        />
       )}
 
       {activeTab === 'activity' && (
         <div className="border border-border bg-surface p-6">
+          <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
           <ActivityFeed
             events={events}
             loading={eventsLoading}
-            emptyMessage="No activity yet. Connect a GitHub repo to start tracking."
+            emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub or GitLab repo to start tracking."}
           />
         </div>
       )}
@@ -845,7 +1125,7 @@ export default function ProjectDetailPage() {
               };
               updateGoal(id, { status, progress: progressMap[status] });
             }}
-
+            onEdit={(id) => { const g = goals.find((g) => g.id === id); if (g) setEditGoal(g); }}
             onDelete={deleteGoal}
             onAdd={goalModal.onOpen}
             getAssignee={getAssignee}
@@ -874,35 +1154,65 @@ export default function ProjectDetailPage() {
                   className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
                 />
               </div>
-              <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category</label>
-                <select
-                  value={newGoalCategory}
-                  onChange={(e) => setNewGoalCategory(e.target.value)}
-                  title="Goal category"
-                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
-                >
-                  <option value="">— Select category —</option>
-                  <option value="Testing">Testing</option>
-                  <option value="Seeker">Seeker</option>
-                  <option value="Missile">Missile</option>
-                  <option value="Admin">Admin</option>
-                  <option value="Simulation">Simulation</option>
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category</label>
+                  <select
+                    value={newGoalCategory}
+                    onChange={(e) => setNewGoalCategory(e.target.value)}
+                    title="Goal category"
+                    className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+                  >
+                    <option value="">— None —</option>
+                    <option value="Testing">Testing</option>
+                    <option value="Seeker">Seeker</option>
+                    <option value="Missile">Missile</option>
+                    <option value="Admin">Admin</option>
+                    <option value="Simulation">Simulation</option>
+                    <option value="DevOps">DevOps</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Line of Effort</label>
+                  <select
+                    value={newGoalLoe}
+                    onChange={(e) => setNewGoalLoe(e.target.value)}
+                    title="Line of Effort"
+                    className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+                  >
+                    <option value="">— None —</option>
+                    <option value="Training">Training</option>
+                    <option value="Simulation">Simulation</option>
+                    <option value="JetsonCV">JetsonCV</option>
+                    <option value="Image Capture">Image Capture</option>
+                    <option value="Flight Software">Flight Software</option>
+                    <option value="IR Camera Suite">IR Camera Suite</option>
+                    <option value="Admin">Admin</option>
+                  </select>
+                </div>
               </div>
               <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Assign to (optional)</label>
-                <select
-                  value={newGoalAssignee}
-                  onChange={(e) => setNewGoalAssignee(e.target.value)}
-                  title="Assign goal to team member"
-                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
-                >
-                  <option value="">Unassigned</option>
-                  {allMembers.map((m) => (
-                    <option key={m.user_id} value={m.user_id}>{m.display_name}</option>
-                  ))}
-                </select>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
+                  Assign To <span className="text-muted/60 normal-case tracking-normal">(select multiple)</span>
+                </label>
+                <div className="border border-border divide-y divide-border/50 max-h-32 overflow-y-auto">
+                  {allMembers.map((m) => {
+                    const checked = newGoalAssignees.includes(m.user_id);
+                    return (
+                      <label key={m.user_id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => setNewGoalAssignees((prev) =>
+                            checked ? prev.filter((id) => id !== m.user_id) : [...prev, m.user_id]
+                          )}
+                          className="accent-accent w-3 h-3 shrink-0"
+                        />
+                        <span className="text-sm font-mono text-heading truncate">{m.display_name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
@@ -931,6 +1241,16 @@ export default function ProjectDetailPage() {
         />
       )}
 
+      {activeTab === 'reports' && (
+        <ReportsTab
+          projectId={project.id}
+          projectName={project.name}
+          projectStartDate={project.start_date ?? null}
+          messages={reportMessages}
+          onMessagesChange={setReportMessages}
+        />
+      )}
+
       {activeTab === 'documents' && (
         <DocumentsTab
           events={events}
@@ -954,7 +1274,7 @@ export default function ProjectDetailPage() {
           projectId={projectId!}
           project={project ? { name: project.name, github_repo: project.github_repo } : null}
           githubRepo={project?.github_repo ?? null}
-          gitlabRepo={gitlabRepo}
+          gitlabRepos={gitlabRepos}
           goals={goals.map((g) => ({ id: g.id, title: g.title, status: g.status, progress: g.progress ?? 0 }))}
           o365Docs={events.filter((e) => ['onenote', 'onedrive', 'teams', 'local'].includes(e.source))}
           onNavigateSettings={() => setActiveTab('settings')}
@@ -963,8 +1283,8 @@ export default function ProjectDetailPage() {
 
       {activeTab === 'settings' && (
         <div className="space-y-8">
-          {/* Team Members */}
-          <div className="space-y-4">
+          {/* Team Members + Invite — side by side */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="border border-border bg-surface p-6">
               <div className="flex items-center gap-2 mb-6">
                 <Users size={14} className="text-accent2" />
@@ -1164,16 +1484,6 @@ export default function ProjectDetailPage() {
                   </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleRepoScan}
-                  disabled={scanLoading}
-                  className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md disabled:opacity-50"
-                >
-                  {scanLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                  {scanLoading ? 'Scanning...' : 'Scan with AI'}
-                </button>
-
                 {scanResults && (
                   <div className="space-y-3 mt-4 border-t border-border pt-4">
                     {scanResults.completed.length > 0 && (
@@ -1252,7 +1562,7 @@ export default function ProjectDetailPage() {
           </div>
 
           {/* GitLab Repository */}
-          <GitLabSection projectId={projectId!} onLinked={(repo) => setGitlabRepo(repo)} />
+          <GitLabSection projectId={projectId!} onReposChanged={(repos) => setGitlabRepos(repos)} />
         </div>
       )}
     </div>
@@ -1268,7 +1578,39 @@ export default function ProjectDetailPage() {
     )}
 
     {/* Project AI Chat */}
-    <ProjectChat projectId={project.id} projectName={project.name} />
+    <ProjectChat
+      projectId={project.id}
+      projectName={project.name}
+      onGoalMutated={refetchGoals}
+    />
+
+    {/* Goal Edit Modal */}
+    {editGoal && (
+      <GoalEditModal
+        goal={editGoal}
+        members={allMembers.map((m) => ({ user_id: m.user_id, display_name: m.display_name }))}
+        onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
+        onClose={() => setEditGoal(null)}
+      />
+    )}
+
+    {/* Goal Report Modal */}
+    {reportGoal && (
+      <GoalReportModal
+        goal={reportGoal}
+        projectId={project.id}
+        onClose={() => setReportGoal(null)}
+      />
+    )}
+
+    {/* Intelligent Update Panel */}
+    {intelligentUpdateOpen && (
+      <IntelligentUpdatePanel
+        projectId={project.id}
+        onClose={() => setIntelligentUpdateOpen(false)}
+        onGoalMutated={refetchGoals}
+      />
+    )}
 
     {/* Teams Folder Picker modal */}
     {teamsFolderPickerOpen && (
@@ -1394,22 +1736,22 @@ function TeamsFolderPickerModal({
 type GoalStatus = import('../types').Goal['status'];
 
 const KANBAN_COLUMNS: { status: GoalStatus; label: string; color: string; accent: string }[] = [
-  { status: 'not_started', label: 'Not Started', color: 'text-muted',        accent: 'border-border' },
-  { status: 'in_progress', label: 'In Progress', color: 'text-accent2',      accent: 'border-accent2/40' },
-  { status: 'in_review',   label: 'In Review',   color: 'text-yellow-400',   accent: 'border-yellow-400/40' },
-  { status: 'complete',    label: 'Complete',     color: 'text-accent3',      accent: 'border-accent3/40' },
+  { status: 'not_started', label: 'Not Started', color: 'text-[#D94F4F]', accent: 'border-[#D94F4F]/40' },
+  { status: 'in_progress', label: 'In Progress', color: 'text-[#D97E2A]', accent: 'border-[#D97E2A]/40' },
+  { status: 'in_review',   label: 'In Review',   color: 'text-[#B89820]', accent: 'border-[#B89820]/40' },
+  { status: 'complete',    label: 'Complete',     color: 'text-[#6DBE7D]', accent: 'border-[#6DBE7D]/40' },
 ];
 
 interface GoalsKanbanProps {
   goals: import('../types').Goal[];
   onUpdateStatus: (id: string, status: GoalStatus) => void;
-
+  onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onAdd: () => void;
   getAssignee: (userId: string | null | undefined) => { display_name: string | null; avatar_url: string | null } | null;
 }
 
-function GoalsKanban({ goals, onUpdateStatus, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
+function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<GoalStatus | null>(null);
 
@@ -1477,7 +1819,7 @@ function GoalsKanban({ goals, onUpdateStatus, onDelete, onAdd, getAssignee }: Go
             {/* Cards */}
             <div className="flex flex-col gap-2 p-2 flex-1 overflow-y-auto">
               {colGoals.map((goal) => {
-                const assignee = getAssignee(goal.assigned_to);
+                const assigneeList = (goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : [])).map(getAssignee).filter(Boolean);
                 const isDragging = draggingId === goal.id;
                 return (
                   <div
@@ -1489,25 +1831,40 @@ function GoalsKanban({ goals, onUpdateStatus, onDelete, onAdd, getAssignee }: Go
                       isDragging ? 'opacity-30' : 'hover:border-border/80 hover:shadow-sm'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-1 mb-2">
-                      <p className="text-xs text-heading font-medium leading-snug flex-1">{goal.title}</p>
-                      <button
-                        type="button"
-                        title="Delete goal"
-                        onClick={() => onDelete(goal.id)}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 text-muted hover:text-danger transition-all shrink-0"
-                      >
-                        <Trash2 size={11} />
-                      </button>
+                    <div className="flex items-start justify-between gap-1 mb-1.5">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-heading font-medium leading-snug">{goal.title}</p>
+                        {goal.loe && (
+                          <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          title="Expand goal"
+                          onClick={() => onEdit(goal.id)}
+                          className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                        >
+                          <ExternalLink size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete goal"
+                          onClick={() => onDelete(goal.id)}
+                          className="p-0.5 text-muted hover:text-danger transition-colors"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Progress bar — driven by status */}
                     {(() => {
                       const barMeta: Record<GoalStatus, { pct: number; cls: string }> = {
-                        not_started: { pct: 0,   cls: 'bg-muted/40' },
-                        in_progress: { pct: 40,  cls: 'bg-accent2' },
-                        in_review:   { pct: 75,  cls: 'bg-yellow-400' },
-                        complete:    { pct: 100, cls: 'bg-accent3' },
+                        not_started: { pct: 0,   cls: 'bg-[#D94F4F]/50' },
+                        in_progress: { pct: 40,  cls: 'bg-[#D97E2A]/70' },
+                        in_review:   { pct: 75,  cls: 'bg-[#B89820]/70' },
+                        complete:    { pct: 100, cls: 'bg-[#6DBE7D]/70' },
                       };
                       const bar = barMeta[col.status];
                       return (
@@ -1530,8 +1887,15 @@ function GoalsKanban({ goals, onUpdateStatus, onDelete, onAdd, getAssignee }: Go
                       {goal.category && (
                         <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
                       )}
-                      {assignee && (
-                        <span className="text-[9px] text-muted truncate max-w-[80px]">{assignee.display_name}</span>
+                      {assigneeList.length > 0 && (
+                        <div className="flex items-center gap-0.5 flex-wrap">
+                          {assigneeList.slice(0, 2).map((a) => (
+                            <span key={a!.user_id} className="text-[9px] text-muted truncate max-w-[70px]">{a!.display_name}</span>
+                          ))}
+                          {assigneeList.length > 2 && (
+                            <span className="text-[9px] text-muted font-mono">+{assigneeList.length - 2}</span>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1785,7 +2149,7 @@ interface IntegrationsPreviewTabProps {
   projectId: string;
   project: { name: string; github_repo?: string | null } | null;
   githubRepo: string | null;
-  gitlabRepo: string | null;
+  gitlabRepos: string[];
   goals: { id: string; title: string; status: string; progress: number }[];
   o365Docs: import('../types').OdysseyEvent[];
   onNavigateSettings: () => void;
@@ -1829,7 +2193,7 @@ function buildTree(files: FileEntry[]): TreeNode[] {
 
 function TreeNodeRow({ node, depth = 0, onOpenFile }: { node: TreeNode; depth?: number; onOpenFile?: (path: string) => void }) {
   // Root folders (depth 0) start open so structure is visible; subfolders start collapsed
-  const [open, setOpen] = useState(depth === 0);
+  const [open, setOpen] = useState(false);
   // Pre-defined Tailwind padding classes per depth (up to 8 levels)
   const filePl  = ['pl-4',  'pl-7',  'pl-10', 'pl-14', 'pl-[68px]', 'pl-20', 'pl-24', 'pl-28'][Math.min(depth, 7)];
   const dirPl   = ['pl-1',  'pl-4',  'pl-7',  'pl-10', 'pl-14',     'pl-16', 'pl-20', 'pl-24'][Math.min(depth, 7)];
@@ -1885,6 +2249,7 @@ function RepoPanel({
   repoId,
   repoLabel,
   repoUrl,
+  titleExtra,
   commits,
   readme,
   files,
@@ -1899,6 +2264,7 @@ function RepoPanel({
   repoId: string;
   repoLabel?: string;
   repoUrl?: string;
+  titleExtra?: React.ReactNode;
   commits: CommitEntry[];
   readme: string | null;
   files: FileEntry[];
@@ -1934,7 +2300,7 @@ function RepoPanel({
 
       <div className="border border-border bg-surface">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-2 min-w-0 flex-wrap">
             {icon}
             <span className="font-sans text-sm font-bold text-heading">{title}</span>
             {repoLabel && repoUrl && (
@@ -1946,6 +2312,7 @@ function RepoPanel({
             {repoLabel && !repoUrl && (
               <span className="text-[10px] text-muted truncate max-w-[240px]">{repoLabel}</span>
             )}
+            {titleExtra}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {scanButton}
@@ -2057,8 +2424,10 @@ function RepoPanel({
   );
 }
 
-function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gitlabRepo, goals, o365Docs, onNavigateSettings }: IntegrationsPreviewTabProps) {
+function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gitlabRepos, goals, o365Docs, onNavigateSettings }: IntegrationsPreviewTabProps) {
   const { agent } = useAIAgent();
+  const [selectedGlRepo, setSelectedGlRepo] = useState<string>(gitlabRepos[0] ?? '');
+  const gitlabRepo = selectedGlRepo || gitlabRepos[0] || null;
   const [ghCommits, setGhCommits] = useState<CommitEntry[]>([]);
   const [ghReadme, setGhReadme] = useState<string | null>(null);
   const [ghFiles, setGhFiles] = useState<FileEntry[]>([]);
@@ -2157,24 +2526,28 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         }
         source="gitlab"
         repoId={gitlabRepo ?? ''}
-        repoLabel={gitlabRepo ?? undefined}
+        repoLabel={undefined}
+        titleExtra={gitlabRepos.length > 1 ? (
+          <select
+            value={selectedGlRepo}
+            onChange={(e) => { setSelectedGlRepo(e.target.value); setGlCommits([]); setGlReadme(null); setGlFiles([]); }}
+            title="Select GitLab repo"
+            className="text-[10px] font-mono bg-surface2 border border-[#FC6D26]/30 text-[#FC6D26] px-2 py-0.5 rounded focus:outline-none cursor-pointer"
+          >
+            {gitlabRepos.map((r) => (
+              <option key={r} value={r}>{r.split('/').pop() ?? r}</option>
+            ))}
+          </select>
+        ) : gitlabRepo ? (
+          <span className="text-[10px] text-muted font-mono truncate max-w-[240px]">{gitlabRepo.split('/').pop() ?? gitlabRepo}</span>
+        ) : undefined}
         commits={glCommits}
         readme={glReadme}
         files={glFiles}
         loading={glLoading}
         connected={!!gitlabRepo}
         onNavigateSettings={onNavigateSettings}
-        scanButton={gitlabRepo ? (
-          <button
-            type="button"
-            onClick={handleGitLabScan}
-            disabled={glScanLoading}
-            className="flex items-center gap-1.5 px-3 py-1 text-[10px] tracking-wider uppercase font-medium bg-[#FC6D26]/10 text-[#FC6D26] border border-[#FC6D26]/20 rounded hover:bg-[#FC6D26]/20 transition-colors disabled:opacity-50"
-          >
-            {glScanLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-            {glScanLoading ? 'Scanning…' : 'Scan with AI'}
-          </button>
-        ) : undefined}
+        scanButton={undefined}
       />
 
       {/* GitLab scan results */}
@@ -2258,35 +2631,27 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
 }
 
 // ── GitLab repo section (Settings tab) ───────────────────────────────────────
-function GitLabSection({ projectId, onLinked }: { projectId: string; onLinked?: (repo: string | null) => void }) {
-  const [linkedRepo, setLinkedRepo] = useState<string | null>(null);
+function GitLabSection({ projectId, onReposChanged }: { projectId: string; onReposChanged?: (repos: string[]) => void }) {
+  const [linkedRepos, setLinkedRepos] = useState<string[]>([]);
   const [repoInput, setRepoInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<{ name: string; web_url: string; last_activity: string; visibility: string } | null>(null);
 
   useEffect(() => {
-    supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').single()
+    supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle()
       .then(({ data }) => {
         if (data?.config) {
-          const cfg = data.config as { repo: string };
-          setLinkedRepo(cfg.repo);
+          const cfg = data.config as { repos?: string[]; repo?: string };
+          setLinkedRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
         }
       });
   }, [projectId]);
-
-  useEffect(() => {
-    if (!linkedRepo) { setInfo(null); return; }
-    fetch(`/api/gitlab/info?repo=${encodeURIComponent(linkedRepo)}`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (d) setInfo(d); })
-      .catch(() => {});
-  }, [linkedRepo]);
 
   const handleLink = async () => {
     const raw = repoInput.trim();
     if (!raw) return;
     const path = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
+    if (linkedRepos.includes(path)) { setError('This repo is already linked.'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -2297,13 +2662,14 @@ function GitLabSection({ projectId, onLinked }: { projectId: string; onLinked?: 
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({ projectId, repo: path }),
       });
-      const data = await res.json();
+      const data = await res.json() as { repos?: string[]; error?: string };
       if (!res.ok) {
         setError(data.error ?? 'Failed to link repo');
       } else {
-        setLinkedRepo(path);
+        const updated = data.repos ?? [...linkedRepos, path];
+        setLinkedRepos(updated);
         setRepoInput('');
-        onLinked?.(path);
+        onReposChanged?.(updated);
       }
     } catch {
       setError('Network error — check server is running');
@@ -2312,17 +2678,18 @@ function GitLabSection({ projectId, onLinked }: { projectId: string; onLinked?: 
     }
   };
 
-  const handleUnlink = async () => {
+  const handleUnlink = async (repo: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}`, {
+      const res = await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
-      setLinkedRepo(null);
-      setInfo(null);
-      onLinked?.(null);
+      const data = await res.json() as { repos?: string[] };
+      const updated = data.repos ?? linkedRepos.filter((r) => r !== repo);
+      setLinkedRepos(updated);
+      onReposChanged?.(updated);
     } catch { /* ignore */ }
   };
 
@@ -2332,62 +2699,55 @@ function GitLabSection({ projectId, onLinked }: { projectId: string; onLinked?: 
         <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-[#FC6D26]">
           <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
         </svg>
-        <h3 className="font-sans text-sm font-bold text-heading">GitLab Repository</h3>
+        <h3 className="font-sans text-sm font-bold text-heading">GitLab Repositories</h3>
         <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">NPS</span>
+        {linkedRepos.length > 0 && (
+          <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">{linkedRepos.length} linked</span>
+        )}
       </div>
 
-      {linkedRepo ? (
-        <div className="space-y-4">
-          <div className="flex items-start gap-3 p-4 border border-[#FC6D26]/20 bg-[#FC6D26]/5 rounded">
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-heading font-mono truncate">{linkedRepo}</div>
-              {info && (
-                <div className="mt-1 space-y-0.5">
-                  <div className="text-[10px] text-muted">{info.name}</div>
-                  <div className="text-[10px] text-muted">
-                    Last activity {new Date(info.last_activity).toLocaleDateString()} · {info.visibility}
-                  </div>
-                </div>
-              )}
-              {info?.web_url && (
-                <a href={info.web_url} target="_blank" rel="noopener noreferrer"
-                  className="text-[10px] text-[#FC6D26] hover:underline mt-1 inline-block">
-                  Open in GitLab →
-                </a>
-              )}
+      {/* Linked repos list */}
+      {linkedRepos.length > 0 && (
+        <div className="space-y-2 mb-5">
+          {linkedRepos.map((repo) => (
+            <div key={repo} className="flex items-center gap-3 p-3 border border-[#FC6D26]/20 bg-[#FC6D26]/5 rounded">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-heading font-mono truncate">{repo}</div>
+              </div>
+              <button type="button" onClick={() => handleUnlink(repo)}
+                className="px-2.5 py-1 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded shrink-0">
+                Disconnect
+              </button>
             </div>
-            <button type="button" onClick={handleUnlink}
-              className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded shrink-0">
-              Disconnect
-            </button>
-          </div>
-          <p className="text-[11px] text-muted">Commits and README from this repo are included in AI insights and chat context.</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <p className="text-xs text-muted">
-            Link your NPS GitLab repository. Paste the full URL or just the project path.
-          </p>
-          <div className="flex gap-2 max-w-lg">
-            <input
-              type="text"
-              value={repoInput}
-              onChange={(e) => setRepoInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleLink()}
-              placeholder="usmc-capability-development/digital-trident-ir-camera-suite"
-              title="GitLab repository path or URL"
-              className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-[#FC6D26]/50 transition-colors rounded"
-            />
-            <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
-              className="px-4 py-3 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2">
-              {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
-              Connect
-            </button>
-          </div>
-          {error && <p className="text-xs text-danger font-mono">{error}</p>}
-          <p className="text-[10px] text-muted">Must be on the NPS network or VPN for the server to reach gitlab.nps.edu</p>
+          ))}
+          <p className="text-[11px] text-muted">Commits and READMEs from all repos are included in AI insights and chat context.</p>
         </div>
       )}
+
+      {/* Add repo input — always visible */}
+      <div className="space-y-3">
+        {linkedRepos.length === 0 && (
+          <p className="text-xs text-muted">Link your NPS GitLab repositories. Paste a full URL or project path.</p>
+        )}
+        <div className="flex gap-2 max-w-lg">
+          <input
+            type="text"
+            value={repoInput}
+            onChange={(e) => setRepoInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleLink()}
+            placeholder="group/project-name or full URL"
+            title="GitLab repository path or URL"
+            className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-[#FC6D26]/50 transition-colors rounded"
+          />
+          <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
+            className="px-4 py-2.5 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
+            {linkedRepos.length > 0 ? 'Add' : 'Connect'}
+          </button>
+        </div>
+        {error && <p className="text-xs text-danger font-mono">{error}</p>}
+        <p className="text-[10px] text-muted">Must be on the NPS network or VPN for the server to reach gitlab.nps.edu</p>
+      </div>
     </div>
   );
 }
@@ -2397,21 +2757,28 @@ function ProjectNameForm({
   project,
   updateProject,
 }: {
-  project: { name: string; description?: string | null };
-  updateProject: (updates: { name?: string; description?: string }) => Promise<unknown>;
+  project: { name: string; description?: string | null; start_date?: string | null };
+  updateProject: (updates: { name?: string; description?: string; start_date?: string | null }) => Promise<unknown>;
 }) {
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? '');
+  const [startDate, setStartDate] = useState(project.start_date ?? '');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const dirty = name.trim() !== project.name || description.trim() !== (project.description ?? '');
+  const dirty = name.trim() !== project.name
+    || description.trim() !== (project.description ?? '')
+    || startDate !== (project.start_date ?? '');
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
     setSaving(true);
-    await updateProject({ name: name.trim(), description: description.trim() || undefined });
+    await updateProject({
+      name: name.trim(),
+      description: description.trim() || undefined,
+      start_date: startDate || null,
+    });
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -2423,37 +2790,55 @@ function ProjectNameForm({
         <Settings size={14} className="text-heading" />
         <h3 className="font-sans text-sm font-bold text-heading">Project Details</h3>
       </div>
-      <form onSubmit={handleSave} className="space-y-4 max-w-lg">
-        <div>
-          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Project Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            title="Project name"
-            placeholder="Project name"
-            className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-          />
+      <form onSubmit={handleSave}>
+        <div className="flex gap-4 items-start">
+          {/* Left column: Name + Start Date stacked */}
+          <div className="flex flex-col gap-3 w-56 shrink-0">
+            <div>
+              <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Project Name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                title="Project name"
+                placeholder="Project name"
+                className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                title="Project start date"
+                className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+            </div>
+          </div>
+          {/* Right column: Description */}
+          <div className="flex-1">
+            <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Description (optional)</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={4}
+              placeholder="What is this project about?"
+              className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
+            />
+          </div>
         </div>
-        <div>
-          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Description (optional)</label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            placeholder="What is this project about?"
-            className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
-          />
+        <div className="mt-3">
+          <button
+            type="submit"
+            disabled={saving || !dirty || !name.trim()}
+            className="flex items-center gap-2 px-5 py-2 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <CheckCircle size={12} /> : null}
+            {saved ? 'Saved' : 'Save Changes'}
+          </button>
         </div>
-        <button
-          type="submit"
-          disabled={saving || !dirty || !name.trim()}
-          className="flex items-center gap-2 px-5 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
-        >
-          {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <CheckCircle size={12} /> : null}
-          {saved ? 'Saved' : 'Save Changes'}
-        </button>
       </form>
     </div>
   );

@@ -69,33 +69,45 @@ export function useUpcomingDeadlines() {
   useEffect(() => {
     if (!user) return;
 
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() + 21); // next 3 weeks
+    async function load() {
+      // RLS on goals requires project_id context — scope through memberships first
+      const { data: memberships } = await supabase
+        .from('project_members')
+        .select('project_id')
+        .eq('user_id', user!.id);
 
-    supabase
-      .from('goals')
-      .select('id, title, deadline, status, progress, project_id, projects(name)')
-      .not('deadline', 'is', null)
-      .not('status', 'in', '("complete","missed")')
-      .lte('deadline', cutoff.toISOString().slice(0, 10))
-      .order('deadline', { ascending: true })
-      .limit(6)
-      .then(({ data, error }) => {
-        if (!error && data) {
-          setDeadlines(
-            data.map((g: any) => ({
-              id: g.id,
-              title: g.title,
-              deadline: g.deadline,
-              status: g.status,
-              progress: g.progress,
-              project_id: g.project_id,
-              projectName: g.projects?.name ?? 'Unknown project',
-            })),
-          );
-        }
-        setLoading(false);
-      });
+      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      if (projectIds.length === 0) { setLoading(false); return; }
+
+      const today = new Date().toISOString().slice(0, 10);
+
+      const { data, error } = await supabase
+        .from('goals')
+        .select('id, title, deadline, status, progress, project_id, projects(name)')
+        .in('project_id', projectIds)
+        .not('deadline', 'is', null)
+        .neq('status', 'complete')
+        .gte('deadline', today)
+        .order('deadline', { ascending: true })
+        .limit(3);
+
+      if (!error && data) {
+        setDeadlines(
+          data.map((g: any) => ({
+            id: g.id,
+            title: g.title,
+            deadline: g.deadline,
+            status: g.status,
+            progress: g.progress,
+            project_id: g.project_id,
+            projectName: g.projects?.name ?? 'Unknown project',
+          })),
+        );
+      }
+      setLoading(false);
+    }
+
+    load();
   }, [user]);
 
   return { deadlines, loading };
@@ -143,6 +155,55 @@ export function useLatestInsight() {
   return { insight, loading };
 }
 
+export interface RecentCommit {
+  sha: string;
+  date: string;
+  author: string;
+  message: string;
+  repo: string;
+  source: 'github' | 'gitlab';
+}
+
+export function useRecentCommits() {
+  const { user } = useAuth();
+  const [commits, setCommits] = useState<RecentCommit[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+
+    async function load() {
+      const { data: memberships } = await supabase
+        .from('project_members')
+        .select('project_id')
+        .eq('user_id', user!.id);
+
+      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      if (projectIds.length === 0) { setLoading(false); return; }
+
+      const all: RecentCommit[] = [];
+      await Promise.all(
+        projectIds.map(async (pid: string) => {
+          try {
+            const r = await fetch(`/api/projects/${pid}/commit-history`);
+            if (!r.ok) return;
+            const json: { recentCommits?: RecentCommit[] } = await r.json();
+            all.push(...(json.recentCommits ?? []));
+          } catch { /* ignore */ }
+        })
+      );
+
+      all.sort((a, b) => b.date.localeCompare(a.date));
+      setCommits(all.slice(0, 20));
+      setLoading(false);
+    }
+
+    load();
+  }, [user]);
+
+  return { commits, loading };
+}
+
 export function useActivityByDate() {
   const { user } = useAuth();
   const [data, setData] = useState<{ date: string; count: number }[]>([]);
@@ -150,22 +211,66 @@ export function useActivityByDate() {
   useEffect(() => {
     if (!user) return;
 
-    const since = new Date();
-    since.setDate(since.getDate() - 84); // 12 weeks
+    async function load() {
+      // RLS requires project_id — scope through memberships
+      const { data: memberships } = await supabase
+        .from('project_members')
+        .select('project_id')
+        .eq('user_id', user!.id);
 
-    supabase
-      .from('events')
-      .select('occurred_at')
-      .gte('occurred_at', since.toISOString())
-      .then(({ data: events, error }) => {
-        if (error || !events) return;
-        const counts = new Map<string, number>();
-        events.forEach((e) => {
-          const date = (e.occurred_at as string).slice(0, 10);
-          counts.set(date, (counts.get(date) ?? 0) + 1);
-        });
-        setData(Array.from(counts.entries()).map(([date, count]) => ({ date, count })));
+      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      if (projectIds.length === 0) return;
+
+      const since = new Date();
+      since.setDate(since.getDate() - 84);
+
+      const counts = new Map<string, number>();
+
+      // Pull events (manual activity)
+      const { data: events } = await supabase
+        .from('events')
+        .select('occurred_at')
+        .in('project_id', projectIds)
+        .gte('occurred_at', since.toISOString());
+
+      (events ?? []).forEach((e: any) => {
+        const date = (e.occurred_at as string).slice(0, 10);
+        counts.set(date, (counts.get(date) ?? 0) + 1);
       });
+
+      // Pull goal creation/updates as activity proxy
+      const { data: goals } = await supabase
+        .from('goals')
+        .select('created_at')
+        .in('project_id', projectIds)
+        .gte('created_at', since.toISOString());
+
+      (goals ?? []).forEach((g: any) => {
+        const date = (g.created_at as string).slice(0, 10);
+        counts.set(date, (counts.get(date) ?? 0) + 1);
+      });
+
+      // Pull commit history from all integrated GitHub/GitLab repos per project
+      await Promise.all(
+        projectIds.map(async (pid: string) => {
+          try {
+            const r = await fetch(`/api/projects/${pid}/commit-history`);
+            if (!r.ok) return;
+            const json: { commits: { date: string; count: number }[] } = await r.json();
+            for (const { date, count } of json.commits ?? []) {
+              const d = new Date(date);
+              if (d >= since) {
+                counts.set(date, (counts.get(date) ?? 0) + count);
+              }
+            }
+          } catch { /* ignore per-project failures */ }
+        })
+      );
+
+      setData(Array.from(counts.entries()).map(([date, count]) => ({ date, count })));
+    }
+
+    load();
   }, [user]);
 
   return { data };

@@ -1,0 +1,10 @@
+/* ReportsTab layout */
+.rt-root  { height: calc(100vh - 16rem); }
+
+/* Chat textarea auto-resize */
+.rt-input {
+  min-height: 36px;
+  max-height: 90px;
+  overflow-y: auto;
+  resize: none;
+}

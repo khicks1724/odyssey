@@ -5,6 +5,7 @@ export interface Project {
   owner_id: string;
   github_repo: string | null;
   created_at: string;
+  start_date: string | null;
 }
 
 export interface Goal {
@@ -17,7 +18,9 @@ export interface Goal {
   progress: number;
   completed_at: string | null;
   assigned_to: string | null;
+  assignees: string[];
   category: string | null;
+  loe: string | null;
   created_at: string;
 }
 

@@ -11,7 +11,11 @@
 .tl-wknd-shade  { position: absolute; left: var(--tl-left, 0); top: 40px; width: 40px; height: var(--tl-h, 0); background: rgba(0,0,0,0.04); z-index: 1; }
 .tl-row-div     { position: absolute; left: 0; right: 0; top: var(--tl-top, 0); height: 56px; border-bottom: 1px solid var(--color-border); opacity: 0.35; z-index: 1; }
 .tl-month-lbl   { position: absolute; left: var(--tl-left, 4px); top: 0; line-height: 40px; }
+.tl-month-header { z-index: 5; }
 .tl-today-line  { position: absolute; top: 0; bottom: 0; left: var(--tl-left, 0); width: 2px; background: var(--color-accent); opacity: 0.8; z-index: 20; }
+.tl-today-label { position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+                  white-space: nowrap; padding: 2px 8px; border-radius: 4px;
+                  background: var(--color-accent); color: var(--color-bg); }
 .tl-bar-wrap    { position: absolute; top: var(--tl-top, 0); left: var(--tl-left, 0); height: 18px; width: var(--tl-w, 0); z-index: 10; }
 .tl-bar-track   { position: absolute; inset: 0; border-radius: 9999px; background: var(--tl-bg, transparent); border: 1px solid var(--tl-border, transparent); }
 .tl-bar-fill    { position: absolute; top: 0; left: 0; bottom: 0; border-radius: 9999px; width: var(--tl-w, 0); background: var(--tl-bg, transparent); opacity: 0.55; }
@@ -20,3 +24,15 @@
 .tl-canvas      { position: relative; min-height: var(--tl-min-h, 0); width: var(--tl-w, 0); }
 .tl-scroll      { cursor: grab; }
 .tl-axis-bot    { position: absolute; left: 0; right: 0; top: var(--tl-top, 0); z-index: 5; height: 36px; }
+
+/* Label column hover */
+.tl-label-hover { cursor: default; }
+.tl-label-dot   { width: 6px; height: 6px; border-radius: 9999px; background: var(--tl-cat, #5a6a7e); }
+.tl-label-text  { color: var(--tl-cat-label, #5a6a7e); }
+
+/* Legend swatches */
+.tl-cat-swatch  { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--tl-cat, #5a6a7e); }
+.tl-cat-label   { color: var(--tl-cat-label, var(--color-muted)); }
+
+/* Fixed-position tooltip (uses tlo-tooltip classes from Timeline.css for visual consistency) */
+.tl-tooltip-fixed { position: fixed; z-index: 9999; pointer-events: none; }

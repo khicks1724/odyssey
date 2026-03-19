@@ -1,0 +1,255 @@
+/* ── Theme tokens for commit intensity ─────────────────────────────────────── */
+:root {
+  --commit-0: color-mix(in srgb, var(--color-border) 60%, transparent);
+  --commit-1: color-mix(in srgb, var(--color-accent) 25%, var(--color-surface));
+  --commit-2: color-mix(in srgb, var(--color-accent) 50%, var(--color-surface));
+  --commit-3: color-mix(in srgb, var(--color-accent) 75%, var(--color-surface));
+  --commit-4: var(--color-accent);
+}
+
+/* ── Root wrapper ───────────────────────────────────────────────────────────── */
+.cac-root {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  margin-bottom: 32px;
+}
+
+/* ── Shared header row ──────────────────────────────────────────────────────── */
+.cac-heatmap-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.cac-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--font-sans, sans-serif);
+  color: var(--color-heading);
+  letter-spacing: 0.02em;
+}
+
+.cac-total {
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+}
+
+/* ── Heatmap ────────────────────────────────────────────────────────────────── */
+.cac-heatmap-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.cac-heatmap-grid-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.cac-day-labels {
+  display: flex;
+  flex-direction: column;
+  padding-top: 20px; /* align with svg rows */
+  flex-shrink: 0;
+}
+
+.cac-day-label {
+  display: flex;
+  align-items: center;
+  height: 16px; /* matches STEP = CELL(13) + GAP(3) */
+  font-size: 9px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+  line-height: 1;
+}
+
+.cac-heatmap-svg {
+  display: block;
+  overflow: visible;
+}
+
+.cac-month-label {
+  font-size: 9px;
+  font-family: var(--font-mono, monospace);
+  fill: var(--color-muted);
+}
+
+.cac-cell {
+  transition: opacity 0.1s;
+}
+
+.cac-cell:hover {
+  opacity: 0.75;
+}
+
+/* ── Legend ─────────────────────────────────────────────────────────────────── */
+.cac-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
+.cac-legend-label {
+  font-size: 9px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+}
+
+.cac-legend-cell {
+  display: block;
+}
+
+/* ── Line chart ─────────────────────────────────────────────────────────────── */
+.cac-linechart-wrap {
+  width: 100%;
+}
+
+.cac-linechart-body {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.cac-y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 9px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+  padding: 0 4px 0 0;
+  flex-shrink: 0;
+  text-align: right;
+  width: 28px;
+}
+
+.cac-linechart-svg {
+  flex: 1;
+  display: block;
+  width: 100%;
+  height: 100px;
+  overflow: visible;
+}
+
+.cac-grid-line {
+  stroke: var(--color-border);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.cac-bar {
+  fill: var(--color-accent);
+  opacity: 0.45;
+}
+
+.cac-bar-hovered {
+  opacity: 0.85;
+}
+
+/* ── X-axis ──────────────────────────────────────────────────────────────────── */
+.cac-x-axis {
+  position: relative;
+  height: 20px;
+  margin-left: 36px; /* align with chart, past y-axis */
+  margin-top: 4px;
+}
+
+.cac-x-label {
+  position: absolute;
+  left: var(--cac-x-pct, 0%);
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+/* ── Hover tooltip ───────────────────────────────────────────────────────────── */
+.cac-tooltip {
+  position: fixed;
+  left: var(--cac-tip-x, 0px);
+  top: var(--cac-tip-y, 0px);
+  z-index: 9999;
+  pointer-events: none;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.14);
+  padding: 8px 10px;
+  min-width: 140px;
+}
+
+.cac-tooltip-date {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+  margin-bottom: 3px;
+}
+
+.cac-tooltip-total {
+  font-size: 13px;
+  font-family: var(--font-sans, sans-serif);
+  font-weight: 700;
+  color: var(--color-heading);
+  margin-bottom: 6px;
+}
+
+.cac-tooltip-repos {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 5px;
+}
+
+.cac-tooltip-repo {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.cac-tooltip-repo-name {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-muted);
+  truncate: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.cac-tooltip-repo-count {
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+/* ── Skeleton loader ─────────────────────────────────────────────────────────── */
+.cac-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-bottom: 32px;
+}
+
+.cac-skeleton-bar {
+  background: var(--color-border);
+  border-radius: 6px;
+  animation: cac-pulse 1.4s ease-in-out infinite;
+}
+
+.cac-skeleton-heatmap { height: 120px; }
+.cac-skeleton-line    { height: 160px; }
+
+@keyframes cac-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 0.7; }
+}
