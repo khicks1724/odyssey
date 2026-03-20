@@ -2724,6 +2724,23 @@ function DocumentsTab({
     a.click();
   };
 
+  const [previewDoc, setPreviewDoc] = useState<{ url: string; title: string; filename: string } | null>(null);
+
+  const handlePreview = async (e: import('../types').OdysseyEvent) => {
+    const meta = e.metadata as { storage_path?: string; filename?: string } | undefined;
+    if (!meta?.storage_path) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    const res = await fetch('/api/uploads/sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ storagePath: meta.storage_path }),
+    });
+    if (!res.ok) return;
+    const { url } = await res.json();
+    setPreviewDoc({ url, title: e.title ?? 'Document', filename: meta.filename ?? e.title ?? 'file' });
+  };
+
   const handleUpload = async (files: File[]) => {
     if (!files.length) return;
     setUploading(true);
@@ -2886,14 +2903,24 @@ function DocumentsTab({
                     </a>
                   )}
                   {(e.metadata as { storage_path?: string })?.storage_path && (
-                    <button
-                      type="button"
-                      title="Download file"
-                      onClick={() => handleDownload(e)}
-                      className="text-[10px] text-accent hover:underline"
-                    >
-                      Download
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        title="Preview file"
+                        onClick={() => handlePreview(e)}
+                        className="text-[10px] text-accent hover:underline"
+                      >
+                        Preview
+                      </button>
+                      <button
+                        type="button"
+                        title="Download file"
+                        onClick={() => handleDownload(e)}
+                        className="text-[10px] text-accent hover:underline"
+                      >
+                        Download
+                      </button>
+                    </>
                   )}
                   <button
                     type="button"
@@ -3075,6 +3102,66 @@ function DocumentsTab({
                     Close
                   </button>
                 </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* ── Document Preview Modal ─────────────────────────────────────────── */}
+      {previewDoc && (() => {
+        const ext = previewDoc.filename.split('.').pop()?.toLowerCase() ?? '';
+        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
+        const isPdf   = ext === 'pdf';
+        return (
+          <>
+            <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setPreviewDoc(null)} />
+            <div className="fixed inset-4 z-50 flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-2xl overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--color-border)] shrink-0">
+                <span className="text-sm font-bold text-[var(--color-heading)] font-sans truncate">{previewDoc.title}</span>
+                <div className="flex items-center gap-3 shrink-0">
+                  <a
+                    href={previewDoc.url}
+                    download={previewDoc.filename}
+                    className="text-[10px] text-[var(--color-accent)] hover:underline font-mono flex items-center gap-1"
+                  >
+                    <Download size={11} /> Download
+                  </a>
+                  <button type="button" title="Close preview" onClick={() => setPreviewDoc(null)}
+                    className="text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+              {/* Preview body */}
+              <div className="flex-1 overflow-hidden bg-[var(--color-surface2)]/30">
+                {isPdf && (
+                  <iframe
+                    src={previewDoc.url}
+                    title={previewDoc.title}
+                    className="w-full h-full border-0"
+                  />
+                )}
+                {isImage && (
+                  <div className="w-full h-full flex items-center justify-center overflow-auto p-4">
+                    <img src={previewDoc.url} alt={previewDoc.title} className="max-w-full max-h-full object-contain rounded" />
+                  </div>
+                )}
+                {!isPdf && !isImage && (
+                  <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-8">
+                    <p className="text-sm text-[var(--color-muted)]">
+                      Preview not available for <span className="font-mono">.{ext}</span> files.
+                    </p>
+                    <a
+                      href={previewDoc.url}
+                      download={previewDoc.filename}
+                      className="text-[11px] text-[var(--color-accent)] hover:underline font-mono"
+                    >
+                      Download to view
+                    </a>
+                  </div>
+                )}
               </div>
             </div>
           </>
