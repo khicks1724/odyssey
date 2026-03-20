@@ -21,6 +21,8 @@ export interface Goal {
   assignees: string[];
   category: string | null;
   loe: string | null;
+  ai_guidance: string | null;
+  estimated_hours: number | null;
   created_at: string;
   updated_at: string;
   updated_by: string | null;
@@ -30,8 +32,8 @@ export interface OdysseyEvent {
   id: string;
   project_id: string;
   actor_id: string | null;
-  source: 'github' | 'teams' | 'onedrive' | 'onenote' | 'local' | 'gitlab' | 'manual';
-  event_type: 'commit' | 'message' | 'file_edit' | 'note' | 'meeting' | 'file_upload' | 'goal_progress_updated' | string;
+  source: 'github' | 'teams' | 'onedrive' | 'onenote' | 'local' | 'gitlab' | 'manual' | 'ai';
+  event_type: 'commit' | 'message' | 'file_edit' | 'note' | 'meeting' | 'file_upload' | 'goal_progress_updated' | 'goal_risk_assessed' | 'time_logged' | 'comment_added' | string;
   title: string | null;
   summary: string | null;
   metadata: Record<string, unknown> | null;
@@ -102,4 +104,40 @@ export interface ProjectInsight {
   future_features: string[];
   provider: string;
   generated_at: string;
+}
+
+export interface GoalDependency {
+  id: string;
+  goal_id: string;
+  depends_on_goal_id: string;
+  project_id: string;
+  created_at: string;
+}
+
+export interface TimeLog {
+  id: string;
+  goal_id: string;
+  project_id: string;
+  user_id: string | null;
+  logged_hours: number;
+  description: string | null;
+  logged_at: string;
+  created_at: string;
+}
+
+export interface GoalComment {
+  id: string;
+  goal_id: string;
+  project_id: string;
+  author_id: string | null;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RiskAssessment {
+  goalId: string;
+  score: number;
+  level: 'low' | 'medium' | 'high' | 'critical';
+  factors: string[];
 }
