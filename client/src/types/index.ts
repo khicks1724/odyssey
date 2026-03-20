@@ -21,6 +21,7 @@ export interface Goal {
   assignees: string[];
   category: string | null;
   loe: string | null;
+  ai_guidance: string | null;
   created_at: string;
   updated_at: string;
   updated_by: string | null;

@@ -45,7 +45,7 @@ export function useGoals(projectId: string | undefined) {
     return data;
   };
 
-  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'assignees' | 'category' | 'loe' | 'completed_at'>>) => {
+  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'assignees' | 'category' | 'loe' | 'completed_at' | 'ai_guidance'>>) => {
     const { data: { user } } = await supabase.auth.getUser();
     const enriched: typeof updates & { updated_by?: string | null } = { ...updates, updated_by: user?.id ?? null };
     // Keep assigned_to in sync with first assignee

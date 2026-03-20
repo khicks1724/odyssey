@@ -15,11 +15,13 @@ const CATEGORY_COLORS: Record<string, { bg: string; border: string; label: strin
 const DEFAULT_CATEGORY = { bg: 'rgba(90,106,126,0.3)', border: '#5a6a7e', label: '#5a6a7e' };
 
 const DAY_MS = 86_400_000;
-const ROW_H = 56;
+const ROW_H = 36;
+const SECTION_H = 22;
 const HEADER_H = 40;
 const AXIS_H = 36;
 const MIN_PPD = 8;
 const MAX_PPD = 140;
+const CATEGORY_KEY_ORDER = Object.keys(CATEGORY_COLORS);
 
 function fmtDate(d: Date) { return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
 function fmtMonth(d: Date) { return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }); }
@@ -103,7 +105,13 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
 
   const goalsWithDeadline = goals
     .filter((g) => g.deadline)
-    .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime());
+    .sort((a, b) => {
+      const ai = CATEGORY_KEY_ORDER.indexOf(a.category ?? '');
+      const bi = CATEGORY_KEY_ORDER.indexOf(b.category ?? '');
+      const catDiff = (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+      if (catDiff !== 0) return catDiff;
+      return new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime();
+    });
 
   // Scroll to today on mount
   useEffect(() => {
@@ -164,8 +172,25 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
   const totalDays  = Math.ceil((rangeEnd.getTime() - rangeStart.getTime()) / DAY_MS);
   const totalWidth = totalDays * pxPerDay;
   const todayOff   = ((now.getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay;
-  const trackH     = goalsWithDeadline.length * ROW_H;
-  const canvasH    = HEADER_H + trackH + AXIS_H;
+
+  // Build grouped rows (section headers + goal rows)
+  type SectionRow = { type: 'section'; category: string; top: number };
+  type GoalRow    = { type: 'goal'; goal: Goal; top: number };
+  const groupedRows: Array<SectionRow | GoalRow> = [];
+  let curTop = 0;
+  let curCat: string | undefined = undefined;
+  for (const goal of goalsWithDeadline) {
+    const cat = goal.category ?? '';
+    if (cat !== curCat) {
+      groupedRows.push({ type: 'section', category: cat || 'Uncategorized', top: curTop });
+      curTop += SECTION_H;
+      curCat = cat;
+    }
+    groupedRows.push({ type: 'goal', goal, top: curTop });
+    curTop += ROW_H;
+  }
+  const trackH  = curTop;
+  const canvasH = HEADER_H + trackH + AXIS_H;
 
   const months: { label: string; x: number }[] = [];
   const mCur = new Date(rangeStart); mCur.setDate(1); mCur.setMonth(mCur.getMonth() + 1);
@@ -181,7 +206,8 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
     wCur.setDate(wCur.getDate() + 7);
   }
 
-  const usedCategories = [...new Set(goalsWithDeadline.map((g) => g.category).filter(Boolean))] as string[];
+  const usedCatSet = new Set(goalsWithDeadline.map((g) => g.category).filter(Boolean)) as Set<string>;
+  const usedCategories = CATEGORY_KEY_ORDER.filter((c) => usedCatSet.has(c));
   const hoveredGoal = hovered ? goalsWithDeadline.find((g) => g.id === hovered.id) : null;
 
   return (
@@ -207,7 +233,21 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
         {/* Label column */}
         <div className="tl-label-col shrink-0 border-r border-border bg-surface flex flex-col">
           <div className="tl-header-row border-b border-border/40" />
-          {goalsWithDeadline.map((goal) => {
+          {groupedRows.map((row, i) => {
+            if (row.type === 'section') {
+              const c = CATEGORY_COLORS[row.category] ?? DEFAULT_CATEGORY;
+              return (
+                <div
+                  key={`sec-${i}`}
+                  className="tl-section-row"
+                  {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}
+                >
+                  <span className="tl-section-dot" />
+                  <span className="tl-section-lbl">{row.category}</span>
+                </div>
+              );
+            }
+            const { goal } = row;
             const c = catColor(goal);
             return (
               <div
@@ -257,9 +297,11 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
               return <div key={`w${d}`} className="tl-wknd-shade" {...({ style: cv({ '--tl-left': `${d * pxPerDay}px`, '--tl-h': `${trackH}px` }) } as any)} />;
             })}
 
-            {/* Row dividers */}
-            {goalsWithDeadline.map((_, idx) => (
-              <div key={`rd${idx}`} className="tl-row-div" {...({ style: cv({ '--tl-top': `${HEADER_H + idx * ROW_H}px` }) } as any)} />
+            {/* Row dividers + section shading */}
+            {groupedRows.map((row, i) => (
+              row.type === 'section'
+                ? <div key={`sd${i}`} className="tl-section-div" {...({ style: cv({ '--tl-top': `${HEADER_H + row.top}px` }) } as any)} />
+                : <div key={`rd${i}`} className="tl-row-div"     {...({ style: cv({ '--tl-top': `${HEADER_H + row.top}px` }) } as any)} />
             ))}
 
             {/* Month labels */}
@@ -279,12 +321,13 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
             </div>
 
             {/* Goal bars */}
-            {goalsWithDeadline.map((goal, idx) => {
+            {groupedRows.filter((r): r is GoalRow => r.type === 'goal').map((row) => {
+              const { goal } = row;
               const deadlineOff = ((new Date(goal.deadline!).getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay;
               const createdOff  = Math.max(0, ((new Date(goal.created_at).getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay);
               const barW        = Math.max(deadlineOff - createdOff, 24);
               const fillW       = (goal.progress / 100) * barW;
-              const barTop      = HEADER_H + idx * ROW_H + (ROW_H - 18) / 2;
+              const barTop      = HEADER_H + row.top + (ROW_H - 18) / 2;
               const c           = catColor(goal);
 
               return (

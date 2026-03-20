@@ -152,9 +152,23 @@ export default function ProjectDetailPage() {
   const [standup, setStandup] = useState<StandupData | null>(null);
   const [standupError, setStandupError] = useState<string | null>(null);
 
-  // Per-task AI guidance state — text persists even when collapsed
+  // Per-task AI guidance state — seeded from DB on load, updated on generate
   const [taskGuidance, setTaskGuidance] = useState<Record<string, { loading: boolean; text: string | null }>>({});
   const [guidanceVisible, setGuidanceVisible] = useState<Record<string, boolean>>({});
+
+  // Seed taskGuidance from saved ai_guidance whenever goals load/change
+  useEffect(() => {
+    if (goals.length === 0) return;
+    setTaskGuidance((prev) => {
+      const next = { ...prev };
+      for (const g of goals) {
+        if (g.ai_guidance && !next[g.id]?.text) {
+          next[g.id] = { loading: false, text: g.ai_guidance };
+        }
+      }
+      return next;
+    });
+  }, [goals]);
 
   // Documents / Office file picker
   const [officePickerOpen, setOfficePickerOpen] = useState(false);
@@ -394,7 +408,9 @@ export default function ProjectDetailPage() {
         body: JSON.stringify({ agent, projectId, taskTitle: g.title, taskStatus: g.status, taskProgress: g.progress, taskCategory: g.category, taskLoe: g.loe }),
       });
       const data = await res.json();
-      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: res.ok ? (data.guidance ?? null) : null } }));
+      const text = res.ok ? (data.guidance ?? null) : null;
+      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text } }));
+      if (text) updateGoal(g.id, { ai_guidance: text }).catch(() => {});
     } catch {
       setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: prev[g.id]?.text ?? null } }));
     }
@@ -509,7 +525,7 @@ export default function ProjectDetailPage() {
     return (
       <div className="p-8 max-w-6xl mx-auto text-center py-20">
         <p className="text-muted text-sm mb-4">Project not found</p>
-        <button onClick={() => navigate('/projects')} className="text-accent text-xs hover:underline">
+        <button type="button" onClick={() => navigate('/projects')} className="text-accent text-xs hover:underline">
           ← Back to Projects
         </button>
       </div>
@@ -559,6 +575,7 @@ export default function ProjectDetailPage() {
     <div className="p-8 max-w-6xl mx-auto">
       {/* Back button */}
       <button
+        type="button"
         onClick={() => navigate('/projects')}
         className="flex items-center gap-1 text-muted hover:text-heading text-xs mb-4 transition-colors"
       >

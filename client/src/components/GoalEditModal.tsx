@@ -23,7 +23,7 @@ interface GoalEditModalProps {
   projectId?: string;
   agent?: string;
   autoGuidance?: boolean;
-  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress'>>) => Promise<void>;
+  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance'>>) => Promise<void>;
   onClose: () => void;
 }
 
@@ -37,7 +37,8 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
   const [progress,   setProgress]   = useState(goal.progress);
   const [saving,     setSaving]     = useState(false);
 
-  const [guidance,        setGuidance]        = useState<string | null>(null);
+  // Initialize from saved guidance on the task; keeps text even while regenerating
+  const [guidance,        setGuidance]        = useState<string | null>(goal.ai_guidance ?? null);
   const [guidanceLoading, setGuidanceLoading] = useState(false);
 
   const fetchGuidance = async () => {
@@ -58,9 +59,14 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
         }),
       });
       const data = await res.json();
-      setGuidance(res.ok ? (data.guidance ?? null) : null);
+      const text = res.ok ? (data.guidance ?? null) : null;
+      setGuidance(text);
+      // Auto-save guidance to the task so it persists for next open
+      if (text) {
+        onSave(goal.id, { ai_guidance: text }).catch(() => {});
+      }
     } catch {
-      setGuidance(null);
+      // keep existing guidance on error
     }
     setGuidanceLoading(false);
   };
@@ -87,13 +93,14 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
     onClose();
   };
 
-  const hasGuidance = guidanceLoading || !!guidance;
+  // Right panel is always shown when projectId is provided
+  const showRightPanel = !!projectId;
 
   return (
     <>
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
-        <div className={`w-full bg-surface border border-border shadow-2xl rounded-lg overflow-hidden flex flex-col transition-all duration-300 max-h-[90vh] ${hasGuidance ? 'max-w-4xl' : 'max-w-md'}`}>
+      <div className="fixed inset-0 flex items-center justify-center z-50 p-4" onClick={onClose}>
+        <div className={`w-full bg-surface border border-border shadow-2xl rounded-lg overflow-hidden flex flex-col transition-all duration-300 max-h-[90vh] ${showRightPanel ? 'max-w-4xl' : 'max-w-md'}`} onClick={(e) => e.stopPropagation()}>
 
           {/* Header */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
@@ -125,7 +132,7 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
           {/* Body — two columns when guidance is present */}
           <div className="flex flex-1 overflow-hidden">
             {/* Form column */}
-            <div className={`p-5 space-y-4 overflow-y-auto ${hasGuidance ? 'w-[420px] shrink-0 border-r border-border' : 'w-full'}`}>
+            <div className={`p-5 space-y-4 overflow-y-auto ${showRightPanel ? 'w-[420px] shrink-0 border-r border-border' : 'w-full'}`}>
               {/* Title */}
               <div>
                 <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Title</label>
@@ -236,8 +243,8 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
               </div>
             </div>
 
-            {/* AI Guidance panel — only shown when loading or has content */}
-            {hasGuidance && (
+            {/* AI Guidance panel — always shown when projectId present */}
+            {showRightPanel && (
               <div className="flex-1 flex flex-col overflow-hidden bg-surface2/30">
                 <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
                   <Sparkles size={12} className="text-accent" />
@@ -249,7 +256,7 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                       <Loader2 size={13} className="animate-spin text-accent" />
                       <span className="text-xs animate-pulse">Analyzing task against the repository…</span>
                     </div>
-                  ) : (
+                  ) : guidance ? (
                     <div className="text-[12px] text-muted leading-relaxed">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
@@ -266,8 +273,16 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                           a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
                         }}
                       >
-                        {guidance ?? ''}
+                        {guidance}
                       </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6 py-8">
+                      <Sparkles size={28} className="text-accent/30" />
+                      <p className="text-xs font-semibold text-muted/60">No AI Guidance Yet</p>
+                      <p className="text-[11px] text-muted/50 leading-relaxed">
+                        Click the <span className="text-accent font-semibold">AI Guidance</span> button above to get tailored suggestions for this task — including next steps, risks, and recommendations based on your project context.
+                      </p>
                     </div>
                   )}
                 </div>
