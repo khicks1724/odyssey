@@ -40,7 +40,7 @@ export default function Sidebar() {
       {/* Brand */}
       <div className={`flex items-center border-b border-border h-16 px-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
         {!collapsed && (
-          <span className="font-serif text-3xl font-bold italic text-heading flex-1 text-center">
+          <span className="font-serif text-4xl font-bold italic text-heading flex-1 text-center">
             <span className="text-accent">Odyssey</span>
           </span>
         )}

@@ -147,6 +147,9 @@ export default function ProjectDetailPage() {
   const [standup, setStandup] = useState<StandupData | null>(null);
   const [standupError, setStandupError] = useState<string | null>(null);
 
+  // Per-task AI guidance state
+  const [taskGuidance, setTaskGuidance] = useState<Record<string, { loading: boolean; text: string | null }>>({});
+
   // Documents / Office file picker
   const [officePickerOpen, setOfficePickerOpen] = useState(false);
 
@@ -210,6 +213,12 @@ export default function ProjectDetailPage() {
           });
         }
       });
+
+    // Load saved standup report
+    fetch(`${API_BASE}/ai/standup/${projectId}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data) setStandup(data); })
+      .catch(() => {});
 
     // Load GitLab integration (multi-repo)
     supabase
@@ -364,6 +373,26 @@ export default function ProjectDetailPage() {
       setStandupError('Network error — is the server running?');
     }
     setStandupLoading(false);
+  };
+
+  // AI guidance for a single task — toggle on/off per task card
+  const handleTaskGuidance = async (g: { id: string; title: string; status: string; progress: number; category: string | null; loe: string | null }) => {
+    if (taskGuidance[g.id]?.text) {
+      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: null } }));
+      return;
+    }
+    setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: true, text: null } }));
+    try {
+      const res = await fetch(`${API_BASE}/ai/task-guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent, projectId, taskTitle: g.title, taskStatus: g.status, taskProgress: g.progress, taskCategory: g.category, taskLoe: g.loe }),
+      });
+      const data = await res.json();
+      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: res.ok ? (data.guidance ?? null) : null } }));
+    } catch {
+      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: null } }));
+    }
   };
 
   // Sync goal progress from imported Office documents using AI
@@ -1106,16 +1135,14 @@ export default function ProjectDetailPage() {
             return (
               <section>
                 <h4 className="text-[10px] tracking-[0.2em] uppercase text-muted font-semibold mb-3">
-                  Recent Goal Progress
+                  Recent Task Progress
                 </h4>
                 <div className="space-y-3">
                   {recentGoals.map((g) => {
-                    const assignee = getAssignee(g.updated_by ?? g.assigned_to);
                     const updatedBy = getAssignee(g.updated_by);
                     const assignedTo = getAssignee(g.assigned_to);
                     const actor = updatedBy ?? assignedTo;
 
-                    // Look for a matching goal_progress_updated event for action detail
                     const relatedEvent = events.find(
                       (e) => e.event_type === 'goal_progress_updated' &&
                         (e.metadata as Record<string, unknown> | null)?.goal_id === g.id
@@ -1128,49 +1155,76 @@ export default function ProjectDetailPage() {
                       (Date.now() - new Date(g.updated_at).getTime()) / (1000 * 60 * 60 * 24)
                     );
                     const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
+                    const guidance = taskGuidance[g.id];
 
                     return (
-                      <div key={g.id} className="flex items-start gap-3 px-3 py-3 rounded border border-border/50 bg-surface2/30 hover:bg-surface2 transition-colors">
-                        {/* Gradient progress ring */}
-                        <div className="relative shrink-0">
-                          <ProgressRing progress={g.progress} size={44} />
-                          {g.status === 'complete' && (
-                            <CheckCircle size={10} className="absolute -top-0.5 -right-0.5 text-accent3" />
-                          )}
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <span className="text-xs text-heading font-medium truncate">{g.title}</span>
-                            <span className="text-[10px] text-muted font-mono shrink-0">{timeStr}</span>
-                          </div>
-
-                          {/* Progress bar */}
-                          <div className="mt-1.5 h-1 rounded-full bg-border overflow-hidden w-full">
-                            <div className={`h-full rounded-full bg-accent transition-all w-[${g.progress}%]`} />
-                          </div>
-
-                          <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                            <span className={`text-[10px] font-semibold ${statusColor[g.status] ?? 'text-muted'}`}>
-                              {statusLabel[g.status] ?? g.status}
-                            </span>
-                            {g.category && (
-                              <span className="text-[10px] text-muted font-mono">{g.category}</span>
+                      <div key={g.id} className="rounded border border-border/50 bg-surface2/30 hover:bg-surface2 transition-colors group">
+                        <div className="flex items-start gap-3 px-3 py-3">
+                          {/* Progress ring */}
+                          <div className="relative shrink-0">
+                            <ProgressRing progress={g.progress} size={44} />
+                            {g.status === 'complete' && (
+                              <CheckCircle size={10} className="absolute -top-0.5 -right-0.5 text-accent3" />
                             )}
-                            {(actor ?? assignee) && (
-                              <span className="text-[10px] text-muted">
-                                {updatedBy ? `updated by ${updatedBy.display_name}` : assignedTo ? `assigned to ${assignedTo.display_name}` : ''}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            {/* Title row */}
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="text-sm text-heading font-semibold leading-snug">{g.title}</span>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className="text-[10px] text-muted font-mono">{timeStr}</span>
+                                <button
+                                  type="button"
+                                  title="Get AI guidance for this task"
+                                  onClick={() => handleTaskGuidance(g)}
+                                  disabled={guidance?.loading}
+                                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent/10 text-muted hover:text-accent transition-all disabled:opacity-40"
+                                >
+                                  <Sparkles size={12} />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Badges row */}
+                            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                              <span className={`text-[10px] font-semibold ${statusColor[g.status] ?? 'text-muted'}`}>
+                                {statusLabel[g.status] ?? g.status}
                               </span>
-                            )}
-                            {completedBy && (
-                              <span className="text-[10px] text-muted">work by {completedBy}</span>
+                              <span className="text-[10px] text-muted font-mono">{g.progress}%</span>
+                              {g.category && (
+                                <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{g.category}</span>
+                              )}
+                              {g.loe && (
+                                <span className="text-[9px] px-1.5 py-0.5 border border-accent2/30 rounded text-accent2 font-mono uppercase">{g.loe}</span>
+                              )}
+                              {actor && (
+                                <span className="text-[10px] text-muted">
+                                  {updatedBy ? `updated by ${updatedBy.display_name}` : assignedTo ? `assigned to ${assignedTo.display_name}` : ''}
+                                </span>
+                              )}
+                              {completedBy && (
+                                <span className="text-[10px] text-muted">work by {completedBy}</span>
+                              )}
+                            </div>
+
+                            {evidence && (
+                              <p className="text-[11px] text-muted mt-1 line-clamp-2 italic">{evidence}</p>
                             )}
                           </div>
-
-                          {evidence && (
-                            <p className="text-[11px] text-muted mt-1 line-clamp-2 italic">{evidence}</p>
-                          )}
                         </div>
+
+                        {/* AI Guidance expansion */}
+                        {(guidance?.loading || guidance?.text) && (
+                          <div className="border-t border-border/50 px-3 py-2.5 flex gap-2">
+                            <Sparkles size={12} className="text-accent shrink-0 mt-0.5" />
+                            {guidance.loading ? (
+                              <span className="text-[11px] text-muted animate-pulse">Analyzing task…</span>
+                            ) : (
+                              <p className="text-[11px] text-muted whitespace-pre-line leading-relaxed">{guidance.text}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

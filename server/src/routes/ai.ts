@@ -1335,7 +1335,7 @@ Generate the standup summary.`,
       const raw = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
       const parsed = JSON.parse(raw);
 
-      return {
+      const standupResult = {
         highlights: parsed.highlights ?? '',
         accomplished: parsed.accomplished ?? [],
         inProgress: parsed.inProgress ?? [],
@@ -1345,6 +1345,24 @@ Generate the standup summary.`,
         totalCommits,
         provider: result.provider,
       };
+
+      // Persist (best-effort, non-blocking)
+      supabase.from('standup_reports').upsert({
+        project_id:    projectId,
+        highlights:    standupResult.highlights,
+        accomplished:  standupResult.accomplished,
+        in_progress:   standupResult.inProgress,
+        blockers:      standupResult.blockers,
+        period:        standupResult.period,
+        commit_summary: standupResult.commitSummary,
+        total_commits: standupResult.totalCommits,
+        provider:      standupResult.provider,
+        generated_at:  new Date().toISOString(),
+      }, { onConflict: 'project_id' }).then(({ error: e }) => {
+        if (e) server.log.warn('Failed to persist standup:', e.message);
+      });
+
+      return standupResult;
     } catch (err: any) {
       server.log.error(err);
       const msg = err?.message ?? 'Failed to generate standup';
@@ -1409,6 +1427,74 @@ Analyze everything and suggest specific improvements to the goal structure and d
       const msg = err?.message ?? 'Failed to run intelligent update';
       if (msg.includes('credit') || msg.includes('billing')) return reply.status(402).send({ error: 'API key has no credits.' });
       return reply.status(500).send({ error: msg });
+    }
+  });
+
+  // ── Load persisted standup report ─────────────────────────────────────────
+  server.get<{ Params: { projectId: string } }>('/ai/standup/:projectId', async (request, reply) => {
+    const { projectId } = request.params;
+    const { data, error } = await supabase
+      .from('standup_reports')
+      .select('*')
+      .eq('project_id', projectId)
+      .maybeSingle();
+    if (error || !data) return reply.status(404).send({ error: 'No standup found' });
+    return {
+      highlights:    data.highlights,
+      accomplished:  data.accomplished,
+      inProgress:    data.in_progress,
+      blockers:      data.blockers,
+      period:        data.period,
+      commitSummary: data.commit_summary,
+      totalCommits:  data.total_commits,
+      provider:      data.provider,
+      generatedAt:   data.generated_at,
+    };
+  });
+
+  // ── Per-task AI guidance ──────────────────────────────────────────────────
+  interface TaskGuidanceBody {
+    agent?: string;
+    projectId: string;
+    taskTitle: string;
+    taskStatus: string;
+    taskProgress: number;
+    taskCategory?: string;
+    taskLoe?: string;
+  }
+
+  server.post<{ Body: TaskGuidanceBody }>('/ai/task-guidance', async (request, reply) => {
+    const { agent, projectId, taskTitle, taskStatus, taskProgress, taskCategory, taskLoe } = request.body;
+    if (!projectId || !taskTitle) return reply.status(400).send({ error: 'projectId and taskTitle are required' });
+    const provider = resolveProvider({ agent }, 'claude-sonnet');
+    const ctx = await getCachedContext(projectId);
+
+    const repoCtx = [
+      ctx.githubContext ? `GITHUB COMMITS & README:\n${ctx.githubContext.slice(0, 3000)}` : '',
+      ctx.gitlabContext ? `GITLAB CONTEXT:\n${ctx.gitlabContext.slice(0, 3000)}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    try {
+      const result = await chat(provider, {
+        system: `You are a technical advisor giving specific, actionable guidance on how to make the most progress on a single project task.
+Be concrete. Reference repo files, commits, or related tasks where visible. No emojis. Respond in clean markdown bullet points only (4-6 bullets max).`,
+        user: `TASK: "${taskTitle}"
+Status: ${taskStatus} (${taskProgress}% complete)
+Category: ${taskCategory ?? 'unspecified'}
+Line of Effort: ${taskLoe ?? 'unspecified'}
+
+OTHER PROJECT TASKS:
+${ctx.goalsText?.slice(0, 800) ?? 'none'}
+
+${repoCtx}
+
+Give me the 4-6 most impactful next steps to make concrete progress on this task right now.`,
+        maxTokens: 500,
+      });
+      return { guidance: result.text, provider: result.provider };
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: 'Failed to generate guidance' });
     }
   });
 }
