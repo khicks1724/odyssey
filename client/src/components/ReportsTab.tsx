@@ -367,6 +367,34 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
             className="px-3 py-1.5 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 rounded" />
         </div>
         <div>
+          <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5">Preset</label>
+          <div className="flex gap-1">
+            {([
+              { label: '2W',    days: 14 },
+              { label: '1M',    months: 1 },
+              { label: '3M',    months: 3 },
+              { label: '6M',    months: 6 },
+            ] as { label: string; days?: number; months?: number }[]).map(({ label, days, months }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => {
+                  const to = new Date();
+                  const from = new Date();
+                  if (days)   from.setDate(from.getDate() - days);
+                  if (months) from.setMonth(from.getMonth() - months);
+                  const fmt = (d: Date) => d.toISOString().split('T')[0];
+                  setDateFrom(fmt(from));
+                  setDateTo(fmt(to));
+                }}
+                className="px-2.5 py-1.5 text-xs border border-border rounded text-muted hover:text-heading hover:bg-surface2 transition-colors font-mono"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
           <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5">Format</label>
           <div className="flex gap-1">
             {formatBtns.map((f) => (
