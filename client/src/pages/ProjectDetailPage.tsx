@@ -1614,99 +1614,6 @@ export default function ProjectDetailPage() {
             onLogTime={(id) => { const g = goals.find((g) => g.id === id); if (g) setLogTimeGoal(g); }}
           />
 
-          <Modal open={goalModal.open} onClose={goalModal.onClose} title="Add Goal">
-            <form onSubmit={handleCreateGoal} className="space-y-4">
-              <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Title</label>
-                <input
-                  type="text"
-                  value={newGoalTitle}
-                  onChange={(e) => setNewGoalTitle(e.target.value)}
-                  required
-                  placeholder="e.g. Complete API integration"
-                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Deadline (optional)</label>
-                <input
-                  type="date"
-                  value={newGoalDeadline}
-                  onChange={(e) => setNewGoalDeadline(e.target.value)}
-                  title="Task deadline"
-                  className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category</label>
-                  <select
-                    value={newGoalCategory}
-                    onChange={(e) => setNewGoalCategory(e.target.value)}
-                    title="Task category"
-                    className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
-                  >
-                    <option value="">— None —</option>
-                    <option value="Testing">Testing</option>
-                    <option value="Seeker">Seeker</option>
-                    <option value="Missile">Missile</option>
-                    <option value="Admin">Admin</option>
-                    <option value="Simulation">Simulation</option>
-                    <option value="DevOps">DevOps</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Line of Effort</label>
-                  <select
-                    value={newGoalLoe}
-                    onChange={(e) => setNewGoalLoe(e.target.value)}
-                    title="Line of Effort"
-                    className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
-                  >
-                    <option value="">— None —</option>
-                    <option value="Training">Training</option>
-                    <option value="Simulation">Simulation</option>
-                    <option value="JetsonCV">JetsonCV</option>
-                    <option value="Image Capture">Image Capture</option>
-                    <option value="Flight Software">Flight Software</option>
-                    <option value="IR Camera Suite">IR Camera Suite</option>
-                    <option value="Admin">Admin</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
-                  Assign To <span className="text-muted/60 normal-case tracking-normal">(select multiple)</span>
-                </label>
-                <div className="border border-border divide-y divide-border/50 max-h-32 overflow-y-auto">
-                  {allMembers.map((m) => {
-                    const checked = newGoalAssignees.includes(m.user_id);
-                    return (
-                      <label key={m.user_id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => setNewGoalAssignees((prev) =>
-                            checked ? prev.filter((id) => id !== m.user_id) : [...prev, m.user_id]
-                          )}
-                          className="accent-accent w-3 h-3 shrink-0"
-                        />
-                        <span className="text-sm font-mono text-heading truncate">{m.display_name}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
-                  Create Task
-                </button>
-                <button type="button" onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md">
-                  Cancel
-                </button>
-              </div>
-            </form>
-          </Modal>
         </div>
       )}
 
@@ -2180,6 +2087,101 @@ export default function ProjectDetailPage() {
       />
     )}
 
+    {/* Add Task Modal — rendered globally so it works from any tab (timeline, calendar, tasks) */}
+    <Modal open={goalModal.open} onClose={goalModal.onClose} title="Add Task">
+      <form onSubmit={handleCreateGoal} className="space-y-4">
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Title</label>
+          <input
+            type="text"
+            value={newGoalTitle}
+            onChange={(e) => setNewGoalTitle(e.target.value)}
+            required
+            placeholder="e.g. Complete API integration"
+            className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Deadline (optional)</label>
+          <input
+            type="date"
+            value={newGoalDeadline}
+            onChange={(e) => setNewGoalDeadline(e.target.value)}
+            title="Task deadline"
+            className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category</label>
+            <select
+              value={newGoalCategory}
+              onChange={(e) => setNewGoalCategory(e.target.value)}
+              title="Task category"
+              className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+            >
+              <option value="">— None —</option>
+              <option value="Testing">Testing</option>
+              <option value="Seeker">Seeker</option>
+              <option value="Missile">Missile</option>
+              <option value="Admin">Admin</option>
+              <option value="Simulation">Simulation</option>
+              <option value="DevOps">DevOps</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Line of Effort</label>
+            <select
+              value={newGoalLoe}
+              onChange={(e) => setNewGoalLoe(e.target.value)}
+              title="Line of Effort"
+              className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
+            >
+              <option value="">— None —</option>
+              <option value="Training">Training</option>
+              <option value="Simulation">Simulation</option>
+              <option value="JetsonCV">JetsonCV</option>
+              <option value="Image Capture">Image Capture</option>
+              <option value="Flight Software">Flight Software</option>
+              <option value="IR Camera Suite">IR Camera Suite</option>
+              <option value="Admin">Admin</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
+            Assign To <span className="text-muted/60 normal-case tracking-normal">(select multiple)</span>
+          </label>
+          <div className="border border-border divide-y divide-border/50 max-h-32 overflow-y-auto">
+            {allMembers.map((m) => {
+              const checked = newGoalAssignees.includes(m.user_id);
+              return (
+                <label key={m.user_id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => setNewGoalAssignees((prev) =>
+                      checked ? prev.filter((id) => id !== m.user_id) : [...prev, m.user_id]
+                    )}
+                    className="accent-accent w-3 h-3 shrink-0"
+                  />
+                  <span className="text-sm font-mono text-heading truncate">{m.display_name}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
+            Create Task
+          </button>
+          <button type="button" onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md">
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Modal>
+
     {/* Goal Edit Modal */}
     {editGoal && (
       <GoalEditModal
@@ -2400,10 +2402,10 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
     return (
       <div className="border border-border bg-surface p-12 text-center">
         <Target size={32} className="text-border mx-auto mb-3" />
-        <p className="text-sm text-muted mb-4">No goals yet. Add your first goal to start tracking progress.</p>
+        <p className="text-sm text-muted mb-4">No tasks yet. Add your first task to start tracking progress.</p>
         <button type="button" onClick={onAdd}
           className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md">
-          <Plus size={14} /> Add Goal
+          <Plus size={14} /> Add Task
         </button>
       </div>
     );
