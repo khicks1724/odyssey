@@ -173,8 +173,8 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
 
       {/* ── Calendar grid ── */}
       <div
-        className="flex-1 overflow-y-auto"
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridTemplateRows: `repeat(${numWeeks}, minmax(100px, 1fr))` }}
+        className="flex-1 min-h-0"
+        style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridTemplateRows: `repeat(${numWeeks}, 1fr)` }}
       >
         {cells.map((dateStr, idx) => {
           const isToday      = dateStr === todayStr;
@@ -185,18 +185,24 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
           const isMsInput    = milestoneInput?.date === dateStr;
           const dayNum       = dateStr ? parseInt(dateStr.slice(8)) : null;
           const isLastCol    = idx % 7 === 6;
+          // How many items we can show — milestones get priority
+          const maxItems = 3;
+          const shownMilestones = dayMilestones.slice(0, maxItems);
+          const remainingSlots  = maxItems - shownMilestones.length;
+          const shownGoals      = dayGoals.slice(0, remainingSlots);
+          const overflow        = dayMilestones.length + dayGoals.length - shownMilestones.length - shownGoals.length;
 
           return (
             <div
               key={idx}
-              className={`relative p-1.5 border-r border-b border-[var(--color-border)]/30 group ${
+              className={`relative overflow-hidden border-r border-b border-[var(--color-border)]/30 group flex flex-col ${
                 isOtherMonth ? 'bg-[var(--color-surface2)]/10' : 'hover:bg-[var(--color-surface2)]/20'
               } ${isLastCol ? 'border-r-0' : ''} transition-colors`}
             >
               {dateStr && (
                 <>
                   {/* Day number + add button */}
-                  <div className="flex items-start justify-between mb-1">
+                  <div className="flex items-center justify-between px-1.5 pt-1 pb-0.5 shrink-0">
                     <span className={`inline-flex items-center justify-center w-5 h-5 text-[11px] font-mono rounded-full ${
                       isToday
                         ? 'bg-[var(--color-accent)] text-white font-bold'
@@ -206,6 +212,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                     </span>
                     <button
                       type="button"
+                      title="Add task or milestone"
                       onClick={(e) => { e.stopPropagation(); setActiveDayMenu(isMenuOpen ? null : dateStr); setMilestoneInput(null); }}
                       className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded flex items-center justify-center text-[var(--color-muted)] hover:text-[var(--color-heading)] hover:bg-[var(--color-surface2)] transition-all"
                     >
@@ -213,38 +220,42 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                     </button>
                   </div>
 
-                  {/* Milestones */}
-                  {dayMilestones.map(m => (
-                    <div key={m.id} className="flex items-center gap-1 mb-0.5 px-1 py-0.5 rounded group/ms" style={{ background: 'rgba(189,147,249,0.12)', borderLeft: '2px solid #bd93f9' }}>
-                      <Flag size={8} style={{ color: '#bd93f9' }} className="shrink-0" />
-                      <span className="text-[9px] font-mono truncate leading-tight flex-1" style={{ color: '#bd93f9' }}>{m.title}</span>
-                      <button type="button" onClick={() => deleteMilestone(m.id)}
-                        className="opacity-0 group-hover/ms:opacity-100 transition-opacity hover:text-red-400"
-                        title="Remove milestone">
-                        <X size={7} />
-                      </button>
-                    </div>
-                  ))}
+                  {/* Items area — fixed, never grows the cell */}
+                  <div className="flex-1 overflow-hidden px-1 pb-1 flex flex-col gap-px">
+                    {/* Milestones */}
+                    {shownMilestones.map(m => (
+                      <div key={m.id} className="flex items-center gap-1 px-1 py-px rounded min-w-0 group/ms shrink-0" style={{ background: 'rgba(189,147,249,0.12)', borderLeft: '2px solid #bd93f9' }}>
+                        <Flag size={7} style={{ color: '#bd93f9' }} className="shrink-0" />
+                        <span className="text-[9px] font-mono truncate leading-tight flex-1 min-w-0" style={{ color: '#bd93f9' }}>{m.title}</span>
+                        <button type="button" onClick={() => deleteMilestone(m.id)}
+                          className="opacity-0 group-hover/ms:opacity-100 transition-opacity hover:text-red-400 shrink-0"
+                          title="Remove milestone">
+                          <X size={7} />
+                        </button>
+                      </div>
+                    ))}
 
-                  {/* Task pills */}
-                  {dayGoals.slice(0, 4).map(g => {
-                    const color = CATEGORY_COLORS[g.category ?? ''] ?? DEFAULT_COLOR;
-                    return (
-                      <button
-                        key={g.id}
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); onGoalClick(g); }}
-                        className="w-full flex items-center gap-1 mb-0.5 px-1 py-0.5 rounded text-left transition-all hover:brightness-125"
-                        style={{ background: `${color}20`, borderLeft: `2px solid ${color}` }}
-                        title={g.title}
-                      >
-                        <span className="text-[9px] font-mono truncate leading-tight" style={{ color }}>{g.title}</span>
-                      </button>
-                    );
-                  })}
-                  {dayGoals.length > 4 && (
-                    <span className="text-[9px] text-[var(--color-muted)] font-mono px-1">+{dayGoals.length - 4} more</span>
-                  )}
+                    {/* Task pills */}
+                    {shownGoals.map(g => {
+                      const color = CATEGORY_COLORS[g.category ?? ''] ?? DEFAULT_COLOR;
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); onGoalClick(g); }}
+                          className="w-full min-w-0 overflow-hidden flex items-center gap-1 px-1 py-px rounded text-left transition-all hover:brightness-125 shrink-0"
+                          style={{ background: `${color}20`, borderLeft: `2px solid ${color}` }}
+                          title={g.title}
+                        >
+                          <span className="text-[9px] font-mono truncate leading-tight min-w-0 flex-1" style={{ color }}>{g.title}</span>
+                        </button>
+                      );
+                    })}
+
+                    {overflow > 0 && (
+                      <span className="text-[9px] text-[var(--color-muted)] font-mono px-1 shrink-0">+{overflow} more</span>
+                    )}
+                  </div>
 
                   {/* Day action popover */}
                   {isMenuOpen && !isMsInput && (

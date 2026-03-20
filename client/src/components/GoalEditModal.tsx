@@ -117,7 +117,7 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-0 z-40" onClick={onClose} />
       <div className="fixed inset-0 flex items-center justify-center z-50 p-4" onClick={onClose}>
         <div className={`w-full bg-[var(--color-surface)] border border-[var(--color-border)] shadow-2xl rounded-lg overflow-hidden flex flex-col transition-all duration-300 max-h-[90vh] ${showRightPanel ? 'max-w-4xl' : 'max-w-md'}`} onClick={(e) => e.stopPropagation()}>
 
