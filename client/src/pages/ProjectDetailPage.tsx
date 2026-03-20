@@ -1337,8 +1337,7 @@ export default function ProjectDetailPage() {
                             {/* Title row */}
                             <div className="flex items-start justify-between gap-2">
                               <span className="text-sm text-heading font-semibold leading-snug">{g.title}</span>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className="text-[10px] text-muted font-mono">{timeStr}</span>
+                              <div className="flex flex-col items-end shrink-0 gap-0.5">
                                 <button
                                   type="button"
                                   title={hasGuidance ? 'Regenerate guidance' : 'Get AI guidance'}
@@ -1349,6 +1348,7 @@ export default function ProjectDetailPage() {
                                   {hasGuidance ? <RefreshCw size={10} /> : <Sparkles size={11} />}
                                   {hasGuidance && <span className="font-mono">Regenerate</span>}
                                 </button>
+                                <span className="text-[10px] text-muted font-mono">{timeStr}</span>
                               </div>
                             </div>
 
