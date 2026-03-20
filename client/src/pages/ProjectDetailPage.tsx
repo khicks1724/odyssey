@@ -31,6 +31,9 @@ import {
   Clock,
   Pencil,
   ClipboardList,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
 } from 'lucide-react';
 import GoalMetrics from '../components/GoalMetrics';
 import FileViewerLazy from '../components/FileViewer';
@@ -149,8 +152,9 @@ export default function ProjectDetailPage() {
   const [standup, setStandup] = useState<StandupData | null>(null);
   const [standupError, setStandupError] = useState<string | null>(null);
 
-  // Per-task AI guidance state
+  // Per-task AI guidance state — text persists even when collapsed
   const [taskGuidance, setTaskGuidance] = useState<Record<string, { loading: boolean; text: string | null }>>({});
+  const [guidanceVisible, setGuidanceVisible] = useState<Record<string, boolean>>({});
 
   // Documents / Office file picker
   const [officePickerOpen, setOfficePickerOpen] = useState(false);
@@ -377,13 +381,10 @@ export default function ProjectDetailPage() {
     setStandupLoading(false);
   };
 
-  // AI guidance for a single task — toggle on/off per task card
+  // Fetch (or regenerate) AI guidance for a task — always fetches, always shows result
   const handleTaskGuidance = async (g: { id: string; title: string; status: string; progress: number; category: string | null; loe: string | null }) => {
-    if (taskGuidance[g.id]?.text) {
-      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: null } }));
-      return;
-    }
-    setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: true, text: null } }));
+    setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: true, text: prev[g.id]?.text ?? null } }));
+    setGuidanceVisible((prev) => ({ ...prev, [g.id]: true }));
     try {
       const res = await fetch(`${API_BASE}/ai/task-guidance`, {
         method: 'POST',
@@ -393,7 +394,7 @@ export default function ProjectDetailPage() {
       const data = await res.json();
       setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: res.ok ? (data.guidance ?? null) : null } }));
     } catch {
-      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: null } }));
+      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: prev[g.id]?.text ?? null } }));
     }
   };
 
@@ -1158,6 +1159,8 @@ export default function ProjectDetailPage() {
                     );
                     const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
                     const guidance = taskGuidance[g.id];
+                    const hasGuidance = !!guidance?.text;
+                    const isVisible = !!guidanceVisible[g.id];
 
                     return (
                       <div key={g.id} className="rounded border border-border/50 bg-surface2/30 hover:bg-surface2 transition-colors group">
@@ -1178,12 +1181,13 @@ export default function ProjectDetailPage() {
                                 <span className="text-[10px] text-muted font-mono">{timeStr}</span>
                                 <button
                                   type="button"
-                                  title="Get AI guidance for this task"
+                                  title={hasGuidance ? 'Regenerate guidance' : 'Get AI guidance'}
                                   onClick={() => handleTaskGuidance(g)}
                                   disabled={guidance?.loading}
-                                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-accent/10 text-muted hover:text-accent transition-all disabled:opacity-40"
+                                  className={`opacity-0 group-hover:opacity-100 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/10 transition-all disabled:opacity-40 ${hasGuidance ? 'text-accent' : 'text-muted hover:text-accent'}`}
                                 >
-                                  <Sparkles size={12} />
+                                  {hasGuidance ? <RefreshCw size={10} /> : <Sparkles size={11} />}
+                                  {hasGuidance && <span className="font-mono">Regenerate</span>}
                                 </button>
                               </div>
                             </div>
@@ -1216,31 +1220,52 @@ export default function ProjectDetailPage() {
                           </div>
                         </div>
 
-                        {/* AI Guidance expansion */}
-                        {(guidance?.loading || guidance?.text) && (
-                          <div className="border-t border-border/50 px-3 py-2.5 flex gap-2">
-                            <Sparkles size={12} className="text-accent shrink-0 mt-0.5" />
-                            {guidance.loading ? (
-                              <span className="text-[11px] text-muted animate-pulse">Analyzing task…</span>
-                            ) : (
-                              <div className="text-[11px] text-muted leading-relaxed min-w-0">
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkGfm]}
-                                  components={{
-                                    p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
-                                    h1: ({ children }) => <h1 className="text-xs font-bold mb-1.5 mt-2 first:mt-0 text-heading">{children}</h1>,
-                                    h2: ({ children }) => <h2 className="text-xs font-bold mb-1 mt-2 first:mt-0 text-heading">{children}</h2>,
-                                    h3: ({ children }) => <h3 className="text-[11px] font-semibold mb-1 mt-1.5 first:mt-0 text-heading">{children}</h3>,
-                                    ul: ({ children }) => <ul className="mb-1.5 pl-4 space-y-0.5 list-disc">{children}</ul>,
-                                    ol: ({ children }) => <ol className="mb-1.5 pl-4 space-y-0.5 list-decimal">{children}</ol>,
-                                    strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                                    em: ({ children }) => <em className="italic">{children}</em>,
-                                    code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
-                                    a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                  }}
-                                >
-                                  {guidance.text ?? ''}
-                                </ReactMarkdown>
+                        {/* AI Guidance panel — collapsible, text persists */}
+                        {(guidance?.loading || hasGuidance) && (
+                          <div className="border-t border-border/50">
+                            {/* Panel header with collapse toggle */}
+                            <button
+                              type="button"
+                              onClick={() => setGuidanceVisible((prev) => ({ ...prev, [g.id]: !isVisible }))}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-surface2/50 transition-colors"
+                            >
+                              <Sparkles size={11} className="text-accent shrink-0" />
+                              <span className="text-[10px] text-accent font-mono tracking-wide flex-1 text-left">
+                                {guidance?.loading ? 'Analyzing task…' : 'AI Guidance'}
+                              </span>
+                              {!guidance?.loading && (
+                                isVisible
+                                  ? <ChevronUp size={11} className="text-muted" />
+                                  : <ChevronDown size={11} className="text-muted" />
+                              )}
+                            </button>
+
+                            {/* Collapsible content */}
+                            {isVisible && (
+                              <div className="px-3 pb-2.5">
+                                {guidance?.loading ? (
+                                  <span className="text-[11px] text-muted animate-pulse">Analyzing task…</span>
+                                ) : (
+                                  <div className="text-[11px] text-muted leading-relaxed min-w-0">
+                                    <ReactMarkdown
+                                      remarkPlugins={[remarkGfm]}
+                                      components={{
+                                        p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+                                        h1: ({ children }) => <h1 className="text-xs font-bold mb-1.5 mt-2 first:mt-0 text-heading">{children}</h1>,
+                                        h2: ({ children }) => <h2 className="text-xs font-bold mb-1 mt-2 first:mt-0 text-heading">{children}</h2>,
+                                        h3: ({ children }) => <h3 className="text-[11px] font-semibold mb-1 mt-1.5 first:mt-0 text-heading">{children}</h3>,
+                                        ul: ({ children }) => <ul className="mb-1.5 pl-4 space-y-0.5 list-disc">{children}</ul>,
+                                        ol: ({ children }) => <ol className="mb-1.5 pl-4 space-y-0.5 list-decimal">{children}</ol>,
+                                        strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
+                                        em: ({ children }) => <em className="italic">{children}</em>,
+                                        code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
+                                        a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                                      }}
+                                    >
+                                      {guidance?.text ?? ''}
+                                    </ReactMarkdown>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
