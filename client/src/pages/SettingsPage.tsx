@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { useProfile } from '../hooks/useProfile';
 import { useMicrosoftIntegration } from '../hooks/useMicrosoftIntegration';
-import { useTimeFormat, TIMEZONE_GROUPS, type HourCycle } from '../lib/time-format';
+import { useTimeFormat, type HourCycle } from '../lib/time-format';
+import TimezoneGlobe from '../components/TimezoneGlobe';
 import { Github, Monitor, Bell, Palette, Shield, Check, Loader2, Link, Unlink, Clock } from 'lucide-react';
 
 export default function SettingsPage() {
@@ -14,7 +15,6 @@ export default function SettingsPage() {
   const [nameLoaded, setNameLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [tzSearch, setTzSearch] = useState('');
 
   // Load profile display name once
   if (profile && !nameLoaded) {
@@ -143,44 +143,13 @@ export default function SettingsPage() {
             </div>
 
             {/* Timezone */}
-            <div className="flex justify-between items-start gap-6">
-              <div>
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <Clock size={11} className="text-muted" />
-                  <span className="text-xs text-muted">Timezone</span>
-                </div>
-                <p className="text-[10px] text-muted/50 font-mono pl-4">
-                  {tfSettings.timezone}
-                </p>
+            <div>
+              <div className="flex items-center gap-1.5 mb-3">
+                <Clock size={11} className="text-muted" />
+                <span className="text-xs text-muted">Timezone</span>
               </div>
-              <div className="flex flex-col gap-1.5 min-w-[220px]">
-                <input
-                  type="text"
-                  placeholder="Search timezones…"
-                  value={tzSearch}
-                  onChange={(e) => setTzSearch(e.target.value)}
-                  className="px-2 py-1 bg-surface2 border border-border text-heading text-[10px] font-mono focus:outline-none focus:border-accent/50 rounded"
-                />
-                <select
-                  value={tfSettings.timezone}
-                  onChange={(e) => setTimezone(e.target.value)}
-                  title="Select timezone"
-                  className="px-2 py-1.5 bg-surface2 border border-border text-heading text-[10px] font-mono focus:outline-none focus:border-accent/50 rounded cursor-pointer"
-                >
-                  {TIMEZONE_GROUPS.map(({ region, zones }) => {
-                    const filtered = tzSearch
-                      ? zones.filter((z) => z.toLowerCase().includes(tzSearch.toLowerCase()))
-                      : zones;
-                    if (filtered.length === 0) return null;
-                    return (
-                      <optgroup key={region} label={region}>
-                        {filtered.map((z) => (
-                          <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>
-                        ))}
-                      </optgroup>
-                    );
-                  })}
-                </select>
+              <div className="max-w-[560px] mx-auto">
+                <TimezoneGlobe value={tfSettings.timezone} onChange={setTimezone} />
               </div>
             </div>
 

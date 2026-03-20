@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "^2.99.2",
     "@tailwindcss/vite": "^4.2.1",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/topojson-client": "^3.1.5",
     "docx": "^9.6.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.577.0",
@@ -23,7 +24,9 @@
     "react-router-dom": "^7.13.1",
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
-    "tailwindcss": "^4.2.1"
+    "tailwindcss": "^4.2.1",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

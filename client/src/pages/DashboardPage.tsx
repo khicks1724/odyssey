@@ -13,7 +13,10 @@ import {
 import { Link } from 'react-router-dom';
 import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight, useRecentCommits } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
+import { getSortMode, sortProjects } from '../lib/project-sort';
 import ContributionGraph from '../components/ContributionGraph';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const statusColors: Record<string, string> = {
   at_risk: 'text-accent',
@@ -29,7 +32,8 @@ const statusIcons: Record<string, typeof Circle> = {
 
 export default function DashboardPage() {
   const { stats, loading: statsLoading } = useDashboardStats();
-  const { projects } = useProjects();
+  const { projects: rawProjects } = useProjects();
+  const projects = sortProjects(rawProjects, getSortMode());
   const { deadlines, loading: deadlinesLoading } = useUpcomingDeadlines();
   const { data: activityData } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
@@ -166,7 +170,32 @@ export default function DashboardPage() {
               </Link>
 
               {/* Status */}
-              <p className="text-xs text-heading leading-relaxed break-words">{insight.status}</p>
+              <div className="text-xs text-heading leading-relaxed break-words">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                    h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-heading">{children}</h1>,
+                    h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-heading">{children}</h2>,
+                    h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-heading">{children}</h3>,
+                    ul: ({ children }) => <ul className="mb-2 pl-4 space-y-0.5 list-disc leading-relaxed">{children}</ul>,
+                    ol: ({ children }) => <ol className="mb-2 pl-4 space-y-0.5 list-decimal leading-relaxed">{children}</ol>,
+                    strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
+                    em: ({ children }) => <em className="italic">{children}</em>,
+                    code: ({ children, className }) => {
+                      const isBlock = className?.includes('language-');
+                      return isBlock
+                        ? <code className="block bg-surface2 border border-border rounded px-2 py-1.5 font-mono text-[10px] whitespace-pre overflow-x-auto mb-2 max-w-full">{children}</code>
+                        : <code className="bg-surface2 border border-border rounded px-1 py-0.5 font-mono text-[10px] break-all">{children}</code>;
+                    },
+                    pre: ({ children }) => <pre className="mb-2 overflow-x-auto max-w-full">{children}</pre>,
+                    blockquote: ({ children }) => <blockquote className="border-l-2 border-accent/40 pl-3 text-muted italic mb-2">{children}</blockquote>,
+                    a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                  }}
+                >
+                  {insight.status}
+                </ReactMarkdown>
+              </div>
 
               {/* Next Steps */}
               {insight.next_steps.length > 0 && (
@@ -176,7 +205,20 @@ export default function DashboardPage() {
                     {insight.next_steps.slice(0, 3).map((step, i) => (
                       <li key={i} className="flex items-start gap-1.5">
                         <span className="text-accent2 mt-0.5 shrink-0">›</span>
-                        <span className="text-[11px] text-muted leading-snug break-words min-w-0">{step}</span>
+                        <span className="text-[11px] text-muted leading-snug break-words min-w-0">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              p: ({ children }) => <span>{children}</span>,
+                              strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
+                              em: ({ children }) => <em className="italic">{children}</em>,
+                              code: ({ children }) => <code className="bg-surface2 border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
+                              a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                            }}
+                          >
+                            {step}
+                          </ReactMarkdown>
+                        </span>
                       </li>
                     ))}
                   </ul>

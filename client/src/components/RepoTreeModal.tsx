@@ -228,10 +228,10 @@ export default function RepoTreeModal({ repo, type, onClose }: RepoTreeModalProp
       {/* Backdrop */}
       <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Panel — anchored LEFT, expands right when file is open */}
+      {/* Panel — anchored LEFT, expands to right edge when file is open */}
       <div
         className={`rtm-panel fixed inset-y-4 left-4 z-50 flex border border-[var(--color-border)] bg-[var(--color-surface)] rounded-lg shadow-2xl overflow-hidden transition-all duration-200 ${
-          hasPreview ? 'w-[900px]' : 'w-[340px]'
+          hasPreview ? 'right-4' : 'w-[340px]'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
