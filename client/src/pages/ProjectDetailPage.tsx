@@ -184,7 +184,8 @@ export default function ProjectDetailPage() {
   const [members, setMembers] = useState<MemberRow[]>([]);
 
   // Goal edit / report modals
-  const [editGoal,   setEditGoal]   = useState<import('../types').Goal | null>(null);
+  const [editGoal,        setEditGoal]        = useState<import('../types').Goal | null>(null);
+  const [editAutoGuidance, setEditAutoGuidance] = useState(false);
   const [reportGoal, setReportGoal] = useState<import('../types').Goal | null>(null);
 
   // Report chat history — persists across tab switches
@@ -1341,7 +1342,8 @@ export default function ProjectDetailPage() {
               };
               updateGoal(id, { status, progress: progressMap[status] });
             }}
-            onEdit={(id) => { const g = goals.find((g) => g.id === id); if (g) setEditGoal(g); }}
+            onEdit={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}
+            onEditWithGuidance={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(true); setEditGoal(g); } }}
             onDelete={deleteGoal}
             onAdd={goalModal.onOpen}
             getAssignee={getAssignee}
@@ -1799,8 +1801,11 @@ export default function ProjectDetailPage() {
       <GoalEditModal
         goal={editGoal}
         members={allMembers.map((m) => ({ user_id: m.user_id, display_name: m.display_name }))}
+        projectId={project.id}
+        agent={agent}
+        autoGuidance={editAutoGuidance}
         onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
-        onClose={() => setEditGoal(null)}
+        onClose={() => { setEditGoal(null); setEditAutoGuidance(false); }}
       />
     )}
 
@@ -1947,6 +1952,7 @@ interface GoalsKanbanProps {
   goals: import('../types').Goal[];
   onUpdateStatus: (id: string, status: GoalStatus) => void;
   onEdit: (id: string) => void;
+  onEditWithGuidance: (id: string) => void;
   onDelete: (id: string) => void;
   onAdd: () => void;
   getAssignee: (userId: string | null | undefined) => { display_name: string | null; avatar_url: string | null } | null;
@@ -1960,7 +1966,7 @@ function isStaleComplete(goal: import('../types').Goal): boolean {
   return Date.now() - updated > STALE_MS;
 }
 
-function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
+function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<GoalStatus | null>(null);
   const [showStale, setShowStale] = useState(false);
@@ -2030,6 +2036,10 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onDelete, onAdd, getAssign
             {goal.loe && <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>}
           </div>
           <div className="flex items-center gap-0.5 shrink-0">
+            <button type="button" title="Get AI guidance" onClick={(e) => { e.stopPropagation(); onEditWithGuidance(goal.id); }}
+              className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
+              <Sparkles size={11} />
+            </button>
             <button type="button" title="Expand goal" onClick={() => onEdit(goal.id)}
               className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
               <ExternalLink size={11} />
