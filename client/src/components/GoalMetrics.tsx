@@ -330,9 +330,11 @@ export default function GoalMetrics({
                     key={rowKey}
                     className="relative"
                     onMouseEnter={() => setHoveredUid(rowKey)}
-                    onMouseLeave={() => {
-                      setHoveredUid(null);
-                      setAssigningGoalId(null);
+                    onMouseLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setHoveredUid(null);
+                        setAssigningGoalId(null);
+                      }
                     }}
                   >
                     {/* Assignee row */}
