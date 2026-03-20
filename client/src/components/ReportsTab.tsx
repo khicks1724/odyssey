@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, Bot, FileText, Download, BarChart3, Presentation, X } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
+import { supabase } from '../lib/supabase';
 import './ReportsTab.css';
 
 interface ReportSection {
@@ -47,6 +48,7 @@ interface ReportsTabProps {
   projectStartDate: string | null;
   messages: Message[];
   onMessagesChange: (msgs: Message[]) => void;
+  onReportSaved?: () => void;
 }
 
 /** Parse a natural-language message for date range hints.
@@ -680,7 +682,7 @@ async function downloadPdf(report: ReportContent) {
   doc.save(`${report.title.replace(/\s+/g, '_')}.pdf`);
 }
 
-export default function ReportsTab({ projectId, projectName, projectStartDate, messages, onMessagesChange }: ReportsTabProps) {
+export default function ReportsTab({ projectId, projectName, projectStartDate, messages, onMessagesChange, onReportSaved }: ReportsTabProps) {
   const { agent } = useAIAgent();
   const setMessages = onMessagesChange;
   const [input,      setInput]      = useState('');
@@ -785,6 +787,19 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
       }
 
       setLastReport(data);
+
+      // Persist to saved_reports table (best-effort)
+      supabase.from('saved_reports').insert({
+        project_id:      projectId,
+        title:           data.title,
+        content:         data,
+        format:          activeFormat,
+        date_range_from: effectiveFrom || null,
+        date_range_to:   effectiveTo   || null,
+        generated_at:    new Date().toISOString(),
+        provider:        data.provider ?? null,
+      }).then(() => onReportSaved?.());
+
       if (activeFormat === 'docx') await downloadDocx(data);
       else if (activeFormat === 'pptx') await downloadPptx(data);
       else await downloadPdf(data);

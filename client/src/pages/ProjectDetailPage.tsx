@@ -190,6 +190,7 @@ export default function ProjectDetailPage() {
 
   // Report chat history — persists across tab switches
   const [reportMessages, setReportMessages] = useState<{ role: 'user' | 'assistant'; content: string; provider?: string }[]>([]);
+  const [savedReportsVersion, setSavedReportsVersion] = useState(0);
   const [hasCommitData, setHasCommitData] = useState(false);
 
   // Intelligent Update panel — now lives in the layout right panel via context
@@ -1467,6 +1468,7 @@ export default function ProjectDetailPage() {
           projectStartDate={project.start_date ?? null}
           messages={reportMessages}
           onMessagesChange={setReportMessages}
+          onReportSaved={() => setSavedReportsVersion((v) => v + 1)}
         />
       )}
 
@@ -1485,6 +1487,7 @@ export default function ProjectDetailPage() {
           setDeletingEventId={setDeletingEventId}
           onOpenOfficePicker={() => setOfficePickerOpen(true)}
           onRefresh={refetchEvents}
+          savedReportsVersion={savedReportsVersion}
         />
       )}
 
@@ -2146,6 +2149,17 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
 }
 
 // ── Documents Tab ────────────────────────────────────────────────────────────
+interface SavedReport {
+  id: string;
+  title: string;
+  content: Record<string, unknown>;
+  format: string;
+  date_range_from: string | null;
+  date_range_to: string | null;
+  generated_at: string;
+  provider: string | null;
+}
+
 interface DocumentsTabProps {
   events: import('../types').OdysseyEvent[];
   eventsLoading: boolean;
@@ -2160,6 +2174,7 @@ interface DocumentsTabProps {
   setDeletingEventId: (v: string | null) => void;
   onOpenOfficePicker: () => void;
   onRefresh: () => void;
+  savedReportsVersion?: number;
 }
 
 function DocumentsTab({
@@ -2169,6 +2184,7 @@ function DocumentsTab({
   bulkDeleting, setBulkDeleting,
   deletingEventId, setDeletingEventId,
   onOpenOfficePicker, onRefresh,
+  savedReportsVersion = 0,
 }: DocumentsTabProps) {
   const docs = events.filter((e) =>
     e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local' || e.source === 'teams'
@@ -2176,6 +2192,27 @@ function DocumentsTab({
   const allSelected = docSelected.size === docs.length && docs.length > 0;
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // ── Saved reports ──────────────────────────────────────────────────────────
+  const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
+  const [previewReport, setPreviewReport] = useState<SavedReport | null>(null);
+  const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
+
+  useEffect(() => {
+    supabase.from('saved_reports')
+      .select('id, title, content, format, date_range_from, date_range_to, generated_at, provider')
+      .eq('project_id', projectId)
+      .order('generated_at', { ascending: false })
+      .then(({ data }) => { if (data) setSavedReports(data as SavedReport[]); });
+  }, [projectId, savedReportsVersion]);
+
+  const handleDeleteReport = async (id: string) => {
+    setDeletingReportId(id);
+    await supabase.from('saved_reports').delete().eq('id', id);
+    setSavedReports((prev) => prev.filter((r) => r.id !== id));
+    setDeletingReportId(null);
+    if (previewReport?.id === id) setPreviewReport(null);
+  };
 
   const toggleRow = (id: string) => {
     const next = new Set(docSelected);
@@ -2436,6 +2473,150 @@ function DocumentsTab({
           )}
         </div>
       )}
+
+      {/* ── Historical Reports ─────────────────────────────────────────────── */}
+      <div className="mt-8">
+        <h4 className="text-[10px] tracking-[0.2em] uppercase text-muted font-semibold mb-3">Historical Reports</h4>
+        {savedReports.length === 0 ? (
+          <div className="border border-border bg-surface px-4 py-8 text-center">
+            <p className="text-xs text-muted">No saved reports yet. Generate a report in the Reports tab.</p>
+          </div>
+        ) : (
+          <div className="border border-border bg-surface divide-y divide-border">
+            {savedReports.map((r) => {
+              const fmtIcon = r.format === 'pptx' ? '📊' : r.format === 'pdf' ? '📄' : '📝';
+              const dateStr = new Date(r.generated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+              const rangeStr = r.date_range_from && r.date_range_to
+                ? `${r.date_range_from} → ${r.date_range_to}` : '';
+              return (
+                <div key={r.id} className="flex items-center gap-3 px-4 py-3 hover:bg-surface2 transition-colors group">
+                  <span className="text-base shrink-0">{fmtIcon}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-heading font-medium truncate">{r.title}</p>
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      <span className="text-[10px] text-muted font-mono">{dateStr}</span>
+                      {rangeStr && <span className="text-[10px] text-muted font-mono">{rangeStr}</span>}
+                      {r.format && <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{r.format}</span>}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    title="Preview report"
+                    onClick={() => setPreviewReport(r)}
+                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
+                  >
+                    <FileText size={11} /> View
+                  </button>
+                  <button
+                    type="button"
+                    title="Delete report"
+                    onClick={() => handleDeleteReport(r.id)}
+                    disabled={deletingReportId === r.id}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all disabled:opacity-40"
+                  >
+                    {deletingReportId === r.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Report Preview Modal ───────────────────────────────────────────── */}
+      {previewReport && (() => {
+        const rc = previewReport.content as {
+          title?: string; subtitle?: string; executiveSummary?: string;
+          dateRange?: { from: string; to: string };
+          sections?: Array<{ title: string; body: string; bullets?: string[]; table?: { headers: string[]; rows: string[][] } }>;
+        };
+        return (
+          <>
+            <div className="fixed inset-0 bg-black/60 z-40" onClick={() => setPreviewReport(null)} />
+            <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
+              <div className="w-full max-w-3xl max-h-[88vh] bg-surface border border-border shadow-2xl rounded-lg flex flex-col overflow-hidden">
+                {/* Header */}
+                <div className="flex items-start justify-between px-6 py-4 border-b border-border shrink-0">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-bold text-heading font-sans truncate">{rc.title ?? previewReport.title}</h3>
+                    {rc.subtitle && <p className="text-xs text-muted mt-0.5">{rc.subtitle}</p>}
+                    {rc.dateRange && (
+                      <p className="text-[10px] text-muted font-mono mt-1">{rc.dateRange.from} → {rc.dateRange.to}</p>
+                    )}
+                  </div>
+                  <button type="button" title="Close" onClick={() => setPreviewReport(null)}
+                    className="text-muted hover:text-heading transition-colors shrink-0 ml-4">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* Scrollable content */}
+                <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+                  {/* Executive summary */}
+                  {rc.executiveSummary && (
+                    <div className="p-4 border border-border rounded bg-surface2">
+                      <p className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold mb-2">Executive Summary</p>
+                      <p className="text-xs text-heading leading-relaxed">{rc.executiveSummary}</p>
+                    </div>
+                  )}
+
+                  {/* Sections */}
+                  {(rc.sections ?? []).map((s, i) => (
+                    <div key={i}>
+                      <h4 className="text-xs font-bold text-heading mb-2 pb-1 border-b border-border">{s.title}</h4>
+                      {s.body && <p className="text-xs text-muted leading-relaxed mb-2">{s.body}</p>}
+                      {s.bullets && s.bullets.length > 0 && (
+                        <ul className="space-y-1 mb-2">
+                          {s.bullets.map((b, j) => (
+                            <li key={j} className="flex items-start gap-2 text-xs text-muted">
+                              <span className="text-accent shrink-0 mt-0.5">•</span>
+                              <span>{b}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {s.table && (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[11px] border border-border">
+                            <thead>
+                              <tr className="bg-surface2">
+                                {s.table.headers.map((h, j) => (
+                                  <th key={j} className="px-3 py-1.5 text-left text-muted font-semibold border-b border-border">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {s.table.rows.map((row, j) => (
+                                <tr key={j} className="border-b border-border/50 last:border-0 hover:bg-surface2/50">
+                                  {row.map((cell, k) => (
+                                    <td key={k} className="px-3 py-1.5 text-heading">{cell}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Footer */}
+                <div className="px-6 py-3 border-t border-border bg-surface2 shrink-0 flex items-center justify-between">
+                  <span className="text-[10px] text-muted">
+                    Generated {new Date(previewReport.generated_at).toLocaleString()}
+                    {previewReport.provider && ` · ${previewReport.provider}`}
+                  </span>
+                  <button type="button" onClick={() => setPreviewReport(null)}
+                    className="px-3 py-1.5 text-xs text-muted border border-border rounded hover:text-heading transition-colors">
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
