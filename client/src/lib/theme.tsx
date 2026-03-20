@@ -12,18 +12,23 @@ export interface ThemeColors {
   text: string;
   muted: string;
   heading: string;
+  /** Text color used on top of accent-colored backgrounds (buttons, bubbles). Defaults to white. */
+  accentFg?: string;
 }
 
 export interface Theme {
   id: string;
   name: string;
   colors: ThemeColors;
+  /** Override the three preview dot colors [dot1, dot2, dot3]. Falls back to [bg, accent, accent3]. */
+  previewColors?: [string, string, string];
 }
 
 export const themes: Theme[] = [
   {
     id: 'odyssey-dark',
     name: 'Odyssey Dark',
+    previewColors: ['#13151c', '#6a9fd8', '#f5f0e8'],
     colors: {
       bg: '#13151c',
       surface: '#1a1d26',
@@ -31,10 +36,10 @@ export const themes: Theme[] = [
       border: '#2a3044',
       accent: '#6a9fd8',
       accent2: '#5a9e8a',
-      accent3: '#e8a235',
+      accent3: '#f5f0e8',
       danger: '#e05555',
-      text: '#c8d0dc',
-      muted: '#6b7a8d',
+      text: '#d0d9e6',
+      muted: '#8c9db0',
       heading: '#e8edf4',
     },
   },
@@ -68,7 +73,7 @@ export const themes: Theme[] = [
       accent3: '#98c379',
       danger: '#e06c75',
       text: '#abb2bf',
-      muted: '#5c6370',
+      muted: '#7c8898',
       heading: '#e5e9f0',
     },
   },
@@ -85,7 +90,7 @@ export const themes: Theme[] = [
       accent3: '#52c98e',
       danger: '#e85555',
       text: '#d4dde8',
-      muted: '#5a6a7e',
+      muted: '#7a8fa5',
       heading: '#f0f4f8',
     },
   },
@@ -119,7 +124,7 @@ export const themes: Theme[] = [
       accent3: '#5CB85C',
       danger: '#E06B8A',
       text: '#d4d4d4',
-      muted: '#858585',
+      muted: '#a8a8a8',
       heading: '#f0f0f0',
     },
   },
@@ -138,6 +143,43 @@ export const themes: Theme[] = [
       text: '#1F1E1D',
       muted: '#6F6F78',
       heading: '#1F1E1D',
+    },
+  },
+  {
+    id: 'nps-dark',
+    name: 'NPS Dark',
+    previewColors: ['#00457c', '#FFD503', '#ffffff'],
+    colors: {
+      // NPS Blue screens used as bg/surface layers
+      bg:       '#00111e',  // very dark navy
+      surface:  '#001a2e',  // dark navy
+      surface2: '#00243f',  // slightly lighter navy
+      border:   '#00457c',  // full NPS Blue as border
+      accent:   '#FFD503',  // NPS Yellow — primary interactive
+      accent2:  '#5986aa',  // NPS Blue @ 65% screen — secondary
+      accent3:  '#8c8c8c',  // NPS Grey
+      danger:   '#e05555',
+      text:     '#ccdae5',  // NPS Blue @ 20% screen (light blue-grey)
+      muted:    '#5986aa',  // NPS Blue @ 65% screen
+      heading:  '#ffffff',
+      accentFg: '#001a2e',  // dark text on yellow buttons
+    },
+  },
+  {
+    id: 'nps-light',
+    name: 'NPS Light',
+    colors: {
+      bg:       '#ffffff',
+      surface:  '#fafaf8',  // barely warm white
+      surface2: '#f0efea',  // light warm grey
+      border:   '#c8c7c2',  // neutral warm grey
+      accent:   '#00457c',  // NPS Blue (corrected)
+      accent2:  '#5986aa',  // NPS Blue @ 65% screen
+      accent3:  '#FFD503',  // NPS Yellow — tertiary/badges
+      danger:   '#b91c1c',
+      text:     '#001a2e',  // very dark navy
+      muted:    '#8c8c8c',  // NPS Grey
+      heading:  '#00457c',  // NPS Blue headings
     },
   },
   {
@@ -187,8 +229,9 @@ export const themes: Theme[] = [
       accent3: '#50fa7b',
       danger: '#ff5555',
       text: '#c0c0d0',
-      muted: '#6272a4',
+      muted: '#8292c4',
       heading: '#f8f8f2',
+      accentFg: '#282a36',
     },
   },
 ];
@@ -207,6 +250,7 @@ function applyTheme(theme: Theme) {
   root.style.setProperty('--color-text', c.text);
   root.style.setProperty('--color-muted', c.muted);
   root.style.setProperty('--color-heading', c.heading);
+  root.style.setProperty('--color-accent-fg', c.accentFg ?? '#ffffff');
 }
 
 interface ThemeContextValue {

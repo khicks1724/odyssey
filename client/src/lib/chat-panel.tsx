@@ -1,9 +1,20 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
 
+export interface MessageAttachment {
+  type: 'image' | 'text-file' | 'document' | 'repo';
+  name: string;
+  /** For display: data URL (images) */
+  previewUrl?: string;
+  mimeType?: string;
+  repo?: string;
+  repoType?: 'github' | 'gitlab';
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   provider?: string;
+  attachments?: MessageAttachment[];
   pendingAction?: {
     type: 'create_goal' | 'update_goal' | 'delete_goal';
     description: string;

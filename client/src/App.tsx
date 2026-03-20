@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth, AuthProvider } from './lib/auth';
 import { ThemeProvider } from './lib/theme';
+import { TimeFormatProvider } from './lib/time-format';
 import { AIAgentProvider } from './lib/ai-agent';
 import { ChatPanelProvider } from './lib/chat-panel';
 import AppLayout from './components/layout/AppLayout';
@@ -43,6 +44,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <ThemeProvider>
+        <TimeFormatProvider>
         <AIAgentProvider>
           <ChatPanelProvider>
             <AuthProvider>
@@ -50,6 +52,7 @@ export default function App() {
             </AuthProvider>
           </ChatPanelProvider>
         </AIAgentProvider>
+        </TimeFormatProvider>
       </ThemeProvider>
     </BrowserRouter>
   );

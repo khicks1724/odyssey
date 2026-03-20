@@ -312,7 +312,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
             <button
               type="button"
               onClick={runAnalysis}
-              className="flex items-center gap-2 px-5 py-2.5 bg-accent text-white text-sm rounded hover:bg-accent/90 transition-colors font-medium"
+              className="flex items-center gap-2 px-5 py-2.5 bg-accent text-[var(--color-accent-fg)] text-sm rounded hover:bg-accent/90 transition-colors font-medium"
             >
               <Sparkles size={14} /> Run Analysis
             </button>

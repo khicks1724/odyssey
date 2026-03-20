@@ -8,3 +8,59 @@
   overflow-y: auto;
   resize: none;
 }
+
+/* Markdown prose styles for assistant messages */
+.rt-prose { line-height: 1.6; }
+.rt-prose h1, .rt-prose h2, .rt-prose h3, .rt-prose h4 {
+  color: var(--color-heading);
+  font-weight: 600;
+  margin: 0.75em 0 0.25em;
+  line-height: 1.3;
+}
+.rt-prose h1 { font-size: 0.95rem; }
+.rt-prose h2 { font-size: 0.85rem; }
+.rt-prose h3, .rt-prose h4 { font-size: 0.8rem; }
+.rt-prose p  { margin: 0.4em 0; }
+.rt-prose ul, .rt-prose ol { margin: 0.4em 0; padding-left: 1.25em; }
+.rt-prose li { margin: 0.2em 0; }
+.rt-prose strong { color: var(--color-heading); font-weight: 600; }
+.rt-prose em    { font-style: italic; }
+.rt-prose code  {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+}
+.rt-prose pre {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.6em 0.8em;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.rt-prose pre code { background: none; border: none; padding: 0; }
+.rt-prose blockquote {
+  border-left: 3px solid var(--color-border);
+  padding-left: 0.75em;
+  margin: 0.5em 0;
+  color: var(--color-muted);
+}
+.rt-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.75rem;
+}
+.rt-prose th, .rt-prose td {
+  border: 1px solid var(--color-border);
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.rt-prose th { background: var(--color-surface2); color: var(--color-heading); font-weight: 600; }
+.rt-prose hr { border: none; border-top: 1px solid var(--color-border); margin: 0.75em 0; }
+.rt-prose a  { color: var(--color-accent2); text-decoration: underline; }
+.rt-prose > *:first-child { margin-top: 0; }
+.rt-prose > *:last-child  { margin-bottom: 0; }

@@ -2,16 +2,19 @@ import { useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { useProfile } from '../hooks/useProfile';
 import { useMicrosoftIntegration } from '../hooks/useMicrosoftIntegration';
-import { Github, Monitor, Bell, Palette, Shield, Check, Loader2, Link, Unlink } from 'lucide-react';
+import { useTimeFormat, TIMEZONE_GROUPS, type HourCycle } from '../lib/time-format';
+import { Github, Monitor, Bell, Palette, Shield, Check, Loader2, Link, Unlink, Clock } from 'lucide-react';
 
 export default function SettingsPage() {
   const { user } = useAuth();
   const { profile, updateProfile } = useProfile();
   const { status: msStatus, loading: msLoading, connecting: msConnecting, connectError: msError, connect: msConnect, disconnect: msDisconnect } = useMicrosoftIntegration();
+  const { settings: tfSettings, setTimezone, setHourCycle } = useTimeFormat();
   const [displayName, setDisplayName] = useState('');
   const [nameLoaded, setNameLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [tzSearch, setTzSearch] = useState('');
 
   // Load profile display name once
   if (profile && !nameLoaded) {
@@ -133,14 +136,76 @@ export default function SettingsPage() {
             <Palette size={14} className="text-accent" />
             <h2 className="font-sans text-sm font-bold text-heading">Preferences</h2>
           </div>
-          <div className="space-y-4">
+          <div className="space-y-5">
             <div className="flex justify-between items-center">
               <span className="text-xs text-muted">Theme</span>
-              <span className="text-xs text-heading font-mono">Dark</span>
+              <span className="text-xs text-heading font-mono">Managed via theme switcher</span>
             </div>
+
+            {/* Timezone */}
+            <div className="flex justify-between items-start gap-6">
+              <div>
+                <div className="flex items-center gap-1.5 mb-0.5">
+                  <Clock size={11} className="text-muted" />
+                  <span className="text-xs text-muted">Timezone</span>
+                </div>
+                <p className="text-[10px] text-muted/50 font-mono pl-4">
+                  {tfSettings.timezone}
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5 min-w-[220px]">
+                <input
+                  type="text"
+                  placeholder="Search timezones…"
+                  value={tzSearch}
+                  onChange={(e) => setTzSearch(e.target.value)}
+                  className="px-2 py-1 bg-surface2 border border-border text-heading text-[10px] font-mono focus:outline-none focus:border-accent/50 rounded"
+                />
+                <select
+                  value={tfSettings.timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  title="Select timezone"
+                  className="px-2 py-1.5 bg-surface2 border border-border text-heading text-[10px] font-mono focus:outline-none focus:border-accent/50 rounded cursor-pointer"
+                >
+                  {TIMEZONE_GROUPS.map(({ region, zones }) => {
+                    const filtered = tzSearch
+                      ? zones.filter((z) => z.toLowerCase().includes(tzSearch.toLowerCase()))
+                      : zones;
+                    if (filtered.length === 0) return null;
+                    return (
+                      <optgroup key={region} label={region}>
+                        {filtered.map((z) => (
+                          <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
+              </div>
+            </div>
+
+            {/* Time format */}
             <div className="flex justify-between items-center">
-              <span className="text-xs text-muted">Timezone</span>
-              <span className="text-xs text-heading font-mono">{Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
+              <div className="flex items-center gap-1.5">
+                <Clock size={11} className="text-muted" />
+                <span className="text-xs text-muted">Time Format</span>
+              </div>
+              <div className="flex border border-border rounded overflow-hidden text-[10px] font-mono">
+                {(['h12', 'h23'] as HourCycle[]).map((hc) => (
+                  <button
+                    key={hc}
+                    type="button"
+                    onClick={() => setHourCycle(hc)}
+                    className={`px-3 py-1.5 transition-colors ${
+                      tfSettings.hourCycle === hc
+                        ? 'bg-accent text-[var(--color-accent-fg)]'
+                        : 'text-muted hover:text-heading hover:bg-surface2'
+                    }`}
+                  >
+                    {hc === 'h12' ? '12h' : '24h'}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>

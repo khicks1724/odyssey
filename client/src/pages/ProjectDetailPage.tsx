@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
+import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
+import FilePreviewModal from '../components/FilePreviewModal';
+import RepoTreeModal from '../components/RepoTreeModal';
 import './ProjectDetailPage.css';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -13,7 +17,7 @@ import {
   Plus,
   Trash2,
   ArrowLeft,
-  GanttChart,
+  Clock,
   Search,
   Link,
   Loader2,
@@ -28,7 +32,6 @@ import {
   GitBranch,
   FileText,
   ExternalLink,
-  Clock,
   Pencil,
   ClipboardList,
   ChevronDown,
@@ -67,7 +70,7 @@ import Modal, { useModal } from '../components/Modal';
 
 const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
-  { id: 'timeline',      label: 'Timeline',      icon: GanttChart },
+  { id: 'timeline',      label: 'Timeline',      icon: Clock },
   { id: 'activity',      label: 'Activity',      icon: Activity },
   { id: 'goals',         label: 'Tasks',         icon: Target },
   { id: 'metrics',       label: 'Metrics',       icon: TrendingUp },
@@ -160,7 +163,7 @@ export default function ProjectDetailPage() {
   const [standupError, setStandupError] = useState<string | null>(null);
 
   // Per-task AI guidance state — seeded from DB on load, updated on generate
-  const [taskGuidance, setTaskGuidance] = useState<Record<string, { loading: boolean; text: string | null }>>({});
+  const [taskGuidance, setTaskGuidance] = useState<Record<string, { loading: boolean; text: string | null; provider?: string }>>({});
   const [guidanceVisible, setGuidanceVisible] = useState<Record<string, boolean>>({});
 
   // Seed taskGuidance from saved ai_guidance whenever goals load/change
@@ -196,6 +199,33 @@ export default function ProjectDetailPage() {
   // GitLab linked repos (for overview panel)
   const [gitlabRepos, setGitlabRepos] = useState<string[]>([]);
 
+  // File path index for clickable code file links
+  const { filePaths, fetchFileContent } = useProjectFilePaths(project?.github_repo, gitlabRepos);
+  const [previewFileRef, setPreviewFileRef] = useState<FileRef | null>(null);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+
+  const handleFileClick = useCallback(async (ref: FileRef) => {
+    setPreviewFileRef(ref);
+    setPreviewContent(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+    try {
+      const content = await fetchFileContent(ref);
+      setPreviewContent(content);
+    } catch (err: any) {
+      setPreviewError(err?.message ?? 'Failed to load file');
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [fetchFileContent]);
+
+  const handleRepoClick = useCallback((repo: string, type: 'github' | 'gitlab') => {
+    setRepoTreeTarget({ repo, type });
+  }, []);
+
   // Teams folder integration (project-level)
   const [teamsFolder, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
   const [teamsFolderPickerOpen, setTeamsFolderPickerOpen] = useState(false);
@@ -225,8 +255,12 @@ export default function ProjectDetailPage() {
   });
   const [riskPanelOpen, setRiskPanelOpen] = useState(false);
   const [goalDependencies, setGoalDependencies] = useState<import('../types').GoalDependency[]>([]);
-  const [auditFrom, setAuditFrom] = useState('');
-  const [auditTo, setAuditTo] = useState('');
+  const [auditFrom, setAuditFrom] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toISOString().split('T')[0];
+  });
+  const [auditTo, setAuditTo] = useState(() => new Date().toISOString().split('T')[0]);
+  const [auditPreset, setAuditPreset] = useState<'2W' | '1M' | '3M' | '6M' | 'Full' | 'custom'>('1M');
   const [auditType, setAuditType] = useState('');
   const [auditPage, setAuditPage] = useState(0);
   const AUDIT_PAGE_SIZE = 25;
@@ -520,7 +554,8 @@ export default function ProjectDetailPage() {
       });
       const data = await res.json();
       const text = res.ok ? (data.guidance ?? null) : null;
-      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text } }));
+      const provider = res.ok ? (data.provider ?? undefined) : undefined;
+      setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text, provider } }));
       if (text) updateGoal(g.id, { ai_guidance: text }).catch(() => {});
     } catch {
       setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: prev[g.id]?.text ?? null } }));
@@ -650,14 +685,24 @@ export default function ProjectDetailPage() {
     : 0;
 
   // Calculate overall project health from deadline vs progress data
-  const projectStatus = (() => {
+  const { projectStatus, statusInsight } = (() => {
     const now = Date.now();
-    const incomplete = goals.filter(g => g.status !== 'complete' && g.deadline);
-    if (incomplete.length === 0) return 'on_plan' as const;
+    const incomplete    = goals.filter(g => g.status !== 'complete' && g.deadline);
+    const withDeadlines = goals.filter(g => g.deadline).length;
+    const total = goals.length;
 
-    let missedCount = 0;   // overdue and not complete
-    let criticalCount = 0; // ≤21 days left, >40pt deficit
-    let behindCount = 0;   // ≤45 days left, >30pt deficit
+    if (incomplete.length === 0) {
+      const reason = total === 0
+        ? 'No tasks yet'
+        : goals.every(g => g.status === 'complete')
+          ? `All ${total} task${total !== 1 ? 's' : ''} complete`
+          : `${total} task${total !== 1 ? 's' : ''} · none with deadlines`;
+      return { projectStatus: 'on_plan' as const, statusInsight: reason };
+    }
+
+    let missedCount = 0;
+    let criticalCount = 0;
+    let behindCount = 0;
 
     for (const g of incomplete) {
       const deadlineMs = new Date(g.deadline!).getTime();
@@ -675,9 +720,18 @@ export default function ProjectDetailPage() {
       else if (daysUntil <= 45 && deficit > 30) behindCount++;
     }
 
-    if (missedCount >= 1 || criticalCount >= 2) return 'off_track' as const;
-    if (criticalCount >= 1 || behindCount >= 2) return 'at_risk' as const;
-    return 'on_plan' as const;
+    const status =
+      (missedCount >= 1 || criticalCount >= 2) ? 'off_track' as const :
+      (criticalCount >= 1 || behindCount >= 2) ? 'at_risk'   as const :
+      'on_plan' as const;
+
+    const lines: string[] = [`${withDeadlines} of ${total} tasks have deadlines`];
+    if (missedCount)   lines.push(`${missedCount} overdue (past deadline)`);
+    if (criticalCount) lines.push(`${criticalCount} critical (≤21 days left, >40pt behind)`);
+    if (behindCount)   lines.push(`${behindCount} at risk (≤45 days left, >30pt behind)`);
+    if (!missedCount && !criticalCount && !behindCount) lines.push('All deadlines on track');
+
+    return { projectStatus: status, statusInsight: lines.join('\n') };
   })();
 
   const handleCreateGoal = async (e: React.FormEvent) => {
@@ -758,7 +812,17 @@ export default function ProjectDetailPage() {
                 {project.name}
               </h1>
             )}
-            <StatusBadge status={projectStatus} size="md" />
+            <div className="relative group/status">
+              <StatusBadge status={projectStatus} size="md" />
+              <div className="absolute left-0 top-full mt-2 w-64 z-50 pointer-events-none opacity-0 group-hover/status:opacity-100 transition-opacity duration-150">
+                <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-xl p-3">
+                  <p className="text-[10px] tracking-[0.12em] uppercase text-[var(--color-muted)] font-semibold mb-1.5">Schedule Health</p>
+                  {statusInsight.split('\n').map((line, i) => (
+                    <p key={i} className={`text-xs font-mono ${i === 0 ? 'text-[var(--color-heading)]' : 'text-[var(--color-muted)] mt-0.5'}`}>{line}</p>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
           <div className="relative group shrink-0">
             <button
@@ -1004,7 +1068,11 @@ export default function ProjectDetailPage() {
                       <BarChart3 size={14} className="text-accent" />
                       <h4 className="font-sans text-base font-bold text-heading">Project Status</h4>
                     </div>
-                    <p className="text-xs text-muted leading-relaxed pl-5">{insights.status}</p>
+                    <div className="text-xs text-muted leading-relaxed pl-5">
+                      <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>
+                        {insights.status}
+                      </MarkdownWithFileLinks>
+                    </div>
                   </div>
 
                   {/* Next Steps */}
@@ -1017,8 +1085,8 @@ export default function ProjectDetailPage() {
                       <ul className="space-y-1.5 pl-5">
                         {insights.nextSteps.map((step: string, i: number) => (
                           <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-accent font-mono text-[10px] mt-0.5">{i + 1}.</span>
-                            {step}
+                            <span className="text-accent font-mono text-[10px] mt-0.5 shrink-0">{i + 1}.</span>
+                            <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{step}</MarkdownWithFileLinks>
                           </li>
                         ))}
                       </ul>
@@ -1035,8 +1103,8 @@ export default function ProjectDetailPage() {
                       <ul className="space-y-1.5 pl-5">
                         {insights.futureFeatures.map((feat: string, i: number) => (
                           <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-yellow-500">◆</span>
-                            {feat}
+                            <span className="text-yellow-500 shrink-0">◆</span>
+                            <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{feat}</MarkdownWithFileLinks>
                           </li>
                         ))}
                       </ul>
@@ -1054,7 +1122,7 @@ export default function ProjectDetailPage() {
                         {insights.codeInsights.map((obs: string, i: number) => (
                           <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
                             <span className="text-accent3 font-mono text-[10px] mt-0.5 shrink-0">{'</>'}</span>
-                            {obs}
+                            <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{obs}</MarkdownWithFileLinks>
                           </li>
                         ))}
                       </ul>
@@ -1174,7 +1242,7 @@ export default function ProjectDetailPage() {
           {/* Timeline */}
           <div className="border border-border bg-surface p-6 mb-8">
             <div className="flex items-center gap-2 mb-4">
-              <Target size={14} className="text-accent2" />
+              <Clock size={14} className="text-accent2" />
               <h3 className="font-sans text-sm font-bold text-heading">Timeline</h3>
             </div>
             <Timeline
@@ -1386,10 +1454,13 @@ export default function ProjectDetailPage() {
                             {/* Panel header with collapse toggle */}
                             <button
                               type="button"
-                              onClick={() => setGuidanceVisible((prev) => ({ ...prev, [g.id]: !isVisible }))}
+                              onClick={() => !guidance?.loading && setGuidanceVisible((prev) => ({ ...prev, [g.id]: !isVisible }))}
                               className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-surface2/50 transition-colors"
                             >
-                              <Sparkles size={11} className="text-accent shrink-0" />
+                              {guidance?.loading
+                                ? <Loader2 size={11} className="text-accent shrink-0 animate-spin" />
+                                : <Sparkles size={11} className="text-accent shrink-0" />
+                              }
                               <span className="text-[10px] text-accent font-mono tracking-wide flex-1 text-left">
                                 {guidance?.loading ? 'Analyzing task…' : 'AI Guidance'}
                               </span>
@@ -1400,31 +1471,30 @@ export default function ProjectDetailPage() {
                               )}
                             </button>
 
-                            {/* Collapsible content */}
-                            {isVisible && (
+                            {/* Collapsible content — hidden while loading to avoid duplicate status */}
+                            {isVisible && !guidance?.loading && (
                               <div className="px-3 pb-2.5">
-                                {guidance?.loading ? (
-                                  <span className="text-[11px] text-muted animate-pulse">Analyzing task…</span>
-                                ) : (
-                                  <div className="text-[11px] text-muted leading-relaxed min-w-0">
-                                    <ReactMarkdown
-                                      remarkPlugins={[remarkGfm]}
-                                      components={{
-                                        p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
-                                        h1: ({ children }) => <h1 className="text-xs font-bold mb-1.5 mt-2 first:mt-0 text-heading">{children}</h1>,
-                                        h2: ({ children }) => <h2 className="text-xs font-bold mb-1 mt-2 first:mt-0 text-heading">{children}</h2>,
-                                        h3: ({ children }) => <h3 className="text-[11px] font-semibold mb-1 mt-1.5 first:mt-0 text-heading">{children}</h3>,
-                                        ul: ({ children }) => <ul className="mb-1.5 pl-4 space-y-0.5 list-disc">{children}</ul>,
-                                        ol: ({ children }) => <ol className="mb-1.5 pl-4 space-y-0.5 list-decimal">{children}</ol>,
-                                        strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                                        em: ({ children }) => <em className="italic">{children}</em>,
-                                        code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
-                                        a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                      }}
-                                    >
-                                      {guidance?.text ?? ''}
-                                    </ReactMarkdown>
-                                  </div>
+                                <div className="text-[11px] text-muted leading-relaxed min-w-0">
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                      p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+                                      h1: ({ children }) => <h1 className="text-xs font-bold mb-1.5 mt-2 first:mt-0 text-heading">{children}</h1>,
+                                      h2: ({ children }) => <h2 className="text-xs font-bold mb-1 mt-2 first:mt-0 text-heading">{children}</h2>,
+                                      h3: ({ children }) => <h3 className="text-[11px] font-semibold mb-1 mt-1.5 first:mt-0 text-heading">{children}</h3>,
+                                      ul: ({ children }) => <ul className="mb-1.5 pl-4 space-y-0.5 list-disc">{children}</ul>,
+                                      ol: ({ children }) => <ol className="mb-1.5 pl-4 space-y-0.5 list-decimal">{children}</ol>,
+                                      strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
+                                      em: ({ children }) => <em className="italic">{children}</em>,
+                                      code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
+                                      a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                                    }}
+                                  >
+                                    {guidance?.text ?? ''}
+                                  </ReactMarkdown>
+                                </div>
+                                {guidance?.provider && (
+                                  <div className="mt-1.5 text-[9px] text-muted/50 font-mono text-right">{guidance.provider}</div>
                                 )}
                               </div>
                             )}
@@ -1980,7 +2050,7 @@ export default function ProjectDetailPage() {
               <input
                 type="date"
                 value={auditFrom}
-                onChange={(e) => setAuditFrom(e.target.value)}
+                onChange={(e) => { setAuditFrom(e.target.value); setAuditPreset('custom'); }}
                 title="From date"
                 className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
               />
@@ -1988,10 +2058,48 @@ export default function ProjectDetailPage() {
               <input
                 type="date"
                 value={auditTo}
-                onChange={(e) => setAuditTo(e.target.value)}
+                onChange={(e) => { setAuditTo(e.target.value); setAuditPreset('custom'); }}
                 title="To date"
                 className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
               />
+              {/* Presets */}
+              {((['2W', '1M', '3M', '6M', 'Full'] as const).map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => {
+                    const fmt = (d: Date) => d.toISOString().split('T')[0];
+                    const to = new Date();
+                    const from = new Date();
+                    if (label === '2W')        from.setDate(from.getDate() - 14);
+                    else if (label === '1M')   from.setMonth(from.getMonth() - 1);
+                    else if (label === '3M')   from.setMonth(from.getMonth() - 3);
+                    else if (label === '6M')   from.setMonth(from.getMonth() - 6);
+                    else if (label === 'Full') { setAuditFrom(project?.start_date ?? fmt(from)); setAuditTo(fmt(to)); setAuditPreset('Full'); return; }
+                    setAuditFrom(fmt(from));
+                    setAuditTo(fmt(to));
+                    setAuditPreset(label);
+                  }}
+                  className={`px-2.5 py-1 text-[10px] border rounded transition-colors font-mono ${
+                    auditPreset === label
+                      ? 'bg-[var(--color-accent)] text-[var(--color-accent-fg)] border-[var(--color-accent)]'
+                      : 'border-border text-muted hover:text-heading hover:bg-surface2'
+                  }`}
+                >
+                  {label}
+                </button>
+              )))}
+              <button
+                type="button"
+                onClick={() => setAuditPreset('custom')}
+                className={`px-2.5 py-1 text-[10px] border rounded transition-colors font-mono ${
+                  auditPreset === 'custom'
+                    ? 'bg-[var(--color-accent)] text-[var(--color-accent-fg)] border-[var(--color-accent)]'
+                    : 'border-border text-muted hover:text-heading hover:bg-surface2'
+                }`}
+              >
+                Custom
+              </button>
               <select
                 value={auditType}
                 onChange={(e) => setAuditType(e.target.value)}
@@ -2003,10 +2111,10 @@ export default function ProjectDetailPage() {
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
-              {(auditFrom || auditTo || auditType) && (
-                <button type="button" onClick={() => { setAuditFrom(''); setAuditTo(''); setAuditType(''); }}
+              {auditType && (
+                <button type="button" onClick={() => setAuditType('')}
                   className="text-[10px] text-muted hover:text-heading transition-colors">
-                  Clear
+                  Clear type
                 </button>
               )}
             </div>
@@ -2216,6 +2324,26 @@ export default function ProjectDetailPage() {
       />
     )}
 
+
+    {/* ── File Preview Modal (code files from GitHub/GitLab) ─────────────── */}
+    {previewFileRef && (
+      <FilePreviewModal
+        fileRef={previewFileRef}
+        content={previewContent}
+        loading={previewLoading}
+        error={previewError}
+        onClose={() => { setPreviewFileRef(null); setPreviewContent(null); setPreviewError(null); }}
+      />
+    )}
+
+    {/* ── Repo Tree Modal (browse repo files from AI insight links) ────────── */}
+    {repoTreeTarget && (
+      <RepoTreeModal
+        repo={repoTreeTarget.repo}
+        type={repoTreeTarget.type}
+        onClose={() => setRepoTreeTarget(null)}
+      />
+    )}
 
     {/* Teams Folder Picker modal */}
     {teamsFolderPickerOpen && (
@@ -2891,27 +3019,30 @@ function DocumentsTab({
                 </div>
               </div>
               {!docEditMode && (
-                <div className="flex items-center gap-2 shrink-0">
-                  {(e.metadata as { web_url?: string })?.web_url && (
-                    <a
-                      href={(e.metadata as { web_url: string }).web_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                <div className="flex items-center gap-6 shrink-0">
+                  {/* Preview — sits further left, separated from the download/delete cluster */}
+                  {(e.metadata as { storage_path?: string })?.storage_path && (
+                    <button
+                      type="button"
+                      title="Preview file"
+                      onClick={() => handlePreview(e)}
                       className="text-[10px] text-accent hover:underline"
                     >
-                      Open
-                    </a>
+                      Preview
+                    </button>
                   )}
-                  {(e.metadata as { storage_path?: string })?.storage_path && (
-                    <>
-                      <button
-                        type="button"
-                        title="Preview file"
-                        onClick={() => handlePreview(e)}
+                  <div className="flex items-center gap-2">
+                    {(e.metadata as { web_url?: string })?.web_url && (
+                      <a
+                        href={(e.metadata as { web_url: string }).web_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="text-[10px] text-accent hover:underline"
                       >
-                        Preview
-                      </button>
+                        Open
+                      </a>
+                    )}
+                    {(e.metadata as { storage_path?: string })?.storage_path && (
                       <button
                         type="button"
                         title="Download file"
@@ -2920,8 +3051,8 @@ function DocumentsTab({
                       >
                         Download
                       </button>
-                    </>
-                  )}
+                    )}
+                  </div>
                   <button
                     type="button"
                     title="Remove from context"

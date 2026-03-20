@@ -3,7 +3,7 @@ import type { Goal } from '../types';
 import './TimelinePage.css';
 import './Timeline.css';
 import CalendarView from './CalendarView';
-import { LayoutList, CalendarDays } from 'lucide-react';
+import { Clock, CalendarDays } from 'lucide-react';
 
 /* ─── Category colors ─── */
 const CATEGORY_COLORS: Record<string, { bg: string; border: string; label: string }> = {
@@ -181,7 +181,7 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
           <span className="text-[10px] text-muted uppercase tracking-widest font-mono mr-2">View</span>
           <button type="button" onClick={() => setView('timeline')}
             className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors">
-            <LayoutList size={12} /> Timeline
+            <Clock size={12} /> Timeline
           </button>
           <button type="button" onClick={() => setView('calendar')}
             className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono bg-surface2 text-heading transition-colors">
@@ -257,7 +257,7 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
         <div className="flex items-center gap-0.5 bg-surface2 rounded p-0.5 shrink-0">
           <button type="button" onClick={() => setView('timeline')}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono bg-surface text-heading shadow-sm transition-colors">
-            <LayoutList size={11} /> Timeline
+            <Clock size={11} /> Timeline
           </button>
           <button type="button" onClick={() => setView('calendar')}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono text-muted hover:text-heading transition-colors">

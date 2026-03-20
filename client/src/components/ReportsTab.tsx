@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, Bot, FileText, Download, BarChart3, Presentation, X, TableIcon } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
 import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
@@ -9,6 +11,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   provider?: string;
+  reportReady?: { data: ReportContent; format: ReportFormat };
 }
 
 interface ReportsTabProps {
@@ -129,19 +132,26 @@ type ReportFormat = 'docx' | 'pptx' | 'pdf';
 
 
 export default function ReportsTab({ projectId, projectName, projectStartDate, messages, onMessagesChange, onReportSaved }: ReportsTabProps) {
-  const { agent } = useAIAgent();
+  const { agent, providers } = useAIAgent();
+  const activeProviderName = agent === 'auto'
+    ? null
+    : (providers.find((p) => p.id === agent)?.name ?? agent);
   const setMessages = onMessagesChange;
   const [input,      setInput]      = useState('');
   const [loading,    setLoading]    = useState(false);
   const [format,     setFormat]     = useState<ReportFormat>('docx');
   const today = new Date().toISOString().split('T')[0];
-  const [dateFrom,   setDateFrom]   = useState(() => projectStartDate ?? today);
-  const [dateTo,     setDateTo]     = useState(today);
-  const [generating,    setGenerating]    = useState(false);
-  const [generateStatus, setGenerateStatus] = useState('');
-  const [streamStatus,  setStreamStatus]  = useState('');
-  const [error,         setError]         = useState<string | null>(null);
-  const [lastReport, setLastReport] = useState<ReportContent | null>(null);
+  const [dateFrom,     setDateFrom]     = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toISOString().split('T')[0];
+  });
+  const [dateTo,       setDateTo]       = useState(today);
+  const [activePreset, setActivePreset] = useState<'2W' | '1M' | '3M' | '6M' | 'Full' | 'custom'>('1M');
+  const [generating,       setGenerating]       = useState(false);
+  const [generatingMessage, setGeneratingMessage] = useState<string | null>(null);
+  const [streamStatus,     setStreamStatus]     = useState('');
+  const [error,            setError]            = useState<string | null>(null);
+
   const bottomRef  = useRef<HTMLDivElement>(null);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
   const abortRef   = useRef<AbortController | null>(null);
@@ -152,7 +162,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
     setLoading(false);
     setGenerating(false);
     setStreamStatus('');
-    setGenerateStatus('');
+
   };
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -170,50 +180,72 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
 
   const defaultFrom = projectStartDate ?? today;
 
-  const handleGenerate = async (promptOverride?: string, fromChat = false) => {
-    // For button clicks with no dates, default to project start → today
+  const buildDefaultPrompt = (activeFormat: ReportFormat, from: string, to: string) => {
+    const fmtLabel = activeFormat === 'pptx' ? 'PowerPoint presentation' : activeFormat === 'pdf' ? 'PDF report' : 'Word document';
+    return `Generate a comprehensive ${fmtLabel} for the project "${projectName}" covering the period from ${from} to ${to}. ` +
+      `Please review and include: all tasks and their completion status, deadlines and whether they were met or are at risk, ` +
+      `overall project progress and schedule health, key contributions by team member, ` +
+      `insights from all linked GitHub and GitLab repositories (commits, activity, file changes), ` +
+      `and any relevant content from all uploaded documents. ` +
+      `Provide an executive summary, highlight accomplishments, flag risks or delays, and recommend next steps. ` +
+      `Include figures (bar charts, pie charts, progress charts, or timelines) wherever the data supports them to make the report easier to understand. ` +
+      `Ensure all text, tables, and figures are properly sized and do not overlap or overrun any boundaries.`;
+  };
+
+  const phasesByFormat: Record<ReportFormat, string[]> = {
+    pptx: [
+      'Reading commits and codebase from all repos…',
+      'Designing slide structure…',
+      'Writing slide content…',
+      'Building presentation…',
+    ],
+    docx: [
+      'Reading commits and codebase from all repos…',
+      'Outlining document sections…',
+      'Writing section content…',
+      'Formatting Word document…',
+    ],
+    pdf: [
+      'Reading commits and codebase from all repos…',
+      'Structuring report layout…',
+      'Writing content…',
+      'Generating PDF…',
+    ],
+  };
+
+  // baseMessages: the messages snapshot to append to (avoids stale closure when called from sendMessage)
+  const handleGenerate = async (promptOverride?: string, baseMessages?: Message[]) => {
     const effectiveFrom = dateFrom || defaultFrom;
     const effectiveTo   = dateTo   || today;
 
-    // If triggered from chat, auto-switch format based on what the user asked for
     const detectedFormat = promptOverride ? detectFormat(promptOverride) : null;
     const activeFormat = detectedFormat ?? format;
     if (detectedFormat && detectedFormat !== format) setFormat(detectedFormat);
 
-    const lastUserMsg = messages.filter((m) => m.role === 'user').slice(-1)[0]?.content ?? '';
-    const prompt = promptOverride ?? lastUserMsg ?? `Generate a comprehensive project status report for ${projectName}`;
+    const rawPrompt = promptOverride ?? '';
+    const prompt = rawPrompt || buildDefaultPrompt(activeFormat, effectiveFrom, effectiveTo);
+
+    // Use provided snapshot or current messages; inject user message if button-triggered
+    let currentMessages = baseMessages ?? messages;
+    if (!baseMessages) {
+      const userMsg: Message = { role: 'user', content: prompt };
+      currentMessages = [...currentMessages, userMsg];
+      setMessages(currentMessages);
+    }
 
     setGenerating(true);
     setError(null);
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const phasesByFormat: Record<ReportFormat, string[]> = {
-      pptx: [
-        'Reading commits and codebase from all repos…',
-        'Designing slide structure…',
-        'Writing slide content…',
-        'Building presentation…',
-      ],
-      docx: [
-        'Reading commits and codebase from all repos…',
-        'Outlining document sections…',
-        'Writing section content…',
-        'Formatting Word document…',
-      ],
-      pdf: [
-        'Reading commits and codebase from all repos…',
-        'Structuring report layout…',
-        'Writing content…',
-        'Generating PDF…',
-      ],
-    };
     const phases = phasesByFormat[activeFormat];
     let phaseIdx = 0;
-    setGenerateStatus(phases[0]);
+    setGeneratingMessage(phases[0]);
+
     const phaseTimer = setInterval(() => {
       phaseIdx = Math.min(phaseIdx + 1, phases.length - 1);
-      setGenerateStatus(phases[phaseIdx]);
+      setGeneratingMessage(phases[phaseIdx]);
+
     }, 6000);
 
     try {
@@ -225,16 +257,15 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
       });
       const data = await res.json();
       clearInterval(phaseTimer);
+      setGeneratingMessage(null);
+
       if (!res.ok) {
         setError(data.error ?? `Error ${res.status}`);
         setGenerating(false);
-        setGenerateStatus('');
+
         return;
       }
 
-      setLastReport(data);
-
-      // Persist to saved_reports table (best-effort)
       supabase.from('saved_reports').insert({
         project_id:      projectId,
         title:           data.title,
@@ -246,17 +277,17 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
         provider:        data.provider ?? null,
       }).then(() => onReportSaved?.());
 
-      if (activeFormat === 'docx') await downloadDocx(data);
-      else if (activeFormat === 'pptx') await downloadPptx(data);
-      else await downloadPdf(data);
-
-      setMessages([...messages, {
+      // No auto-download — show a download card in the chat instead
+      const fmtLabel = activeFormat === 'pptx' ? 'PowerPoint' : activeFormat === 'pdf' ? 'PDF' : 'Word';
+      setMessages([...currentMessages, {
         role: 'assistant',
-        content: `✓ Report generated: **${data.title}** — ${data.sections.length} sections. The file has been downloaded to your device.`,
+        content: `✓ **${data.title}** is ready — ${data.sections.length} sections · ${fmtLabel}`,
         provider: data.provider,
+        reportReady: { data, format: activeFormat },
       }]);
     } catch (err: any) {
       clearInterval(phaseTimer);
+      setGeneratingMessage(null);
       if (err?.name !== 'AbortError') {
         setError('Failed to generate report.');
         console.error(err);
@@ -264,7 +295,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
     }
     abortRef.current = null;
     setGenerating(false);
-    setGenerateStatus('');
+
   };
 
   const sendMessage = async () => {
@@ -285,8 +316,9 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
     if (GENERATE_INTENT.test(text)) {
       const fmt = detectFormat(text) ?? format;
       const fmtLabel = fmt === 'pptx' ? 'PowerPoint slide deck' : fmt === 'docx' ? 'Word document' : 'PDF';
-      setMessages([...next, { role: 'assistant', content: `Got it — generating your ${fmtLabel} now…` }]);
-      await handleGenerate(text, true);
+      const withAck: Message[] = [...next, { role: 'assistant', content: `Got it — generating your ${fmtLabel} now…` }];
+      setMessages(withAck);
+      await handleGenerate(text, withAck);
       return;
     }
 
@@ -354,82 +386,121 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
 
   return (
     <div className="rt-root flex flex-col">
-      {/* Controls bar */}
-      <div className="border border-border bg-surface p-4 mb-4 flex flex-wrap items-end gap-4">
-        <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5">From</label>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="Report start date"
-            className="px-3 py-1.5 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 rounded" />
-        </div>
-        <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5">To</label>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="Report end date"
-            className="px-3 py-1.5 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 rounded" />
-        </div>
-        <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5">Preset</label>
-          <div className="flex gap-1">
-            {([
-              { label: '2W',    days: 14 },
-              { label: '1M',    months: 1 },
-              { label: '3M',    months: 3 },
-              { label: '6M',    months: 6 },
-            ] as { label: string; days?: number; months?: number }[]).map(({ label, days, months }) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() => {
-                  const to = new Date();
-                  const from = new Date();
-                  if (days)   from.setDate(from.getDate() - days);
-                  if (months) from.setMonth(from.getMonth() - months);
-                  const fmt = (d: Date) => d.toISOString().split('T')[0];
-                  setDateFrom(fmt(from));
-                  setDateTo(fmt(to));
-                }}
-                className="px-2.5 py-1.5 text-xs border border-border rounded text-muted hover:text-heading hover:bg-surface2 transition-colors font-mono"
-              >
-                {label}
-              </button>
-            ))}
+      {/* Controls bar — two-row stacked layout */}
+      <div className="border border-border bg-surface px-3 py-2.5 mb-4 flex items-stretch gap-3">
+
+        {/* FROM / TO stacked */}
+        <div className="flex flex-col justify-between gap-1.5 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-muted font-mono w-7 shrink-0">From</span>
+            <input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setActivePreset('custom'); }} title="Report start date"
+              className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 rounded" />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-muted font-mono w-7 shrink-0">To</span>
+            <input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setActivePreset('custom'); }} title="Report end date"
+              className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 rounded" />
           </div>
         </div>
-        <div>
-          <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5">Format</label>
-          <div className="flex gap-1">
-            {formatBtns.map((f) => (
-              <button key={f.id} type="button" onClick={() => setFormat(f.id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded transition-colors ${
-                  format === f.id
-                    ? 'bg-accent text-white border-accent'
-                    : 'border-border text-muted hover:text-heading hover:bg-surface2'
-                }`}>
-                {f.icon}{f.label}
-              </button>
-            ))}
-          </div>
+
+        {/* Divider */}
+        <span className="w-px bg-border self-stretch shrink-0" />
+
+        {/* Presets — 3×2 grid filling height */}
+        <div className="grid grid-cols-3 gap-1 shrink-0 content-stretch">
+          {([
+            { label: '2W',     days: 14 },
+            { label: '1M',     months: 1 },
+            { label: '3M',     months: 3 },
+            { label: '6M',     months: 6 },
+            { label: 'Full',   full: true },
+            { label: 'Custom', custom: true },
+          ] as { label: string; days?: number; months?: number; full?: boolean; custom?: boolean }[]).map(
+            ({ label, days, months, full, custom }) => {
+              const activeKey = custom ? 'custom' : label;
+              return (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => {
+                    if (custom) { setActivePreset('custom'); return; }
+                    const fmt = (d: Date) => d.toISOString().split('T')[0];
+                    const to = new Date();
+                    if (full) {
+                      setDateFrom(projectStartDate ?? fmt(to));
+                      setDateTo(fmt(to));
+                    } else {
+                      const from = new Date();
+                      if (days)   from.setDate(from.getDate() - days);
+                      if (months) from.setMonth(from.getMonth() - months);
+                      setDateFrom(fmt(from));
+                      setDateTo(fmt(to));
+                    }
+                    setActivePreset(label as typeof activePreset);
+                  }}
+                  className={`px-2 text-xs border rounded transition-colors font-mono flex items-center justify-center ${
+                    activePreset === activeKey
+                      ? 'bg-accent text-[var(--color-accent-fg)] border-accent'
+                      : 'border-border text-muted hover:text-heading hover:bg-surface2'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            }
+          )}
         </div>
-        <div className="flex items-center gap-2 ml-auto">
-          {(generating || loading) && (
+
+        {/* Divider */}
+        <span className="w-px bg-border self-stretch shrink-0" />
+
+        {/* Format — stacked column filling height */}
+        <div className="flex flex-col gap-1 shrink-0">
+          {formatBtns.map((f) => (
+            <button key={f.id} type="button" onClick={() => setFormat(f.id)}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 text-xs border rounded transition-colors ${
+                format === f.id
+                  ? 'bg-accent text-[var(--color-accent-fg)] border-accent'
+                  : 'border-border text-muted hover:text-heading hover:bg-surface2'
+              }`}>
+              {f.icon}{f.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <span className="w-px bg-border self-stretch shrink-0" />
+
+        {/* Generate + Stop filling height */}
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => handleGenerate()}
+            disabled={generating || loading}
+            className="flex-1 flex items-center justify-center gap-1.5 px-5 bg-accent text-[var(--color-accent-fg)] text-xs font-medium rounded hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Generate
+          </button>
+          {(generating || loading) ? (
             <button
               type="button"
               onClick={abort}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-danger/40 text-danger text-xs rounded hover:bg-danger/10 transition-colors"
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 border border-danger/40 text-danger text-xs rounded hover:bg-danger/10 transition-colors"
             >
-              <X size={12} />
-              Stop
+              <X size={11} />Stop
             </button>
+          ) : (
+            <div className="flex-1" /> /* spacer keeps Generate full-height when Stop is hidden */
           )}
-          <button
-            type="button"
-            onClick={() => handleGenerate(undefined, false)}
-            disabled={generating || loading}
-            className="flex items-center gap-1.5 px-5 py-1.5 bg-accent text-white text-xs font-medium rounded hover:bg-accent/90 transition-colors disabled:opacity-50"
-          >
-            {generating ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            {generating ? (generateStatus || 'Generating…') : 'Generate & Download'}
-          </button>
         </div>
+
+        {/* Model note — right-aligned, vertically centred */}
+        <span className="ml-auto self-center text-[10px] text-muted font-mono shrink-0 hidden lg:block">
+          {activeProviderName
+            ? <><span className="text-[var(--color-accent)]">{activeProviderName}</span> · <span className="opacity-60">change model above</span></>
+            : <><span className="text-[var(--color-accent)]">Claude Sonnet 4.6</span> · <span className="opacity-60">change model above</span></>
+          }
+        </span>
       </div>
 
       {/* Chat area */}
@@ -462,24 +533,65 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
 
           {messages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] px-3 py-2 rounded text-xs leading-relaxed whitespace-pre-wrap ${
-                msg.role === 'user'
-                  ? 'bg-accent text-white ml-4'
-                  : 'bg-surface2 border border-border text-heading mr-4'
-              }`}>
-                {msg.content}
-                {msg.role === 'assistant' && msg.provider && (
-                  <div className="text-[9px] text-muted mt-1 text-right opacity-60">{msg.provider}</div>
-                )}
-              </div>
+              {msg.reportReady ? (
+                <div className="bg-surface2 border border-border rounded p-3 text-xs max-w-[85%] mr-4 space-y-2">
+                  <div className="flex items-center gap-1.5 text-[var(--color-accent3)] font-medium">
+                    <FileText size={11} />
+                    {msg.content}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const { data, format: fmt } = msg.reportReady!;
+                        if (fmt === 'docx') await downloadDocx(data);
+                        else if (fmt === 'pptx') await downloadPptx(data);
+                        else await downloadPdf(data);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1 bg-accent text-[var(--color-accent-fg)] text-[10px] font-medium rounded hover:bg-accent/90 transition-colors"
+                    >
+                      <Download size={10} />
+                      Download {msg.reportReady.format.toUpperCase()}
+                    </button>
+                    {msg.reportReady.data.rawData?.goals?.length ? (
+                      <button
+                        type="button"
+                        onClick={() => exportGoalsCSV(msg.reportReady!.data)}
+                        className="flex items-center gap-1 text-[10px] text-muted hover:text-heading border border-border rounded px-2 py-1 hover:bg-surface2 transition-colors"
+                      >
+                        <TableIcon size={9} />
+                        Export CSV
+                      </button>
+                    ) : null}
+                  </div>
+                  {msg.provider && (
+                    <div className="text-[9px] text-muted opacity-60">{msg.provider}</div>
+                  )}
+                </div>
+              ) : (
+                <div className={`max-w-[85%] px-3 py-2 rounded text-xs leading-relaxed ${
+                  msg.role === 'user'
+                    ? 'bg-accent text-[var(--color-accent-fg)] ml-4 whitespace-pre-wrap'
+                    : 'bg-surface2 border border-border text-heading mr-4 rt-prose'
+                }`}>
+                  {msg.role === 'user' ? msg.content : (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  )}
+                  {msg.role === 'assistant' && msg.provider && (
+                    <div className="text-[9px] text-muted mt-1 text-right opacity-60">{msg.provider}</div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
 
-          {loading && (
+          {(loading || generatingMessage) && (
             <div className="flex justify-start">
               <div className="bg-surface2 border border-border px-3 py-2 rounded flex items-center gap-2 mr-4">
                 <Loader2 size={11} className="animate-spin text-accent" />
-                <span className="text-[10px] text-muted font-mono">{streamStatus || 'Thinking…'}</span>
+                <span className="text-[10px] text-muted font-mono">
+                  {generatingMessage || streamStatus || 'Thinking…'}
+                </span>
               </div>
             </div>
           )}
@@ -488,30 +600,6 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
             <div className="flex items-center gap-2 text-[10px] text-danger bg-danger/5 border border-danger/20 rounded px-3 py-2 font-mono">
               <X size={11} />
               {error}
-            </div>
-          )}
-
-          {lastReport && (
-            <div className="flex justify-start mr-4">
-              <div className="bg-accent3/5 border border-accent3/20 rounded p-3 text-xs max-w-[85%]">
-                <div className="flex items-center gap-1.5 mb-2 text-accent3 font-medium">
-                  <Download size={11} />
-                  Report Ready — {lastReport.sections.length} sections
-                </div>
-                <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => handleGenerate(undefined, false)} disabled={generating}
-                    className="text-[10px] text-accent hover:underline">
-                    Re-download
-                  </button>
-                  {lastReport.rawData?.goals?.length ? (
-                    <button type="button" onClick={() => exportGoalsCSV(lastReport!)}
-                      className="flex items-center gap-1 text-[10px] text-muted hover:text-heading border border-border rounded px-2 py-0.5 hover:bg-surface2 transition-colors">
-                      <TableIcon size={9} />
-                      Export CSV
-                    </button>
-                  ) : null}
-                </div>
-              </div>
             </div>
           )}
 
@@ -541,7 +629,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
             </button>
           ) : (
             <button type="button" title="Send" onClick={sendMessage} disabled={!input.trim()}
-              className="p-2 bg-accent text-white rounded hover:bg-accent/90 transition-colors disabled:opacity-40 shrink-0">
+              className="p-2 bg-accent text-[var(--color-accent-fg)] rounded hover:bg-accent/90 transition-colors disabled:opacity-40 shrink-0">
               <Send size={13} />
             </button>
           )}

@@ -6,10 +6,17 @@ export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt
 // 'auto' is a client-side concept — server resolves it per endpoint before calling chat()
 export type AIProviderOrAuto = AIProvider | 'auto';
 
+export interface ImageAttachment {
+  base64: string;
+  mimeType: string;
+}
+
 interface ChatMessage {
   system: string;
   user: string;
   maxTokens?: number;
+  /** Vision images (Claude + GPT-4o only) */
+  images?: ImageAttachment[];
 }
 
 interface ChatResult {
@@ -34,7 +41,18 @@ async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIP
       model,
       max_tokens: msg.maxTokens || 500,
       system: msg.system,
-      messages: [{ role: 'user', content: msg.user }],
+      messages: [{
+        role: 'user',
+        content: msg.images?.length
+          ? [
+              ...msg.images.map((img) => ({
+                type: 'image',
+                source: { type: 'base64', media_type: img.mimeType, data: img.base64 },
+              })),
+              { type: 'text', text: msg.user },
+            ]
+          : msg.user,
+      }],
     }),
   });
 
@@ -66,12 +84,22 @@ async function callGPT(msg: ChatMessage): Promise<ChatResult> {
   if (!apiKey) throw new Error('OPENAI_API_KEY not set');
 
   const openai = new OpenAI({ apiKey });
+  const userContent = msg.images?.length
+    ? [
+        ...msg.images.map((img) => ({
+          type: 'image_url' as const,
+          image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+        })),
+        { type: 'text' as const, text: msg.user },
+      ]
+    : msg.user;
+
   const completion = await openai.chat.completions.create({
     model: 'gpt-4o',
     max_tokens: msg.maxTokens || 500,
     messages: [
       { role: 'system', content: msg.system },
-      { role: 'user', content: msg.user },
+      { role: 'user', content: userContent as any },
     ],
   });
 
