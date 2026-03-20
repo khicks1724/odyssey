@@ -262,6 +262,10 @@ export default function GoalMetrics({
 
   return (
     <div className="space-y-6">
+      {/* Backdrop — clicking outside any open popup closes it */}
+      {openUid && (
+        <div className="fixed inset-0 z-40" onClick={() => setOpenUid(null)} />
+      )}
       {/* ── Summary Cards ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border">
         {[
