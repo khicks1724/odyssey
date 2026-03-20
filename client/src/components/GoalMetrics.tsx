@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { List, X } from 'lucide-react';
-import type { Goal } from '../types';
+import { List, X, Clock, ShieldAlert } from 'lucide-react';
+import type { Goal, TimeLog } from '../types';
 
 interface MemberInfo {
   user_id: string;
@@ -15,6 +15,7 @@ interface GoalMetricsProps {
   currentUserName: string;
   currentUserAvatar?: string;
   onAssignTask?: (goalId: string, userId: string) => void;
+  timeLogs?: TimeLog[];
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -199,6 +200,7 @@ export default function GoalMetrics({
   currentUserName,
   currentUserAvatar,
   onAssignTask,
+  timeLogs = [],
 }: GoalMetricsProps) {
   const [openUid, setOpenUid] = useState<string | null>(null);
 
@@ -468,6 +470,145 @@ export default function GoalMetrics({
           </div>
         </div>
       )}
+
+      {/* ── Time Tracking ── */}
+      {timeLogs.length > 0 && (() => {
+        const totalHours = timeLogs.reduce((s, l) => s + l.logged_hours, 0);
+
+        // Hours by category
+        const hoursByCategory = new Map<string, number>();
+        for (const log of timeLogs) {
+          const goal = goals.find(g => g.id === log.goal_id);
+          const cat = goal?.category || 'General';
+          hoursByCategory.set(cat, (hoursByCategory.get(cat) ?? 0) + log.logged_hours);
+        }
+        const sortedCats = Array.from(hoursByCategory.entries()).sort((a, b) => b[1] - a[1]);
+        const maxCatHours = Math.max(...sortedCats.map(([, h]) => h), 1);
+
+        // Hours by assignee
+        const hoursByAssignee = new Map<string, number>();
+        for (const log of timeLogs) {
+          const uid = log.user_id ?? 'unknown';
+          hoursByAssignee.set(uid, (hoursByAssignee.get(uid) ?? 0) + log.logged_hours);
+        }
+        const sortedAssignees = Array.from(hoursByAssignee.entries()).sort((a, b) => b[1] - a[1]);
+        const maxAssigneeHours = Math.max(...sortedAssignees.map(([, h]) => h), 1);
+
+        return (
+          <div className="border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Clock size={13} className="text-[var(--color-accent2)]" />
+              <SectionHeader label="Time Tracking" />
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Total stat */}
+              <div>
+                <div className="text-3xl font-extrabold text-[var(--color-accent2)] font-sans mb-0.5">{totalHours.toFixed(1)}h</div>
+                <div className="text-[10px] text-[var(--color-muted)] uppercase tracking-widest">Total Hours Logged</div>
+                <div className="text-[10px] text-[var(--color-muted)] mt-1">{timeLogs.length} log entries across {goals.filter(g => timeLogs.some(l => l.goal_id === g.id)).length} tasks</div>
+              </div>
+
+              {/* Hours by category mini bars */}
+              <div>
+                <div className="text-[10px] uppercase tracking-widest text-[var(--color-muted)] mb-2">By Category</div>
+                <div className="space-y-2">
+                  {sortedCats.slice(0, 5).map(([cat, hrs]) => (
+                    <div key={cat}>
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-[10px] text-[var(--color-heading)] font-mono truncate">{cat}</span>
+                        <span className="text-[10px] text-[var(--color-muted)] font-mono shrink-0 ml-2">{hrs.toFixed(1)}h</span>
+                      </div>
+                      <MiniBar pct={Math.round((hrs / maxCatHours) * 100)} color="bg-[var(--color-accent2)]/70" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Hours by assignee */}
+            {sortedAssignees.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-[var(--color-border)]">
+                <div className="text-[10px] uppercase tracking-widest text-[var(--color-muted)] mb-2">By Contributor</div>
+                <div className="space-y-2">
+                  {sortedAssignees.slice(0, 5).map(([uid, hrs]) => {
+                    const person = allPeople.find(p => p.user_id === uid);
+                    const name = person?.display_name ?? uid.slice(0, 8);
+                    return (
+                      <div key={uid}>
+                        <div className="flex items-center justify-between mb-0.5">
+                          <span className="text-[10px] text-[var(--color-heading)] font-mono truncate">{name}</span>
+                          <span className="text-[10px] text-[var(--color-muted)] font-mono shrink-0 ml-2">{hrs.toFixed(1)}h</span>
+                        </div>
+                        <MiniBar pct={Math.round((hrs / maxAssigneeHours) * 100)} color="bg-[var(--color-accent)]/70" />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Risk Overview ── */}
+      {goals.some(g => g.risk_score != null) && (() => {
+        const scored = goals.filter(g => g.risk_score != null);
+        const low = scored.filter(g => (g.risk_score ?? 0) < 0.25).length;
+        const medium = scored.filter(g => (g.risk_score ?? 0) >= 0.25 && (g.risk_score ?? 0) < 0.5).length;
+        const high = scored.filter(g => (g.risk_score ?? 0) >= 0.5 && (g.risk_score ?? 0) < 0.75).length;
+        const critical = scored.filter(g => (g.risk_score ?? 0) >= 0.75).length;
+        const highRiskGoals = scored.filter(g => (g.risk_score ?? 0) >= 0.5).sort((a, b) => (b.risk_score ?? 0) - (a.risk_score ?? 0));
+
+        const riskColor = (score: number) =>
+          score >= 0.75 ? 'text-[var(--color-danger)] bg-[var(--color-danger)]/10 border-[var(--color-danger)]/20'
+          : score >= 0.5 ? 'text-orange-400 bg-orange-400/10 border-orange-400/20'
+          : score >= 0.25 ? 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20'
+          : 'text-[var(--color-accent3)] bg-[var(--color-accent3)]/10 border-[var(--color-accent3)]/20';
+
+        const riskLabel = (score: number) =>
+          score >= 0.75 ? 'Critical' : score >= 0.5 ? 'High' : score >= 0.25 ? 'Medium' : 'Low';
+
+        return (
+          <div className="border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <ShieldAlert size={13} className="text-[var(--color-accent)]" />
+              <SectionHeader label="Risk Overview" />
+            </div>
+
+            {/* Distribution */}
+            <div className="grid grid-cols-4 gap-px bg-[var(--color-border)] border border-[var(--color-border)] mb-4">
+              {[
+                { label: 'Low', count: low, cls: 'text-[var(--color-accent3)]' },
+                { label: 'Medium', count: medium, cls: 'text-yellow-400' },
+                { label: 'High', count: high, cls: 'text-orange-400' },
+                { label: 'Critical', count: critical, cls: 'text-[var(--color-danger)]' },
+              ].map(({ label, count, cls }) => (
+                <div key={label} className="bg-[var(--color-surface)] p-3 text-center">
+                  <div className={`text-xl font-extrabold font-sans ${cls}`}>{count}</div>
+                  <div className="text-[9px] text-[var(--color-muted)] uppercase tracking-wider">{label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* High + Critical list */}
+            {highRiskGoals.length > 0 ? (
+              <div className="space-y-1.5">
+                {highRiskGoals.map(g => (
+                  <div key={g.id} className="flex items-center gap-2">
+                    <span className={`text-[9px] px-1.5 py-0.5 border rounded font-mono font-semibold shrink-0 ${riskColor(g.risk_score ?? 0)}`}>
+                      {riskLabel(g.risk_score ?? 0)}
+                    </span>
+                    <span className="text-xs text-[var(--color-heading)] truncate">{g.title}</span>
+                    <span className="text-[10px] text-[var(--color-muted)] font-mono shrink-0">{Math.round((g.risk_score ?? 0) * 100)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-[var(--color-muted)]">No high-risk tasks. Run "Assess Risk" to update scores.</p>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

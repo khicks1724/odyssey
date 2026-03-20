@@ -1512,4 +1512,151 @@ Give me the 4-6 most impactful next steps to make concrete progress on this task
       return reply.status(500).send({ error: 'Failed to generate guidance' });
     }
   });
+
+  // ── AI Search ────────────────────────────────────────────────────────────────
+  interface AISearchBody { agent?: string; projectId: string; query: string; }
+
+  server.post<{ Body: AISearchBody }>('/ai/search', async (request, reply) => {
+    const { agent, projectId, query } = request.body;
+    if (!projectId || !query) return reply.status(400).send({ error: 'projectId and query are required' });
+
+    // Fetch goals + recent events
+    const [goalsRes, eventsRes] = await Promise.all([
+      supabase.from('goals').select('id,title,status,progress,category,loe,assignees,deadline').eq('project_id', projectId),
+      supabase.from('events').select('id,title,summary,source,event_type,occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(200),
+    ]);
+
+    const goals = goalsRes.data ?? [];
+    const events = eventsRes.data ?? [];
+
+    // Instant text match
+    const q = query.toLowerCase();
+    const textGoalIds = new Set(goals.filter((g: any) => g.title?.toLowerCase().includes(q)).map((g: any) => g.id));
+    const textEventIds = new Set(events.filter((e: any) => e.title?.toLowerCase().includes(q) || e.summary?.toLowerCase().includes(q)).map((e: any) => e.id));
+
+    const provider = resolveProvider({ agent }, 'claude-haiku');
+
+    const goalsText = goals.map((g: any) =>
+      `ID:${g.id} | "${g.title}" | ${g.status} | ${g.progress}% | category:${g.category ?? '-'} | assignees:${(g.assignees ?? []).join(',')} | deadline:${g.deadline ?? '-'}`
+    ).join('\n');
+
+    const eventsText = events.slice(0, 100).map((e: any) =>
+      `ID:${e.id} | [${e.source}/${e.event_type}] ${e.title ?? ''} — ${e.summary?.slice(0, 120) ?? ''} | ${e.occurred_at?.slice(0, 10)}`
+    ).join('\n');
+
+    let aiGoalIds: string[] = [];
+    let aiEventIds: string[] = [];
+    let interpretation: string | null = null;
+
+    try {
+      const result = await chat(provider, {
+        system: `You are Odyssey's search engine. Given a natural language query about a project, identify which goals and events best match. Consider semantic meaning — the user might ask things like "tasks assigned to John", "what happened last week", or "at-risk items in Testing".
+Respond ONLY with valid JSON: { "goalIds": ["id1",...], "eventIds": ["id1",...], "interpretation": "plain English explanation of what was searched for" }
+Return up to 10 goalIds and 10 eventIds ordered by relevance.`,
+        user: `QUERY: "${query}"
+
+GOALS:
+${goalsText || 'none'}
+
+RECENT EVENTS:
+${eventsText || 'none'}`,
+        maxTokens: 600,
+      });
+
+      const parsed = JSON.parse(extractJson(result.text));
+      aiGoalIds = Array.isArray(parsed.goalIds) ? parsed.goalIds : [];
+      aiEventIds = Array.isArray(parsed.eventIds) ? parsed.eventIds : [];
+      interpretation = parsed.interpretation ?? null;
+    } catch {
+      // fallback to text-only results
+    }
+
+    // Merge AI + text results, deduplicated
+    const mergedGoals = [
+      ...aiGoalIds.map((id: string) => ({ id, score: 'ai' as const })),
+      ...[...textGoalIds].filter(id => !aiGoalIds.includes(id)).map(id => ({ id, score: 'text' as const })),
+    ];
+    const mergedEvents = [
+      ...aiEventIds.map((id: string) => ({ id, score: 'ai' as const })),
+      ...[...textEventIds].filter(id => !aiEventIds.includes(id)).map(id => ({ id, score: 'text' as const })),
+    ];
+
+    return { goals: mergedGoals, events: mergedEvents, interpretation, provider };
+  });
+
+  // ── Risk Assessment ───────────────────────────────────────────────────────────
+  interface RiskAssessBody { agent?: string; projectId: string; }
+
+  server.post<{ Body: RiskAssessBody }>('/ai/risk-assess', async (request, reply) => {
+    const { agent, projectId } = request.body;
+    if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+
+    const [goalsRes, depsRes] = await Promise.all([
+      supabase.from('goals').select('id,title,status,progress,deadline,updated_at,assignees,category').eq('project_id', projectId),
+      supabase.from('goal_dependencies').select('goal_id,depends_on_goal_id').eq('project_id', projectId),
+    ]);
+
+    const goals: any[] = goalsRes.data ?? [];
+    const deps: any[] = depsRes.data ?? [];
+    const now = new Date();
+
+    const goalMap = new Map(goals.map(g => [g.id, g]));
+
+    const goalsText = goals.map(g => {
+      const deadline = g.deadline ? Math.round((new Date(g.deadline).getTime() - now.getTime()) / 86400000) : null;
+      const stale = Math.round((now.getTime() - new Date(g.updated_at).getTime()) / 86400000);
+      const myDeps = deps.filter(d => d.goal_id === g.id);
+      const blockedBy = myDeps
+        .map(d => goalMap.get(d.depends_on_goal_id))
+        .filter((dep): dep is any => dep && dep.status !== 'complete')
+        .map(dep => dep.title);
+
+      return [
+        `ID:${g.id} | "${g.title}" | ${g.status} | ${g.progress}%`,
+        deadline !== null ? `deadline in ${deadline}d` : 'no deadline',
+        `last updated ${stale}d ago`,
+        blockedBy.length > 0 ? `blocked by: ${blockedBy.join(', ')}` : 'no blockers',
+      ].join(' | ');
+    }).join('\n');
+
+    const provider = resolveProvider({ agent }, 'claude-sonnet');
+
+    try {
+      const result = await chat(provider, {
+        system: `You are Odyssey's risk analyst. Evaluate each goal's risk based on: progress vs deadline proximity, staleness (days since last update), whether it depends on incomplete goals, and current status.
+Risk levels: low(0-25), medium(26-50), high(51-75), critical(76-100).
+Respond ONLY with a valid JSON array: [{ "goalId": "...", "score": 45, "level": "medium", "factors": ["3 days until deadline", "no updates in 10 days"] }]
+Assess every goal listed.`,
+        user: `PROJECT GOALS:\n${goalsText}`,
+        maxTokens: 1500,
+      });
+
+      const assessments: { goalId: string; score: number; level: string; factors: string[] }[] = JSON.parse(extractJson(result.text));
+
+      // Write risk scores back to goals (0-1 float)
+      await Promise.all(
+        assessments.map(a =>
+          supabase.from('goals').update({ risk_score: a.score / 100 }).eq('id', a.goalId)
+        )
+      );
+
+      // Log a single audit event
+      const session = await supabase.auth.getSession();
+      const userId = session.data?.session?.user?.id ?? null;
+      await supabase.from('events').insert({
+        project_id: projectId,
+        source: 'ai',
+        event_type: 'goal_risk_assessed',
+        title: 'Risk assessment completed',
+        summary: `${assessments.length} goals assessed`,
+        occurred_at: new Date().toISOString(),
+        created_by: userId,
+      });
+
+      return { assessments, provider: result.provider };
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: 'Failed to assess risk' });
+    }
+  });
 }

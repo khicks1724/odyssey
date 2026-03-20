@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { X, Save, Loader2, Sparkles, RefreshCw } from 'lucide-react';
+import { X, Save, Loader2, Sparkles, RefreshCw, Link, Clock, ShieldAlert } from 'lucide-react';
 import type { Goal } from '../types';
+import { useGoalDependencies } from '../hooks/useGoalDependencies';
 
 const API_BASE = '/api';
 
@@ -15,6 +16,14 @@ const STATUSES: { value: Goal['status']; label: string }[] = [
   { value: 'complete',    label: 'Complete' },
 ];
 
+function getRiskLabel(score: number | null): { label: string; color: string } | null {
+  if (score === null || score === undefined) return null;
+  if (score >= 0.75) return { label: 'Critical Risk', color: 'text-[var(--color-danger)] border-[var(--color-danger)]/40 bg-[var(--color-danger)]/5' };
+  if (score >= 0.5)  return { label: 'High Risk',     color: 'text-orange-400 border-orange-400/40 bg-orange-400/5' };
+  if (score >= 0.25) return { label: 'Medium Risk',   color: 'text-yellow-400 border-yellow-400/40 bg-yellow-400/5' };
+  return               { label: 'Low Risk',      color: 'text-[var(--color-accent3)] border-[var(--color-accent3)]/40 bg-[var(--color-accent3)]/5' };
+}
+
 export interface MemberOption { user_id: string; display_name: string | null; }
 
 interface GoalEditModalProps {
@@ -23,23 +32,32 @@ interface GoalEditModalProps {
   projectId?: string;
   agent?: string;
   autoGuidance?: boolean;
-  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance'>>) => Promise<void>;
+  allGoals?: Goal[];
+  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance' | 'estimated_hours'>>) => Promise<void>;
   onClose: () => void;
 }
 
-export default function GoalEditModal({ goal, members, projectId, agent, autoGuidance, onSave, onClose }: GoalEditModalProps) {
-  const [title,      setTitle]      = useState(goal.title);
-  const [category,   setCategory]   = useState(goal.category ?? '');
-  const [loe,        setLoe]        = useState(goal.loe ?? '');
-  const [assignees,  setAssignees]  = useState<string[]>(goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []));
-  const [deadline,   setDeadline]   = useState(goal.deadline?.split('T')[0] ?? '');
-  const [status,     setStatus]     = useState<Goal['status']>(goal.status);
-  const [progress,   setProgress]   = useState(goal.progress);
-  const [saving,     setSaving]     = useState(false);
+export default function GoalEditModal({ goal, members, projectId, agent, autoGuidance, allGoals = [], onSave, onClose }: GoalEditModalProps) {
+  const [title,          setTitle]          = useState(goal.title);
+  const [category,       setCategory]       = useState(goal.category ?? '');
+  const [loe,            setLoe]            = useState(goal.loe ?? '');
+  const [assignees,      setAssignees]      = useState<string[]>(goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []));
+  const [deadline,       setDeadline]       = useState(goal.deadline?.split('T')[0] ?? '');
+  const [status,         setStatus]         = useState<Goal['status']>(goal.status);
+  const [progress,       setProgress]       = useState(goal.progress);
+  const [estimatedHours, setEstimatedHours] = useState(goal.estimated_hours?.toString() ?? '');
+  const [saving,         setSaving]         = useState(false);
 
   // Initialize from saved guidance on the task; keeps text even while regenerating
   const [guidance,        setGuidance]        = useState<string | null>(goal.ai_guidance ?? null);
   const [guidanceLoading, setGuidanceLoading] = useState(false);
+
+  // Dependency management
+  const { dependencies, addDependency, removeDependency } = useGoalDependencies(goal.id, projectId);
+  const dependencySet = new Set(dependencies.map(d => d.depends_on_goal_id));
+  const otherGoals = allGoals.filter(g => g.id !== goal.id);
+
+  const riskLabel = getRiskLabel(goal.risk_score);
 
   const fetchGuidance = async () => {
     if (!projectId) return;
@@ -71,7 +89,6 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
     setGuidanceLoading(false);
   };
 
-  // Auto-start guidance if triggered from card sparkle button
   useEffect(() => {
     if (autoGuidance && projectId) fetchGuidance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,14 +97,16 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
   const handleSave = async () => {
     if (!title.trim()) return;
     setSaving(true);
+    const hrs = parseFloat(estimatedHours);
     await onSave(goal.id, {
-      title:       title.trim(),
-      category:    category || null,
-      loe:         loe      || null,
+      title:          title.trim(),
+      category:       category || null,
+      loe:            loe || null,
       assignees,
-      deadline:    deadline || null,
+      deadline:       deadline || null,
       status,
       progress,
+      estimated_hours: !isNaN(hrs) && hrs > 0 ? hrs : null,
     });
     setSaving(false);
     onClose();
@@ -100,11 +119,19 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
     <>
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
       <div className="fixed inset-0 flex items-center justify-center z-50 p-4" onClick={onClose}>
-        <div className={`w-full bg-surface border border-border shadow-2xl rounded-lg overflow-hidden flex flex-col transition-all duration-300 max-h-[90vh] ${showRightPanel ? 'max-w-4xl' : 'max-w-md'}`} onClick={(e) => e.stopPropagation()}>
+        <div className={`w-full bg-[var(--color-surface)] border border-[var(--color-border)] shadow-2xl rounded-lg overflow-hidden flex flex-col transition-all duration-300 max-h-[90vh] ${showRightPanel ? 'max-w-4xl' : 'max-w-md'}`} onClick={(e) => e.stopPropagation()}>
 
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-            <h3 className="text-sm font-bold text-heading font-sans">Edit Task</h3>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)] shrink-0">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-[var(--color-heading)] font-sans">Edit Task</h3>
+              {riskLabel && (
+                <span className={`flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 border rounded ${riskLabel.color}`}>
+                  <ShieldAlert size={8} />
+                  {riskLabel.label}
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               {projectId && (
                 <button
@@ -112,7 +139,7 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                   title={guidance ? 'Regenerate AI guidance' : 'Get AI guidance'}
                   onClick={fetchGuidance}
                   disabled={guidanceLoading}
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] border border-accent/30 text-accent rounded hover:bg-accent/5 transition-colors disabled:opacity-40"
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-[10px] border border-[var(--color-accent)]/30 text-[var(--color-accent)] rounded hover:bg-[var(--color-accent)]/5 transition-colors disabled:opacity-40"
                 >
                   {guidanceLoading
                     ? <Loader2 size={10} className="animate-spin" />
@@ -123,25 +150,26 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                   {guidanceLoading ? 'Analyzing…' : guidance ? 'Regenerate' : 'AI Guidance'}
                 </button>
               )}
-              <button type="button" title="Close" onClick={onClose} className="text-muted hover:text-heading transition-colors">
+              <button type="button" title="Close" onClick={onClose} className="text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
                 <X size={16} />
               </button>
             </div>
           </div>
 
-          {/* Body — two columns when guidance is present */}
+          {/* Body — two columns when projectId present */}
           <div className="flex flex-1 overflow-hidden">
             {/* Form column */}
-            <div className={`p-5 space-y-4 overflow-y-auto ${showRightPanel ? 'w-[420px] shrink-0 border-r border-border' : 'w-full'}`}>
+            <div className={`p-5 space-y-4 overflow-y-auto ${showRightPanel ? 'w-[420px] shrink-0 border-r border-[var(--color-border)]' : 'w-full'}`}>
+
               {/* Title */}
               <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Title</label>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Title</label>
                 <input
                   type="text"
                   title="Task title"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-surface2 border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-sm font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                   autoFocus
                 />
               </div>
@@ -149,12 +177,12 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
               {/* Status + Progress */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Status</label>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Status</label>
                   <select
                     value={status}
                     onChange={(e) => setStatus(e.target.value as Goal['status'])}
                     title="Status"
-                    className="w-full px-3 py-2 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+                    className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                   >
                     {STATUSES.map((s) => (
                       <option key={s.value} value={s.value}>{s.label}</option>
@@ -162,15 +190,15 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">
-                    Progress — <span className="text-accent font-mono">{progress}%</span>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">
+                    Progress — <span className="text-[var(--color-accent)] font-mono">{progress}%</span>
                   </label>
                   <input
                     type="range" min="0" max="100" step="5"
                     value={progress}
                     onChange={(e) => setProgress(Number(e.target.value))}
                     title="Progress"
-                    className="w-full accent-accent mt-2"
+                    className="w-full accent-[var(--color-accent)] mt-2"
                   />
                 </div>
               </div>
@@ -178,24 +206,24 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
               {/* Category + LOE */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Category</label>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Category</label>
                   <select
                     value={category}
                     onChange={(e) => setCategory(e.target.value)}
                     title="Category"
-                    className="w-full px-3 py-2 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+                    className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                   >
                     <option value="">— None —</option>
                     {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Line of Effort</label>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Line of Effort</label>
                   <select
                     value={loe}
                     onChange={(e) => setLoe(e.target.value)}
                     title="Line of Effort"
-                    className="w-full px-3 py-2 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+                    className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                   >
                     <option value="">— None —</option>
                     {LINES_OF_EFFORT.map((l) => <option key={l} value={l}>{l}</option>)}
@@ -203,26 +231,44 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                 </div>
               </div>
 
+              {/* Estimated Hours */}
+              <div>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5 flex items-center gap-1">
+                  <Clock size={9} />
+                  Estimated Hours
+                </label>
+                <input
+                  type="number"
+                  step="0.25"
+                  min="0"
+                  value={estimatedHours}
+                  onChange={(e) => setEstimatedHours(e.target.value)}
+                  placeholder="e.g. 8"
+                  title="Estimated hours"
+                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
+                />
+              </div>
+
               {/* Assigned To (multi-select) */}
               {members.length > 0 && (
                 <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">
-                    Assigned To <span className="text-muted/60 normal-case tracking-normal">(select multiple)</span>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">
+                    Assigned To <span className="text-[var(--color-muted)]/60 normal-case tracking-normal">(select multiple)</span>
                   </label>
-                  <div className="border border-border rounded divide-y divide-border/50 max-h-36 overflow-y-auto">
+                  <div className="border border-[var(--color-border)] rounded divide-y divide-[var(--color-border)]/50 max-h-36 overflow-y-auto">
                     {members.map((m) => {
                       const checked = assignees.includes(m.user_id);
                       return (
-                        <label key={m.user_id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-surface2 transition-colors">
+                        <label key={m.user_id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-[var(--color-surface2)] transition-colors">
                           <input
                             type="checkbox"
                             checked={checked}
                             onChange={() => setAssignees((prev) =>
                               checked ? prev.filter((id) => id !== m.user_id) : [...prev, m.user_id]
                             )}
-                            className="accent-accent w-3 h-3 shrink-0"
+                            className="w-3 h-3 shrink-0"
                           />
-                          <span className="text-xs font-mono text-heading truncate">{m.display_name ?? m.user_id}</span>
+                          <span className="text-xs font-mono text-[var(--color-heading)] truncate">{m.display_name ?? m.user_id}</span>
                         </label>
                       );
                     })}
@@ -232,45 +278,94 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
 
               {/* Deadline */}
               <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Deadline</label>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Deadline</label>
                 <input
                   type="date"
                   value={deadline}
                   onChange={(e) => setDeadline(e.target.value)}
                   title="Deadline"
-                  className="w-full px-3 py-2 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                 />
               </div>
+
+              {/* Dependencies */}
+              {otherGoals.length > 0 && (
+                <div>
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5 flex items-center gap-1">
+                    <Link size={9} />
+                    Depends On
+                  </label>
+                  <div className="border border-[var(--color-border)] rounded divide-y divide-[var(--color-border)]/50 max-h-36 overflow-y-auto">
+                    {otherGoals.map((g) => {
+                      const checked = dependencySet.has(g.id);
+                      return (
+                        <label key={g.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-[var(--color-surface2)] transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              if (checked) removeDependency(g.id);
+                              else addDependency(g.id);
+                            }}
+                            className="w-3 h-3 shrink-0"
+                          />
+                          <span className="text-xs font-mono text-[var(--color-heading)] truncate flex-1">{g.title}</span>
+                          <span className={`text-[9px] font-mono px-1 rounded ${
+                            g.status === 'complete' ? 'text-[var(--color-accent3)]' : 'text-[var(--color-muted)]'
+                          }`}>{g.status.replace('_', ' ')}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {dependencies.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {dependencies.map(dep => {
+                        const g = allGoals.find(g => g.id === dep.depends_on_goal_id);
+                        if (!g) return null;
+                        return (
+                          <span key={dep.id} className="flex items-center gap-1 text-[9px] font-mono bg-[var(--color-surface2)] border border-[var(--color-border)] rounded px-1.5 py-0.5 text-[var(--color-muted)]">
+                            <Link size={7} />
+                            {g.title.slice(0, 30)}{g.title.length > 30 ? '…' : ''}
+                            <button type="button" title="Remove dependency" onClick={() => removeDependency(g.id)} className="ml-0.5 hover:text-[var(--color-danger)] transition-colors">
+                              <X size={7} />
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* AI Guidance panel — always shown when projectId present */}
             {showRightPanel && (
-              <div className="flex-1 flex flex-col overflow-hidden bg-surface2/30">
-                <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-                  <Sparkles size={12} className="text-accent" />
-                  <span className="text-[10px] tracking-[0.15em] uppercase text-accent font-semibold">AI Guidance</span>
+              <div className="flex-1 flex flex-col overflow-hidden bg-[var(--color-surface2)]/30">
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border)] shrink-0">
+                  <Sparkles size={12} className="text-[var(--color-accent)]" />
+                  <span className="text-[10px] tracking-[0.15em] uppercase text-[var(--color-accent)] font-semibold">AI Guidance</span>
                 </div>
                 <div className="flex-1 overflow-y-auto px-4 py-4">
                   {guidanceLoading ? (
-                    <div className="flex items-center gap-2 text-muted">
-                      <Loader2 size={13} className="animate-spin text-accent" />
+                    <div className="flex items-center gap-2 text-[var(--color-muted)]">
+                      <Loader2 size={13} className="animate-spin text-[var(--color-accent)]" />
                       <span className="text-xs animate-pulse">Analyzing task against the repository…</span>
                     </div>
                   ) : guidance ? (
-                    <div className="text-[12px] text-muted leading-relaxed">
+                    <div className="text-[12px] text-[var(--color-muted)] leading-relaxed">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
-                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                          h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-heading">{children}</h1>,
-                          h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-heading">{children}</h2>,
-                          h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-heading">{children}</h3>,
-                          ul: ({ children }) => <ul className="mb-2 pl-4 space-y-1 list-disc">{children}</ul>,
-                          ol: ({ children }) => <ol className="mb-2 pl-4 space-y-1 list-decimal">{children}</ol>,
-                          strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                          em: ({ children }) => <em className="italic">{children}</em>,
-                          code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
-                          a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                          p:      ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                          h1:     ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-[var(--color-heading)]">{children}</h1>,
+                          h2:     ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-[var(--color-heading)]">{children}</h2>,
+                          h3:     ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-[var(--color-heading)]">{children}</h3>,
+                          ul:     ({ children }) => <ul className="mb-2 pl-4 space-y-1 list-disc">{children}</ul>,
+                          ol:     ({ children }) => <ol className="mb-2 pl-4 space-y-1 list-decimal">{children}</ol>,
+                          strong: ({ children }) => <strong className="font-semibold text-[var(--color-heading)]">{children}</strong>,
+                          em:     ({ children }) => <em className="italic">{children}</em>,
+                          code:   ({ children }) => <code className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
+                          a:      ({ href, children }) => <a href={href} className="text-[var(--color-accent2)] underline" target="_blank" rel="noreferrer">{children}</a>,
                         }}
                       >
                         {guidance}
@@ -278,10 +373,10 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6 py-8">
-                      <Sparkles size={28} className="text-accent/30" />
-                      <p className="text-xs font-semibold text-muted/60">No AI Guidance Yet</p>
-                      <p className="text-[11px] text-muted/50 leading-relaxed">
-                        Click the <span className="text-accent font-semibold">AI Guidance</span> button above to get tailored suggestions for this task — including next steps, risks, and recommendations based on your project context.
+                      <Sparkles size={28} className="text-[var(--color-accent)]/30" />
+                      <p className="text-xs font-semibold text-[var(--color-muted)]/60">No AI Guidance Yet</p>
+                      <p className="text-[11px] text-[var(--color-muted)]/50 leading-relaxed">
+                        Click the <span className="text-[var(--color-accent)] font-semibold">AI Guidance</span> button above to get tailored suggestions for this task — including next steps, risks, and recommendations based on your project context.
                       </p>
                     </div>
                   )}
@@ -291,11 +386,11 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-border bg-surface2 shrink-0">
+          <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-[var(--color-border)] bg-[var(--color-surface2)] shrink-0">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-1.5 text-xs text-muted hover:text-heading border border-border rounded transition-colors"
+              className="px-4 py-1.5 text-xs text-[var(--color-muted)] hover:text-[var(--color-heading)] border border-[var(--color-border)] rounded transition-colors"
             >
               Cancel
             </button>
@@ -303,7 +398,7 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
               type="button"
               onClick={handleSave}
               disabled={saving || !title.trim()}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-accent text-white text-xs rounded hover:bg-accent/90 transition-colors disabled:opacity-40"
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-[var(--color-accent)] text-white text-xs rounded hover:opacity-90 transition-opacity disabled:opacity-40"
             >
               {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
               Save Changes

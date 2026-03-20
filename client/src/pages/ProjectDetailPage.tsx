@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ProjectDetailPage.css';
@@ -34,8 +34,14 @@ import {
   ChevronDown,
   ChevronUp,
   RefreshCw,
+  ShieldAlert,
+  Download,
+  Table,
 } from 'lucide-react';
 import GoalMetrics from '../components/GoalMetrics';
+import SearchPanel from '../components/SearchPanel';
+import LogTimeModal from '../components/LogTimeModal';
+import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
 import FileViewerLazy from '../components/FileViewer';
 import OfficeFilePicker from '../components/OfficeFilePicker';
 import GoalEditModal from '../components/GoalEditModal';
@@ -45,6 +51,7 @@ import { useProject } from '../hooks/useProjects';
 import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
+import { useProjectTimeLogs } from '../hooks/useProjectTimeLogs';
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useChatPanel } from '../lib/chat-panel';
@@ -207,6 +214,25 @@ export default function ProjectDetailPage() {
   const [savedReportsVersion, setSavedReportsVersion] = useState(0);
   const [hasCommitData, setHasCommitData] = useState(false);
 
+  // Search, time tracking, risk, audit log state
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [logTimeGoal, setLogTimeGoal] = useState<import('../types').Goal | null>(null);
+  const [riskAssessing, setRiskAssessing] = useState(false);
+  const [goalDependencies, setGoalDependencies] = useState<import('../types').GoalDependency[]>([]);
+  const [auditFrom, setAuditFrom] = useState('');
+  const [auditTo, setAuditTo] = useState('');
+  const [auditType, setAuditType] = useState('');
+  const [auditPage, setAuditPage] = useState(0);
+  const AUDIT_PAGE_SIZE = 25;
+
+  // Project-wide time logs
+  const { logs: timeLogs, refetch: refetchTimeLogs } = useProjectTimeLogs(projectId);
+  const timeLogTotals = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of timeLogs) m.set(l.goal_id, (m.get(l.goal_id) ?? 0) + l.logged_hours);
+    return m;
+  }, [timeLogs]);
+
   // Intelligent Update panel — now lives in the layout right panel via context
   const [memberSearch, setMemberSearch] = useState('');
   const [memberResults, setMemberResults] = useState<GitHubUser[]>([]);
@@ -271,6 +297,25 @@ export default function ProjectDetailPage() {
       });
   }, [projectId]);
 
+  // Ctrl+K global search shortcut
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(true); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Fetch project-level goal dependencies
+  useEffect(() => {
+    if (!projectId) return;
+    supabase.from('goal_dependencies').select('*').eq('project_id', projectId)
+      .then(({ data }) => { if (data) setGoalDependencies(data as import('../types').GoalDependency[]); });
+  }, [projectId]);
+
+  // Reset audit pagination on filter change
+  useEffect(() => { setAuditPage(0); }, [auditFrom, auditTo, auditType]);
+
   // Fetch members
   const fetchMembers = useCallback(async () => {
     if (!projectId) return;
@@ -284,6 +329,59 @@ export default function ProjectDetailPage() {
   useEffect(() => {
     fetchMembers();
   }, [fetchMembers]);
+
+  // AI risk assessment
+  const handleAssessRisk = async () => {
+    if (!projectId) return;
+    setRiskAssessing(true);
+    try {
+      await fetch(`${API_BASE}/ai/risk-assess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, agent }),
+      });
+      await refetchGoals();
+    } catch (err) {
+      console.error('Risk assessment failed:', err);
+    }
+    setRiskAssessing(false);
+  };
+
+  // Export audit log as CSV
+  const handleExportAuditCSV = () => {
+    const filtered = events.filter((e) => {
+      if (auditFrom && e.occurred_at < auditFrom) return false;
+      if (auditTo && e.occurred_at > auditTo + 'T23:59:59Z') return false;
+      if (auditType && e.event_type !== auditType) return false;
+      return true;
+    });
+    const header = ['Timestamp', 'Source', 'Type', 'Title', 'Summary'];
+    const rows = filtered.map((e) => [
+      new Date(e.occurred_at).toISOString(),
+      e.source,
+      e.event_type,
+      (e.title ?? '').replace(/,/g, ';'),
+      (e.summary ?? '').replace(/,/g, ';').replace(/\n/g, ' '),
+    ]);
+    const csv = [header, ...rows].map((r) => r.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit-log-${projectId}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Close goal edit modal + refetch dependencies
+  const handleGoalEditClose = async () => {
+    setEditGoal(null);
+    setEditAutoGuidance(false);
+    if (projectId) {
+      const { data } = await supabase.from('goal_dependencies').select('*').eq('project_id', projectId);
+      if (data) setGoalDependencies(data as import('../types').GoalDependency[]);
+    }
+  };
 
   // Save GitHub repo — accepts "owner/repo" or full HTTPS clone URL
   const handleSaveRepo = async () => {
@@ -1318,6 +1416,24 @@ export default function ProjectDetailPage() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={() => setSearchOpen(true)}
+                title="Search tasks (Ctrl+K)"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md"
+              >
+                <Search size={12} /> Search
+              </button>
+              <button
+                type="button"
+                onClick={handleAssessRisk}
+                disabled={riskAssessing}
+                title="Run AI risk assessment on all tasks"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50"
+              >
+                {riskAssessing ? <Loader2 size={12} className="animate-spin" /> : <ShieldAlert size={12} />}
+                {riskAssessing ? 'Assessing…' : 'Assess Risk'}
+              </button>
+              <button
+                type="button"
                 onClick={handleSyncOfficeProgress}
                 disabled={syncingProgress}
                 title="Analyze imported Office documents and auto-update goal progress using AI"
@@ -1365,6 +1481,9 @@ export default function ProjectDetailPage() {
             onDelete={deleteGoal}
             onAdd={goalModal.onOpen}
             getAssignee={getAssignee}
+            goalDependencies={goalDependencies}
+            timeLogTotals={timeLogTotals}
+            onLogTime={(id) => { const g = goals.find((g) => g.id === id); if (g) setLogTimeGoal(g); }}
           />
 
           <Modal open={goalModal.open} onClose={goalModal.onClose} title="Add Goal">
@@ -1475,6 +1594,7 @@ export default function ProjectDetailPage() {
           currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
           currentUserAvatar={user?.user_metadata?.avatar_url}
           onAssignTask={(goalId, userId) => updateGoal(goalId, { assigned_to: userId })}
+          timeLogs={timeLogs}
         />
       )}
 
@@ -1802,6 +1922,122 @@ export default function ProjectDetailPage() {
 
           {/* GitLab Repository */}
           <GitLabSection projectId={projectId!} onReposChanged={(repos) => setGitlabRepos(repos)} />
+
+          {/* Audit Log */}
+          <div className="border border-border bg-surface p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <ClipboardList size={14} className="text-heading" />
+                <h3 className="font-sans text-sm font-bold text-heading">Audit Log</h3>
+                <span className="text-[10px] text-muted font-mono">({events.length} events)</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportAuditCSV}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs hover:text-heading hover:bg-surface2 transition-colors rounded font-mono"
+              >
+                <Download size={11} /> Export CSV
+              </button>
+            </div>
+
+            {/* Filters */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <input
+                type="date"
+                value={auditFrom}
+                onChange={(e) => setAuditFrom(e.target.value)}
+                title="From date"
+                className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+              <span className="text-[10px] text-muted">to</span>
+              <input
+                type="date"
+                value={auditTo}
+                onChange={(e) => setAuditTo(e.target.value)}
+                title="To date"
+                className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+              <select
+                value={auditType}
+                onChange={(e) => setAuditType(e.target.value)}
+                title="Filter by event type"
+                className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
+              >
+                <option value="">All types</option>
+                {[...new Set(events.map((e) => e.event_type))].sort().map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+              {(auditFrom || auditTo || auditType) && (
+                <button type="button" onClick={() => { setAuditFrom(''); setAuditTo(''); setAuditType(''); }}
+                  className="text-[10px] text-muted hover:text-heading transition-colors">
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {/* Table */}
+            {(() => {
+              const filtered = events.filter((e) => {
+                if (auditFrom && e.occurred_at < auditFrom) return false;
+                if (auditTo && e.occurred_at > auditTo + 'T23:59:59Z') return false;
+                if (auditType && e.event_type !== auditType) return false;
+                return true;
+              });
+              const totalPages = Math.ceil(filtered.length / AUDIT_PAGE_SIZE);
+              const paginated = filtered.slice(auditPage * AUDIT_PAGE_SIZE, (auditPage + 1) * AUDIT_PAGE_SIZE);
+
+              return (
+                <>
+                  <div className="overflow-x-auto border border-border rounded">
+                    <table className="w-full text-[10px] font-mono">
+                      <thead>
+                        <tr className="border-b border-border bg-surface2">
+                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Timestamp</th>
+                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Source</th>
+                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Type</th>
+                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Title</th>
+                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider hidden md:table-cell">Summary</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {paginated.length === 0 ? (
+                          <tr><td colSpan={5} className="px-3 py-6 text-center text-muted">No events match the current filters</td></tr>
+                        ) : paginated.map((e) => (
+                          <tr key={e.id} className="hover:bg-surface2 transition-colors">
+                            <td className="px-3 py-2 text-muted whitespace-nowrap">{new Date(e.occurred_at).toLocaleString()}</td>
+                            <td className="px-3 py-2 text-accent">{e.source}</td>
+                            <td className="px-3 py-2 text-muted">{e.event_type}</td>
+                            <td className="px-3 py-2 text-heading truncate max-w-[200px]">{e.title ?? '—'}</td>
+                            <td className="px-3 py-2 text-muted truncate max-w-[200px] hidden md:table-cell">{e.summary ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-[10px] text-muted font-mono">
+                        {filtered.length} events · page {auditPage + 1}/{totalPages}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button type="button" onClick={() => setAuditPage((p) => Math.max(0, p - 1))} disabled={auditPage === 0}
+                          className="text-[10px] px-2 py-1 border border-border rounded hover:bg-surface2 disabled:opacity-40 transition-colors font-mono">
+                          ← Prev
+                        </button>
+                        <button type="button" onClick={() => setAuditPage((p) => Math.min(totalPages - 1, p + 1))} disabled={auditPage >= totalPages - 1}
+                          className="text-[10px] px-2 py-1 border border-border rounded hover:bg-surface2 disabled:opacity-40 transition-colors font-mono">
+                          Next →
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
         </div>
       )}
     </div>
@@ -1824,8 +2060,9 @@ export default function ProjectDetailPage() {
         projectId={project.id}
         agent={agent}
         autoGuidance={editAutoGuidance}
+        allGoals={goals.filter((g) => g.id !== editGoal.id)}
         onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
-        onClose={() => { setEditGoal(null); setEditAutoGuidance(false); }}
+        onClose={handleGoalEditClose}
       />
     )}
 
@@ -1835,6 +2072,33 @@ export default function ProjectDetailPage() {
         goal={reportGoal}
         projectId={project.id}
         onClose={() => setReportGoal(null)}
+      />
+    )}
+
+    {/* Log Time Modal */}
+    {logTimeGoal && (
+      <LogTimeModal
+        goalId={logTimeGoal.id}
+        projectId={projectId!}
+        goalTitle={logTimeGoal.title}
+        onClose={() => setLogTimeGoal(null)}
+        onLogged={() => { setLogTimeGoal(null); refetchTimeLogs(); }}
+      />
+    )}
+
+    {/* Search Panel */}
+    {searchOpen && (
+      <SearchPanel
+        projectId={projectId ?? null}
+        goals={goals}
+        events={events}
+        onClose={() => setSearchOpen(false)}
+        onGoalSelect={(id) => {
+          setSearchOpen(false);
+          const g = goals.find((g) => g.id === id);
+          if (g) { setEditAutoGuidance(false); setEditGoal(g); }
+        }}
+        onEventSelect={() => { setSearchOpen(false); setActiveTab('activity'); }}
       />
     )}
 
@@ -1976,6 +2240,9 @@ interface GoalsKanbanProps {
   onDelete: (id: string) => void;
   onAdd: () => void;
   getAssignee: (userId: string | null | undefined) => { display_name: string | null; avatar_url: string | null } | null;
+  goalDependencies?: import('../types').GoalDependency[];
+  timeLogTotals?: Map<string, number>;
+  onLogTime?: (goalId: string) => void;
 }
 
 const STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -1986,7 +2253,7 @@ function isStaleComplete(goal: import('../types').Goal): boolean {
   return Date.now() - updated > STALE_MS;
 }
 
-function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDelete, onAdd, getAssignee }: GoalsKanbanProps) {
+function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDelete, onAdd, getAssignee, goalDependencies = [], timeLogTotals = new Map(), onLogTime }: GoalsKanbanProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = useState<GoalStatus | null>(null);
   const [showStale, setShowStale] = useState(false);
@@ -2029,17 +2296,32 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
     );
   }
 
-  const barMeta: Record<GoalStatus, { pct: number; cls: string }> = {
-    not_started: { pct: 0,   cls: 'bg-[#D94F4F]/50' },
-    in_progress: { pct: 40,  cls: 'bg-[#D97E2A]/70' },
-    in_review:   { pct: 75,  cls: 'bg-[#facc15]/70' },
-    complete:    { pct: 100, cls: 'bg-[#6DBE7D]/70' },
+  const barColors: Record<GoalStatus, string> = {
+    not_started: 'bg-[#D94F4F]/50',
+    in_progress: 'bg-[#D97E2A]/70',
+    in_review:   'bg-[#facc15]/70',
+    complete:    'bg-[#6DBE7D]/70',
+  };
+
+  const riskDotColor = (score: number | null | undefined) => {
+    if (score == null) return null;
+    if (score >= 0.75) return 'bg-red-500';
+    if (score >= 0.5) return 'bg-orange-400';
+    if (score >= 0.25) return 'bg-yellow-400';
+    return 'bg-green-500';
   };
 
   const renderCard = (goal: import('../types').Goal, colStatus: GoalStatus, stale = false) => {
     const assigneeList = (goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : [])).map(getAssignee).filter(Boolean);
     const isDragging = draggingId === goal.id;
-    const bar = barMeta[colStatus];
+    const barCls = barColors[colStatus];
+    const riskDot = riskDotColor(goal.risk_score);
+    const myDeps = goalDependencies.filter((d) => d.goal_id === goal.id);
+    const blockedDeps = myDeps.filter((d) => {
+      const depGoal = goals.find((g) => g.id === d.depends_on_goal_id);
+      return depGoal && depGoal.status !== 'complete';
+    });
+    const loggedHours = timeLogTotals.get(goal.id);
     return (
       <div
         key={goal.id}
@@ -2051,11 +2333,20 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
         } ${stale ? 'bg-surface border-border/30 opacity-40 saturate-0' : 'bg-surface2 border-border'}`}
       >
         <div className="flex items-start justify-between gap-1 mb-1.5">
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-heading font-medium leading-snug">{goal.title}</p>
-            {goal.loe && <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>}
+          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+            {riskDot && <span className={`w-2 h-2 rounded-full shrink-0 ${riskDot}`} title={`Risk score: ${Math.round((goal.risk_score ?? 0) * 100)}`} />}
+            <div className="min-w-0">
+              <p className="text-xs text-heading font-medium leading-snug">{goal.title}</p>
+              {goal.loe && <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>}
+            </div>
           </div>
           <div className="flex items-center gap-0.5 shrink-0">
+            {onLogTime && (
+              <button type="button" title="Log time" onClick={(e) => { e.stopPropagation(); onLogTime(goal.id); }}
+                className="p-0.5 text-muted hover:text-accent2 transition-colors opacity-0 group-hover:opacity-100">
+                <Clock size={11} />
+              </button>
+            )}
             <button type="button" title="Get AI guidance" onClick={(e) => { e.stopPropagation(); onEditWithGuidance(goal.id); }}
               className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
               <Sparkles size={11} />
@@ -2074,30 +2365,46 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
         <div className="mb-2">
           <div className="h-1.5 bg-border rounded-full overflow-hidden">
             <div
-              className={`h-full rounded-full transition-all duration-500 ${bar.cls} w-[var(--p)]`}
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              {...({ style: { '--p': `${bar.pct}%` } } as any)}
+              className={`h-full rounded-full transition-all duration-500 ${barCls}`}
+              style={{ width: `${goal.progress ?? 0}%` }}
             />
           </div>
+          <span className="text-[9px] text-muted font-mono">{goal.progress ?? 0}%</span>
         </div>
 
         <div className="flex items-center justify-between gap-1 flex-wrap">
-          {goal.deadline && (
-            <span className="text-[9px] text-muted font-mono">{new Date(goal.deadline).toLocaleDateString()}</span>
-          )}
-          {goal.category && (
-            <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
-          )}
-          {assigneeList.length > 0 && (
-            <div className="flex items-center gap-0.5 flex-wrap">
-              {assigneeList.slice(0, 2).map((a) => (
-                <span key={a!.user_id} className="text-[9px] text-muted truncate max-w-[70px]">{a!.display_name}</span>
-              ))}
-              {assigneeList.length > 2 && (
-                <span className="text-[9px] text-muted font-mono">+{assigneeList.length - 2}</span>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-1 flex-wrap">
+            {goal.deadline && (
+              <span className="text-[9px] text-muted font-mono">{new Date(goal.deadline).toLocaleDateString()}</span>
+            )}
+            {goal.category && (
+              <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
+            )}
+            {assigneeList.length > 0 && (
+              <div className="flex items-center gap-0.5 flex-wrap">
+                {assigneeList.slice(0, 2).map((a) => (
+                  <span key={a!.user_id} className="text-[9px] text-muted truncate max-w-[70px]">{a!.display_name}</span>
+                ))}
+                {assigneeList.length > 2 && (
+                  <span className="text-[9px] text-muted font-mono">+{assigneeList.length - 2}</span>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            {myDeps.length > 0 && (
+              <span className={`text-[9px] font-mono flex items-center gap-0.5 ${blockedDeps.length > 0 ? 'text-red-400' : 'text-muted'}`}
+                title={`${myDeps.length} dependenc${myDeps.length === 1 ? 'y' : 'ies'}${blockedDeps.length > 0 ? ` (${blockedDeps.length} blocking)` : ''}`}>
+                <Link size={8} />{myDeps.length}
+              </span>
+            )}
+            {loggedHours != null && loggedHours > 0 && (
+              <span className="text-[9px] text-muted font-mono flex items-center gap-0.5" title="Hours logged">
+                <Clock size={8} />{loggedHours.toFixed(1)}h
+                {goal.estimated_hours ? `/${goal.estimated_hours}h` : ''}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -2134,6 +2441,9 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
 
             {/* Cards */}
             <div className="flex flex-col gap-2 p-2 flex-1 overflow-y-auto">
+              {freshGoals.length === 0 && !isOver && (
+                <p className="text-[10px] text-muted/50 text-center py-4">No tasks here</p>
+              )}
               {freshGoals.map((goal) => renderCard(goal, col.status, false))}
 
               {/* Stale completed goals */}
@@ -2523,6 +2833,27 @@ function DocumentsTab({
                     className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
                   >
                     <FileText size={11} /> View
+                  </button>
+                  <button
+                    type="button"
+                    title="Download report"
+                    onClick={async () => {
+                      const rc = r.content as ReportContent;
+                      if (r.format === 'pptx') await downloadPptx(rc);
+                      else if (r.format === 'pdf') await downloadPdf(rc);
+                      else await downloadDocx(rc);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
+                  >
+                    <Download size={11} /> Download
+                  </button>
+                  <button
+                    type="button"
+                    title="Export goals as CSV"
+                    onClick={() => exportGoalsCSV(r.content as ReportContent)}
+                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
+                  >
+                    <Table size={11} /> CSV
                   </button>
                   <button
                     type="button"
