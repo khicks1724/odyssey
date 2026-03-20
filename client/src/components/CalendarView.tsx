@@ -132,25 +132,20 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
     setMilestones(prev => prev.filter(m => m.id !== id));
   };
 
-  // Row height: target ~500px usable grid height spread across numWeeks rows
-  // We pin the grid height so it never collapses when empty
-  const ROW_PX = Math.max(80, Math.floor(500 / numWeeks));
-
   return (
-    <div ref={containerRef} className="flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden"
-      style={{ height: '100%', minHeight: `calc(100vh - 13rem)` }}>
+    <div ref={containerRef} className="flex flex-col h-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
 
       {/* ── Header ── */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--color-border)] shrink-0">
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setCurrent(d => new Date(d.getFullYear(), d.getMonth()-1, 1))}
+          <button type="button" title="Previous month" onClick={() => setCurrent(d => new Date(d.getFullYear(), d.getMonth()-1, 1))}
             className="p-1 rounded hover:bg-[var(--color-surface2)] text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
             <ChevronLeft size={15} />
           </button>
           <span className="text-sm font-bold text-[var(--color-heading)] font-mono w-44 text-center">
             {MONTHS[month]} {year}
           </span>
-          <button type="button" onClick={() => setCurrent(d => new Date(d.getFullYear(), d.getMonth()+1, 1))}
+          <button type="button" title="Next month" onClick={() => setCurrent(d => new Date(d.getFullYear(), d.getMonth()+1, 1))}
             className="p-1 rounded hover:bg-[var(--color-surface2)] text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
             <ChevronRight size={15} />
           </button>
@@ -190,8 +185,8 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
         ))}
       </div>
 
-      {/* ── Calendar grid — fixed row heights so empty months stay consistent ── */}
-      <div className="flex-1 overflow-y-auto" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridAutoRows: `${ROW_PX}px` }}>
+      {/* ── Calendar grid: 1fr rows fill the container exactly, overflow hidden on every cell ── */}
+      <div className="cal-grid flex-1 min-h-0" style={{ gridTemplateRows: `repeat(${numWeeks}, 1fr)` }}>
         {cells.map((dateStr, idx) => {
           const isToday       = dateStr === todayStr;
           const isOtherMonth  = !dateStr;
@@ -203,19 +198,17 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
           const dayNum        = dateStr ? parseInt(dateStr.slice(8)) : null;
           const isLastCol     = idx % 7 === 6;
 
-          // How many items fit in normal view (header row ~20px, each pill ~17px, gap 1px)
-          const maxShown = Math.max(1, Math.floor((ROW_PX - 24) / 18));
+          // Show at most 3 pills; remainder triggers "+N more"
           const allItems = [...dayMilestones.map(m => ({ type: 'ms' as const, m })), ...dayGoals.map(g => ({ type: 'goal' as const, g }))];
-          const shownItems = allItems.slice(0, maxShown);
+          const shownItems = allItems.slice(0, 3);
           const overflow   = allItems.length - shownItems.length;
 
           return (
             <div
               key={idx}
-              className={`relative border-r border-b border-[var(--color-border)]/30 group flex flex-col ${
+              className={`cal-cell relative border-r border-b border-[var(--color-border)]/30 group flex flex-col ${
                 isOtherMonth ? 'bg-[var(--color-surface2)]/10' : 'hover:bg-[var(--color-surface2)]/10'
               } ${isLastCol ? 'border-r-0' : ''} transition-colors`}
-              style={{ height: `${ROW_PX}px` }}
             >
               {dateStr && (
                 <>
@@ -273,8 +266,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                   {/* Expanded day overlay — scrollable list of ALL tasks */}
                   {isExpanded && (
                     <div
-                      className="absolute inset-x-0 top-0 z-50 bg-[var(--color-surface)] border border-[var(--color-accent)]/30 rounded-lg shadow-2xl flex flex-col"
-                      style={{ minHeight: `${ROW_PX}px`, maxHeight: `${ROW_PX * 2.5}px` }}
+                      className="absolute inset-x-0 top-0 z-50 bg-[var(--color-surface)] border border-[var(--color-accent)]/30 rounded-lg shadow-2xl flex flex-col cal-expanded"
                       onClick={e => e.stopPropagation()}
                     >
                       <div className="flex items-center justify-between px-2 py-1 border-b border-[var(--color-border)] shrink-0">

@@ -175,9 +175,9 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
   // Calendar view — always renderable regardless of deadlines
   if (view === 'calendar') {
     return (
-      <div className="tl-root flex flex-col">
+      <div className="tl-cal-wrap flex flex-col">
         {/* View toggle strip */}
-        <div className="flex items-center gap-1 px-4 py-2 border border-border bg-surface rounded-t-lg border-b-0">
+        <div className="flex items-center gap-1 px-4 py-2 border border-border bg-surface rounded-t-lg border-b-0 shrink-0">
           <span className="text-[10px] text-muted uppercase tracking-widest font-mono mr-2">View</span>
           <button type="button" onClick={() => setView('timeline')}
             className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors">

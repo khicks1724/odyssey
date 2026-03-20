@@ -1,5 +1,11 @@
 /* TimelinePage layout */
 .tl-root        { min-height: calc(100vh - 12rem); }
+.tl-cal-wrap    { height: calc(100vh - 12rem); }
+
+/* Calendar grid */
+.cal-grid       { display: grid; grid-template-columns: repeat(7, 1fr); overflow: hidden; }
+.cal-cell       { overflow: hidden; min-height: 0; min-width: 0; }
+.cal-expanded   { min-height: 80px; max-height: 200px; }
 .tl-label-col   { width: 180px; }
 .tl-header-row  { height: 40px; }
 .tl-row         { height: 36px; }
