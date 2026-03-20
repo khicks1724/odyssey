@@ -37,7 +37,7 @@ export default function DashboardPage() {
 
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
-    { label: 'Goals Tracked', value: statsLoading ? '…' : String(stats.goalsTracked), icon: Target, color: 'text-accent2' },
+    { label: 'Tasks Tracked', value: statsLoading ? '…' : String(stats.goalsTracked), icon: Target, color: 'text-accent2' },
     { label: 'Events This Week', value: statsLoading ? '…' : String(stats.eventsThisWeek), icon: Activity, color: 'text-accent3' },
     { label: 'On-Track Rate', value: statsLoading ? '…' : stats.onTrackRate !== null ? `${stats.onTrackRate}%` : '—', icon: TrendingUp, color: 'text-heading' },
   ];
@@ -214,7 +214,7 @@ export default function DashboardPage() {
         ) : deadlines.length === 0 ? (
           <div className="py-8 text-center">
             <p className="text-xs text-muted tracking-wide">
-              No upcoming deadlines in the next 3 weeks. Add goal deadlines in your projects.
+              No upcoming deadlines in the next 3 weeks. Add task deadlines in your projects.
             </p>
           </div>
         ) : (

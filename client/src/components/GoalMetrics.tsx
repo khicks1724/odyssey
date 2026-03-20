@@ -85,7 +85,7 @@ export default function GoalMetrics({ goals, members, currentUserId, currentUser
   if (totalGoals === 0) {
     return (
       <div className="border border-border bg-surface p-12 text-center">
-        <p className="text-sm text-muted">No goals yet — add goals to see metrics.</p>
+        <p className="text-sm text-muted">No tasks yet — add tasks to see metrics.</p>
       </div>
     );
   }
@@ -95,7 +95,7 @@ export default function GoalMetrics({ goals, members, currentUserId, currentUser
       {/* ── Summary Cards ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border">
         {[
-          { label: 'Total Goals', value: totalGoals, color: 'text-heading' },
+          { label: 'Total Tasks', value: totalGoals, color: 'text-heading' },
           { label: 'Completed', value: completed, color: 'text-accent3' },
           { label: 'At Risk', value: atRisk, color: 'text-accent' },
           { label: 'Avg Progress', value: `${avgProgress}%`, color: 'text-accent2' },
@@ -180,10 +180,10 @@ export default function GoalMetrics({ goals, members, currentUserId, currentUser
 
       {/* ── On-time Performance ── */}
       <div className="border border-border bg-surface p-6">
-        <SectionHeader label="On-Time Performance (completed goals with deadlines)" />
+        <SectionHeader label="On-Time Performance (completed tasks with deadlines)" />
         {perf.length === 0 ? (
           <p className="text-xs text-muted">
-            No completed goals with deadlines yet. Mark a goal complete to see timing data.
+            No completed tasks with deadlines yet. Mark a task complete to see timing data.
           </p>
         ) : (
           <div className="space-y-4">
@@ -227,7 +227,7 @@ export default function GoalMetrics({ goals, members, currentUserId, currentUser
 
             {/* Per-goal breakdown */}
             <div className="border-t border-border pt-4">
-              <div className="text-[10px] tracking-[0.15em] uppercase text-muted mb-2">Goal Breakdown</div>
+              <div className="text-[10px] tracking-[0.15em] uppercase text-muted mb-2">Task Breakdown</div>
               <div className="space-y-1">
                 {perf.sort((a, b) => b.daysEarly - a.daysEarly).map(({ goal, daysEarly }) => (
                   <div key={goal.id} className="flex items-center gap-3 text-xs">

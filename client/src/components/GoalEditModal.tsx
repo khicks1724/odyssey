@@ -54,7 +54,7 @@ export default function GoalEditModal({ goal, members, onSave, onClose }: GoalEd
 
           {/* Header */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-            <h3 className="text-sm font-bold text-heading font-sans">Edit Goal</h3>
+            <h3 className="text-sm font-bold text-heading font-sans">Edit Task</h3>
             <button onClick={onClose} className="text-muted hover:text-heading transition-colors">
               <X size={16} />
             </button>

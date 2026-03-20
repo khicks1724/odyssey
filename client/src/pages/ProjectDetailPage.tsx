@@ -57,7 +57,7 @@ const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
   { id: 'timeline',      label: 'Timeline',      icon: GanttChart },
   { id: 'activity',      label: 'Activity',      icon: Activity },
-  { id: 'goals',         label: 'Goals',         icon: Target },
+  { id: 'goals',         label: 'Tasks',         icon: Target },
   { id: 'metrics',       label: 'Metrics',       icon: TrendingUp },
   { id: 'reports',       label: 'Reports',       icon: ClipboardList },
   { id: 'documents',     label: 'Documents',     icon: Link },
@@ -617,7 +617,7 @@ export default function ProjectDetailPage() {
             <div className="bg-surface p-6">
               <h3 className="font-sans text-sm font-bold text-heading mb-4">Project Status</h3>
               <div className="space-y-3">
-                <StatRow label="Goals" value={`${completedGoals.length} / ${goals.length}`} />
+                <StatRow label="Tasks" value={`${completedGoals.length} / ${goals.length}`} />
                 <StatRow label="Overall Progress" value={`${overallProgress}%`} />
                 <StatRow label="Members" value={String(members.length || 1)} />
                 <StatRow label="Events" value={String(events.length)} />
@@ -645,7 +645,7 @@ export default function ProjectDetailPage() {
                     label = 'On Track';
                     color = 'text-green-500';
                   } else if (goals.length === 0) {
-                    label = 'No goals yet';
+                    label = 'No tasks yet';
                     color = 'text-muted';
                   } else {
                     label = 'Early Stage';
@@ -1196,7 +1196,7 @@ export default function ProjectDetailPage() {
       {activeTab === 'goals' && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-sans text-sm font-bold text-heading">Goals ({goals.length})</h3>
+            <h3 className="font-sans text-sm font-bold text-heading">Tasks ({goals.length})</h3>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -1213,7 +1213,7 @@ export default function ProjectDetailPage() {
                 onClick={goalModal.onOpen}
                 className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
               >
-                <Plus size={14} /> Add Goal
+                <Plus size={14} /> Add Task
               </button>
             </div>
           </div>
@@ -1222,7 +1222,7 @@ export default function ProjectDetailPage() {
             <div className="mb-4 border border-accent/20 bg-accent/5 rounded p-4 text-xs">
               <div className="flex items-center justify-between mb-1">
                 <span className="font-semibold text-accent">
-                  {syncResult.applied > 0 ? `Updated ${syncResult.applied} goal${syncResult.applied > 1 ? 's' : ''} from Office documents` : 'Analysis complete — no changes needed'}
+                  {syncResult.applied > 0 ? `Updated ${syncResult.applied} task${syncResult.applied > 1 ? 's' : ''} from Office documents` : 'Analysis complete — no changes needed'}
                 </span>
                 <button type="button" title="Dismiss" onClick={() => setSyncResult(null)} className="text-muted hover:text-heading"><X size={12} /></button>
               </div>
@@ -1267,7 +1267,7 @@ export default function ProjectDetailPage() {
                   type="date"
                   value={newGoalDeadline}
                   onChange={(e) => setNewGoalDeadline(e.target.value)}
-                  title="Goal deadline"
+                  title="Task deadline"
                   className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
                 />
               </div>
@@ -1277,7 +1277,7 @@ export default function ProjectDetailPage() {
                   <select
                     value={newGoalCategory}
                     onChange={(e) => setNewGoalCategory(e.target.value)}
-                    title="Goal category"
+                    title="Task category"
                     className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
                   >
                     <option value="">— None —</option>
@@ -1333,7 +1333,7 @@ export default function ProjectDetailPage() {
               </div>
               <div className="flex gap-3 pt-2">
                 <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
-                  Create Goal
+                  Create Task
                 </button>
                 <button type="button" onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md">
                   Cancel
