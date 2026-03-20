@@ -27,6 +27,23 @@ interface CalendarViewProps {
   onCreateGoalForDate: (dateStr: string) => void;
 }
 
+function TaskPill({ g, onClick }: { g: Goal; onClick: () => void }) {
+  const color = CATEGORY_COLORS[g.category ?? ''] ?? DEFAULT_COLOR;
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className="w-full min-w-0 overflow-hidden flex items-center gap-1 px-1 py-px rounded text-left hover:brightness-125 shrink-0 transition-all"
+      style={{ background: `${color}20`, borderLeft: `2px solid ${color}` }}
+      title={g.title}
+    >
+      <span className="text-[9px] font-mono truncate leading-tight min-w-0 flex-1" style={{ color }}>
+        {g.title}
+      </span>
+    </button>
+  );
+}
+
 export default function CalendarView({ goals, members: _members, projectId, onGoalClick, onCreateGoalForDate }: CalendarViewProps) {
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
@@ -36,9 +53,9 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
   const [activeDayMenu, setActiveDayMenu] = useState<string | null>(null);
   const [milestoneInput, setMilestoneInput] = useState<{ date: string; title: string } | null>(null);
   const [milestoneLoading, setMilestoneLoading] = useState(false);
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Fetch milestones from events table
   useEffect(() => {
     if (!projectId) return;
     supabase
@@ -51,12 +68,12 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
       });
   }, [projectId]);
 
-  // Close menus on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setActiveDayMenu(null);
         setMilestoneInput(null);
+        setExpandedDay(null);
       }
     };
     document.addEventListener('mousedown', handler);
@@ -78,7 +95,6 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
   while (cells.length % 7 !== 0) cells.push(null);
   const numWeeks = cells.length / 7;
 
-  // Index goals and milestones by date
   const goalsByDate: Record<string, Goal[]> = {};
   for (const g of goals) {
     if (!g.deadline) continue;
@@ -116,8 +132,13 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
     setMilestones(prev => prev.filter(m => m.id !== id));
   };
 
+  // Row height: target ~500px usable grid height spread across numWeeks rows
+  // We pin the grid height so it never collapses when empty
+  const ROW_PX = Math.max(80, Math.floor(500 / numWeeks));
+
   return (
-    <div ref={containerRef} className="flex flex-col h-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+    <div ref={containerRef} className="flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden"
+      style={{ height: '100%', minHeight: `calc(100vh - 13rem)` }}>
 
       {/* ── Header ── */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--color-border)] shrink-0">
@@ -139,7 +160,6 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
           </button>
         </div>
 
-        {/* Legend chips */}
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-sm" style={{ background: '#bd93f9' }} />
@@ -153,7 +173,6 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
           ))}
         </div>
 
-        {/* M365 Sync — framework placeholder */}
         <div
           title="Microsoft 365 calendar sync — coming soon. Backend integration in progress."
           className="flex items-center gap-1.5 px-3 py-1.5 border border-[var(--color-border)]/40 rounded-md opacity-40 cursor-not-allowed select-none"
@@ -171,91 +190,121 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
         ))}
       </div>
 
-      {/* ── Calendar grid ── */}
-      <div
-        className="flex-1 min-h-0"
-        style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridTemplateRows: `repeat(${numWeeks}, 1fr)` }}
-      >
+      {/* ── Calendar grid — fixed row heights so empty months stay consistent ── */}
+      <div className="flex-1 overflow-y-auto" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gridAutoRows: `${ROW_PX}px` }}>
         {cells.map((dateStr, idx) => {
-          const isToday      = dateStr === todayStr;
-          const isOtherMonth = !dateStr;
-          const dayGoals     = dateStr ? (goalsByDate[dateStr] ?? []) : [];
+          const isToday       = dateStr === todayStr;
+          const isOtherMonth  = !dateStr;
+          const dayGoals      = dateStr ? (goalsByDate[dateStr] ?? []) : [];
           const dayMilestones = dateStr ? (milestonesByDate[dateStr] ?? []) : [];
-          const isMenuOpen   = activeDayMenu === dateStr;
-          const isMsInput    = milestoneInput?.date === dateStr;
-          const dayNum       = dateStr ? parseInt(dateStr.slice(8)) : null;
-          const isLastCol    = idx % 7 === 6;
-          // How many items we can show — milestones get priority
-          const maxItems = 3;
-          const shownMilestones = dayMilestones.slice(0, maxItems);
-          const remainingSlots  = maxItems - shownMilestones.length;
-          const shownGoals      = dayGoals.slice(0, remainingSlots);
-          const overflow        = dayMilestones.length + dayGoals.length - shownMilestones.length - shownGoals.length;
+          const isMenuOpen    = activeDayMenu === dateStr;
+          const isMsInput     = milestoneInput?.date === dateStr;
+          const isExpanded    = expandedDay === dateStr;
+          const dayNum        = dateStr ? parseInt(dateStr.slice(8)) : null;
+          const isLastCol     = idx % 7 === 6;
+
+          // How many items fit in normal view (header row ~20px, each pill ~17px, gap 1px)
+          const maxShown = Math.max(1, Math.floor((ROW_PX - 24) / 18));
+          const allItems = [...dayMilestones.map(m => ({ type: 'ms' as const, m })), ...dayGoals.map(g => ({ type: 'goal' as const, g }))];
+          const shownItems = allItems.slice(0, maxShown);
+          const overflow   = allItems.length - shownItems.length;
 
           return (
             <div
               key={idx}
-              className={`relative overflow-hidden border-r border-b border-[var(--color-border)]/30 group flex flex-col ${
-                isOtherMonth ? 'bg-[var(--color-surface2)]/10' : 'hover:bg-[var(--color-surface2)]/20'
+              className={`relative border-r border-b border-[var(--color-border)]/30 group flex flex-col ${
+                isOtherMonth ? 'bg-[var(--color-surface2)]/10' : 'hover:bg-[var(--color-surface2)]/10'
               } ${isLastCol ? 'border-r-0' : ''} transition-colors`}
+              style={{ height: `${ROW_PX}px` }}
             >
               {dateStr && (
                 <>
                   {/* Day number + add button */}
                   <div className="flex items-center justify-between px-1.5 pt-1 pb-0.5 shrink-0">
                     <span className={`inline-flex items-center justify-center w-5 h-5 text-[11px] font-mono rounded-full ${
-                      isToday
-                        ? 'bg-[var(--color-accent)] text-white font-bold'
-                        : 'text-[var(--color-muted)]'
+                      isToday ? 'bg-[var(--color-accent)] text-white font-bold' : 'text-[var(--color-muted)]'
                     }`}>
                       {dayNum}
                     </span>
                     <button
                       type="button"
                       title="Add task or milestone"
-                      onClick={(e) => { e.stopPropagation(); setActiveDayMenu(isMenuOpen ? null : dateStr); setMilestoneInput(null); }}
+                      onClick={(e) => { e.stopPropagation(); setActiveDayMenu(isMenuOpen ? null : dateStr); setMilestoneInput(null); setExpandedDay(null); }}
                       className="opacity-0 group-hover:opacity-100 w-5 h-5 rounded flex items-center justify-center text-[var(--color-muted)] hover:text-[var(--color-heading)] hover:bg-[var(--color-surface2)] transition-all"
                     >
                       <Plus size={10} />
                     </button>
                   </div>
 
-                  {/* Items area — fixed, never grows the cell */}
-                  <div className="flex-1 overflow-hidden px-1 pb-1 flex flex-col gap-px">
-                    {/* Milestones */}
-                    {shownMilestones.map(m => (
-                      <div key={m.id} className="flex items-center gap-1 px-1 py-px rounded min-w-0 group/ms shrink-0" style={{ background: 'rgba(189,147,249,0.12)', borderLeft: '2px solid #bd93f9' }}>
-                        <Flag size={7} style={{ color: '#bd93f9' }} className="shrink-0" />
-                        <span className="text-[9px] font-mono truncate leading-tight flex-1 min-w-0" style={{ color: '#bd93f9' }}>{m.title}</span>
-                        <button type="button" onClick={() => deleteMilestone(m.id)}
-                          className="opacity-0 group-hover/ms:opacity-100 transition-opacity hover:text-red-400 shrink-0"
-                          title="Remove milestone">
-                          <X size={7} />
+                  {/* Normal pills view — clipped to cell height */}
+                  {!isExpanded && (
+                    <div className="flex-1 overflow-hidden px-1 pb-1 flex flex-col gap-px">
+                      {shownItems.map((item, ii) => {
+                        if (item.type === 'ms') {
+                          const m = item.m;
+                          return (
+                            <div key={`ms-${m.id}`} className="flex items-center gap-1 px-1 py-px rounded min-w-0 group/ms shrink-0"
+                              style={{ background: 'rgba(189,147,249,0.12)', borderLeft: '2px solid #bd93f9' }}>
+                              <Flag size={7} style={{ color: '#bd93f9' }} className="shrink-0" />
+                              <span className="text-[9px] font-mono truncate leading-tight flex-1 min-w-0" style={{ color: '#bd93f9' }}>{m.title}</span>
+                              <button type="button" onClick={() => deleteMilestone(m.id)} title="Remove milestone"
+                                className="opacity-0 group-hover/ms:opacity-100 transition-opacity hover:text-red-400 shrink-0">
+                                <X size={7} />
+                              </button>
+                            </div>
+                          );
+                        }
+                        const g = item.g;
+                        return <TaskPill key={`g-${g.id}-${ii}`} g={g} onClick={() => onGoalClick(g)} />;
+                      })}
+
+                      {overflow > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setExpandedDay(dateStr); setActiveDayMenu(null); }}
+                          className="text-[9px] text-[var(--color-accent)] font-mono px-1 text-left hover:underline shrink-0"
+                        >
+                          +{overflow} more
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Expanded day overlay — scrollable list of ALL tasks */}
+                  {isExpanded && (
+                    <div
+                      className="absolute inset-x-0 top-0 z-50 bg-[var(--color-surface)] border border-[var(--color-accent)]/30 rounded-lg shadow-2xl flex flex-col"
+                      style={{ minHeight: `${ROW_PX}px`, maxHeight: `${ROW_PX * 2.5}px` }}
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between px-2 py-1 border-b border-[var(--color-border)] shrink-0">
+                        <span className={`inline-flex items-center justify-center w-5 h-5 text-[11px] font-mono rounded-full ${
+                          isToday ? 'bg-[var(--color-accent)] text-white font-bold' : 'text-[var(--color-muted)]'
+                        }`}>{dayNum}</span>
+                        <span className="text-[9px] font-mono text-[var(--color-muted)]">{allItems.length} items</span>
+                        <button type="button" title="Close" onClick={() => setExpandedDay(null)}
+                          className="text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
+                          <X size={10} />
                         </button>
                       </div>
-                    ))}
-
-                    {/* Task pills */}
-                    {shownGoals.map(g => {
-                      const color = CATEGORY_COLORS[g.category ?? ''] ?? DEFAULT_COLOR;
-                      return (
-                        <button
-                          key={g.id}
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); onGoalClick(g); }}
-                          className="w-full min-w-0 overflow-hidden flex items-center gap-1 px-1 py-px rounded text-left transition-all hover:brightness-125 shrink-0"
-                          style={{ background: `${color}20`, borderLeft: `2px solid ${color}` }}
-                          title={g.title}
-                        >
-                          <span className="text-[9px] font-mono truncate leading-tight min-w-0 flex-1" style={{ color }}>{g.title}</span>
-                        </button>
-                      );
-                    })}
-
-                    {overflow > 0 && (
-                      <span className="text-[9px] text-[var(--color-muted)] font-mono px-1 shrink-0">+{overflow} more</span>
-                    )}
-                  </div>
+                      <div className="flex-1 overflow-y-auto px-1 py-1 flex flex-col gap-px">
+                        {dayMilestones.map(m => (
+                          <div key={m.id} className="flex items-center gap-1 px-1 py-px rounded min-w-0 group/ms shrink-0"
+                            style={{ background: 'rgba(189,147,249,0.12)', borderLeft: '2px solid #bd93f9' }}>
+                            <Flag size={7} style={{ color: '#bd93f9' }} className="shrink-0" />
+                            <span className="text-[9px] font-mono truncate leading-tight flex-1 min-w-0" style={{ color: '#bd93f9' }}>{m.title}</span>
+                            <button type="button" onClick={() => deleteMilestone(m.id)} title="Remove milestone"
+                              className="opacity-0 group-hover/ms:opacity-100 transition-opacity hover:text-red-400 shrink-0">
+                              <X size={7} />
+                            </button>
+                          </div>
+                        ))}
+                        {dayGoals.map(g => (
+                          <TaskPill key={g.id} g={g} onClick={() => { onGoalClick(g); setExpandedDay(null); }} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Day action popover */}
                   {isMenuOpen && !isMsInput && (
@@ -306,7 +355,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                           {milestoneLoading ? <Loader2 size={8} className="animate-spin" /> : <Flag size={8} />}
                           Save
                         </button>
-                        <button type="button" onClick={() => setMilestoneInput(null)}
+                        <button type="button" title="Cancel" onClick={() => setMilestoneInput(null)}
                           className="px-2 py-1 border border-[var(--color-border)] text-[var(--color-muted)] text-[9px] font-mono rounded hover:text-[var(--color-heading)] transition-colors"
                         >
                           <X size={8} />
