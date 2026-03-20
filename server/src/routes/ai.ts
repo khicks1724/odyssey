@@ -7,9 +7,24 @@ const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-op
 // Strip markdown code fences that models sometimes wrap JSON responses in.
 // e.g. ```json { ... } ``` → { ... }
 function extractJson(text: string): string {
+  // Strip code fences
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) return fenced[1].trim();
-  return text.trim();
+  let raw = fenced ? fenced[1].trim() : text.trim();
+
+  // Find the outermost JSON object/array in case of preamble text
+  const firstBrace = raw.indexOf('{');
+  const firstBracket = raw.indexOf('[');
+  const start = firstBrace === -1 ? firstBracket : firstBracket === -1 ? firstBrace : Math.min(firstBrace, firstBracket);
+  if (start > 0) raw = raw.slice(start);
+
+  // Strip JS-style line comments (// ...) — invalid in JSON
+  raw = raw.replace(/\/\/[^\n]*/g, '');
+  // Strip block comments (/* ... */) — invalid in JSON
+  raw = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Fix trailing commas before } or ] — invalid in JSON
+  raw = raw.replace(/,(\s*[}\]])/g, '$1');
+
+  return raw.trim();
 }
 
 // Resolve the provider from the request body.
@@ -1388,7 +1403,7 @@ Generate the standup summary.`,
       const result = await chat(provider, {
         system: `You are Odyssey's intelligent project advisor. Analyze ALL available project data — goals, documents, commits, team activity — and produce a JSON list of specific, actionable suggestions to improve the project's goal structure and deadlines.
 
-Respond ONLY with valid JSON — no markdown, no explanation outside the JSON.
+Respond ONLY with valid JSON — no markdown, no code fences, no comments, no trailing commas, no explanation outside the JSON.
 
 Return an object with one key:
 - "suggestions": array of suggestion objects, each with:
@@ -1417,7 +1432,7 @@ RECENT ACTIVITY & DOCUMENTS:
 ${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + source code):\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}
 
 Analyze everything and suggest specific improvements to the goal structure and deadlines.`,
-        maxTokens: 2000,
+        maxTokens: 4000,
       });
 
       const parsed = JSON.parse(extractJson(result.text));
