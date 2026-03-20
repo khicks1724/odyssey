@@ -5,7 +5,7 @@
 /* Calendar grid */
 .cal-grid       { display: grid; grid-template-columns: repeat(7, 1fr); overflow: hidden; }
 .cal-cell       { overflow: hidden; min-height: 0; min-width: 0; }
-.cal-expanded   { min-height: 80px; max-height: 200px; }
+.cal-expanded   { min-width: 160px; width: 100%; min-height: 80px; max-height: 240px; }
 .tl-label-col   { width: 180px; }
 .tl-header-row  { height: 40px; }
 .tl-row         { height: 36px; }

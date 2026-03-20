@@ -208,7 +208,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
               key={idx}
               className={`cal-cell relative border-r border-b border-[var(--color-border)]/30 group flex flex-col ${
                 isOtherMonth ? 'bg-[var(--color-surface2)]/10' : 'hover:bg-[var(--color-surface2)]/10'
-              } ${isLastCol ? 'border-r-0' : ''} transition-colors`}
+              } ${isLastCol ? 'border-r-0' : ''} ${isExpanded ? '!overflow-visible z-50' : ''} transition-colors`}
             >
               {dateStr && (
                 <>
@@ -266,7 +266,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                   {/* Expanded day overlay — scrollable list of ALL tasks */}
                   {isExpanded && (
                     <div
-                      className="absolute inset-x-0 top-0 z-50 bg-[var(--color-surface)] border border-[var(--color-accent)]/30 rounded-lg shadow-2xl flex flex-col cal-expanded"
+                      className="absolute left-0 top-0 z-50 bg-[var(--color-surface)] border border-[var(--color-accent)]/30 rounded-lg shadow-2xl flex flex-col cal-expanded"
                       onClick={e => e.stopPropagation()}
                     >
                       <div className="flex items-center justify-between px-2 py-1 border-b border-[var(--color-border)] shrink-0">
