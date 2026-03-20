@@ -84,6 +84,8 @@ interface TaskPreviewPopupProps {
   onAssignTask?: (goalId: string, userId: string) => void;
   assigningGoalId: string | null;
   setAssigningGoalId: (id: string | null) => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
 }
 
 function TaskPreviewPopup({
@@ -94,9 +96,15 @@ function TaskPreviewPopup({
   onAssignTask,
   assigningGoalId,
   setAssigningGoalId,
+  onMouseEnter,
+  onMouseLeave,
 }: TaskPreviewPopupProps) {
   return (
-    <div className="absolute left-0 top-full mt-2 w-full bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden">
+    <div
+      className="absolute left-0 top-full mt-1 w-full bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       {/* Header */}
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold">
@@ -106,7 +114,7 @@ function TaskPreviewPopup({
       </div>
 
       {/* Task list */}
-      <div className="max-h-64 overflow-y-auto p-2 space-y-2">
+      <div className="max-h-96 overflow-y-auto p-2 space-y-2">
         {tasks.map((g) => (
           <div
             key={g.id}
@@ -154,7 +162,7 @@ function TaskPreviewPopup({
                 </button>
 
                 {assigningGoalId === g.id && (
-                  <div className="absolute left-0 top-full mt-1 bg-surface border border-border rounded-lg shadow-xl z-10 w-44 overflow-hidden">
+                  <div className="absolute left-0 bottom-full mb-1 bg-surface border border-border rounded-lg shadow-xl z-10 w-44 overflow-hidden">
                     {members.map((p) => (
                       <button
                         key={p.user_id}
@@ -199,6 +207,21 @@ export default function GoalMetrics({
 }: GoalMetricsProps) {
   const [hoveredUid, setHoveredUid] = useState<string | null>(null);
   const [assigningGoalId, setAssigningGoalId] = useState<string | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleClose = () => {
+    closeTimer.current = setTimeout(() => {
+      setHoveredUid(null);
+      setAssigningGoalId(null);
+    }, 120);
+  };
+
+  const cancelClose = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
 
   // ── By Category ──────────────────────────────────────────────────────────
   const categoryMap = new Map<string, Goal[]>();
@@ -329,13 +352,8 @@ export default function GoalMetrics({
                   <div
                     key={rowKey}
                     className="relative"
-                    onMouseEnter={() => setHoveredUid(rowKey)}
-                    onMouseLeave={(e) => {
-                      if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                        setHoveredUid(null);
-                        setAssigningGoalId(null);
-                      }
-                    }}
+                    onMouseEnter={() => { cancelClose(); setHoveredUid(rowKey); }}
+                    onMouseLeave={scheduleClose}
                   >
                     {/* Assignee row */}
                     <div className={`rounded px-2 py-1.5 transition-colors ${isHovered ? 'bg-surface2' : ''}`}>
@@ -371,6 +389,8 @@ export default function GoalMetrics({
                         onAssignTask={onAssignTask}
                         assigningGoalId={assigningGoalId}
                         setAssigningGoalId={setAssigningGoalId}
+                        onMouseEnter={cancelClose}
+                        onMouseLeave={scheduleClose}
                       />
                     )}
                   </div>
