@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { List, X } from 'lucide-react';
 import type { Goal } from '../types';
 
 interface MemberInfo {
@@ -79,38 +80,32 @@ function TaskProgressFill({ progress, status }: { progress: number; status: stri
 interface TaskPreviewPopupProps {
   name: string;
   tasks: Goal[];
-  isUnassigned: boolean;
   members: MemberInfo[];
   onAssignTask?: (goalId: string, userId: string) => void;
-  assigningGoalId: string | null;
-  setAssigningGoalId: (id: string | null) => void;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
+  onClose: () => void;
 }
 
-function TaskPreviewPopup({
-  name,
-  tasks,
-  isUnassigned,
-  members,
-  onAssignTask,
-  assigningGoalId,
-  setAssigningGoalId,
-  onMouseEnter,
-  onMouseLeave,
-}: TaskPreviewPopupProps) {
+function TaskPreviewPopup({ name, tasks, members, onAssignTask, onClose }: TaskPreviewPopupProps) {
+  const [assigningGoalId, setAssigningGoalId] = useState<string | null>(null);
+
   return (
-    <div
-      className="absolute left-0 top-full mt-1 w-full bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden"
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-    >
+    <div className="absolute left-0 top-full mt-1 w-full bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden">
       {/* Header */}
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <span className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold">
-          {isUnassigned ? 'Unassigned Tasks' : `${name}'s Tasks`}
+          {name}'s Tasks
         </span>
-        <span className="text-[10px] font-mono text-muted">{tasks.length}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-muted">{tasks.length}</span>
+          <button
+            type="button"
+            title="Close"
+            onClick={onClose}
+            className="p-0.5 rounded text-muted hover:text-heading hover:bg-surface2 transition-colors"
+          >
+            <X size={12} />
+          </button>
+        </div>
       </div>
 
       {/* Task list */}
@@ -147,8 +142,8 @@ function TaskPreviewPopup({
               )}
             </div>
 
-            {/* Assign button for unassigned tasks */}
-            {isUnassigned && onAssignTask && (
+            {/* Assign / Reassign */}
+            {onAssignTask && (
               <div className="mt-2 relative">
                 <button
                   type="button"
@@ -158,7 +153,7 @@ function TaskPreviewPopup({
                   }}
                   className="text-[10px] px-2 py-1 border border-accent/30 text-accent rounded hover:bg-accent/5 transition-colors"
                 >
-                  Assign to…
+                  {g.assigned_to ? 'Reassign…' : 'Assign to…'}
                 </button>
 
                 {assigningGoalId === g.id && (
@@ -205,23 +200,7 @@ export default function GoalMetrics({
   currentUserAvatar,
   onAssignTask,
 }: GoalMetricsProps) {
-  const [hoveredUid, setHoveredUid] = useState<string | null>(null);
-  const [assigningGoalId, setAssigningGoalId] = useState<string | null>(null);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleClose = () => {
-    closeTimer.current = setTimeout(() => {
-      setHoveredUid(null);
-      setAssigningGoalId(null);
-    }, 120);
-  };
-
-  const cancelClose = () => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-  };
+  const [openUid, setOpenUid] = useState<string | null>(null);
 
   // ── By Category ──────────────────────────────────────────────────────────
   const categoryMap = new Map<string, Goal[]>();
@@ -345,52 +324,53 @@ export default function GoalMetrics({
                 const missedCount = ag.filter((g) => g.status === 'missed').length;
                 const pct = Math.round((done / ag.length) * 100);
                 const rowKey = uid ?? 'unassigned';
-                const isHovered = hoveredUid === rowKey;
-                const isUnassigned = uid === null;
+                const isOpen = openUid === rowKey;
 
                 return (
-                  <div
-                    key={rowKey}
-                    className="relative"
-                    onMouseEnter={() => { cancelClose(); setHoveredUid(rowKey); }}
-                    onMouseLeave={scheduleClose}
-                  >
+                  <div key={rowKey} className="relative">
                     {/* Assignee row */}
-                    <div className={`rounded px-2 py-1.5 transition-colors ${isHovered ? 'bg-surface2' : ''}`}>
+                    <div className={`rounded px-2 py-1.5 transition-colors ${isOpen ? 'bg-surface2' : ''}`}>
                       <div className="flex items-center gap-2 mb-1">
                         {avatar ? (
                           <img src={avatar} alt="" className="w-5 h-5 rounded-full" />
                         ) : (
-                          <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isUnassigned ? 'bg-border' : 'bg-accent/20'}`}>
-                            <span className={`text-[8px] font-bold uppercase ${isUnassigned ? 'text-muted' : 'text-accent'}`}>
-                              {isUnassigned ? '?' : name[0]}
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center ${uid === null ? 'bg-border' : 'bg-accent/20'}`}>
+                            <span className={`text-[8px] font-bold uppercase ${uid === null ? 'text-muted' : 'text-accent'}`}>
+                              {uid === null ? '?' : name[0]}
                             </span>
                           </div>
                         )}
-                        <span className={`text-xs font-medium flex-1 ${isHovered ? 'text-heading' : 'text-heading'}`}>
-                          {name}
-                        </span>
+                        <span className="text-xs font-medium flex-1 text-heading">{name}</span>
                         <span className="text-[10px] font-mono text-muted">
                           {done}/{ag.length}
                           {risk > 0 && <span className="ml-1 text-accent">·{risk}⚠</span>}
                           {missedCount > 0 && <span className="ml-1 text-danger">·{missedCount}✗</span>}
                         </span>
+                        <button
+                          type="button"
+                          title="See tasks"
+                          onClick={() => setOpenUid(isOpen ? null : rowKey)}
+                          className={`flex items-center gap-1 text-[10px] px-2 py-0.5 border rounded transition-colors ${
+                            isOpen
+                              ? 'border-accent/40 text-accent bg-accent/5'
+                              : 'border-border text-muted hover:text-heading hover:border-border/80'
+                          }`}
+                        >
+                          <List size={10} />
+                          {isOpen ? 'Hide' : 'See Tasks'}
+                        </button>
                       </div>
                       <MiniBar pct={pct} color={pct === 100 ? 'bg-accent3' : pct >= 50 ? 'bg-accent2' : 'bg-border'} />
                     </div>
 
-                    {/* Hover preview popup */}
-                    {isHovered && (
+                    {/* Click-to-open task preview */}
+                    {isOpen && (
                       <TaskPreviewPopup
                         name={name}
                         tasks={ag}
-                        isUnassigned={isUnassigned}
                         members={allPeople}
                         onAssignTask={onAssignTask}
-                        assigningGoalId={assigningGoalId}
-                        setAssigningGoalId={setAssigningGoalId}
-                        onMouseEnter={cancelClose}
-                        onMouseLeave={scheduleClose}
+                        onClose={() => setOpenUid(null)}
                       />
                     )}
                   </div>
