@@ -1409,6 +1409,7 @@ export default function ProjectDetailPage() {
           currentUserId={user?.id ?? ''}
           currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
           currentUserAvatar={user?.user_metadata?.avatar_url}
+          onAssignTask={(goalId, userId) => updateGoal(goalId, { assigned_to: userId })}
         />
       )}
 

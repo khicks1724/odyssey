@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from 'react';
 import type { Goal } from '../types';
 
 interface MemberInfo {
@@ -12,13 +13,45 @@ interface GoalMetricsProps {
   currentUserId: string;
   currentUserName: string;
   currentUserAvatar?: string;
+  onAssignTask?: (goalId: string, userId: string) => void;
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  not_started: 'Not Started',
+  in_progress: 'In Progress',
+  in_review: 'In Review',
+  complete: 'Complete',
+  at_risk: 'At Risk',
+  missed: 'Missed',
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  not_started: 'text-muted',
+  in_progress: 'text-[#D97E2A]',
+  in_review: 'text-[#facc15]',
+  complete: 'text-[#6DBE7D]',
+  at_risk: 'text-[#D94F4F]',
+  missed: 'text-danger',
+};
+
+const PROGRESS_COLOR: Record<string, string> = {
+  not_started: 'bg-border',
+  in_progress: 'bg-[#D97E2A]/70',
+  in_review: 'bg-[#facc15]/70',
+  complete: 'bg-[#6DBE7D]/70',
+  at_risk: 'bg-[#D94F4F]/70',
+  missed: 'bg-danger/50',
+};
+
 function MiniBar({ pct, color }: { pct: number; color: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.style.width = `${pct}%`;
+  }, [pct]);
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+        <div ref={ref} className={`h-full rounded-full transition-all ${color}`} />
       </div>
       <span className="text-[10px] font-mono text-muted w-8 text-right">{pct}%</span>
     </div>
@@ -31,7 +64,142 @@ function SectionHeader({ label }: { label: string }) {
   );
 }
 
-export default function GoalMetrics({ goals, members, currentUserId, currentUserName, currentUserAvatar }: GoalMetricsProps) {
+function TaskProgressFill({ progress, status }: { progress: number; status: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.style.width = `${progress}%`;
+  }, [progress]);
+  return (
+    <div className="h-1.5 bg-border rounded-full overflow-hidden mt-1.5 mb-1.5">
+      <div ref={ref} className={`h-full rounded-full transition-all ${PROGRESS_COLOR[status] ?? 'bg-border'}`} />
+    </div>
+  );
+}
+
+interface TaskPreviewPopupProps {
+  name: string;
+  tasks: Goal[];
+  isUnassigned: boolean;
+  members: MemberInfo[];
+  onAssignTask?: (goalId: string, userId: string) => void;
+  assigningGoalId: string | null;
+  setAssigningGoalId: (id: string | null) => void;
+}
+
+function TaskPreviewPopup({
+  name,
+  tasks,
+  isUnassigned,
+  members,
+  onAssignTask,
+  assigningGoalId,
+  setAssigningGoalId,
+}: TaskPreviewPopupProps) {
+  return (
+    <div className="absolute left-0 top-full mt-2 w-full bg-surface border border-border rounded-lg shadow-xl z-50 overflow-hidden">
+      {/* Header */}
+      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+        <span className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold">
+          {isUnassigned ? 'Unassigned Tasks' : `${name}'s Tasks`}
+        </span>
+        <span className="text-[10px] font-mono text-muted">{tasks.length}</span>
+      </div>
+
+      {/* Task list */}
+      <div className="max-h-64 overflow-y-auto p-2 space-y-2">
+        {tasks.map((g) => (
+          <div
+            key={g.id}
+            className="border border-border rounded p-2.5 bg-surface2 hover:border-border/80 hover:shadow-sm transition-all"
+          >
+            {/* Title + LOE */}
+            <p className="text-xs text-heading font-medium leading-snug">{g.title}</p>
+            {g.loe && (
+              <p className="text-[9px] text-accent2 font-mono mt-0.5">{g.loe}</p>
+            )}
+
+            {/* Progress bar */}
+            <TaskProgressFill progress={g.progress} status={g.status} />
+
+            {/* Badges */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className={`text-[10px] font-semibold ${STATUS_COLOR[g.status] ?? 'text-muted'}`}>
+                {STATUS_LABEL[g.status] ?? g.status}
+              </span>
+              <span className="text-[10px] text-muted font-mono">{g.progress}%</span>
+              {g.category && (
+                <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">
+                  {g.category}
+                </span>
+              )}
+              {g.deadline && (
+                <span className="text-[9px] text-muted font-mono">
+                  {new Date(g.deadline).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+
+            {/* Assign button for unassigned tasks */}
+            {isUnassigned && onAssignTask && (
+              <div className="mt-2 relative">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAssigningGoalId(assigningGoalId === g.id ? null : g.id);
+                  }}
+                  className="text-[10px] px-2 py-1 border border-accent/30 text-accent rounded hover:bg-accent/5 transition-colors"
+                >
+                  Assign to…
+                </button>
+
+                {assigningGoalId === g.id && (
+                  <div className="absolute left-0 top-full mt-1 bg-surface border border-border rounded-lg shadow-xl z-10 w-44 overflow-hidden">
+                    {members.map((p) => (
+                      <button
+                        key={p.user_id}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAssignTask(g.id, p.user_id);
+                          setAssigningGoalId(null);
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-heading hover:bg-surface2 transition-colors"
+                      >
+                        {p.avatar_url ? (
+                          <img src={p.avatar_url} alt="" className="w-5 h-5 rounded-full shrink-0" />
+                        ) : (
+                          <div className="w-5 h-5 rounded-full bg-accent/20 flex items-center justify-center shrink-0">
+                            <span className="text-[8px] text-accent font-bold uppercase">
+                              {(p.display_name ?? '?')[0]}
+                            </span>
+                          </div>
+                        )}
+                        <span className="truncate">{p.display_name ?? p.user_id.slice(0, 8)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function GoalMetrics({
+  goals,
+  members,
+  currentUserId,
+  currentUserName,
+  currentUserAvatar,
+  onAssignTask,
+}: GoalMetricsProps) {
+  const [hoveredUid, setHoveredUid] = useState<string | null>(null);
+  const [assigningGoalId, setAssigningGoalId] = useState<string | null>(null);
+
   // ── By Category ──────────────────────────────────────────────────────────
   const categoryMap = new Map<string, Goal[]>();
   for (const g of goals) {
@@ -151,26 +319,58 @@ export default function GoalMetrics({ goals, members, currentUserId, currentUser
                 const avatar = person?.avatar_url;
                 const done = ag.filter((g) => g.status === 'complete').length;
                 const risk = ag.filter((g) => g.status === 'at_risk').length;
-                const missed = ag.filter((g) => g.status === 'missed').length;
+                const missedCount = ag.filter((g) => g.status === 'missed').length;
                 const pct = Math.round((done / ag.length) * 100);
+                const rowKey = uid ?? 'unassigned';
+                const isHovered = hoveredUid === rowKey;
+                const isUnassigned = uid === null;
+
                 return (
-                  <div key={uid ?? 'unassigned'}>
-                    <div className="flex items-center gap-2 mb-1">
-                      {avatar ? (
-                        <img src={avatar} alt="" className="w-5 h-5 rounded-full" />
-                      ) : (
-                        <div className="w-5 h-5 rounded-full bg-accent/20 flex items-center justify-center">
-                          <span className="text-[8px] text-accent font-bold uppercase">{name[0]}</span>
-                        </div>
-                      )}
-                      <span className="text-xs text-heading font-medium flex-1">{name}</span>
-                      <span className="text-[10px] font-mono text-muted">
-                        {done}/{ag.length}
-                        {risk > 0 && <span className="ml-1 text-accent">·{risk}⚠</span>}
-                        {missed > 0 && <span className="ml-1 text-danger">·{missed}✗</span>}
-                      </span>
+                  <div
+                    key={rowKey}
+                    className="relative"
+                    onMouseEnter={() => setHoveredUid(rowKey)}
+                    onMouseLeave={() => {
+                      setHoveredUid(null);
+                      setAssigningGoalId(null);
+                    }}
+                  >
+                    {/* Assignee row */}
+                    <div className={`rounded px-2 py-1.5 transition-colors ${isHovered ? 'bg-surface2' : ''}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        {avatar ? (
+                          <img src={avatar} alt="" className="w-5 h-5 rounded-full" />
+                        ) : (
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center ${isUnassigned ? 'bg-border' : 'bg-accent/20'}`}>
+                            <span className={`text-[8px] font-bold uppercase ${isUnassigned ? 'text-muted' : 'text-accent'}`}>
+                              {isUnassigned ? '?' : name[0]}
+                            </span>
+                          </div>
+                        )}
+                        <span className={`text-xs font-medium flex-1 ${isHovered ? 'text-heading' : 'text-heading'}`}>
+                          {name}
+                        </span>
+                        <span className="text-[10px] font-mono text-muted">
+                          {done}/{ag.length}
+                          {risk > 0 && <span className="ml-1 text-accent">·{risk}⚠</span>}
+                          {missedCount > 0 && <span className="ml-1 text-danger">·{missedCount}✗</span>}
+                        </span>
+                      </div>
+                      <MiniBar pct={pct} color={pct === 100 ? 'bg-accent3' : pct >= 50 ? 'bg-accent2' : 'bg-border'} />
                     </div>
-                    <MiniBar pct={pct} color={pct === 100 ? 'bg-accent3' : pct >= 50 ? 'bg-accent2' : 'bg-border'} />
+
+                    {/* Hover preview popup */}
+                    {isHovered && (
+                      <TaskPreviewPopup
+                        name={name}
+                        tasks={ag}
+                        isUnassigned={isUnassigned}
+                        members={allPeople}
+                        onAssignTask={onAssignTask}
+                        assigningGoalId={assigningGoalId}
+                        setAssigningGoalId={setAssigningGoalId}
+                      />
+                    )}
                   </div>
                 );
               })}
