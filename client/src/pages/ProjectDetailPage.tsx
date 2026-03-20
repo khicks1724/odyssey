@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import './ProjectDetailPage.css';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -1221,7 +1223,25 @@ export default function ProjectDetailPage() {
                             {guidance.loading ? (
                               <span className="text-[11px] text-muted animate-pulse">Analyzing task…</span>
                             ) : (
-                              <p className="text-[11px] text-muted whitespace-pre-line leading-relaxed">{guidance.text}</p>
+                              <div className="text-[11px] text-muted leading-relaxed min-w-0">
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  components={{
+                                    p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+                                    h1: ({ children }) => <h1 className="text-xs font-bold mb-1.5 mt-2 first:mt-0 text-heading">{children}</h1>,
+                                    h2: ({ children }) => <h2 className="text-xs font-bold mb-1 mt-2 first:mt-0 text-heading">{children}</h2>,
+                                    h3: ({ children }) => <h3 className="text-[11px] font-semibold mb-1 mt-1.5 first:mt-0 text-heading">{children}</h3>,
+                                    ul: ({ children }) => <ul className="mb-1.5 pl-4 space-y-0.5 list-disc">{children}</ul>,
+                                    ol: ({ children }) => <ol className="mb-1.5 pl-4 space-y-0.5 list-decimal">{children}</ol>,
+                                    strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
+                                    em: ({ children }) => <em className="italic">{children}</em>,
+                                    code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
+                                    a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                                  }}
+                                >
+                                  {guidance.text ?? ''}
+                                </ReactMarkdown>
+                              </div>
                             )}
                           </div>
                         )}
