@@ -2,6 +2,8 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import type { Goal } from '../types';
 import './TimelinePage.css';
 import './Timeline.css';
+import CalendarView from './CalendarView';
+import { LayoutList, CalendarDays } from 'lucide-react';
 
 /* ─── Category colors ─── */
 const CATEGORY_COLORS: Record<string, { bg: string; border: string; label: string }> = {
@@ -93,9 +95,17 @@ function GoalTooltip({ goal, members, y }: { goal: Goal; members: MemberInfo[]; 
   );
 }
 
-interface TimelinePageProps { goals: Goal[]; projectName: string; members?: MemberInfo[] }
+interface TimelinePageProps {
+  goals: Goal[];
+  projectName: string;
+  members?: MemberInfo[];
+  projectId?: string;
+  onGoalClick?: (goal: Goal) => void;
+  onCreateGoalForDate?: (dateStr: string) => void;
+}
 
-export default function TimelinePage({ goals, members = [] }: TimelinePageProps) {
+export default function TimelinePage({ goals, members = [], projectId = '', onGoalClick, onCreateGoalForDate }: TimelinePageProps) {
+  const [view, setView] = useState<'timeline' | 'calendar'>('timeline');
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [hovered, setHovered] = useState<HoverState | null>(null);
@@ -162,6 +172,35 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
     if (el) { el.style.cursor = 'grab'; el.style.userSelect = ''; }
   }, []);
 
+  // Calendar view — always renderable regardless of deadlines
+  if (view === 'calendar') {
+    return (
+      <div className="tl-root flex flex-col">
+        {/* View toggle strip */}
+        <div className="flex items-center gap-1 px-4 py-2 border border-border bg-surface rounded-t-lg border-b-0">
+          <span className="text-[10px] text-muted uppercase tracking-widest font-mono mr-2">View</span>
+          <button type="button" onClick={() => setView('timeline')}
+            className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors">
+            <LayoutList size={12} /> Timeline
+          </button>
+          <button type="button" onClick={() => setView('calendar')}
+            className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono bg-surface2 text-heading transition-colors">
+            <CalendarDays size={12} /> Calendar
+          </button>
+        </div>
+        <div className="flex-1 min-h-0">
+          <CalendarView
+            goals={goals}
+            members={members}
+            projectId={projectId}
+            onGoalClick={onGoalClick ?? (() => {})}
+            onCreateGoalForDate={onCreateGoalForDate ?? (() => {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
   if (goalsWithDeadline.length === 0) {
     return <div className="tl-root border border-border bg-surface p-12 text-center flex-1"><p className="text-xs text-muted tracking-wide">Add goals with deadlines to see the timeline</p></div>;
   }
@@ -212,8 +251,19 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
 
   return (
     <div className="tl-root border border-border bg-surface flex flex-col">
-      {/* Legend + zoom hint */}
+      {/* Legend + view toggle + zoom hint */}
       <div className="flex items-center gap-4 px-6 py-3 border-b border-border flex-wrap shrink-0">
+        {/* View toggle */}
+        <div className="flex items-center gap-0.5 bg-surface2 rounded p-0.5 shrink-0">
+          <button type="button" onClick={() => setView('timeline')}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono bg-surface text-heading shadow-sm transition-colors">
+            <LayoutList size={11} /> Timeline
+          </button>
+          <button type="button" onClick={() => setView('calendar')}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono text-muted hover:text-heading transition-colors">
+            <CalendarDays size={11} /> Calendar
+          </button>
+        </div>
         <span className="text-[10px] text-muted uppercase tracking-widest font-mono">Categories</span>
         {usedCategories.map((cat) => {
           const c = CATEGORY_COLORS[cat] ?? DEFAULT_CATEGORY;
@@ -252,13 +302,14 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
             return (
               <div
                 key={goal.id}
-                className="tl-row tl-label-hover flex items-center px-3 gap-2 border-b border-border/30"
+                className={`tl-row tl-label-hover flex items-center px-3 gap-2 border-b border-border/30 ${onGoalClick ? 'cursor-pointer' : ''}`}
                 {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}
                 onMouseEnter={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
                   setHovered({ id: goal.id, y: rect.top + rect.height / 2 });
                 }}
                 onMouseLeave={() => setHovered(null)}
+                onClick={() => onGoalClick?.(goal)}
               >
                 <span className="tl-label-dot shrink-0" />
                 <span className="text-[11px] font-mono truncate leading-tight tl-label-text" title={goal.title}>
@@ -331,7 +382,7 @@ export default function TimelinePage({ goals, members = [] }: TimelinePageProps)
               const c           = catColor(goal);
 
               return (
-                <div key={goal.id} className="tl-bar-wrap" {...({ style: cv({ '--tl-top': `${barTop}px`, '--tl-left': `${createdOff}px`, '--tl-w': `${barW}px` }) } as any)} title={`${goal.title} — ${goal.progress}%`}>
+                <div key={goal.id} className={`tl-bar-wrap ${onGoalClick ? 'cursor-pointer' : ''}`} {...({ style: cv({ '--tl-top': `${barTop}px`, '--tl-left': `${createdOff}px`, '--tl-w': `${barW}px` }) } as any)} title={`${goal.title} — ${goal.progress}%`} onClick={() => onGoalClick?.(goal)}>
                   <div className="tl-bar-track" {...({ style: cv({ '--tl-bg': c.bg, '--tl-border': `${c.border}40` }) } as any)} />
                   <div className="tl-bar-fill"  {...({ style: cv({ '--tl-bg': c.border, '--tl-w': `${fillW}px` }) } as any)} />
                   <div className="tl-bar-dot"   {...({ style: cv({ '--tl-bg': c.border }) } as any)} />

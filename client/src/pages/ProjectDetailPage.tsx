@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import './ProjectDetailPage.css';
@@ -39,7 +39,7 @@ import {
   Table,
 } from 'lucide-react';
 import GoalMetrics from '../components/GoalMetrics';
-import SearchPanel from '../components/SearchPanel';
+import SearchPanel, { type SearchPanelHandle } from '../components/SearchPanel';
 import LogTimeModal from '../components/LogTimeModal';
 import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
 import FileViewerLazy from '../components/FileViewer';
@@ -214,10 +214,16 @@ export default function ProjectDetailPage() {
   const [savedReportsVersion, setSavedReportsVersion] = useState(0);
   const [hasCommitData, setHasCommitData] = useState(false);
 
-  // Search, time tracking, risk, audit log state
-  const [searchOpen, setSearchOpen] = useState(false);
+  // Search
+  const searchRef = useRef<SearchPanelHandle>(null);
   const [logTimeGoal, setLogTimeGoal] = useState<import('../types').Goal | null>(null);
   const [riskAssessing, setRiskAssessing] = useState(false);
+  type RiskEntry = { goalId: string; score: number; level: string; factors: string[] };
+  type RiskReport = { assessments: RiskEntry[]; generatedAt: string };
+  const [riskReport, setRiskReport] = useState<RiskReport | null>(() => {
+    try { const raw = localStorage.getItem(`odyssey-risk-${projectId}`); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  });
+  const [riskPanelOpen, setRiskPanelOpen] = useState(false);
   const [goalDependencies, setGoalDependencies] = useState<import('../types').GoalDependency[]>([]);
   const [auditFrom, setAuditFrom] = useState('');
   const [auditTo, setAuditTo] = useState('');
@@ -297,10 +303,10 @@ export default function ProjectDetailPage() {
       });
   }, [projectId]);
 
-  // Ctrl+K global search shortcut
+  // Ctrl+K focuses the inline search bar
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); setSearchOpen(true); }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); searchRef.current?.focus(); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -335,11 +341,18 @@ export default function ProjectDetailPage() {
     if (!projectId) return;
     setRiskAssessing(true);
     try {
-      await fetch(`${API_BASE}/ai/risk-assess`, {
+      const res = await fetch(`${API_BASE}/ai/risk-assess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId, agent }),
       });
+      if (res.ok) {
+        const data = await res.json();
+        const report: RiskReport = { assessments: data.assessments ?? [], generatedAt: new Date().toISOString() };
+        setRiskReport(report);
+        setRiskPanelOpen(true);
+        try { localStorage.setItem(`odyssey-risk-${projectId}`, JSON.stringify(report)); } catch {}
+      }
       await refetchGoals();
     } catch (err) {
       console.error('Risk assessment failed:', err);
@@ -636,9 +649,36 @@ export default function ProjectDetailPage() {
     ? Math.round(goals.reduce((sum, g) => sum + g.progress, 0) / goals.length)
     : 0;
 
-  const projectStatus = goals.some((g) => g.status === 'at_risk') ? 'at_risk'
-    : goals.every((g) => g.status === 'complete') && goals.length > 0 ? 'complete'
-    : 'on_track';
+  // Calculate overall project health from deadline vs progress data
+  const projectStatus = (() => {
+    const now = Date.now();
+    const incomplete = goals.filter(g => g.status !== 'complete' && g.deadline);
+    if (incomplete.length === 0) return 'on_plan' as const;
+
+    let missedCount = 0;   // overdue and not complete
+    let criticalCount = 0; // ≤21 days left, >40pt deficit
+    let behindCount = 0;   // ≤45 days left, >30pt deficit
+
+    for (const g of incomplete) {
+      const deadlineMs = new Date(g.deadline!).getTime();
+      const createdMs  = new Date(g.created_at).getTime();
+      const daysUntil  = (deadlineMs - now) / 86_400_000;
+
+      if (daysUntil < 0) { missedCount++; continue; }
+
+      const totalDuration = deadlineMs - createdMs;
+      const elapsed       = now - createdMs;
+      const expected      = totalDuration > 0 ? Math.min(100, (elapsed / totalDuration) * 100) : 0;
+      const deficit       = expected - g.progress;
+
+      if (daysUntil <= 21 && deficit > 40) criticalCount++;
+      else if (daysUntil <= 45 && deficit > 30) behindCount++;
+    }
+
+    if (missedCount >= 1 || criticalCount >= 2) return 'off_track' as const;
+    if (criticalCount >= 1 || behindCount >= 2) return 'at_risk' as const;
+    return 'on_plan' as const;
+  })();
 
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1220,7 +1260,10 @@ export default function ProjectDetailPage() {
         <TimelinePage
           goals={goals}
           projectName={project.name}
+          projectId={project.id}
           members={members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null }))}
+          onGoalClick={(g) => { setEditAutoGuidance(false); setEditGoal(g); }}
+          onCreateGoalForDate={(dateStr) => { setNewGoalDeadline(dateStr); goalModal.onOpen(); }}
         />
       )}
 
@@ -1414,24 +1457,39 @@ export default function ProjectDetailPage() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-sans text-sm font-bold text-heading">Tasks ({goals.length})</h3>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setSearchOpen(true)}
-                title="Search tasks (Ctrl+K)"
-                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md"
-              >
-                <Search size={12} /> Search
-              </button>
-              <button
-                type="button"
-                onClick={handleAssessRisk}
-                disabled={riskAssessing}
-                title="Run AI risk assessment on all tasks"
-                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50"
-              >
-                {riskAssessing ? <Loader2 size={12} className="animate-spin" /> : <ShieldAlert size={12} />}
-                {riskAssessing ? 'Assessing…' : 'Assess Risk'}
-              </button>
+              <SearchPanel
+                ref={searchRef}
+                projectId={projectId ?? null}
+                goals={goals}
+                events={events}
+                onGoalSelect={(id) => {
+                  const g = goals.find((g) => g.id === id);
+                  if (g) { setEditAutoGuidance(false); setEditGoal(g); }
+                }}
+                onEventSelect={() => setActiveTab('activity')}
+              />
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={handleAssessRisk}
+                  disabled={riskAssessing}
+                  title="Run AI risk assessment on all tasks"
+                  className={`inline-flex items-center gap-2 px-4 py-2 border text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors disabled:opacity-50 ${riskReport ? 'rounded-l-md border-r-0 border-border text-muted' : 'rounded-md border-border text-muted'}`}
+                >
+                  {riskAssessing ? <Loader2 size={12} className="animate-spin" /> : <ShieldAlert size={12} />}
+                  {riskAssessing ? 'Assessing…' : 'Assess Risk'}
+                </button>
+                {riskReport && (
+                  <button
+                    type="button"
+                    onClick={() => setRiskPanelOpen(v => !v)}
+                    title={riskPanelOpen ? 'Hide risk report' : 'Show risk report'}
+                    className={`inline-flex items-center gap-1 px-2.5 py-2 border border-border text-xs font-mono rounded-r-md transition-colors ${riskPanelOpen ? 'bg-surface2 text-heading' : 'text-muted hover:bg-surface2 hover:text-heading'}`}
+                  >
+                    {riskPanelOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={handleSyncOfficeProgress}
@@ -1464,6 +1522,76 @@ export default function ProjectDetailPage() {
               {syncResult.provider && <p className="text-[10px] text-muted/60 mt-1">via {syncResult.provider}</p>}
             </div>
           )}
+          {/* Risk Assessment Panel */}
+          {riskReport && riskPanelOpen && (() => {
+            const sorted = [...riskReport.assessments].sort((a, b) => b.score - a.score);
+            const counts = { critical: 0, high: 0, medium: 0, low: 0 } as Record<string, number>;
+            sorted.forEach(a => { if (counts[a.level] !== undefined) counts[a.level]++; });
+            const levelStyle: Record<string, string> = {
+              critical: 'text-[var(--color-danger)] border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5',
+              high:     'text-orange-400 border-orange-400/30 bg-orange-400/5',
+              medium:   'text-yellow-400 border-yellow-400/30 bg-yellow-400/5',
+              low:      'text-[var(--color-accent3)] border-[var(--color-accent3)]/30 bg-[var(--color-accent3)]/5',
+            };
+            return (
+              <div className="mb-4 border border-border rounded-lg overflow-hidden">
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-2.5 bg-surface2 border-b border-border">
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert size={12} className="text-muted" />
+                    <span className="text-xs font-semibold text-heading">Risk Assessment</span>
+                    <span className="text-[10px] text-muted font-mono">
+                      {new Date(riskReport.generatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {(['critical','high','medium','low'] as const).map(lvl => counts[lvl] > 0 && (
+                      <span key={lvl} className={`text-[9px] font-mono px-1.5 py-0.5 border rounded ${levelStyle[lvl]}`}>
+                        {counts[lvl]} {lvl}
+                      </span>
+                    ))}
+                    <button type="button" title="Close" onClick={() => setRiskPanelOpen(false)} className="text-muted hover:text-heading transition-colors ml-1">
+                      <X size={12} />
+                    </button>
+                  </div>
+                </div>
+                {/* Goal rows */}
+                <div className="divide-y divide-border/50 max-h-72 overflow-y-auto">
+                  {sorted.map(a => {
+                    const goal = goals.find(g => g.id === a.goalId);
+                    if (!goal) return null;
+                    return (
+                      <div key={a.goalId} className="flex items-start gap-3 px-4 py-2.5 hover:bg-surface2/50 transition-colors">
+                        <span className={`shrink-0 text-[9px] font-mono px-1.5 py-0.5 border rounded mt-0.5 ${levelStyle[a.level] ?? ''}`}>
+                          {a.level}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <button
+                            type="button"
+                            className="text-xs text-heading font-mono text-left hover:text-accent transition-colors truncate w-full"
+                            onClick={() => { setEditAutoGuidance(false); setEditGoal(goal); }}
+                          >
+                            {goal.title}
+                          </button>
+                          {a.factors.length > 0 && (
+                            <ul className="mt-0.5 space-y-0.5">
+                              {a.factors.map((f, i) => (
+                                <li key={i} className="text-[10px] text-muted font-mono flex items-start gap-1">
+                                  <span className="shrink-0 mt-0.5 opacity-50">·</span>{f}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        <span className="text-[10px] font-mono text-muted shrink-0">{a.score}/100</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {syncError && (
             <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono">{syncError}</div>
           )}
@@ -2086,21 +2214,6 @@ export default function ProjectDetailPage() {
       />
     )}
 
-    {/* Search Panel */}
-    {searchOpen && (
-      <SearchPanel
-        projectId={projectId ?? null}
-        goals={goals}
-        events={events}
-        onClose={() => setSearchOpen(false)}
-        onGoalSelect={(id) => {
-          setSearchOpen(false);
-          const g = goals.find((g) => g.id === id);
-          if (g) { setEditAutoGuidance(false); setEditGoal(g); }
-        }}
-        onEventSelect={() => { setSearchOpen(false); setActiveTab('activity'); }}
-      />
-    )}
 
     {/* Teams Folder Picker modal */}
     {teamsFolderPickerOpen && (
