@@ -40,9 +40,9 @@ export default function Sidebar() {
       {/* Brand */}
       <div className={`flex items-center border-b border-border h-16 px-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
         {!collapsed && (
-          <span className="font-serif text-4xl font-bold italic text-heading flex-1 text-center">
+          <NavLink to="/" end className="font-serif text-4xl font-bold italic text-heading flex-1 text-center hover:opacity-80 transition-opacity">
             <span className="text-accent">Odyssey</span>
-          </span>
+          </NavLink>
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}

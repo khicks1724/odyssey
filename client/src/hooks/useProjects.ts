@@ -1,7 +1,34 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
-import type { Project } from '../types';
+import type { Project, JoinRequest } from '../types';
+
+// ─── Standalone cascade delete (safe to call from any component) ─────────────
+export async function deleteProjectCascade(id: string) {
+  const { data: goalRows } = await supabase.from('goals').select('id').eq('project_id', id);
+  const goalIds = (goalRows ?? []).map((g) => g.id);
+
+  if (goalIds.length > 0) {
+    await supabase.from('goal_comments').delete().in('goal_id', goalIds);
+    await supabase.from('goal_reports').delete().in('goal_id', goalIds);
+    await supabase.from('goal_ai_guidance').delete().in('goal_id', goalIds);
+    await supabase.from('time_logs').delete().in('goal_id', goalIds);
+    await supabase.from('goal_assignees').delete().in('goal_id', goalIds);
+  }
+
+  await supabase.from('goal_dependencies').delete().eq('project_id', id);
+  await supabase.from('goals').delete().eq('project_id', id);
+  await supabase.from('events').delete().eq('project_id', id);
+  await supabase.from('project_members').delete().eq('project_id', id);
+  await supabase.from('project_insights').delete().eq('project_id', id);
+  await supabase.from('saved_reports').delete().eq('project_id', id);
+  await supabase.from('integrations').delete().eq('project_id', id);
+  await supabase.from('standup_reports').delete().eq('project_id', id);
+  await supabase.from('join_requests').delete().eq('project_id', id);
+
+  const { error } = await supabase.from('projects').delete().eq('id', id);
+  if (error) throw error;
+}
 
 export function useProjects() {
   const { user } = useAuth();
@@ -81,8 +108,7 @@ export function useProjects() {
   };
 
   const deleteProject = async (id: string) => {
-    const { error } = await supabase.from('projects').delete().eq('id', id);
-    if (error) throw error;
+    await deleteProjectCascade(id);
     setProjects((prev) => prev.filter((p) => p.id !== id));
   };
 
@@ -109,7 +135,7 @@ export function useProject(id: string | undefined) {
     fetchProject();
   }, [fetchProject]);
 
-  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date'>>) => {
+  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private'>>) => {
     if (!id) throw new Error('No project');
     const { data, error } = await supabase
       .from('projects')
@@ -123,4 +149,36 @@ export function useProject(id: string | undefined) {
   };
 
   return { project, loading, updateProject, refetch: fetchProject };
+}
+
+// ─── Join requests hook (for project owners) ─────────────────────────────────
+export function useJoinRequests(projectId: string | undefined) {
+  const [requests, setRequests] = useState<JoinRequest[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchRequests = useCallback(async () => {
+    if (!projectId) return;
+    setLoading(true);
+    const { data } = await supabase
+      .from('join_requests')
+      .select('*, profile:user_id(display_name, avatar_url)')
+      .eq('project_id', projectId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true });
+    if (data) setRequests(data as unknown as JoinRequest[]);
+    setLoading(false);
+  }, [projectId]);
+
+  useEffect(() => { fetchRequests(); }, [fetchRequests]);
+
+  const respond = async (requestId: string, action: 'approve' | 'deny') => {
+    const { data } = await supabase.rpc('respond_join_request', {
+      p_request_id: requestId,
+      p_action: action,
+    });
+    if ((data as { error?: string })?.error) throw new Error((data as { error: string }).error);
+    await fetchRequests();
+  };
+
+  return { requests, loading, respond, refetch: fetchRequests };
 }

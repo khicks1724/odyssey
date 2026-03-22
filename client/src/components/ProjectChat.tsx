@@ -723,12 +723,12 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
             }}
             onPaste={handlePaste}
             placeholder="Ask or instruct the AI… (paste images, drag & drop files)"
-            rows={1}
+            rows={3}
             className="pc-input flex-1 bg-surface2 border border-border text-heading text-xs font-mono placeholder:text-muted/50 px-3 py-2 focus:outline-none focus:border-accent/50 transition-colors rounded"
             onInput={(e) => {
               const t = e.currentTarget;
               t.style.height = 'auto';
-              t.style.height = Math.min(t.scrollHeight, 90) + 'px';
+              t.style.height = Math.min(t.scrollHeight, 120) + 'px';
             }}
           />
 

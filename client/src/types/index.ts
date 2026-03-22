@@ -6,6 +6,18 @@ export interface Project {
   github_repo: string | null;
   created_at: string;
   start_date: string | null;
+  invite_code: string | null;
+  is_private: boolean;
+}
+
+export interface JoinRequest {
+  id: string;
+  project_id: string;
+  user_id: string;
+  status: 'pending' | 'approved' | 'denied';
+  created_at: string;
+  updated_at: string;
+  profile?: { display_name: string | null; avatar_url: string | null };
 }
 
 export interface Goal {

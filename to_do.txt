@@ -1,0 +1,13 @@
+- Add project id to project details in the settings tab. Make it so a project owner can change the project id code. This code makes it so a new user could add that project using the code. If the code changes and someone tries to use an old code it should not work. Make the code long enough that no one could reasonable guess the code or type in a random code and join a random project. 
+
+- Fix the project persistence after deletion issue
+
+- Make all file names from all repos and sources clickable and viewable. Make it so that when i click a repo and its showing on the left hand side of the screen and then i click a file in the repo that it extends the file window from the repo pane to the right hand side of the page.
+
+- Show the ai chat icon at all times, even when in the dashboard and not in a project. Based on the prompt a user enters into the chat the ai chatbot should be able to know what project the user is referring to. 
+
+- Make the preview window wider for adding context when i am adding any type of file, document, repo into the ai chatbot on the right hand pane. have it be for the main context type selection window, and the window another layer down for adding the specific file, repo, etc.
+
+- If someone enters text into the ai chat window within the reports tab, have that prompt combine with the default report generation prompt in a logical way and have that be what the report generation prompt gets sent as. Display the logically formed combined prompt within the chat window. Make sure that the user maintains the ability to edit a report within that chat window. If they do not like the first result and say something like, "actually maek it as a pdf instead of a pptx", the chat should regenerate the report as a pdf and provide it within the chat window.
+
+- All chatbot responses within chat windows (reports tab window, project ai chat window) should have formatted text. 

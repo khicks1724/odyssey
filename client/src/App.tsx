@@ -12,6 +12,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import NewProjectPage from './pages/NewProjectPage';
 import SettingsPage from './pages/SettingsPage';
+import JoinQRPage from './pages/JoinQRPage';
 
 function AppRoutes() {
   const { user, loading } = useAuth();
@@ -28,6 +29,8 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route path="/auth/callback" element={<AuthCallbackPage />} />
+      {/* QR join — accessible outside AppLayout so unauthenticated users land here */}
+      <Route path="/join/qr/:token" element={<JoinQRPage />} />
       <Route element={user ? <AppLayout /> : <Navigate to="/login" replace />}>
         <Route index element={<DashboardPage />} />
         <Route path="projects" element={<ProjectsPage />} />

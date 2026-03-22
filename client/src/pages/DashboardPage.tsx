@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import {
   Activity,
   FolderKanban,
@@ -15,8 +16,17 @@ import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestIn
 import { useProjects } from '../hooks/useProjects';
 import { getSortMode, sortProjects } from '../lib/project-sort';
 import ContributionGraph from '../components/ContributionGraph';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+<<<<<<< HEAD
+import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
+import RepoTreeModal from '../components/RepoTreeModal';
+import { supabase } from '../lib/supabase';
+import type { FileRef } from '../hooks/useProjectFilePaths';
+=======
+import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
+import RepoTreeModal from '../components/RepoTreeModal';
+import { supabase } from '../lib/supabase';
+import type { FileRef } from '../hooks/useProjectFilePaths';
+>>>>>>> 95942f7 (Save all changes)
 
 const statusColors: Record<string, string> = {
   at_risk: 'text-accent',
@@ -38,6 +48,36 @@ export default function DashboardPage() {
   const { data: activityData } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
   const { commits: recentCommits, loading: commitsLoading } = useRecentCommits();
+
+  // Repo context for the insight's project
+  const [insightGitlabRepos, setInsightGitlabRepos] = useState<string[]>([]);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+
+  const insightProject = insight ? projects.find((p) => p.id === insight.project_id) ?? null : null;
+
+  useEffect(() => {
+    if (!insight?.project_id) return;
+    supabase
+      .from('integrations')
+      .select('config')
+      .eq('project_id', insight.project_id)
+      .eq('type', 'gitlab')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.config) {
+          const cfg = data.config as { repos?: string[]; repo?: string };
+          setInsightGitlabRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
+        } else {
+          setInsightGitlabRepos([]);
+        }
+      });
+  }, [insight?.project_id]);
+
+  const handleRepoClick = (repo: string, type: 'github' | 'gitlab') =>
+    setRepoTreeTarget({ repo, type });
+
+  // Empty file map — dashboard has no local file preview
+  const emptyFileMap = new Map<string, FileRef>();
 
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
@@ -170,31 +210,29 @@ export default function DashboardPage() {
               </Link>
 
               {/* Status */}
-              <div className="text-xs text-heading leading-relaxed break-words">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                    h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-heading">{children}</h1>,
-                    h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-heading">{children}</h2>,
-                    h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-heading">{children}</h3>,
-                    ul: ({ children }) => <ul className="mb-2 pl-4 space-y-0.5 list-disc leading-relaxed">{children}</ul>,
-                    ol: ({ children }) => <ol className="mb-2 pl-4 space-y-0.5 list-decimal leading-relaxed">{children}</ol>,
-                    strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                    em: ({ children }) => <em className="italic">{children}</em>,
-                    code: ({ children, className }) => {
-                      const isBlock = className?.includes('language-');
-                      return isBlock
-                        ? <code className="block bg-surface2 border border-border rounded px-2 py-1.5 font-mono text-[10px] whitespace-pre overflow-x-auto mb-2 max-w-full">{children}</code>
-                        : <code className="bg-surface2 border border-border rounded px-1 py-0.5 font-mono text-[10px] break-all">{children}</code>;
-                    },
-                    pre: ({ children }) => <pre className="mb-2 overflow-x-auto max-w-full">{children}</pre>,
-                    blockquote: ({ children }) => <blockquote className="border-l-2 border-accent/40 pl-3 text-muted italic mb-2">{children}</blockquote>,
-                    a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
-                  }}
+<<<<<<< HEAD
+              <div className="text-xs text-heading leading-relaxed break-words min-w-0">
+                <MarkdownWithFileLinks
+                  filePaths={emptyFileMap}
+                  onFileClick={() => {}}
+                  githubRepo={insightProject?.github_repo}
+                  gitlabRepos={insightGitlabRepos}
+                  onRepoClick={handleRepoClick}
                 >
                   {insight.status}
-                </ReactMarkdown>
+                </MarkdownWithFileLinks>
+=======
+              <div className="text-xs text-heading leading-relaxed break-words min-w-0">
+                <MarkdownWithFileLinks
+                  filePaths={emptyFileMap}
+                  onFileClick={() => {}}
+                  githubRepo={insightProject?.github_repo}
+                  gitlabRepos={insightGitlabRepos}
+                  onRepoClick={handleRepoClick}
+                >
+                  {insight.status}
+                </MarkdownWithFileLinks>
+>>>>>>> 95942f7 (Save all changes)
               </div>
 
               {/* Next Steps */}
@@ -203,21 +241,30 @@ export default function DashboardPage() {
                   <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1.5">Next Steps</p>
                   <ul className="space-y-1">
                     {insight.next_steps.slice(0, 3).map((step, i) => (
-                      <li key={i} className="flex items-start gap-1.5">
+                      <li key={i} className="flex items-start gap-1.5 min-w-0">
                         <span className="text-accent2 mt-0.5 shrink-0">›</span>
                         <span className="text-[11px] text-muted leading-snug break-words min-w-0">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={{
-                              p: ({ children }) => <span>{children}</span>,
-                              strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                              em: ({ children }) => <em className="italic">{children}</em>,
-                              code: ({ children }) => <code className="bg-surface2 border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
-                              a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
-                            }}
+<<<<<<< HEAD
+                          <MarkdownWithFileLinks
+                            filePaths={emptyFileMap}
+                            onFileClick={() => {}}
+                            githubRepo={insightProject?.github_repo}
+                            gitlabRepos={insightGitlabRepos}
+                            onRepoClick={handleRepoClick}
                           >
                             {step}
-                          </ReactMarkdown>
+                          </MarkdownWithFileLinks>
+=======
+                          <MarkdownWithFileLinks
+                            filePaths={emptyFileMap}
+                            onFileClick={() => {}}
+                            githubRepo={insightProject?.github_repo}
+                            gitlabRepos={insightGitlabRepos}
+                            onRepoClick={handleRepoClick}
+                          >
+                            {step}
+                          </MarkdownWithFileLinks>
+>>>>>>> 95942f7 (Save all changes)
                         </span>
                       </li>
                     ))}
@@ -239,6 +286,14 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {repoTreeTarget && (
+        <RepoTreeModal
+          repo={repoTreeTarget.repo}
+          type={repoTreeTarget.type}
+          onClose={() => setRepoTreeTarget(null)}
+        />
+      )}
 
       {/* Upcoming Deadlines */}
       <div className="border border-border bg-surface p-6">

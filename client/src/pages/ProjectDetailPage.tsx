@@ -40,6 +40,11 @@ import {
   ShieldAlert,
   Download,
   Table,
+  Copy,
+  Lock,
+  Globe,
+  LogOut,
+  Check,
 } from 'lucide-react';
 import GoalMetrics from '../components/GoalMetrics';
 import SearchPanel, { type SearchPanelHandle } from '../components/SearchPanel';
@@ -50,7 +55,8 @@ import OfficeFilePicker from '../components/OfficeFilePicker';
 import GoalEditModal from '../components/GoalEditModal';
 import GoalReportModal from '../components/GoalReportModal';
 import ReportsTab from '../components/ReportsTab';
-import { useProject } from '../hooks/useProjects';
+import ProjectQRCode from '../components/ProjectQRCode';
+import { useProject, useJoinRequests, deleteProjectCascade } from '../hooks/useProjects';
 import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
@@ -113,6 +119,50 @@ export default function ProjectDetailPage() {
   const { goals, createGoal, updateGoal, deleteGoal, refetch: refetchGoals } = useGoals(projectId);
   const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
   const { status: msStatus } = useMicrosoftIntegration();
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [leavingProject, setLeavingProject] = useState(false);
+  const [inviteRole, setInviteRole] = useState<'member' | 'owner'>('member');
+  const [copySuccess, setCopySuccess] = useState(false);
+
+  const isOwner = project?.owner_id === user?.id;
+
+  const handleDeleteProject = async () => {
+    if (!projectId || !project) return;
+    if (!window.confirm(`Permanently delete "${project.name}"?\n\nThis will remove all tasks, events, and data. This cannot be undone.`)) return;
+    setDeletingProject(true);
+    try {
+      await deleteProjectCascade(projectId);
+      navigate('/projects');
+    } catch (err) {
+      console.error('Failed to delete project:', err);
+      alert('Failed to delete project. Please try again.');
+      setDeletingProject(false);
+    }
+  };
+
+  const handleLeaveProject = async () => {
+    if (!projectId || !user) return;
+    if (!window.confirm('Leave this project? You will lose access unless re-invited.')) return;
+    setLeavingProject(true);
+    try {
+      await supabase.from('project_members').delete().eq('project_id', projectId).eq('user_id', user.id);
+      navigate('/projects');
+    } catch (err) {
+      console.error('Failed to leave project:', err);
+      alert('Failed to leave project. Please try again.');
+      setLeavingProject(false);
+    }
+  };
+
+  const handleCopyInviteCode = async () => {
+    if (!project?.invite_code) return;
+    await navigator.clipboard.writeText(project.invite_code);
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 2000);
+  };
+
+  // Join requests (for owners to approve/deny)
+  const { requests: joinRequests, respond: respondJoinRequest, refetch: refetchJoinRequests } = useJoinRequests(isOwner ? projectId : undefined);
 
   // Register this project with the global chat panel; unregister on unmount or project change
   useEffect(() => {
@@ -636,7 +686,7 @@ export default function ProjectDetailPage() {
         setInviting(null);
         return;
       }
-      await supabase.from('project_members').insert({ project_id: projectId, user_id: userId, role: 'member' });
+      await supabase.from('project_members').insert({ project_id: projectId, user_id: userId, role: inviteRole });
       await fetchMembers();
     } catch (err) {
       console.error('Invite failed:', err);
@@ -1747,115 +1797,248 @@ export default function ProjectDetailPage() {
 
       {activeTab === 'settings' && (
         <div className="space-y-8">
+
+          {/* Invite Code + Privacy — owners only */}
+          {isOwner && project?.invite_code && (
+            <div className="border border-border bg-surface p-6">
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <Lock size={14} className="text-accent" />
+                  <h3 className="font-sans text-sm font-bold text-heading">Project Access</h3>
+                </div>
+                {/* Public / Private toggle */}
+                <div className="flex items-center gap-1 border border-border rounded overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => updateProject({ is_private: false })}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${!project.is_private ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
+                  >
+                    <Globe size={10} />
+                    Public
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateProject({ is_private: true })}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${project.is_private ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
+                  >
+                    <Lock size={10} />
+                    Private
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted mb-4">
+                {project.is_private
+                  ? 'Private — join requests require owner approval before access is granted.'
+                  : 'Public — anyone with the invite code can join instantly.'}
+              </p>
+              <div className="flex items-center gap-3">
+                <div>
+                  <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1">Invite Code</p>
+                  <span className="font-mono text-lg font-bold text-heading tracking-widest">
+                    {project.invite_code}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyInviteCode}
+                  title="Copy invite code"
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
+                >
+                  {copySuccess ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
+                  {copySuccess ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* QR Invite Code — owners only */}
+          {isOwner && projectId && (
+            <ProjectQRCode projectId={projectId} />
+          )}
+
           {/* Team Members + Invite — side by side */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="border border-border bg-surface p-6">
               <div className="flex items-center gap-2 mb-6">
                 <Users size={14} className="text-accent2" />
                 <h3 className="font-sans text-sm font-bold text-heading">
-                  Team Members ({members.length + 1})
+                  Team Members ({members.length})
                 </h3>
               </div>
               <div className="space-y-px border border-border bg-border">
-                <div className="flex items-center gap-3 bg-surface px-4 py-3">
-                  {user?.user_metadata?.avatar_url ? (
-                    <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                  ) : (
-                    <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center">
-                      <span className="text-[10px] text-accent font-bold">You</span>
+                {members.map((m) => {
+                  const isCurrentUser = m.user_id === user?.id;
+                  return (
+                    <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
+                      {m.profile?.avatar_url ? (
+                        <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                      ) : (
+                        <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
+                          <span className="text-[10px] text-accent2 font-bold uppercase">
+                            {(m.profile?.display_name ?? '?')[0]}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-heading font-medium truncate">
+                          {m.profile?.display_name ?? m.user_id}
+                          {isCurrentUser && <span className="ml-1.5 text-[9px] text-muted">(you)</span>}
+                        </div>
+                        <div className="text-[10px] text-muted capitalize">{m.role}</div>
+                      </div>
+                      {/* Owners can remove/promote other members */}
+                      {isOwner && !isCurrentUser && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveMember(m.user_id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
+                          title="Remove member"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
                     </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-heading font-medium truncate">
-                      {user?.user_metadata?.user_name ?? user?.email ?? 'You'}
-                    </div>
-                    <div className="text-[10px] text-muted">Owner</div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Invite panel — owners only */}
+            {isOwner ? (
+              <div className="border border-border bg-surface p-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <UserPlus size={14} className="text-accent" />
+                  <h3 className="font-sans text-sm font-bold text-heading">Invite by GitHub Username</h3>
+                </div>
+                <p className="text-[11px] text-muted mb-4">
+                  Search for a GitHub user — they must have signed into Odyssey at least once.
+                </p>
+                {/* Role selector */}
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-[10px] tracking-[0.15em] uppercase text-muted">Invite as</span>
+                  <div className="flex items-center gap-1 border border-border rounded overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setInviteRole('member')}
+                      className={`px-3 py-1 text-[10px] font-semibold tracking-wider uppercase transition-colors ${inviteRole === 'member' ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
+                    >
+                      Member
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInviteRole('owner')}
+                      className={`px-3 py-1 text-[10px] font-semibold tracking-wider uppercase transition-colors ${inviteRole === 'owner' ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
+                    >
+                      Owner
+                    </button>
                   </div>
                 </div>
-                {members.map((m) => (
-                  <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
-                    {m.profile?.avatar_url ? (
-                      <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                <div className="flex gap-2 max-w-md mb-4">
+                  <input
+                    value={memberSearch}
+                    onChange={(e) => setMemberSearch(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
+                    placeholder="GitHub username…"
+                    className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleMemberSearch}
+                    disabled={memberSearching || memberSearch.trim().length < 2}
+                    className="px-4 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                    Search
+                  </button>
+                </div>
+                {memberResults.length > 0 && (
+                  <div className="space-y-px border border-border bg-border max-w-md">
+                    {memberResults.map((u) => (
+                      <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
+                        <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                        <div className="flex-1 min-w-0">
+                          <a href={u.html_url} target="_blank" rel="noopener noreferrer"
+                            className="text-xs text-heading font-medium hover:text-accent transition-colors">
+                            {u.login}
+                          </a>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleInviteMember(u)}
+                          disabled={inviting === u.login}
+                          className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5"
+                        >
+                          {inviting === u.login ? <Loader2 size={10} className="animate-spin" /> : <UserPlus size={10} />}
+                          {inviting === u.login ? 'Adding…' : `Add as ${inviteRole}`}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="border border-border bg-surface p-6 flex flex-col items-center justify-center text-center gap-3 min-h-[140px]">
+                <Users size={24} className="text-muted/30" />
+                <p className="text-xs text-muted">Only project owners can invite new members.</p>
+              </div>
+            )}
+          </div>
+
+          {/* Join Requests — owners only, shown when there are pending requests */}
+          {isOwner && joinRequests.length > 0 && (
+            <div className="border border-border bg-surface p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <UserPlus size={14} className="text-accent2" />
+                <h3 className="font-sans text-sm font-bold text-heading">
+                  Join Requests
+                  <span className="ml-2 text-[10px] font-mono bg-accent2/10 text-accent2 px-1.5 py-0.5 rounded">
+                    {joinRequests.length}
+                  </span>
+                </h3>
+              </div>
+              <div className="space-y-px border border-border bg-border">
+                {joinRequests.map((req) => (
+                  <div key={req.id} className="flex items-center gap-3 bg-surface px-4 py-3">
+                    {req.profile?.avatar_url ? (
+                      <img src={req.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
                     ) : (
                       <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
                         <span className="text-[10px] text-accent2 font-bold uppercase">
-                          {(m.profile?.display_name ?? '?')[0]}
+                          {(req.profile?.display_name ?? '?')[0]}
                         </span>
                       </div>
                     )}
                     <div className="flex-1 min-w-0">
                       <div className="text-xs text-heading font-medium truncate">
-                        {m.profile?.display_name ?? m.user_id}
+                        {req.profile?.display_name ?? req.user_id}
                       </div>
-                      <div className="text-[10px] text-muted capitalize">{m.role}</div>
+                      <div className="text-[10px] text-muted">
+                        {new Date(req.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      </div>
                     </div>
-                    {m.user_id !== user?.id && (
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => handleRemoveMember(m.user_id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
-                        title="Remove member"
+                        onClick={() => respondJoinRequest(req.id, 'approve').then(() => refetchJoinRequests())}
+                        className="flex items-center gap-1 px-3 py-1 text-[10px] font-semibold border border-accent2/30 text-accent2 hover:bg-accent2/10 transition-colors rounded"
                       >
-                        <X size={12} />
+                        <Check size={10} />
+                        Approve
                       </button>
-                    )}
+                      <button
+                        type="button"
+                        onClick={() => respondJoinRequest(req.id, 'deny').then(() => refetchJoinRequests())}
+                        className="flex items-center gap-1 px-3 py-1 text-[10px] font-semibold border border-border text-muted hover:text-danger hover:border-danger/30 transition-colors rounded"
+                      >
+                        <X size={10} />
+                        Deny
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
-
-            <div className="border border-border bg-surface p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <UserPlus size={14} className="text-accent" />
-                <h3 className="font-sans text-sm font-bold text-heading">Invite by GitHub Username</h3>
-              </div>
-              <p className="text-[11px] text-muted mb-4">
-                Search for a GitHub user — they must have signed into Odyssey at least once.
-              </p>
-              <div className="flex gap-2 max-w-md mb-4">
-                <input
-                  value={memberSearch}
-                  onChange={(e) => setMemberSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
-                  placeholder="GitHub username…"
-                  className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-                />
-                <button
-                  type="button"
-                  onClick={handleMemberSearch}
-                  disabled={memberSearching || memberSearch.trim().length < 2}
-                  className="px-4 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
-                >
-                  {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-                  Search
-                </button>
-              </div>
-              {memberResults.length > 0 && (
-                <div className="space-y-px border border-border bg-border max-w-md">
-                  {memberResults.map((u) => (
-                    <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
-                      <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                      <div className="flex-1 min-w-0">
-                        <a href={u.html_url} target="_blank" rel="noopener noreferrer"
-                          className="text-xs text-heading font-medium hover:text-accent transition-colors">
-                          {u.login}
-                        </a>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleInviteMember(u)}
-                        disabled={inviting === u.login}
-                        className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5"
-                      >
-                        {inviting === u.login ? <Loader2 size={10} className="animate-spin" /> : <UserPlus size={10} />}
-                        {inviting === u.login ? 'Adding…' : 'Add'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          )}
 
           {/* Project Name & Description */}
           <ProjectNameForm project={project} updateProject={updateProject} />
@@ -2180,6 +2363,45 @@ export default function ProjectDetailPage() {
                 </>
               );
             })()}
+          </div>
+
+          {/* Danger Zone */}
+          <div className="border border-danger/30 bg-surface p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Trash2 size={14} className="text-danger" />
+              <h3 className="font-sans text-sm font-bold text-danger">Danger Zone</h3>
+            </div>
+            {isOwner ? (
+              <>
+                <p className="text-xs text-muted mb-4">
+                  Permanently delete this project and all associated tasks, events, and data. This action cannot be undone.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleDeleteProject}
+                  disabled={deletingProject}
+                  className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {deletingProject ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                  {deletingProject ? 'Deleting…' : 'Delete Project'}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-muted mb-4">
+                  Remove yourself from this project. You will lose access and will need to be re-invited.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleLeaveProject}
+                  disabled={leavingProject}
+                  className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {leavingProject ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+                  {leavingProject ? 'Leaving…' : 'Leave Project'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
