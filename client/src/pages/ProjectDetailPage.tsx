@@ -2561,6 +2561,18 @@ export default function ProjectDetailPage() {
         agent={agent}
         autoGuidance={editAutoGuidance}
         allGoals={goals.filter((g) => g.id !== editGoal.id)}
+        filePaths={filePaths}
+        githubRepo={project.github_repo}
+        gitlabRepos={gitlabRepos}
+        onFileClick={handleFileClick}
+        onRepoClick={handleRepoClick}
+        onTaskClick={(id) => {
+          const g = goals.find((g) => g.id === id);
+          if (g) {
+            setEditAutoGuidance(false);
+            setEditGoal(g);
+          }
+        }}
         onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
         onClose={handleGoalEditClose}
       />

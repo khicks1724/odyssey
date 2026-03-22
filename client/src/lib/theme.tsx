@@ -199,7 +199,7 @@ export const themes: Theme[] = [
   },
   {
     id: 'usa',
-    name: 'USA',
+    name: '🇺🇸 USA',
     previewColors: ['#b22234', '#ffffff', '#3c3b6e'],
     colors: {
       bg: '#07162d',

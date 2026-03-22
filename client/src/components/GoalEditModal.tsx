@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { X, Save, Loader2, Sparkles, RefreshCw, Link, ShieldAlert } from 'lucide-react';
 import type { Goal } from '../types';
 import { useGoalDependencies } from '../hooks/useGoalDependencies';
+import type { FileRef } from '../hooks/useProjectFilePaths';
+import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 
 const API_BASE = '/api';
 
@@ -33,11 +33,32 @@ interface GoalEditModalProps {
   agent?: string;
   autoGuidance?: boolean;
   allGoals?: Goal[];
+  filePaths?: Map<string, FileRef>;
+  githubRepo?: string | null;
+  gitlabRepos?: string[];
+  onFileClick?: (ref: FileRef) => void;
+  onRepoClick?: (repo: string, type: 'github' | 'gitlab') => void;
+  onTaskClick?: (taskId: string) => void;
   onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance'>>) => Promise<void>;
   onClose: () => void;
 }
 
-export default function GoalEditModal({ goal, members, projectId, agent, autoGuidance, allGoals = [], onSave, onClose }: GoalEditModalProps) {
+export default function GoalEditModal({
+  goal,
+  members,
+  projectId,
+  agent,
+  autoGuidance,
+  allGoals = [],
+  filePaths = new Map(),
+  githubRepo = null,
+  gitlabRepos = [],
+  onFileClick,
+  onRepoClick,
+  onTaskClick,
+  onSave,
+  onClose,
+}: GoalEditModalProps) {
   const [title,          setTitle]          = useState(goal.title);
   const [category,       setCategory]       = useState(goal.category ?? '');
   const [loe,            setLoe]            = useState(goal.loe ?? '');
@@ -331,23 +352,25 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                     </div>
                   ) : guidance ? (
                     <div className="text-[12px] text-[var(--color-muted)] leading-relaxed">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          p:      ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                          h1:     ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-[var(--color-heading)]">{children}</h1>,
-                          h2:     ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-[var(--color-heading)]">{children}</h2>,
-                          h3:     ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-[var(--color-heading)]">{children}</h3>,
-                          ul:     ({ children }) => <ul className="mb-2 pl-4 space-y-1 list-disc">{children}</ul>,
-                          ol:     ({ children }) => <ol className="mb-2 pl-4 space-y-1 list-decimal">{children}</ol>,
-                          strong: ({ children }) => <strong className="font-semibold text-[var(--color-heading)]">{children}</strong>,
-                          em:     ({ children }) => <em className="italic">{children}</em>,
-                          code:   ({ children }) => <code className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
-                          a:      ({ href, children }) => <a href={href} className="text-[var(--color-accent2)] underline" target="_blank" rel="noreferrer">{children}</a>,
+                      <MarkdownWithFileLinks
+                        filePaths={filePaths}
+                        onFileClick={onFileClick ?? (() => {})}
+                        githubRepo={githubRepo}
+                        gitlabRepos={gitlabRepos}
+                        onRepoClick={onRepoClick}
+                        tasks={allGoals.map((g) => ({ id: g.id, title: g.title }))}
+                        onTaskClick={onTaskClick}
+                        extraComponents={{
+                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                          h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-[var(--color-heading)]">{children}</h1>,
+                          h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-[var(--color-heading)]">{children}</h2>,
+                          h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-[var(--color-heading)]">{children}</h3>,
+                          ul: ({ children }) => <ul className="mb-2 pl-4 space-y-1 list-disc">{children}</ul>,
+                          ol: ({ children }) => <ol className="mb-2 pl-4 space-y-1 list-decimal">{children}</ol>,
                         }}
                       >
                         {guidance}
-                      </ReactMarkdown>
+                      </MarkdownWithFileLinks>
                     </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full text-center gap-3 px-6 py-8">
