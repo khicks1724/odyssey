@@ -9,6 +9,196 @@ interface DashboardStats {
   onTrackRate: number | null;
 }
 
+export interface DashboardHoverTask {
+  id: string;
+  projectId: string;
+  title: string;
+  status: string;
+  progress: number;
+  category: string | null;
+  loe: string | null;
+  projectName: string;
+  assignees: string[];
+}
+
+export interface DashboardHoverEvent {
+  id: string;
+  projectId: string;
+  title: string;
+  summary: string | null;
+  source: string;
+  eventType: string;
+  occurredAt: string;
+  projectName: string;
+}
+
+export interface DashboardOnTrackBreakdown {
+  total: number;
+  onTrack: number;
+  needsAttention: number;
+  complete: number;
+  active: number;
+  inProgress: number;
+  notStarted: number;
+  avgProgress: number;
+  topCategories: { name: string; count: number }[];
+}
+
+export function useDashboardHoverDetails() {
+  const { user } = useAuth();
+  const [tasks, setTasks] = useState<DashboardHoverTask[]>([]);
+  const [events, setEvents] = useState<DashboardHoverEvent[]>([]);
+  const [assigneeNames, setAssigneeNames] = useState<Record<string, string>>({});
+  const [breakdown, setBreakdown] = useState<DashboardOnTrackBreakdown>({
+    total: 0,
+    onTrack: 0,
+    needsAttention: 0,
+    complete: 0,
+    active: 0,
+    inProgress: 0,
+    notStarted: 0,
+    avgProgress: 0,
+    topCategories: [],
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+
+    async function load() {
+      setLoading(true);
+
+      const { data: memberships } = await supabase
+        .from('project_members')
+        .select('project_id')
+        .eq('user_id', user.id);
+
+      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      if (projectIds.length === 0) {
+        setTasks([]);
+        setEvents([]);
+        setAssigneeNames({});
+        setBreakdown({
+          total: 0,
+          onTrack: 0,
+          needsAttention: 0,
+          complete: 0,
+          active: 0,
+          inProgress: 0,
+          notStarted: 0,
+          avgProgress: 0,
+          topCategories: [],
+        });
+        setLoading(false);
+        return;
+      }
+
+      const sinceWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [goalsRes, eventsRes] = await Promise.all([
+        supabase
+          .from('goals')
+          .select('id, title, status, progress, category, loe, assignees, assigned_to, project_id, projects(name)')
+          .in('project_id', projectIds)
+          .order('updated_at', { ascending: false }),
+        supabase
+          .from('events')
+          .select('id, title, summary, source, event_type, occurred_at, project_id, projects(name)')
+          .in('project_id', projectIds)
+          .gte('occurred_at', sinceWeek)
+          .order('occurred_at', { ascending: false })
+          .limit(8),
+      ]);
+
+      const goalRows = (goalsRes.data ?? []) as any[];
+      const eventRows = (eventsRes.data ?? []) as any[];
+
+      const assigneeIds = Array.from(
+        new Set(
+          goalRows.flatMap((g) => {
+            const ids = Array.isArray(g.assignees) && g.assignees.length
+              ? g.assignees
+              : (g.assigned_to ? [g.assigned_to] : []);
+            return ids.filter(Boolean);
+          }),
+        ),
+      );
+
+      let assigneeMap: Record<string, string> = {};
+      if (assigneeIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, display_name')
+          .in('id', assigneeIds);
+
+        assigneeMap = Object.fromEntries(
+          (profiles ?? []).map((p: any) => [p.id, p.display_name || 'Unknown']),
+        );
+      }
+
+      const complete = goalRows.filter((g) => g.status === 'complete').length;
+      const active = goalRows.filter((g) => g.status === 'active').length;
+      const inProgress = goalRows.filter((g) => g.status === 'in_progress' || g.status === 'in_review').length;
+      const notStarted = goalRows.filter((g) => g.status === 'not_started').length;
+      const onTrack = goalRows.filter((g) => g.status === 'active' || g.status === 'complete').length;
+      const total = goalRows.length;
+
+      const categoryCounts = new Map<string, number>();
+      for (const goal of goalRows) {
+        const cat = goal.category || 'General';
+        categoryCounts.set(cat, (categoryCounts.get(cat) ?? 0) + 1);
+      }
+
+      setAssigneeNames(assigneeMap);
+      setTasks(
+        goalRows.slice(0, 8).map((g) => ({
+          id: g.id,
+          projectId: g.project_id,
+          title: g.title,
+          status: g.status,
+          progress: g.progress ?? 0,
+          category: g.category,
+          loe: g.loe,
+          projectName: (g.projects as { name?: string } | null)?.name ?? 'Unknown project',
+          assignees: (Array.isArray(g.assignees) && g.assignees.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : []))
+            .map((id: string) => assigneeMap[id] ?? id),
+        })),
+      );
+      setEvents(
+        eventRows.map((e) => ({
+          id: e.id,
+          projectId: e.project_id,
+          title: e.title || e.event_type || 'Untitled event',
+          summary: e.summary,
+          source: e.source,
+          eventType: e.event_type,
+          occurredAt: e.occurred_at,
+          projectName: (e.projects as { name?: string } | null)?.name ?? 'Unknown project',
+        })),
+      );
+      setBreakdown({
+        total,
+        onTrack,
+        needsAttention: Math.max(total - onTrack, 0),
+        complete,
+        active,
+        inProgress,
+        notStarted,
+        avgProgress: total > 0 ? Math.round(goalRows.reduce((sum, g) => sum + (g.progress ?? 0), 0) / total) : 0,
+        topCategories: Array.from(categoryCounts.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([name, count]) => ({ name, count })),
+      });
+      setLoading(false);
+    }
+
+    load();
+  }, [user]);
+
+  return { tasks, events, assigneeNames, breakdown, loading };
+}
+
 export function useDashboardStats() {
   const { user } = useAuth();
   const [stats, setStats] = useState<DashboardStats>({

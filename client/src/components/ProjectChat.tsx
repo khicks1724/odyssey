@@ -3,18 +3,22 @@ import {
   Send, Loader2, Bot, Check, Ban, Plus, Pencil, Trash2, Copy, CheckCheck,
   X, FileText, Github, GitBranch, Image, File, ChevronRight,
 } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useAIAgent } from '../lib/ai-agent';
 import { useChatPanel, type ChatMessage as Message, type MessageAttachment } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
+import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
+import MarkdownWithFileLinks from './MarkdownWithFileLinks';
+import RepoTreeModal from './RepoTreeModal';
+import type { Project } from '../types';
+import { useAIErrorDialog } from '../lib/ai-error';
 import './ProjectChat.css';
 
 type PendingAction = NonNullable<Message['pendingAction']>;
 
 interface Props {
-  projectId: string;
+  projectId: string | null;
   projectName: string;
+  projects: Project[];
   onGoalMutated?: () => void;
 }
 
@@ -107,9 +111,21 @@ function AttachmentPill({ att }: { att: MessageAttachment }) {
 
 // ── Main component ──────────────────────────────────────────────────────────
 
-export default function ProjectChat({ projectId, projectName, onGoalMutated }: Props) {
-  const { agent, notifyModelUsed } = useAIAgent();
+function inferProjectFromPrompt(text: string, projects: Project[], fallbackProjectId: string | null) {
+  const normalized = text.toLowerCase();
+  const matchedProject = projects.find((project) => {
+    const name = project.name.toLowerCase().trim();
+    return name.length > 2 && normalized.includes(name);
+  });
+  return matchedProject?.id ?? fallbackProjectId ?? projects[0]?.id ?? null;
+}
+
+export default function ProjectChat({ projectId, projectName, projects, onGoalMutated }: Props) {
+  const { agent, providers, notifyModelUsed } = useAIAgent();
   const { messages, setMessages } = useChatPanel();
+  const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
+  const [resolvedProjectId, setResolvedProjectId] = useState<string | null>(projectId ?? projects[0]?.id ?? null);
+  const selectedProject = projects.find((project) => project.id === resolvedProjectId) ?? null;
 
   const [input,     setInput]     = useState('');
   const [loading,   setLoading]   = useState(false);
@@ -126,6 +142,8 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
   const [githubRepo,   setGithubRepo]   = useState<string | null>(null);
   const [gitlabRepos,  setGitlabRepos]  = useState<string[]>([]);
   const [resourcesReady, setResourcesReady] = useState(false);
+  const { filePaths } = useProjectFilePaths(githubRepo, gitlabRepos);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string } | null>(null);
 
   const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLTextAreaElement>(null);
@@ -135,14 +153,29 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
   // ── Fetch project resources ──────────────────────────────────────────────
 
   useEffect(() => {
+    if (projectId) {
+      setResolvedProjectId(projectId);
+    } else if (!resolvedProjectId && projects.length > 0) {
+      setResolvedProjectId(projects[0].id);
+    }
+  }, [projectId, projects, resolvedProjectId]);
+
+  useEffect(() => {
     let cancelled = false;
+    if (!resolvedProjectId) {
+      setGithubRepo(null);
+      setGitlabRepos([]);
+      setProjectDocs([]);
+      setResourcesReady(true);
+      return () => { cancelled = true; };
+    }
 
     async function load() {
       // Project record (github_repo)
       const { data: proj } = await supabase
         .from('projects')
         .select('github_repo')
-        .eq('id', projectId)
+        .eq('id', resolvedProjectId)
         .maybeSingle();
       if (!cancelled) setGithubRepo(proj?.github_repo ?? null);
 
@@ -150,7 +183,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
       const { data: gl } = await supabase
         .from('integrations')
         .select('config')
-        .eq('project_id', projectId)
+        .eq('project_id', resolvedProjectId)
         .eq('type', 'gitlab')
         .maybeSingle();
       if (!cancelled && gl?.config) {
@@ -162,7 +195,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
       const { data: evts } = await supabase
         .from('events')
         .select('id, metadata, source')
-        .eq('project_id', projectId)
+        .eq('project_id', resolvedProjectId)
         .in('source', ['local', 'onenote', 'onedrive', 'teams'])
         .order('created_at', { ascending: false })
         .limit(50);
@@ -180,7 +213,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
 
     load();
     return () => { cancelled = true; };
-  }, [projectId]);
+  }, [resolvedProjectId]);
 
   // ── Close context menu on outside click ─────────────────────────────────
 
@@ -300,6 +333,13 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
   const sendMessage = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if ((!text && attachments.length === 0) || loading) return;
+    const targetProjectId = inferProjectFromPrompt(text, projects, resolvedProjectId);
+    if (!targetProjectId) {
+      setError('No accessible project is available for chat.');
+      return;
+    }
+    const inferredProject = projects.find((project) => project.id === targetProjectId) ?? null;
+    setResolvedProjectId(targetProjectId);
 
     // Build display attachments for the message bubble
     const displayAtts: MessageAttachment[] = attachments.map((a) => ({
@@ -324,7 +364,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
 
     const userMsg: Message = {
       role: 'user',
-      content: text,
+      content: inferredProject && inferredProject.id !== projectId ? `[Project: ${inferredProject.name}]\n${text}` : text,
       attachments: displayAtts.length ? displayAtts : undefined,
     };
     const next = [...messages, userMsg];
@@ -340,7 +380,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent,
-          projectId,
+          projectId: targetProjectId,
           messages: next.map((m) => ({ role: m.role, content: m.content })),
           attachments: wireAtts.length ? wireAtts : undefined,
         }),
@@ -348,6 +388,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? `Error ${res.status}`);
+        showAIError(data.error ?? `Error ${res.status}`, res.status);
       } else {
         if (data.provider) notifyModelUsed(data.provider);
         setMessages((prev) => [...prev, {
@@ -360,9 +401,10 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
       }
     } catch {
       setError('Network error — is the server running?');
+      showAIError('Network error — is the server running?', 502);
     }
     setLoading(false);
-  }, [input, attachments, loading, messages, agent, projectId, notifyModelUsed]);
+  }, [input, attachments, loading, messages, agent, projectId, projects, resolvedProjectId, notifyModelUsed]);
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
@@ -406,6 +448,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
       console.error('Action failed:', err);
       setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, actionState: 'pending' } : m));
       setError(`Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      showAIError(`Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   };
 
@@ -554,7 +597,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
           <Bot size={14} className="text-accent shrink-0" />
           <div className="min-w-0">
             <div className="text-xs font-bold text-heading font-sans">Project AI</div>
-            <div className="text-[10px] text-muted font-mono truncate">{projectName}</div>
+            <div className="text-[10px] text-muted font-mono truncate">{selectedProject?.name ?? projectName ?? 'No project selected'}</div>
           </div>
         </div>
       </div>
@@ -565,7 +608,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
           <div className="text-center py-8">
             <Bot size={24} className="text-muted mx-auto mb-2" />
             <p className="text-xs text-muted font-mono">
-              Ask me anything about <span className="text-accent">{projectName}</span>
+              Ask me anything about <span className="text-accent">{selectedProject?.name ?? projectName ?? 'your projects'}</span>
             </p>
             <p className="text-[10px] text-muted/60 mt-1">
               I can create, edit, and delete tasks — I'll always ask before acting.
@@ -590,31 +633,27 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
                       : <Copy size={11} />}
                   </button>
                   <div className="pc-bubble px-3 py-2 rounded text-xs leading-relaxed bg-surface2 border border-border text-heading pc-md">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        p:          ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                        h1:         ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-heading">{children}</h1>,
-                        h2:         ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-heading">{children}</h2>,
-                        h3:         ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-heading">{children}</h3>,
-                        ul:         ({ children }) => <ul className="mb-2 pl-4 space-y-0.5 list-disc leading-relaxed">{children}</ul>,
-                        ol:         ({ children }) => <ol className="mb-2 pl-4 space-y-0.5 list-decimal leading-relaxed">{children}</ol>,
-                        strong:     ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                        em:         ({ children }) => <em className="italic">{children}</em>,
-                        code:       ({ children, className }) => {
-                          const isBlock = className?.includes('language-');
-                          return isBlock
-                            ? <code className="block bg-surface border border-border rounded px-2 py-1.5 font-mono text-[10px] whitespace-pre overflow-x-auto mb-2 max-w-full">{children}</code>
-                            : <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px] break-all">{children}</code>;
-                        },
-                        pre:        ({ children }) => <pre className="mb-2 overflow-x-auto max-w-full">{children}</pre>,
+                    <MarkdownWithFileLinks
+                      className="block"
+                      filePaths={filePaths}
+                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
+                      githubRepo={githubRepo}
+                      gitlabRepos={gitlabRepos}
+                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
+                      extraComponents={{
+                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                        h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-heading">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-heading">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-heading">{children}</h3>,
+                        ul: ({ children }) => <ul className="mb-2 pl-4 space-y-0.5 list-disc leading-relaxed">{children}</ul>,
+                        ol: ({ children }) => <ol className="mb-2 pl-4 space-y-0.5 list-decimal leading-relaxed">{children}</ol>,
+                        pre: ({ children }) => <pre className="mb-2 overflow-x-auto max-w-full">{children}</pre>,
                         blockquote: ({ children }) => <blockquote className="border-l-2 border-accent/40 pl-3 text-muted italic mb-2">{children}</blockquote>,
-                        hr:         () => <hr className="border-border my-2" />,
-                        a:          ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
+                        hr: () => <hr className="border-border my-2" />,
                       }}
                     >
                       {msg.content}
-                    </ReactMarkdown>
+                    </MarkdownWithFileLinks>
                     {msg.provider && (
                       <div className="text-[9px] text-muted mt-1 text-right opacity-60">{msg.provider}</div>
                     )}
@@ -699,7 +738,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
         )}
 
         {/* Input row */}
-        <div className="p-2 flex gap-1.5 items-end">
+        <div className="p-2 flex gap-1.5 items-stretch">
           {/* + context button */}
           <div className="relative shrink-0" ref={contextRef}>
             <button
@@ -736,7 +775,7 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
           <button type="button" onClick={() => sendMessage()}
             disabled={(!input.trim() && attachments.length === 0) || loading}
             title="Send (Enter)"
-            className="p-2 bg-accent text-[var(--color-accent-fg)] rounded hover:bg-accent/90 transition-colors disabled:opacity-40 shrink-0">
+            className="pc-send-btn bg-accent text-[var(--color-accent-fg)] hover:bg-accent/90 transition-colors disabled:opacity-40">
             <Send size={13} />
           </button>
         </div>
@@ -752,6 +791,15 @@ export default function ProjectChat({ projectId, projectName, onGoalMutated }: P
         className="hidden"
         onChange={(e) => { handleFiles(e.target.files); e.target.value = ''; setContextOpen(false); }}
       />
+      {repoTreeTarget && (
+        <RepoTreeModal
+          repo={repoTreeTarget.repo}
+          type={repoTreeTarget.type}
+          initialPath={repoTreeTarget.initialPath}
+          onClose={() => setRepoTreeTarget(null)}
+        />
+      )}
+      {aiErrorDialog}
     </div>
   );
 }

@@ -90,11 +90,38 @@ export async function gitlabRoutes(server: FastifyInstance) {
     if (!GITLAB_TOKEN) return reply.status(503).send({ error: 'GitLab token not configured on server' });
 
     try {
-      type GLTree = { id: string; name: string; type: string; path: string; mode: string }[];
-      // Fetch up to 500 files recursively
-      const data = await glGet(repo, '/repository/tree?recursive=true&per_page=100') as GLTree;
+      type GLTreeEntry = { id: string; name: string; type: string; path: string; mode: string };
+      const encoded = encodeURIComponent(repo);
+      const files: GLTreeEntry[] = [];
+      let page = 1;
+
+      while (page <= 20) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10_000);
+        try {
+          const res = await fetch(
+            `${GITLAB_HOST}/api/v4/projects/${encoded}/repository/tree?recursive=true&per_page=100&page=${page}`,
+            { headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN }, signal: controller.signal },
+          );
+          if (!res.ok) {
+            const body = await res.text();
+            throw new Error(`GitLab ${res.status}: ${body.slice(0, 300)}`);
+          }
+
+          const pageData = await res.json() as GLTreeEntry[];
+          files.push(...pageData);
+
+          const nextPage = res.headers.get('x-next-page');
+          if (!nextPage || pageData.length === 0) break;
+          page = Number(nextPage);
+          if (!page) break;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
       return {
-        files: data
+        files: files
           .filter((f) => f.type === 'blob')
           .map((f) => ({ path: f.path })),
       };

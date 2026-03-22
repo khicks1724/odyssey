@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, Bot, FileText, Download, BarChart3, Presentation, X, TableIcon } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
 import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
+import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
+import MarkdownWithFileLinks from './MarkdownWithFileLinks';
+import RepoTreeModal from './RepoTreeModal';
+import { useAIErrorDialog } from '../lib/ai-error';
 import './ReportsTab.css';
 
 interface Message {
@@ -18,6 +20,8 @@ interface ReportsTabProps {
   projectId: string;
   projectName: string;
   projectStartDate: string | null;
+  githubRepo?: string | null;
+  gitlabRepos?: string[];
   messages: Message[];
   onMessagesChange: (msgs: Message[]) => void;
   onReportSaved?: () => void;
@@ -131,8 +135,18 @@ function parseDateRange(text: string): { from: string | null; to: string | null 
 type ReportFormat = 'docx' | 'pptx' | 'pdf';
 
 
-export default function ReportsTab({ projectId, projectName, projectStartDate, messages, onMessagesChange, onReportSaved }: ReportsTabProps) {
+export default function ReportsTab({
+  projectId,
+  projectName,
+  projectStartDate,
+  githubRepo = null,
+  gitlabRepos = [],
+  messages,
+  onMessagesChange,
+  onReportSaved,
+}: ReportsTabProps) {
   const { agent, providers } = useAIAgent();
+  const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
   const activeProviderName = agent === 'auto'
     ? null
     : (providers.find((p) => p.id === agent)?.name ?? agent);
@@ -151,6 +165,8 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
   const [generatingMessage, setGeneratingMessage] = useState<string | null>(null);
   const [streamStatus,     setStreamStatus]     = useState('');
   const [error,            setError]            = useState<string | null>(null);
+  const { filePaths } = useProjectFilePaths(githubRepo, gitlabRepos);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string } | null>(null);
 
   const bottomRef  = useRef<HTMLDivElement>(null);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
@@ -192,6 +208,12 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
       `Ensure all text, tables, and figures are properly sized and do not overlap or overrun any boundaries.`;
   };
 
+  const buildCombinedPrompt = (userText: string, activeFormat: ReportFormat, from: string, to: string) => {
+    const defaultPrompt = buildDefaultPrompt(activeFormat, from, to);
+    if (!userText.trim()) return defaultPrompt;
+    return `${defaultPrompt}\n\nAdditional user instructions:\n${userText.trim()}`;
+  };
+
   const phasesByFormat: Record<ReportFormat, string[]> = {
     pptx: [
       'Reading commits and codebase from all repos…',
@@ -223,13 +245,24 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
     if (detectedFormat && detectedFormat !== format) setFormat(detectedFormat);
 
     const rawPrompt = promptOverride ?? '';
-    const prompt = rawPrompt || buildDefaultPrompt(activeFormat, effectiveFrom, effectiveTo);
+    const prompt = rawPrompt
+      ? buildCombinedPrompt(rawPrompt, activeFormat, effectiveFrom, effectiveTo)
+      : buildDefaultPrompt(activeFormat, effectiveFrom, effectiveTo);
 
     // Use provided snapshot or current messages; inject user message if button-triggered
     let currentMessages = baseMessages ?? messages;
     if (!baseMessages) {
       const userMsg: Message = { role: 'user', content: prompt };
       currentMessages = [...currentMessages, userMsg];
+      setMessages(currentMessages);
+    } else if (rawPrompt) {
+      currentMessages = [
+        ...currentMessages,
+        {
+          role: 'assistant',
+          content: `### Combined Report Prompt\n\n${prompt}`,
+        },
+      ];
       setMessages(currentMessages);
     }
 
@@ -261,6 +294,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
 
       if (!res.ok) {
         setError(data.error ?? `Error ${res.status}`);
+        showAIError(data.error ?? `Error ${res.status}`, res.status);
         setGenerating(false);
 
         return;
@@ -290,6 +324,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
       setGeneratingMessage(null);
       if (err?.name !== 'AbortError') {
         setError('Failed to generate report.');
+        showAIError(err);
         console.error(err);
       }
     }
@@ -313,7 +348,8 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
     setInput('');
 
     // Detect generate intent — trigger report generation instead of chat
-    if (GENERATE_INTENT.test(text)) {
+    const wantsFormatChange = !!detectFormat(text) && messages.some((msg) => !!msg.reportReady);
+    if (GENERATE_INTENT.test(text) || wantsFormatChange) {
       const fmt = detectFormat(text) ?? format;
       const fmtLabel = fmt === 'pptx' ? 'PowerPoint slide deck' : fmt === 'docx' ? 'Word document' : 'PDF';
       const withAck: Message[] = [...next, { role: 'assistant', content: `Got it — generating your ${fmtLabel} now…` }];
@@ -338,6 +374,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
         setError((data as any).error ?? `Error ${res.status}`);
+        showAIError((data as any).error ?? `Error ${res.status}`, res.status);
         setLoading(false);
         setStreamStatus('');
         return;
@@ -364,6 +401,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
               setMessages([...next, { role: 'assistant', content: event.message, provider: event.provider }]);
             } else if (event.type === 'error') {
               setError(event.message);
+              showAIError(event.message);
             }
           } catch { /* ignore malformed SSE chunk */ }
         }
@@ -371,6 +409,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
         setError('Network error — is the server running?');
+        showAIError('Network error — is the server running?', 502);
       }
     }
     abortRef.current = null;
@@ -575,7 +614,16 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
                     : 'bg-surface2 border border-border text-heading mr-4 rt-prose'
                 }`}>
                   {msg.role === 'user' ? msg.content : (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <MarkdownWithFileLinks
+                      className="block"
+                      filePaths={filePaths}
+                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
+                      githubRepo={githubRepo}
+                      gitlabRepos={gitlabRepos}
+                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
+                    >
+                      {msg.content}
+                    </MarkdownWithFileLinks>
                   )}
                   {msg.role === 'assistant' && msg.provider && (
                     <div className="text-[9px] text-muted mt-1 text-right opacity-60">{msg.provider}</div>
@@ -607,7 +655,7 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
         </div>
 
         {/* Input */}
-        <div className="shrink-0 border-t border-border p-3 flex gap-2 items-end bg-surface">
+      <div className="shrink-0 border-t border-border p-3 flex gap-2 items-end bg-surface">
           <textarea
             ref={inputRef}
             value={input}
@@ -635,6 +683,15 @@ export default function ReportsTab({ projectId, projectName, projectStartDate, m
           )}
         </div>
       </div>
+      {repoTreeTarget && (
+        <RepoTreeModal
+          repo={repoTreeTarget.repo}
+          type={repoTreeTarget.type}
+          initialPath={repoTreeTarget.initialPath}
+          onClose={() => setRepoTreeTarget(null)}
+        />
+      )}
+      {aiErrorDialog}
     </div>
   );
 }

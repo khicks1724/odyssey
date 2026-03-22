@@ -14,6 +14,12 @@ export interface ThemeColors {
   heading: string;
   /** Text color used on top of accent-colored backgrounds (buttons, bubbles). Defaults to white. */
   accentFg?: string;
+  /** Clickable file/program token color in markdown-rendered AI output. */
+  codeFile?: string;
+  /** Clickable repo token color in markdown-rendered AI output. */
+  codeRepo?: string;
+  /** Clickable task token color in markdown-rendered AI output. */
+  codeTask?: string;
 }
 
 export interface Theme {
@@ -46,6 +52,7 @@ export const themes: Theme[] = [
   {
     id: 'ivory',
     name: 'Odyssey Light',
+    previewColors: ['#f5f0e8', '#6b7a8d', '#0f1f33'],
     colors: {
       bg: '#f5f0e8',
       surface: '#ece7df',
@@ -63,6 +70,7 @@ export const themes: Theme[] = [
   {
     id: 'one-dark-pro',
     name: 'One Dark Pro',
+    previewColors: ['#282c34', '#e5c07b', '#e5e9f0'],
     colors: {
       bg: '#282c34',
       surface: '#2c313a',
@@ -80,6 +88,7 @@ export const themes: Theme[] = [
   {
     id: 'dark-modern',
     name: 'Dark Modern',
+    previewColors: ['#3b8eea', '#e8a235', '#f0f4f8'],
     colors: {
       bg: '#080c10',
       surface: '#0d1219',
@@ -97,12 +106,13 @@ export const themes: Theme[] = [
   {
     id: 'light-modern',
     name: 'Light Modern',
+    previewColors: ['#ffffff', '#e8a235', '#2563eb'],
     colors: {
       bg: '#ffffff',
       surface: '#f5f5f5',
       surface2: '#e8e8e8',
       border: '#d1d5db',
-      accent: '#c97b15',
+      accent: '#e8a235',
       accent2: '#2563eb',
       accent3: '#16a34a',
       danger: '#dc2626',
@@ -114,6 +124,7 @@ export const themes: Theme[] = [
   {
     id: 'claude-dark',
     name: 'Claude Dark',
+    previewColors: ['#1e1e1e', '#D4825E', '#f0f0f0'],
     colors: {
       bg: '#1e1e1e',
       surface: '#252525',
@@ -131,12 +142,13 @@ export const themes: Theme[] = [
   {
     id: 'claude-light',
     name: 'Claude Light',
+    previewColors: ['#FAF9F5', '#D4825E', '#1F1E1D'],
     colors: {
       bg: '#FAF9F5',
       surface: '#F0EFE9',
       surface2: '#E5E4DE',
       border: '#D0CFC8',
-      accent: '#C96442',
+      accent: '#D4825E',
       accent2: '#1C6BBB',
       accent3: '#26831A',
       danger: '#D73A83',
@@ -163,6 +175,9 @@ export const themes: Theme[] = [
       muted:    '#5986aa',  // NPS Blue @ 65% screen
       heading:  '#ffffff',
       accentFg: '#001a2e',  // dark text on yellow buttons
+      codeFile: '#FFD503',
+      codeRepo: '#8c8c8c',
+      codeTask: '#5986aa',
     },
   },
   {
@@ -183,8 +198,50 @@ export const themes: Theme[] = [
     },
   },
   {
+    id: 'usa',
+    name: 'USA',
+    previewColors: ['#b22234', '#ffffff', '#3c3b6e'],
+    colors: {
+      bg: '#07162d',
+      surface: '#0c1f3f',
+      surface2: '#132b55',
+      border: '#274777',
+      accent: '#c72c41',
+      accent2: '#4d79c7',
+      accent3: '#ffffff',
+      danger: '#ff6b6b',
+      text: '#f6f8fb',
+      muted: '#b4c3de',
+      heading: '#ffffff',
+      accentFg: '#ffffff',
+    },
+  },
+  {
+    id: 'digital-trident',
+    name: 'Digital Trident',
+    previewColors: ['#000000', '#1e90ff', '#4169e1'],
+    colors: {
+      bg: '#000000',
+      surface: '#1a1a1a',
+      surface2: '#2c2c2e',
+      border: '#3a3a3c',
+      accent: '#1e90ff',
+      accent2: '#4169e1',
+      accent3: '#d6d3d3',
+      danger: '#e05555',
+      text: '#ffffff',
+      muted: '#aaaaaa',
+      heading: '#ffffff',
+      accentFg: '#ffffff',
+      codeFile: '#1e90ff',
+      codeRepo: '#d6d3d3',
+      codeTask: '#4169e1',
+    },
+  },
+  {
     id: 'github-dark',
     name: 'GitHub Dark',
+    previewColors: ['#0d1117', '#f78166', '#f0f6fc'],
     colors: {
       bg: '#0d1117',
       surface: '#161b22',
@@ -202,6 +259,7 @@ export const themes: Theme[] = [
   {
     id: 'nord',
     name: 'Nord',
+    previewColors: ['#2e3440', '#ebcb8b', '#eceff4'],
     colors: {
       bg: '#2e3440',
       surface: '#3b4252',
@@ -251,6 +309,18 @@ function applyTheme(theme: Theme) {
   root.style.setProperty('--color-muted', c.muted);
   root.style.setProperty('--color-heading', c.heading);
   root.style.setProperty('--color-accent-fg', c.accentFg ?? '#ffffff');
+  root.style.setProperty('--color-code-static', c.text);
+  root.style.setProperty('--color-code-static-bg', `${c.surface2}cc`);
+  root.style.setProperty('--color-code-static-border', `${c.border}cc`);
+  root.style.setProperty('--color-code-file', c.codeFile ?? c.accent);
+  root.style.setProperty('--color-code-file-bg', `${(c.codeFile ?? c.accent)}1f`);
+  root.style.setProperty('--color-code-file-border', `${(c.codeFile ?? c.accent)}55`);
+  root.style.setProperty('--color-code-repo', c.codeRepo ?? c.accent2);
+  root.style.setProperty('--color-code-repo-bg', `${(c.codeRepo ?? c.accent2)}1f`);
+  root.style.setProperty('--color-code-repo-border', `${(c.codeRepo ?? c.accent2)}55`);
+  root.style.setProperty('--color-code-task', c.codeTask ?? c.accent3);
+  root.style.setProperty('--color-code-task-bg', `${(c.codeTask ?? c.accent3)}1f`);
+  root.style.setProperty('--color-code-task-border', `${(c.codeTask ?? c.accent3)}55`);
 }
 
 interface ThemeContextValue {

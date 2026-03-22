@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { X, Save, Loader2, Sparkles, RefreshCw, Link, Clock, ShieldAlert } from 'lucide-react';
+import { X, Save, Loader2, Sparkles, RefreshCw, Link, ShieldAlert } from 'lucide-react';
 import type { Goal } from '../types';
 import { useGoalDependencies } from '../hooks/useGoalDependencies';
 
@@ -33,7 +33,7 @@ interface GoalEditModalProps {
   agent?: string;
   autoGuidance?: boolean;
   allGoals?: Goal[];
-  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance' | 'estimated_hours'>>) => Promise<void>;
+  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance'>>) => Promise<void>;
   onClose: () => void;
 }
 
@@ -45,7 +45,6 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
   const [deadline,       setDeadline]       = useState(goal.deadline?.split('T')[0] ?? '');
   const [status,         setStatus]         = useState<Goal['status']>(goal.status);
   const [progress,       setProgress]       = useState(goal.progress);
-  const [estimatedHours, setEstimatedHours] = useState(goal.estimated_hours?.toString() ?? '');
   const [saving,         setSaving]         = useState(false);
 
   // Initialize from saved guidance on the task; keeps text even while regenerating
@@ -97,7 +96,6 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
   const handleSave = async () => {
     if (!title.trim()) return;
     setSaving(true);
-    const hrs = parseFloat(estimatedHours);
     await onSave(goal.id, {
       title:          title.trim(),
       category:       category || null,
@@ -106,7 +104,6 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
       deadline:       deadline || null,
       status,
       progress,
-      estimated_hours: !isNaN(hrs) && hrs > 0 ? hrs : null,
     });
     setSaving(false);
     onClose();
@@ -230,25 +227,6 @@ export default function GoalEditModal({ goal, members, projectId, agent, autoGui
                   </select>
                 </div>
               </div>
-
-              {/* Estimated Hours */}
-              <div>
-                <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5 flex items-center gap-1">
-                  <Clock size={9} />
-                  Estimated Hours
-                </label>
-                <input
-                  type="number"
-                  step="0.25"
-                  min="0"
-                  value={estimatedHours}
-                  onChange={(e) => setEstimatedHours(e.target.value)}
-                  placeholder="e.g. 8"
-                  title="Estimated hours"
-                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
-                />
-              </div>
-
               {/* Assigned To (multi-select) */}
               {members.length > 0 && (
                 <div>

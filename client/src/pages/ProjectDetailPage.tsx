@@ -6,7 +6,7 @@ import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
 import FilePreviewModal from '../components/FilePreviewModal';
 import RepoTreeModal from '../components/RepoTreeModal';
 import './ProjectDetailPage.css';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Activity,
   Users,
@@ -73,6 +73,8 @@ import Timeline from '../components/Timeline';
 import TimelinePage from '../components/TimelinePage';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
+import { generateProjectCode, sanitizeProjectCode, PROJECT_CODE_LENGTH } from '../lib/project-code';
+import { useAIErrorDialog } from '../lib/ai-error';
 
 const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
@@ -112,8 +114,10 @@ const API_BASE = '/api';
 export default function ProjectDetailPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
-  const { agent } = useAIAgent();
+  const { agent, providers } = useAIAgent();
+  const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
   const { register, unregister, setIuOpen } = useChatPanel();
   const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
   const { goals, createGoal, updateGoal, deleteGoal, refetch: refetchGoals } = useGoals(projectId);
@@ -329,6 +333,22 @@ export default function ProjectDetailPage() {
   const [memberSearching, setMemberSearching] = useState(false);
   const [inviting, setInviting] = useState<string | null>(null);
 
+  useEffect(() => {
+    const navState = location.state as { openTab?: TabId; editGoalId?: string } | null;
+    if (!navState) return;
+
+    if (navState.openTab) setActiveTab(navState.openTab);
+    if (navState.editGoalId) {
+      if (goals.length === 0) return;
+      const goal = goals.find((g) => g.id === navState.editGoalId);
+      if (!goal) return;
+      setEditAutoGuidance(false);
+      setEditGoal(goal);
+    }
+
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate, goals]);
+
   // Load persisted insights + Teams folder on mount
   useEffect(() => {
     if (!projectId) return;
@@ -436,10 +456,14 @@ export default function ProjectDetailPage() {
         setRiskReport(report);
         setRiskPanelOpen(true);
         try { localStorage.setItem(`odyssey-risk-${projectId}`, JSON.stringify(report)); } catch {}
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showAIError((data as { error?: string }).error ?? `Error ${res.status}`, res.status);
       }
       await refetchGoals();
     } catch (err) {
       console.error('Risk assessment failed:', err);
+      showAIError(err, 502);
     }
     setRiskAssessing(false);
   };
@@ -521,9 +545,14 @@ export default function ProjectDetailPage() {
         }),
       });
       const scanData = await scanRes.json();
+      if (!scanRes.ok) {
+        showAIError(scanData.error ?? `Error ${scanRes.status}`, scanRes.status);
+        return;
+      }
       setScanResults(scanData);
     } catch (err) {
       console.error('Scan failed:', err);
+      showAIError(err, 502);
     }
     setScanLoading(false);
   };
@@ -543,8 +572,10 @@ export default function ProjectDetailPage() {
       const data = await res.json();
       if (!res.ok) {
         setInsightsError(data.error || `AI request failed (${res.status})`);
+        showAIError(data.error || `AI request failed (${res.status})`, res.status);
       } else if (!data.status && !data.nextSteps?.length) {
         setInsightsError('AI returned an empty response. Try a different model.');
+        showAIError('AI returned an empty response. Try a different model.');
       } else {
         const generatedAt = new Date().toISOString();
         setInsights({ ...data, generatedAt });
@@ -564,6 +595,7 @@ export default function ProjectDetailPage() {
     } catch (err) {
       console.error('Insights failed:', err);
       setInsightsError('Network error — is the server running?');
+      showAIError(err, 502);
     }
     setInsightsLoading(false);
   };
@@ -583,11 +615,13 @@ export default function ProjectDetailPage() {
       const data = await res.json();
       if (!res.ok) {
         setStandupError(data.error || `Failed (${res.status})`);
+        showAIError(data.error || `Failed (${res.status})`, res.status);
       } else {
         setStandup(data);
       }
     } catch {
       setStandupError('Network error — is the server running?');
+      showAIError('Network error — is the server running?', 502);
     }
     setStandupLoading(false);
   };
@@ -605,10 +639,14 @@ export default function ProjectDetailPage() {
       const data = await res.json();
       const text = res.ok ? (data.guidance ?? null) : null;
       const provider = res.ok ? (data.provider ?? undefined) : undefined;
+      if (!res.ok) {
+        showAIError(data.error ?? `Error ${res.status}`, res.status);
+      }
       setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text, provider } }));
       if (text) updateGoal(g.id, { ai_guidance: text }).catch(() => {});
     } catch {
       setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: false, text: prev[g.id]?.text ?? null } }));
+      showAIError('Network error — is the server running?', 502);
     }
   };
 
@@ -627,6 +665,7 @@ export default function ProjectDetailPage() {
       const data = await res.json();
       if (!res.ok) {
         setSyncError(data.error ?? `Error ${res.status}`);
+        showAIError(data.error ?? `Error ${res.status}`, res.status);
       } else {
         setSyncResult({ summary: data.summary, applied: data.applied, provider: data.provider });
         // Refresh goals so UI reflects DB updates
@@ -637,6 +676,7 @@ export default function ProjectDetailPage() {
       }
     } catch {
       setSyncError('Network error — is the server running?');
+      showAIError('Network error — is the server running?', 502);
     }
     setSyncingProgress(false);
   };
@@ -1758,6 +1798,8 @@ export default function ProjectDetailPage() {
           projectId={project.id}
           projectName={project.name}
           projectStartDate={project.start_date ?? null}
+          githubRepo={project.github_repo}
+          gitlabRepos={gitlabRepos}
           messages={reportMessages}
           onMessagesChange={setReportMessages}
           onReportSaved={() => setSavedReportsVersion((v) => v + 1)}
@@ -1798,7 +1840,7 @@ export default function ProjectDetailPage() {
       {activeTab === 'settings' && (
         <div className="space-y-8">
 
-          {/* Invite Code + Privacy — owners only */}
+          {/* Project ID Code + Privacy — owners only */}
           {isOwner && project?.invite_code && (
             <div className="border border-border bg-surface p-6">
               <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
@@ -1829,11 +1871,11 @@ export default function ProjectDetailPage() {
               <p className="text-[11px] text-muted mb-4">
                 {project.is_private
                   ? 'Private — join requests require owner approval before access is granted.'
-                  : 'Public — anyone with the invite code can join instantly.'}
+                  : 'Public — anyone with the project ID code can join instantly.'}
               </p>
               <div className="flex items-center gap-3">
                 <div>
-                  <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1">Invite Code</p>
+                  <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1">Project ID Code</p>
                   <span className="font-mono text-lg font-bold text-heading tracking-widest">
                     {project.invite_code}
                   </span>
@@ -1841,7 +1883,7 @@ export default function ProjectDetailPage() {
                 <button
                   type="button"
                   onClick={handleCopyInviteCode}
-                  title="Copy invite code"
+                  title="Copy project ID code"
                   className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
                 >
                   {copySuccess ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
@@ -1849,11 +1891,6 @@ export default function ProjectDetailPage() {
                 </button>
               </div>
             </div>
-          )}
-
-          {/* QR Invite Code — owners only */}
-          {isOwner && projectId && (
-            <ProjectQRCode projectId={projectId} />
           )}
 
           {/* Team Members + Invite — side by side */}
@@ -1903,15 +1940,18 @@ export default function ProjectDetailPage() {
               </div>
             </div>
 
-            {/* Invite panel — owners only */}
+            {/* Add members panel — owners only */}
             {isOwner ? (
               <div className="border border-border bg-surface p-6">
-                <div className="flex items-center gap-2 mb-4">
+                <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                  <div className="flex items-center gap-2">
                   <UserPlus size={14} className="text-accent" />
-                  <h3 className="font-sans text-sm font-bold text-heading">Invite by GitHub Username</h3>
+                    <h3 className="font-sans text-sm font-bold text-heading">Add Members</h3>
+                  </div>
+                  {projectId && <ProjectQRCode projectId={projectId} />}
                 </div>
                 <p className="text-[11px] text-muted mb-4">
-                  Search for a GitHub user — they must have signed into Odyssey at least once.
+                  Search for a GitHub user — they must have signed into Odyssey at least once, or open a QR preview for a new user to scan.
                 </p>
                 {/* Role selector */}
                 <div className="flex items-center gap-2 mb-4">
@@ -2041,7 +2081,7 @@ export default function ProjectDetailPage() {
           )}
 
           {/* Project Name & Description */}
-          <ProjectNameForm project={project} updateProject={updateProject} />
+          <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} />
 
           {/* Microsoft 365 / Teams Folder */}
           <div className="border border-border bg-surface p-6">
@@ -2566,6 +2606,7 @@ export default function ProjectDetailPage() {
         onClose={() => setRepoTreeTarget(null)}
       />
     )}
+    {aiErrorDialog}
 
     {/* Teams Folder Picker modal */}
     {teamsFolderPickerOpen && (
@@ -2866,7 +2907,6 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
             {loggedHours != null && loggedHours > 0 && (
               <span className="text-[9px] text-muted font-mono flex items-center gap-0.5" title="Hours logged">
                 <Clock size={8} />{loggedHours.toFixed(1)}h
-                {goal.estimated_hours ? `/${goal.estimated_hours}h` : ''}
               </span>
             )}
           </div>
@@ -4139,19 +4179,24 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
 function ProjectNameForm({
   project,
   updateProject,
+  isOwner,
 }: {
-  project: { name: string; description?: string | null; start_date?: string | null };
-  updateProject: (updates: { name?: string; description?: string; start_date?: string | null }) => Promise<unknown>;
+  project: { name: string; description?: string | null; start_date?: string | null; invite_code?: string | null };
+  updateProject: (updates: { name?: string; description?: string; start_date?: string | null; invite_code?: string }) => Promise<unknown>;
+  isOwner: boolean;
 }) {
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? '');
   const [startDate, setStartDate] = useState(project.start_date ?? '');
+  const [inviteCode, setInviteCode] = useState(project.invite_code ?? '');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [copiedInviteCode, setCopiedInviteCode] = useState(false);
 
   const dirty = name.trim() !== project.name
     || description.trim() !== (project.description ?? '')
-    || startDate !== (project.start_date ?? '');
+    || startDate !== (project.start_date ?? '')
+    || (isOwner && inviteCode !== (project.invite_code ?? ''));
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4161,10 +4206,18 @@ function ProjectNameForm({
       name: name.trim(),
       description: description.trim() || undefined,
       start_date: startDate || null,
+      invite_code: isOwner ? inviteCode : undefined,
     });
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleCopyInviteCode = async () => {
+    if (!inviteCode) return;
+    await navigator.clipboard.writeText(inviteCode);
+    setCopiedInviteCode(true);
+    setTimeout(() => setCopiedInviteCode(false), 1600);
   };
 
   return (
@@ -4174,9 +4227,9 @@ function ProjectNameForm({
         <h3 className="font-sans text-sm font-bold text-heading">Project Details</h3>
       </div>
       <form onSubmit={handleSave}>
-        <div className="flex gap-4 items-start">
+        <div className="flex flex-col xl:flex-row gap-5 items-start">
           {/* Left column: Name + Start Date stacked */}
-          <div className="flex flex-col gap-3 w-56 shrink-0">
+          <div className="flex flex-col gap-3 w-full xl:w-[26rem] shrink-0">
             <div>
               <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Project Name</label>
               <input
@@ -4199,6 +4252,46 @@ function ProjectNameForm({
                 className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
               />
             </div>
+            {isOwner && (
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-3">
+                    <label className="block text-[10px] tracking-[0.2em] uppercase text-muted">Project ID Code</label>
+                    <button
+                      type="button"
+                      onClick={() => setInviteCode(generateProjectCode())}
+                      className="text-[10px] font-mono text-accent hover:underline"
+                    >
+                      Generate
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-stretch gap-2">
+                  <input
+                    type="text"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(sanitizeProjectCode(e.target.value))}
+                    title="Project ID code"
+                    placeholder="Project ID code"
+                    className="min-w-0 flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono tracking-[0.12em] uppercase focus:outline-none focus:border-accent/50 transition-colors rounded"
+                  />
+                  {inviteCode.trim() && (
+                    <button
+                      type="button"
+                      onClick={handleCopyInviteCode}
+                      title="Copy project ID code"
+                      className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
+                    >
+                      {copiedInviteCode ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
+                      <span>{copiedInviteCode ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  )}
+                </div>
+                <p className="mt-1 text-[10px] text-muted">
+                  {PROJECT_CODE_LENGTH}-character join code. Changing it invalidates the old code immediately.
+                </p>
+              </div>
+            )}
           </div>
           {/* Right column: Description */}
           <div className="flex-1">
@@ -4206,7 +4299,7 @@ function ProjectNameForm({
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              rows={4}
+              rows={7}
               placeholder="What is this project about?"
               className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
             />

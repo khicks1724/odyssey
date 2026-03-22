@@ -406,7 +406,7 @@ Analyze which goals are completed and suggest new goals.`,
 Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
 
 Return an object with exactly four keys:
-Use backtick markdown formatting for all file paths, function names, module names, variable names, and code identifiers (e.g. \`server/src/routes/ai.ts\`, \`resolveProvider()\`, \`GITHUB_TOKEN\`). Use **bold** for emphasis on key terms.
+Use backtick markdown formatting for all file paths, function names, module names, variable names, and code identifiers (e.g. \`server/src/routes/ai.ts\`, \`resolveProvider()\`, \`GITHUB_TOKEN\`). When referencing repository files, prefer full repo-qualified paths such as \`repo-name/src/components/File.tsx\` instead of ambiguous relative-only paths like \`src/components/File.tsx\`. Use **bold** for emphasis on key terms.
 
 Return an object with exactly four keys:
 - "status": 3-4 sentences on the project's current health. Reference specific files, modules, or components you can see actively changing in the diffs. Note velocity trends.
@@ -945,6 +945,8 @@ Analyze which goals these documents show progress on, who did the work, and when
 
   const CHAT_STYLE = `\n\nRESPONSE STYLE: Do not use emojis. Use rich markdown formatting throughout your responses — the UI renders it fully. Specifically: use \`backticks\` for ALL file names, function names, variable names, repo names, and code identifiers; use **bold** for key terms, task names, and important values; use *italics* for emphasis; use headers (##, ###) to organize longer responses; use bullet lists and numbered lists wherever structure aids clarity; use > blockquotes for notes or caveats; use fenced code blocks (\`\`\`) for any code snippets. Never output raw special characters as literal formatting — always apply the appropriate markdown element so the rendered output is visually clear and scannable.`;
 
+  const CHAT_STYLE_WITH_REPO_PATHS = `${CHAT_STYLE} When referencing a file from a linked repository, prefer the most specific repo-qualified path you can infer such as \`repo-name/src/components/File.tsx\` or \`org/repo/src/components/File.tsx\`, not just \`src/components/File.tsx\`.`;
+
   server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
     const { projectId, messages, reportMode, attachments } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
@@ -970,12 +972,12 @@ Analyze which goals these documents show progress on, who did the work, and when
       : '';
 
     const systemPrompt = reportMode
-      ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual tasks, code files, and activity from the project data below.${CHAT_STYLE}
+      ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual tasks, code files, and activity from the project data below.${CHAT_STYLE_WITH_REPO_PATHS}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}
 TASKS:\n${ctx.goalsText}
 ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
-      : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE}
+      : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE_WITH_REPO_PATHS}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project?.github_repo}` : ''}
 
@@ -1088,12 +1090,12 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
         : '';
 
       const systemPrompt = reportMode
-        ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific.${CHAT_STYLE}
+        ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific.${CHAT_STYLE_WITH_REPO_PATHS}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}
 TASKS:\n${ctx.goalsText}
 ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection2}${githubSection2}${gitlabSection2}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE}
+        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE_WITH_REPO_PATHS}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}
 TASKS (${ctx.goals.length} total):\n${ctx.goalsText}
@@ -1371,7 +1373,7 @@ Return an object with:
 - "inProgress": array of 2-4 strings — work actively underway based on recent commits and active tasks
 - "blockers": array of 0-3 strings — risks, stalled tasks, or potential blockers (return empty array if none apparent)
 
-Be specific. Reference real task names, actual commit topics, and concrete percentages. Avoid generic filler.`,
+Be specific. Reference real task names, actual commit topics, and concrete percentages. When you mention repository files, prefer the most specific repo-qualified or path-qualified form you can infer, such as \`repo-name/src/module/file.ts\` or \`calibration/core/plot_generator.py\`, instead of shortening to ambiguous bare filenames. Avoid generic filler.`,
         user: `Project: ${project?.name ?? 'Unknown'}${project?.description ? `\nDescription: ${project.description}` : ''}
 Period: ${sinceDate} → ${toDate} (14 days)
 Total commits: ${totalCommits}
@@ -1539,7 +1541,7 @@ Analyze everything and suggest specific improvements to the goal structure and d
 
     try {
       const result = await chat(provider, {
-        system: `You are a technical advisor giving specific, actionable guidance on how to make the most progress on a single project task. Be concrete. Reference repo files, commits, or related tasks where visible. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms, bullet lists for steps (4-6 bullets max).`,
+        system: `You are a technical advisor giving specific, actionable guidance on how to make the most progress on a single project task. Be concrete. Reference repo files, commits, or related tasks where visible. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms, bullet lists for steps (4-6 bullets max). When you reference repository files, prefer full repo-qualified paths such as \`repo-name/src/module/file.ts\` over ambiguous relative-only paths.`,
         user: `TASK: "${taskTitle}"
 Status: ${taskStatus} (${taskProgress}% complete)
 Category: ${taskCategory ?? 'unspecified'}

@@ -12,6 +12,21 @@ interface UseProjectFilePathsResult {
   fetchFileContent: (ref: FileRef) => Promise<string>;
 }
 
+function addPathAliases(pathMap: Map<string, FileRef>, ref: FileRef) {
+  const normalized = ref.path.replace(/\\/g, '/');
+  const parts = normalized.split('/').filter(Boolean);
+
+  if (!pathMap.has(normalized)) pathMap.set(normalized, ref);
+
+  for (let i = 1; i < parts.length; i += 1) {
+    const suffix = parts.slice(i).join('/');
+    if (!pathMap.has(suffix)) pathMap.set(suffix, ref);
+  }
+
+  const basename = parts[parts.length - 1];
+  if (basename && !pathMap.has(basename)) pathMap.set(basename, ref);
+}
+
 export function useProjectFilePaths(
   githubRepo: string | null | undefined,
   gitlabRepos: string[],
@@ -36,11 +51,7 @@ export function useProjectFilePaths(
           .then((data: { files?: { path: string }[] } | null) => {
             for (const f of data?.files ?? []) {
               const ref: FileRef = { type: 'github', repo: githubRepo, path: f.path };
-              // Full path
-              if (!pathMap.has(f.path)) pathMap.set(f.path, ref);
-              // Basename (only if unambiguous — set first-seen)
-              const name = f.path.split('/').pop()!;
-              if (!pathMap.has(name)) pathMap.set(name, ref);
+              addPathAliases(pathMap, ref);
             }
           })
           .catch(() => {}),
@@ -54,9 +65,7 @@ export function useProjectFilePaths(
           .then((data: { files?: { path: string }[] } | null) => {
             for (const f of data?.files ?? []) {
               const ref: FileRef = { type: 'gitlab', repo, path: f.path };
-              if (!pathMap.has(f.path)) pathMap.set(f.path, ref);
-              const name = f.path.split('/').pop()!;
-              if (!pathMap.has(name)) pathMap.set(name, ref);
+              addPathAliases(pathMap, ref);
             }
           })
           .catch(() => {}),

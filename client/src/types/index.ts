@@ -34,7 +34,6 @@ export interface Goal {
   category: string | null;
   loe: string | null;
   ai_guidance: string | null;
-  estimated_hours: number | null;
   created_at: string;
   updated_at: string;
   updated_by: string | null;

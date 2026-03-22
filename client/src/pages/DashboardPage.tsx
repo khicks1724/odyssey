@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import {
   Activity,
   FolderKanban,
@@ -11,22 +11,16 @@ import {
   Circle,
   GitCommitHorizontal,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight, useRecentCommits } from '../hooks/useDashboard';
+import { Link, useNavigate } from 'react-router-dom';
+import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight, useRecentCommits, useDashboardHoverDetails } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
 import { getSortMode, sortProjects } from '../lib/project-sort';
 import ContributionGraph from '../components/ContributionGraph';
-<<<<<<< HEAD
 import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
+import FilePreviewModal from '../components/FilePreviewModal';
 import RepoTreeModal from '../components/RepoTreeModal';
 import { supabase } from '../lib/supabase';
-import type { FileRef } from '../hooks/useProjectFilePaths';
-=======
-import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
-import RepoTreeModal from '../components/RepoTreeModal';
-import { supabase } from '../lib/supabase';
-import type { FileRef } from '../hooks/useProjectFilePaths';
->>>>>>> 95942f7 (Save all changes)
+import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 
 const statusColors: Record<string, string> = {
   at_risk: 'text-accent',
@@ -40,7 +34,48 @@ const statusIcons: Record<string, typeof Circle> = {
   complete: CheckCircle,
 };
 
+function StatHoverCard({
+  label,
+  value,
+  icon: Icon,
+  color,
+  children,
+}: {
+  label: string;
+  value: string;
+  icon: typeof FolderKanban;
+  color: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div
+      className="relative bg-surface p-6 hover:bg-surface2 transition-colors"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+    >
+      <div className="flex items-center gap-2 mb-3">
+        <Icon size={14} className={color} />
+        <span className="text-[10px] tracking-[0.2em] uppercase text-muted">
+          {label}
+        </span>
+      </div>
+      <div className="font-sans text-2xl font-bold text-heading">{value}</div>
+
+      <div className={`absolute left-3 right-3 top-full z-20 pt-2 transition-all duration-150 ${open ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'}`}>
+        <div className="border border-border bg-surface/95 backdrop-blur-md shadow-2xl p-4 rounded-lg max-h-80 overflow-y-auto">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const { stats, loading: statsLoading } = useDashboardStats();
   const { projects: rawProjects } = useProjects();
   const projects = sortProjects(rawProjects, getSortMode());
@@ -48,12 +83,21 @@ export default function DashboardPage() {
   const { data: activityData } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
   const { commits: recentCommits, loading: commitsLoading } = useRecentCommits();
+  const { tasks: hoverTasks, events: hoverEvents, breakdown, loading: hoverLoading } = useDashboardHoverDetails();
 
   // Repo context for the insight's project
   const [insightGitlabRepos, setInsightGitlabRepos] = useState<string[]>([]);
   const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+  const [previewFileRef, setPreviewFileRef] = useState<FileRef | null>(null);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const insightProject = insight ? projects.find((p) => p.id === insight.project_id) ?? null : null;
+  const { filePaths: insightFilePaths, fetchFileContent } = useProjectFilePaths(
+    insightProject?.github_repo,
+    insightGitlabRepos,
+  );
 
   useEffect(() => {
     if (!insight?.project_id) return;
@@ -76,8 +120,34 @@ export default function DashboardPage() {
   const handleRepoClick = (repo: string, type: 'github' | 'gitlab') =>
     setRepoTreeTarget({ repo, type });
 
+  const handleFileClick = async (ref: FileRef) => {
+    setPreviewFileRef(ref);
+    setPreviewContent(null);
+    setPreviewError(null);
+    setPreviewLoading(true);
+    try {
+      const content = await fetchFileContent(ref);
+      setPreviewContent(content);
+    } catch (err: any) {
+      setPreviewError(err?.message ?? 'Failed to load file');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleProjectOpen = (projectId: string) => {
+    navigate(`/projects/${projectId}`);
+  };
+
+  const handleTaskOpen = (projectId: string, goalId: string) => {
+    navigate(`/projects/${projectId}`, { state: { openTab: 'goals', editGoalId: goalId } });
+  };
+
+  const handleEventOpen = (projectId: string) => {
+    navigate(`/projects/${projectId}`, { state: { openTab: 'activity' } });
+  };
+
   // Empty file map — dashboard has no local file preview
-  const emptyFileMap = new Map<string, FileRef>();
 
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
@@ -103,17 +173,123 @@ export default function DashboardPage() {
 
       {/* Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border mb-10">
-        {statCards.map((s) => (
-          <div key={s.label} className="bg-surface p-6 hover:bg-surface2 transition-colors">
-            <div className="flex items-center gap-2 mb-3">
-              <s.icon size={14} className={s.color} />
-              <span className="text-[10px] tracking-[0.2em] uppercase text-muted">
-                {s.label}
-              </span>
-            </div>
-            <div className="font-sans text-2xl font-bold text-heading">{s.value}</div>
+        <StatHoverCard {...statCards[0]}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] tracking-[0.18em] uppercase text-muted">Active Projects</p>
+            <span className="text-[10px] font-mono text-accent">{projects.length}</span>
           </div>
-        ))}
+          {projects.length === 0 ? (
+            <p className="text-xs text-muted">No active projects yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {projects.slice(0, 6).map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => handleProjectOpen(project.id)}
+                  className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors"
+                >
+                  <p className="text-xs text-heading font-sans font-semibold truncate hover:text-accent">{project.name}</p>
+                  {project.description && (
+                    <p className="text-[10px] text-muted mt-1 line-clamp-2">{project.description}</p>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </StatHoverCard>
+
+        <StatHoverCard {...statCards[1]}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] tracking-[0.18em] uppercase text-muted">Tracked Tasks</p>
+            <span className="text-[10px] font-mono text-accent2">{stats.goalsTracked}</span>
+          </div>
+          {hoverLoading ? (
+            <p className="text-xs text-muted">Loading tasks…</p>
+          ) : hoverTasks.length === 0 ? (
+            <p className="text-xs text-muted">No tracked tasks yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {hoverTasks.slice(0, 5).map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  onClick={() => handleTaskOpen(task.projectId, task.id)}
+                  className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-xs text-heading font-sans font-semibold leading-snug">{task.title}</p>
+                    <span className="text-[10px] font-mono text-muted shrink-0">{task.progress}%</span>
+                  </div>
+                  <p className="text-[10px] text-muted mt-1 truncate">
+                    {task.assignees.length ? task.assignees.join(', ') : 'Unassigned'} · {task.projectName}
+                  </p>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    {task.category && <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{task.category}</span>}
+                    {task.loe && <span className="text-[9px] px-1.5 py-0.5 border border-accent2/30 rounded text-accent2 font-mono uppercase">{task.loe}</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </StatHoverCard>
+
+        <StatHoverCard {...statCards[2]}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] tracking-[0.18em] uppercase text-muted">Events This Week</p>
+            <span className="text-[10px] font-mono text-accent3">{stats.eventsThisWeek}</span>
+          </div>
+          {hoverLoading ? (
+            <p className="text-xs text-muted">Loading events…</p>
+          ) : hoverEvents.length === 0 ? (
+            <p className="text-xs text-muted">No events logged in the last 7 days.</p>
+          ) : (
+            <div className="space-y-2">
+              {hoverEvents.slice(0, 5).map((event) => (
+                <button key={event.id} type="button" onClick={() => handleEventOpen(event.projectId)} className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-xs text-heading font-sans font-semibold leading-snug">{event.title}</p>
+                    <span className="text-[9px] font-mono text-muted shrink-0">{new Date(event.occurredAt).toLocaleDateString()}</span>
+                  </div>
+                  <p className="text-[10px] text-muted mt-1 truncate">{event.projectName} · {event.source}/{event.eventType}</p>
+                  {event.summary && <p className="text-[10px] text-muted/80 mt-1 line-clamp-2">{event.summary}</p>}
+                </button>
+              ))}
+            </div>
+          )}
+        </StatHoverCard>
+
+        <StatHoverCard {...statCards[3]}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] tracking-[0.18em] uppercase text-muted">On-Track Breakdown</p>
+            <span className="text-[10px] font-mono text-heading">{breakdown.onTrack}/{breakdown.total}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <div className="border border-accent2/25 bg-accent2/8 rounded px-3 py-2">
+              <p className="text-[9px] tracking-[0.16em] uppercase text-muted">On Track</p>
+              <p className="text-lg font-sans font-bold text-accent2">{breakdown.onTrack}</p>
+            </div>
+            <div className="border border-accent/25 bg-accent/8 rounded px-3 py-2">
+              <p className="text-[9px] tracking-[0.16em] uppercase text-muted">Needs Attention</p>
+              <p className="text-lg font-sans font-bold text-accent">{breakdown.needsAttention}</p>
+            </div>
+          </div>
+          <p className="text-[11px] text-muted leading-relaxed mb-3">
+            {breakdown.total > 0
+              ? `${breakdown.onTrack} of ${breakdown.total} tracked tasks are marked active or complete, with an average progress of ${breakdown.avgProgress}%.`
+              : 'No tracked tasks yet, so the on-track rate is not calculated.'}
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] text-muted font-mono">Complete {breakdown.complete}</span>
+            <span className="text-[10px] text-muted font-mono">In Progress {breakdown.inProgress}</span>
+            <span className="text-[10px] text-muted font-mono">Not Started {breakdown.notStarted}</span>
+          </div>
+          {breakdown.topCategories.length > 0 && (
+            <p className="text-[10px] text-muted mt-2">
+              Heaviest areas: {breakdown.topCategories.map((cat) => `${cat.name} (${cat.count})`).join(', ')}.
+            </p>
+          )}
+        </StatHoverCard>
       </div>
 
       {/* Quick Project Access */}
@@ -210,29 +386,16 @@ export default function DashboardPage() {
               </Link>
 
               {/* Status */}
-<<<<<<< HEAD
               <div className="text-xs text-heading leading-relaxed break-words min-w-0">
                 <MarkdownWithFileLinks
-                  filePaths={emptyFileMap}
-                  onFileClick={() => {}}
+                  filePaths={insightFilePaths}
+                  onFileClick={handleFileClick}
                   githubRepo={insightProject?.github_repo}
                   gitlabRepos={insightGitlabRepos}
                   onRepoClick={handleRepoClick}
                 >
                   {insight.status}
                 </MarkdownWithFileLinks>
-=======
-              <div className="text-xs text-heading leading-relaxed break-words min-w-0">
-                <MarkdownWithFileLinks
-                  filePaths={emptyFileMap}
-                  onFileClick={() => {}}
-                  githubRepo={insightProject?.github_repo}
-                  gitlabRepos={insightGitlabRepos}
-                  onRepoClick={handleRepoClick}
-                >
-                  {insight.status}
-                </MarkdownWithFileLinks>
->>>>>>> 95942f7 (Save all changes)
               </div>
 
               {/* Next Steps */}
@@ -244,27 +407,15 @@ export default function DashboardPage() {
                       <li key={i} className="flex items-start gap-1.5 min-w-0">
                         <span className="text-accent2 mt-0.5 shrink-0">›</span>
                         <span className="text-[11px] text-muted leading-snug break-words min-w-0">
-<<<<<<< HEAD
                           <MarkdownWithFileLinks
-                            filePaths={emptyFileMap}
-                            onFileClick={() => {}}
+                            filePaths={insightFilePaths}
+                            onFileClick={handleFileClick}
                             githubRepo={insightProject?.github_repo}
                             gitlabRepos={insightGitlabRepos}
                             onRepoClick={handleRepoClick}
                           >
                             {step}
                           </MarkdownWithFileLinks>
-=======
-                          <MarkdownWithFileLinks
-                            filePaths={emptyFileMap}
-                            onFileClick={() => {}}
-                            githubRepo={insightProject?.github_repo}
-                            gitlabRepos={insightGitlabRepos}
-                            onRepoClick={handleRepoClick}
-                          >
-                            {step}
-                          </MarkdownWithFileLinks>
->>>>>>> 95942f7 (Save all changes)
                         </span>
                       </li>
                     ))}
@@ -292,6 +443,16 @@ export default function DashboardPage() {
           repo={repoTreeTarget.repo}
           type={repoTreeTarget.type}
           onClose={() => setRepoTreeTarget(null)}
+        />
+      )}
+
+      {previewFileRef && (
+        <FilePreviewModal
+          fileRef={previewFileRef}
+          content={previewContent}
+          loading={previewLoading}
+          error={previewError}
+          onClose={() => setPreviewFileRef(null)}
         />
       )}
 

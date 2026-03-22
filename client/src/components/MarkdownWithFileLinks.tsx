@@ -23,14 +23,53 @@ interface MarkdownWithFileLinksProps {
 const FILE_PATH_RE =
   /\b((?:[\w\-]+\/)*[\w\-\.]+\.(?:ts|tsx|py|js|jsx|json|yaml|yml|md|sh|html|css|toml|ini|cfg|rs|go|java|c|cpp|h|rb|php|vue|svelte|kt|swift|sql|txt|env))\b/g;
 
+function normalizePathCandidate(value: string) {
+  return value.trim().replace(/^`+|`+$/g, '').replace(/^\.?\//, '').replace(/\\/g, '/');
+}
+
+function repoPrefixes(ref: FileRef) {
+  const parts = ref.repo.split('/');
+  const repoName = parts[parts.length - 1] ?? ref.repo;
+  return [ref.repo, repoName];
+}
+
+function resolveFileRef(candidateRaw: string, filePaths: Map<string, FileRef>, refs: FileRef[]) {
+  const candidate = normalizePathCandidate(candidateRaw);
+  if (!candidate) return null;
+
+  const direct = filePaths.get(candidate) ?? filePaths.get(candidate.split('/').pop()!);
+  if (direct) return direct;
+
+  const stripped = candidate.replace(/^.*?:\//, '').replace(/^.*?:/, '');
+  const normalizedVariants = new Set<string>([candidate, stripped]);
+
+  for (const variant of Array.from(normalizedVariants)) {
+    for (const ref of refs) {
+      const normalizedPath = normalizePathCandidate(ref.path);
+      if (normalizedPath === variant) return ref;
+      if (normalizedPath.endsWith(`/${variant}`)) return ref;
+
+      for (const prefix of repoPrefixes(ref)) {
+        const withPrefix = `${prefix}/${normalizedPath}`;
+        if (variant === withPrefix) return ref;
+        if (variant.startsWith(`${prefix}/`) && variant.endsWith(`/${normalizedPath}`)) return ref;
+      }
+    }
+  }
+
+  return null;
+}
+
 /** Render plain text, turning any file-path tokens into clickable spans */
 function TextWithFilePaths({
   text,
   filePaths,
+  refs,
   onFileClick,
 }: {
   text: string;
   filePaths: Map<string, FileRef>;
+  refs: FileRef[];
   onFileClick: (ref: FileRef) => void;
 }) {
   const parts: React.ReactNode[] = [];
@@ -40,8 +79,7 @@ function TextWithFilePaths({
 
   while ((match = FILE_PATH_RE.exec(text)) !== null) {
     const candidate = match[1];
-    // Try full path first, then basename fallback
-    const ref = filePaths.get(candidate) ?? filePaths.get(candidate.split('/').pop()!);
+    const ref = resolveFileRef(candidate, filePaths, refs);
     if (!ref) continue;
 
     if (match.index > last) parts.push(text.slice(last, match.index));
@@ -51,7 +89,7 @@ function TextWithFilePaths({
         type="button"
         onClick={() => onFileClick(ref)}
         title={`Open ${ref.path} from ${ref.repo}`}
-        className="font-mono text-[0.85em] bg-[var(--color-accent)]/10 text-[var(--color-accent)] px-1 py-0.5 rounded border border-[var(--color-accent)]/20 hover:bg-[var(--color-accent)]/25 cursor-pointer transition-colors underline-offset-2 hover:underline"
+        className="font-mono text-[0.85em] bg-[var(--color-code-file-bg)] text-[var(--color-code-file)] px-1 py-0.5 rounded border border-[var(--color-code-file-border)] hover:bg-[var(--color-code-file-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
       >
         {candidate}
       </button>,
@@ -75,6 +113,12 @@ export default function MarkdownWithFileLinks({
   className,
   extraComponents = {},
 }: MarkdownWithFileLinksProps) {
+  const refs = useMemo(() => {
+    const unique = new Map<string, FileRef>();
+    for (const ref of filePaths.values()) unique.set(`${ref.type}:${ref.repo}:${ref.path}`, ref);
+    return Array.from(unique.values());
+  }, [filePaths]);
+
   // Build a case-insensitive task title lookup once
   const taskMap = useMemo(() => {
     const m = new Map<string, string>(); // lowercase title → id
@@ -85,15 +129,14 @@ export default function MarkdownWithFileLinks({
   const codeRenderer = ({ children: codeContent }: { children?: React.ReactNode }) => {
     const text = String(codeContent ?? '').trim();
 
-    // Try full path match, then basename fallback
-    const ref = filePaths.get(text) ?? filePaths.get(text.split('/').pop()!);
+    const ref = resolveFileRef(text, filePaths, refs);
     if (ref) {
       return (
         <button
           type="button"
           onClick={() => onFileClick(ref)}
           title={`Open ${ref.path} from ${ref.repo}`}
-          className="font-mono text-[0.85em] bg-[var(--color-accent)]/10 text-[var(--color-accent)] px-1 py-0.5 rounded border border-[var(--color-accent)]/20 hover:bg-[var(--color-accent)]/25 cursor-pointer transition-colors underline-offset-2 hover:underline"
+          className="font-mono text-[0.85em] bg-[var(--color-code-file-bg)] text-[var(--color-code-file)] px-1 py-0.5 rounded border border-[var(--color-code-file-border)] hover:bg-[var(--color-code-file-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
         >
           {text}
         </button>
@@ -109,7 +152,7 @@ export default function MarkdownWithFileLinks({
             type="button"
             onClick={() => onTaskClick(taskId)}
             title="Open task"
-            className="font-mono text-[0.85em] bg-[var(--color-accent3)]/10 text-[var(--color-accent3)] px-1 py-0.5 rounded border border-[var(--color-accent3)]/20 hover:bg-[var(--color-accent3)]/25 cursor-pointer transition-colors underline-offset-2 hover:underline"
+            className="font-mono text-[0.85em] bg-[var(--color-code-task-bg)] text-[var(--color-code-task)] px-1 py-0.5 rounded border border-[var(--color-code-task-border)] hover:bg-[var(--color-code-task-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
           >
             {text}
           </button>
@@ -125,7 +168,7 @@ export default function MarkdownWithFileLinks({
             type="button"
             onClick={() => onRepoClick(githubRepo, 'github')}
             title={`Browse ${githubRepo}`}
-            className="font-mono text-[0.85em] bg-[var(--color-accent2)]/10 text-[var(--color-accent2)] px-1 py-0.5 rounded border border-[var(--color-accent2)]/20 hover:bg-[var(--color-accent2)]/25 cursor-pointer transition-colors underline-offset-2 hover:underline"
+            className="font-mono text-[0.85em] bg-[var(--color-code-repo-bg)] text-[var(--color-code-repo)] px-1 py-0.5 rounded border border-[var(--color-code-repo-border)] hover:bg-[var(--color-code-repo-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
           >
             {text}
           </button>
@@ -138,7 +181,7 @@ export default function MarkdownWithFileLinks({
               type="button"
               onClick={() => onRepoClick(glRepo, 'gitlab')}
               title={`Browse ${glRepo}`}
-              className="font-mono text-[0.85em] bg-[var(--color-accent2)]/10 text-[var(--color-accent2)] px-1 py-0.5 rounded border border-[var(--color-accent2)]/20 hover:bg-[var(--color-accent2)]/25 cursor-pointer transition-colors underline-offset-2 hover:underline"
+              className="font-mono text-[0.85em] bg-[var(--color-code-repo-bg)] text-[var(--color-code-repo)] px-1 py-0.5 rounded border border-[var(--color-code-repo-border)] hover:bg-[var(--color-code-repo-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
             >
               {text}
             </button>
@@ -148,7 +191,7 @@ export default function MarkdownWithFileLinks({
     }
 
     return (
-      <code className="font-mono text-[0.85em] bg-[var(--color-accent)]/10 text-[var(--color-accent)] px-1 py-0.5 rounded border border-[var(--color-accent)]/20">
+      <code className="font-mono text-[0.85em] bg-[var(--color-code-static-bg)] text-[var(--color-code-static)] px-1 py-0.5 rounded border border-[var(--color-code-static-border)]">
         {codeContent}
       </code>
     );
@@ -156,7 +199,7 @@ export default function MarkdownWithFileLinks({
 
   const textRenderer = ({ children: textContent }: { children?: React.ReactNode }) => {
     if (typeof textContent !== 'string' || filePaths.size === 0) return <>{textContent}</>;
-    return <TextWithFilePaths text={textContent} filePaths={filePaths} onFileClick={onFileClick} />;
+    return <TextWithFilePaths text={textContent} filePaths={filePaths} refs={refs} onFileClick={onFileClick} />;
   };
 
   return (

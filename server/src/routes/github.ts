@@ -173,14 +173,14 @@ export async function githubRoutes(server: FastifyInstance) {
       { headers },
     );
     if (!treeRes.ok) return reply.status(treeRes.status).send({ error: 'Tree fetch failed' });
-    const treeData = await treeRes.json() as { tree: { path: string; type: string; size?: number }[] };
+    const treeData = await treeRes.json() as { tree: { path: string; type: string; size?: number }[]; truncated?: boolean };
 
     return {
       branch: info.default_branch,
+      truncated: !!treeData.truncated,
       files: treeData.tree
         .filter((f) => f.type === 'blob')
-        .map((f) => ({ path: f.path, size: f.size ?? 0 }))
-        .slice(0, 500),
+        .map((f) => ({ path: f.path, size: f.size ?? 0 })),
     };
   });
 

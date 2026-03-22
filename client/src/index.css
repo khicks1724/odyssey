@@ -12,6 +12,18 @@
   --color-text: #1e3a5f;
   --color-muted: #6b7a8d;
   --color-heading: #0f1f33;
+  --color-code-static: var(--color-heading);
+  --color-code-static-bg: color-mix(in srgb, var(--color-surface2) 85%, transparent);
+  --color-code-static-border: color-mix(in srgb, var(--color-border) 80%, transparent);
+  --color-code-file: var(--color-accent);
+  --color-code-file-bg: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  --color-code-file-border: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  --color-code-repo: var(--color-accent2);
+  --color-code-repo-bg: color-mix(in srgb, var(--color-accent2) 12%, transparent);
+  --color-code-repo-border: color-mix(in srgb, var(--color-accent2) 30%, transparent);
+  --color-code-task: var(--color-accent3);
+  --color-code-task-bg: color-mix(in srgb, var(--color-accent3) 12%, transparent);
+  --color-code-task-border: color-mix(in srgb, var(--color-accent3) 30%, transparent);
 
   --font-sans: "Syne", sans-serif;
   --font-mono: "DM Mono", monospace;

@@ -8,6 +8,7 @@ import DateTime from '../DateTime';
 import ProjectChat from '../ProjectChat';
 import IntelligentUpdatePanel from '../IntelligentUpdatePanel';
 import { useChatPanel } from '../../lib/chat-panel';
+import { useProjects } from '../../hooks/useProjects';
 import './AppLayout.css';
 
 const PANEL_MIN = 280;
@@ -18,6 +19,7 @@ const MAIN_MIN = 500;
 
 export default function AppLayout() {
   const { open, setOpen, iuOpen, setIuOpen, projectId, projectName, onGoalMutated } = useChatPanel();
+  const { projects } = useProjects();
   const anyPanelOpen = open || iuOpen;
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -65,21 +67,19 @@ export default function AppLayout() {
             <AIAgentDropdown />
             <ThemeSwitcher />
             {/* Chat toggle — only shown when a project is active */}
-            {projectId && (
-              <button
-                type="button"
-                onClick={() => setOpen(!open)}
-                title={open ? 'Close AI Chat' : 'Open AI Chat'}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors cursor-pointer
-                  ${open
-                    ? 'bg-[var(--color-surface2)] border-[var(--color-accent)]/40 text-[var(--color-accent)]'
-                    : 'bg-[var(--color-surface)] border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-heading)] hover:bg-[var(--color-surface2)]'
-                  }`}
-              >
-                {open ? <X size={13} /> : <MessageCircle size={13} />}
-                <span className="text-xs font-medium">AI Chat</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setOpen(!open)}
+              title={open ? 'Close AI Chat' : 'Open AI Chat'}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors cursor-pointer
+                ${open
+                  ? 'bg-[var(--color-surface2)] border-[var(--color-accent)]/40 text-[var(--color-accent)]'
+                  : 'bg-[var(--color-surface)] border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-heading)] hover:bg-[var(--color-surface2)]'
+                }`}
+            >
+              {open ? <X size={13} /> : <MessageCircle size={13} />}
+              <span className="text-xs font-medium">AI Chat</span>
+            </button>
           </div>
         </header>
 
@@ -89,7 +89,7 @@ export default function AppLayout() {
             <Outlet />
           </main>
 
-          {anyPanelOpen && projectId && (
+          {anyPanelOpen && (open || (iuOpen && projectId)) && (
             <>
               {/* Draggable divider */}
               <div
@@ -105,6 +105,7 @@ export default function AppLayout() {
                   <ProjectChat
                     projectId={projectId}
                     projectName={projectName ?? ''}
+                    projects={projects}
                     onGoalMutated={onGoalMutated ?? undefined}
                   />
                 )}

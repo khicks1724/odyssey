@@ -1,16 +1,9 @@
-/**
- * ProjectQRCode
- *
- * Renders an Odyssey-themed QR code that encodes a time-limited invite URL.
- * The code is generated server-side via the `generate_qr_token` RPC.
- * Owners can click "Regenerate" to invalidate the old token and get a new one.
- */
-
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { RefreshCw, Loader2, QrCode, Clock, Copy, Check } from 'lucide-react';
+import { RefreshCw, Loader2, QrCode, Clock, Copy, Check, ExternalLink } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../lib/theme';
+import Modal from './Modal';
 
 interface QRTokenData {
   token: string;
@@ -21,8 +14,6 @@ interface Props {
   projectId: string;
 }
 
-// Build the "Odyssey" wordmark as an inline SVG data-URI so it can be
-// embedded in the centre of the QR code via imageSettings.
 function buildLogoDataUri(fgColor: string, bgColor: string): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="28" viewBox="0 0 80 28">
     <rect width="80" height="28" rx="4" fill="${bgColor}"/>
@@ -53,16 +44,16 @@ export default function ProjectQRCode({ projectId }: Props) {
   const { theme } = useTheme();
   const colors = theme.colors;
 
-  const [tokenData, setTokenData]     = useState<QRTokenData | null>(null);
-  const [loading, setLoading]         = useState(false);
-  const [error, setError]             = useState<string | null>(null);
-  const [timeLeft, setTimeLeft]       = useState('');
-  const [copied, setCopied]           = useState(false);
-  const intervalRef                   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [open, setOpen] = useState(false);
+  const [tokenData, setTokenData] = useState<QRTokenData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [timeLeft, setTimeLeft] = useState('');
+  const [copied, setCopied] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Fetch the most recent active token for this project (without generating one)
   const fetchExistingToken = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error: tableError } = await supabase
       .from('qr_invite_tokens')
       .select('token, expires_at')
       .eq('project_id', projectId)
@@ -71,14 +62,62 @@ export default function ProjectQRCode({ projectId }: Props) {
       .limit(1)
       .maybeSingle();
 
+    if (tableError) {
+      throw tableError;
+    }
+
     if (data) {
       setTokenData({ token: data.token as string, expires_at: data.expires_at as string });
+      return true;
     }
+
+    setTokenData(null);
+    return false;
   }, [projectId]);
 
-  useEffect(() => { fetchExistingToken(); }, [fetchExistingToken]);
+  const generateToken = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error: rpcErr } = await supabase.rpc('generate_qr_token', { p_project_id: projectId });
+      if (rpcErr) throw rpcErr;
+      const res = data as { token?: string; expires_at?: string; error?: string };
+      if (res.error) throw new Error(res.error);
+      if (!res.token || !res.expires_at) throw new Error('QR generator returned an invalid response.');
+      setTokenData({ token: res.token, expires_at: res.expires_at });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to generate QR code';
+      if (message.toLowerCase().includes('function') || message.toLowerCase().includes('qr_invite_tokens')) {
+        setError('QR invites are not available yet. Apply Supabase migration 023, then try again.');
+      } else {
+        setError(message);
+      }
+    }
+    setLoading(false);
+  }, [projectId]);
 
-  // Update the countdown every 30 seconds
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setError(null);
+    setLoading(true);
+    fetchExistingToken()
+      .then((found) => {
+        if (active && !found) {
+          return generateToken();
+        }
+        return undefined;
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'Failed to load QR code';
+        setError(message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [open, fetchExistingToken, generateToken]);
+
   useEffect(() => {
     if (!tokenData) return;
     setTimeLeft(formatTimeLeft(tokenData.expires_at));
@@ -93,24 +132,7 @@ export default function ProjectQRCode({ projectId }: Props) {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [tokenData]);
 
-  const generateToken = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const { data, error: rpcErr } = await supabase.rpc('generate_qr_token', { p_project_id: projectId });
-      if (rpcErr) throw rpcErr;
-      const res = data as { token?: string; expires_at?: string; error?: string };
-      if (res.error) throw new Error(res.error);
-      setTokenData({ token: res.token!, expires_at: res.expires_at! });
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to generate QR code');
-    }
-    setLoading(false);
-  };
-
-  const inviteUrl = tokenData
-    ? `${window.location.origin}/join/qr/${tokenData.token}`
-    : null;
+  const inviteUrl = tokenData ? `${window.location.origin}/join/qr/${tokenData.token}` : null;
 
   const handleCopyLink = async () => {
     if (!inviteUrl) return;
@@ -119,111 +141,141 @@ export default function ProjectQRCode({ projectId }: Props) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // QR code colors from the current theme
-  const qrFg  = colors.heading;
-  const qrBg  = colors.surface;
+  const qrFg = colors.heading;
+  const qrBg = colors.surface;
   const logoDataUri = buildLogoDataUri(colors.accent, qrBg);
 
   return (
-    <div className="border border-border bg-surface p-6">
-      <div className="flex items-center gap-2 mb-4">
-        <QrCode size={14} className="text-accent" />
-        <h3 className="font-sans text-sm font-bold text-heading">QR Invite Code</h3>
-        <span className="ml-auto text-[9px] font-mono bg-surface2 text-muted px-1.5 py-0.5 rounded border border-border">
-          24-hour expiry
-        </span>
-      </div>
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded"
+      >
+        <QrCode size={11} />
+        Add via QR
+      </button>
 
-      <p className="text-[11px] text-muted mb-5 leading-relaxed">
-        Share this QR code so others can scan it and join (or request to join) your project.
-        Generating a new code immediately invalidates the previous one.
-      </p>
-
-      {error && (
-        <p className="text-xs text-danger font-mono mb-4">{error}</p>
-      )}
-
-      {tokenData && inviteUrl ? (
-        <div className="flex flex-col items-center gap-5">
-          {/* Themed QR code */}
-          <div
-            className="p-4 rounded-lg border-2"
-            style={{
-              background: qrBg,
-              borderColor: colors.accent + '40',
-              boxShadow: `0 0 32px ${colors.accent}18`,
-            }}
-          >
-            <QRCodeSVG
-              value={inviteUrl}
-              size={220}
-              bgColor={qrBg}
-              fgColor={qrFg}
-              level="H"
-              imageSettings={{
-                src: logoDataUri,
-                x: undefined,
-                y: undefined,
-                height: 36,
-                width: 100,
-                excavate: true,
-              }}
-            />
-          </div>
-
-          {/* Expiry countdown */}
-          <div className="flex items-center gap-1.5 text-[10px] text-muted font-mono">
+      <Modal open={open} onClose={() => setOpen(false)} title="Add Members via QR Code">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 text-[10px] text-muted font-mono">
             <Clock size={10} />
-            {timeLeft}
+            24-hour expiry
           </div>
 
-          {/* Link + controls */}
-          <div className="flex flex-wrap items-center gap-2 w-full max-w-sm">
-            <code className="flex-1 text-[10px] font-mono text-muted bg-surface2 border border-border px-2 py-1.5 rounded truncate">
-              {inviteUrl}
-            </code>
-            <button
-              type="button"
-              onClick={handleCopyLink}
-              title="Copy link"
-              className="flex items-center gap-1 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
+          <p className="text-xs text-muted leading-relaxed">
+            Open this preview for the new user to scan. Generating a new QR code immediately invalidates the previous one.
+          </p>
+
+          {error && (
+            <div className="border border-danger/30 bg-danger/5 px-3 py-2 rounded text-xs text-danger font-mono">
+              {error}
+            </div>
+          )}
+
+          <div className="flex flex-col items-center gap-4">
+            <div
+              className="p-4 rounded-lg border-2 min-h-[252px] min-w-[252px] flex items-center justify-center"
+              style={{
+                background: qrBg,
+                borderColor: colors.accent + '40',
+                boxShadow: `0 0 32px ${colors.accent}18`,
+              }}
             >
-              {copied ? <Check size={10} className="text-accent2" /> : <Copy size={10} />}
-              {copied ? 'Copied' : 'Copy'}
-            </button>
+              {loading ? (
+                <div className="flex flex-col items-center gap-3 text-muted">
+                  <Loader2 size={20} className="animate-spin" />
+                  <span className="text-[10px] font-mono">Preparing QR preview...</span>
+                </div>
+              ) : inviteUrl ? (
+                <QRCodeSVG
+                  value={inviteUrl}
+                  size={220}
+                  bgColor={qrBg}
+                  fgColor={qrFg}
+                  level="H"
+                  imageSettings={{
+                    src: logoDataUri,
+                    x: undefined,
+                    y: undefined,
+                    height: 36,
+                    width: 100,
+                    excavate: true,
+                  }}
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-3 text-muted">
+                  <QrCode size={34} style={{ color: colors.accent + '55' }} />
+                  <span className="text-[10px] font-mono text-center max-w-[160px]">
+                    No QR code is available yet.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {tokenData && (
+              <div className="flex items-center gap-1.5 text-[10px] text-muted font-mono">
+                <Clock size={10} />
+                {timeLeft}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {!inviteUrl && (
+              <button
+                type="button"
+                onClick={generateToken}
+                disabled={loading}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent hover:bg-accent/10 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded disabled:opacity-50"
+              >
+                {loading ? <Loader2 size={10} className="animate-spin" /> : <QrCode size={10} />}
+                Generate QR Code
+              </button>
+            )}
+
+            {inviteUrl && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className="flex items-center gap-1 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
+                >
+                  {copied ? <Check size={10} className="text-accent2" /> : <Copy size={10} />}
+                  {copied ? 'Copied' : 'Copy Link'}
+                </button>
+                <a
+                  href={inviteUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
+                >
+                  <ExternalLink size={10} />
+                  Open
+                </a>
+              </>
+            )}
+
             <button
               type="button"
               onClick={generateToken}
               disabled={loading}
-              title="Generate new QR code (invalidates current)"
               className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded disabled:opacity-50"
             >
               {loading ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
-              Regenerate
+              {inviteUrl ? 'Regenerate' : 'Retry'}
             </button>
           </div>
+
+          {inviteUrl && (
+            <div className="space-y-2">
+              <code className="block w-full text-[10px] font-mono text-muted bg-surface2 border border-border px-2 py-1.5 rounded break-all">
+                {inviteUrl}
+              </code>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="flex flex-col items-center gap-4 py-8">
-          {/* Placeholder QR frame */}
-          <div
-            className="w-[220px] h-[220px] rounded-lg border-2 border-dashed flex flex-col items-center justify-center gap-3"
-            style={{ borderColor: colors.accent + '30', background: colors.surface2 }}
-          >
-            <QrCode size={40} style={{ color: colors.accent + '40' }} />
-            <span className="text-[10px] font-mono text-muted">No active QR code</span>
-          </div>
-          <button
-            type="button"
-            onClick={generateToken}
-            disabled={loading}
-            className="flex items-center gap-2 px-5 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
-          >
-            {loading ? <Loader2 size={12} className="animate-spin" /> : <QrCode size={12} />}
-            {loading ? 'Generating…' : 'Generate QR Code'}
-          </button>
-        </div>
-      )}
-    </div>
+      </Modal>
+    </>
   );
 }

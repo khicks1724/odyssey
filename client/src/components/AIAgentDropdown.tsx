@@ -81,8 +81,6 @@ export default function AIAgentDropdown() {
                 const meta = agentMeta[id];
                 const available = isAvailable(id);
                 const isActive = id === agent;
-                const isNonClaude = id === 'gpt-4o' || id === 'gemini-pro';
-                if (isNonClaude && !available) return null;
 
                 return (
                   <button

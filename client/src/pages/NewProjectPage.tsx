@@ -53,7 +53,7 @@ function JoinSection() {
           <h3 className="font-sans text-sm font-bold text-heading">Enter Invite Code</h3>
         </div>
         <p className="text-[11px] text-muted mb-4">
-          Ask the project owner for their 8-character invite code.
+          Ask the project owner for their project ID code.
         </p>
         <form onSubmit={handleJoin} className="flex gap-2 max-w-sm">
           <input
@@ -66,7 +66,7 @@ function JoinSection() {
           />
           <button
             type="submit"
-            disabled={joining || code.trim().length < 6}
+            disabled={joining || code.trim().length < 20}
             className="px-5 py-3 bg-accent2/10 border border-accent2/30 text-accent2 text-xs font-semibold tracking-wider uppercase hover:bg-accent2/20 transition-colors disabled:opacity-50 flex items-center gap-2"
           >
             {joining ? <Loader2 size={12} className="animate-spin" /> : <LogIn size={12} />}

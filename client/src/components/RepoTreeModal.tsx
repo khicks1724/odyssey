@@ -141,10 +141,11 @@ const LANG_LABEL: Record<string, string> = {
 interface RepoTreeModalProps {
   repo: string;
   type: 'github' | 'gitlab';
+  initialPath?: string;
   onClose: () => void;
 }
 
-export default function RepoTreeModal({ repo, type, onClose }: RepoTreeModalProps) {
+export default function RepoTreeModal({ repo, type, initialPath, onClose }: RepoTreeModalProps) {
   const [files, setFiles]   = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]   = useState<string | null>(null);
@@ -180,6 +181,16 @@ export default function RepoTreeModal({ repo, type, onClose }: RepoTreeModalProp
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [repo, type]);
+
+  useEffect(() => {
+    if (initialPath) {
+      handleOpenFile(initialPath);
+    } else {
+      setActivePath(null);
+      setPreviewContent(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPath, repo, type]);
 
   const handleOpenFile = async (path: string) => {
     if (path === activePath) return; // already open

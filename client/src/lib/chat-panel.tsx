@@ -74,12 +74,8 @@ export function ChatPanelProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const unregister = useCallback(() => {
-    setProjectId(null);
-    setProjectName(null);
     setOnGoalMutated(null);
-    setOpen(false);
     setIuOpen(false);
-    // Messages intentionally kept so they're there if you navigate back quickly
   }, []);
 
   return (

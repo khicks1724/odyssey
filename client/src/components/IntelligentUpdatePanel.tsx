@@ -9,6 +9,7 @@ import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
 import type { Goal } from '../types';
 import GoalEditModal, { type MemberOption } from './GoalEditModal';
+import { useAIErrorDialog } from '../lib/ai-error';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -163,7 +164,8 @@ function TaskPreview({ draft, isDelete }: { draft: Goal; isDelete?: boolean }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutated }: IntelligentUpdatePanelProps) {
-  const { agent } = useAIAgent();
+  const { agent, providers } = useAIAgent();
+  const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
   const [loading,      setLoading]      = useState(false);
   const [suggestions,  setSuggestions]  = useState<Suggestion[]>([]);
   const [goals,        setGoals]        = useState<Goal[]>([]);
@@ -204,7 +206,11 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
         body: JSON.stringify({ agent, projectId }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? `Error ${res.status}`); return; }
+      if (!res.ok) {
+        setError(data.error ?? `Error ${res.status}`);
+        showAIError(data.error ?? `Error ${res.status}`, res.status);
+        return;
+      }
       const list: Suggestion[] = data.suggestions ?? [];
       setSuggestions(list);
       setProvider(data.provider ?? null);
@@ -213,6 +219,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
       setStates(init);
     } catch {
       setError('Network error — is the server running?');
+      showAIError('Network error — is the server running?', 502);
     } finally {
       setLoading(false);
     }
@@ -475,6 +482,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
           onClose={() => setModifyTarget(null)}
         />
       )}
+      {aiErrorDialog}
     </div>
   );
 }

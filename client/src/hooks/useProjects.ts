@@ -3,6 +3,12 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { Project, JoinRequest } from '../types';
 
+const PROJECTS_CHANGED_EVENT = 'odyssey:projects-changed';
+
+function notifyProjectsChanged() {
+  window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
+}
+
 // ─── Standalone cascade delete (safe to call from any component) ─────────────
 export async function deleteProjectCascade(id: string) {
   const { data: goalRows } = await supabase.from('goals').select('id').eq('project_id', id);
@@ -28,6 +34,7 @@ export async function deleteProjectCascade(id: string) {
 
   const { error } = await supabase.from('projects').delete().eq('id', id);
   if (error) throw error;
+  notifyProjectsChanged();
 }
 
 export function useProjects() {
@@ -49,6 +56,24 @@ export function useProjects() {
 
   useEffect(() => {
     fetchProjects();
+  }, [fetchProjects]);
+
+  useEffect(() => {
+    const onProjectsChanged = () => { fetchProjects(); };
+    const onFocus = () => { fetchProjects(); };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') fetchProjects();
+    };
+
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [fetchProjects]);
 
   // Real-time sync — update local state whenever any project row changes in DB
@@ -91,10 +116,11 @@ export function useProjects() {
       .insert({ project_id: data.id, user_id: user.id, role: 'owner' });
 
     setProjects((prev) => [data, ...prev]);
+    notifyProjectsChanged();
     return data;
   };
 
-  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date'>>) => {
+  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private' | 'invite_code'>>) => {
     const { data, error } = await supabase
       .from('projects')
       .update(updates)
@@ -104,12 +130,14 @@ export function useProjects() {
 
     if (error) throw error;
     setProjects((prev) => prev.map((p) => (p.id === id ? data : p)));
+    notifyProjectsChanged();
     return data;
   };
 
   const deleteProject = async (id: string) => {
     await deleteProjectCascade(id);
     setProjects((prev) => prev.filter((p) => p.id !== id));
+    notifyProjectsChanged();
   };
 
   return { projects, loading, createProject, updateProject, deleteProject, refetch: fetchProjects };
@@ -135,7 +163,7 @@ export function useProject(id: string | undefined) {
     fetchProject();
   }, [fetchProject]);
 
-  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private'>>) => {
+  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private' | 'invite_code'>>) => {
     if (!id) throw new Error('No project');
     const { data, error } = await supabase
       .from('projects')
@@ -145,6 +173,7 @@ export function useProject(id: string | undefined) {
       .single();
     if (error) throw error;
     setProject(data);
+    notifyProjectsChanged();
     return data;
   };
 
