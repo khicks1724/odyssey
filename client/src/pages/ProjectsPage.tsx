@@ -14,6 +14,7 @@ import {
   LogIn,
   Lock,
   Globe,
+  LogOut,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useProjects } from '../hooks/useProjects';
@@ -22,31 +23,44 @@ import { getCustomOrder, getSortMode, setCustomOrder, setSortMode, sortProjects,
 import { PROJECT_CODE_LENGTH, sanitizeProjectCode } from '../lib/project-code';
 import type { Project } from '../types';
 
-function DeleteProjectModal({
+function ProjectRemovalModal({
   project,
-  onConfirm,
+  onRemove,
+  onDelete,
   onClose,
 }: {
   project: Project;
-  onConfirm: () => Promise<void>;
+  onRemove: () => Promise<{ result: 'removed' | 'delete_required' }>;
+  onDelete: () => Promise<void>;
   onClose: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  const [deleting, setDeleting] = useState(false);
+  const [mode, setMode] = useState<'remove' | 'delete'>('remove');
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const valid = typed.trim().toLowerCase() === 'delete';
+  const valid = typed.trim().toLowerCase() === mode;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!valid) return;
-    setDeleting(true);
+    setSubmitting(true);
     setError(null);
     try {
-      await onConfirm();
+      if (mode === 'remove') {
+        const result = await onRemove();
+        if (result.result === 'delete_required') {
+          setMode('delete');
+          setTyped('');
+          setSubmitting(false);
+          return;
+        }
+        return;
+      }
+      await onDelete();
     } catch (err: any) {
-      setError(err?.message ?? 'Failed to delete project. Please try again.');
-      setDeleting(false);
+      setError(err?.message ?? `Failed to ${mode} project. Please try again.`);
+      setSubmitting(false);
     }
   };
 
@@ -60,7 +74,7 @@ function DeleteProjectModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <div className="flex items-center gap-2">
             <Trash2 size={14} className="text-danger" />
-            <h2 className="font-sans text-sm font-bold text-heading">Delete Project</h2>
+            <h2 className="font-sans text-sm font-bold text-heading">{mode === 'remove' ? 'Remove Project' : 'Delete Project'}</h2>
           </div>
           <button type="button" title="Close" aria-label="Close" onClick={onClose} className="text-muted hover:text-heading transition-colors">
             <X size={15} />
@@ -68,20 +82,26 @@ function DeleteProjectModal({
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
-          <p className="text-xs text-muted leading-relaxed">
-            This will permanently delete <span className="font-semibold text-heading">{project.name}</span> and all associated tasks, events, reports, and data.
-          </p>
+          {mode === 'remove' ? (
+            <p className="text-xs text-muted leading-relaxed">
+              This will remove <span className="font-semibold text-heading">{project.name}</span> from your project list. The project will remain in Odyssey for the other members.
+            </p>
+          ) : (
+            <p className="text-xs text-muted leading-relaxed">
+              You are the only member of <span className="font-semibold text-heading">{project.name}</span>. Deleting it will permanently remove the project and all associated tasks, events, reports, and data.
+            </p>
+          )}
 
           <div>
             <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
-              Type <span className="text-danger font-mono">delete</span> to confirm
+              Type <span className="text-danger font-mono">{mode}</span> to confirm
             </label>
             <input
               type="text"
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
               autoFocus
-              placeholder="delete"
+              placeholder={mode}
               className="w-full px-4 py-2.5 bg-surface2 border border-border text-heading text-sm font-mono placeholder:text-muted/40 focus:outline-none focus:border-danger/50 transition-colors"
             />
           </div>
@@ -94,11 +114,11 @@ function DeleteProjectModal({
             </button>
             <button
               type="submit"
-              disabled={!valid || deleting}
+              disabled={!valid || submitting}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-danger/10 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {deleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-              {deleting ? 'Deleting...' : 'Delete'}
+              {submitting ? <Loader2 size={12} className="animate-spin" /> : mode === 'remove' ? <LogOut size={12} /> : <Trash2 size={12} />}
+              {submitting ? (mode === 'remove' ? 'Removing...' : 'Deleting...') : mode === 'remove' ? 'Remove' : 'Delete'}
             </button>
           </div>
         </form>
@@ -177,7 +197,7 @@ function JoinByCodePanel() {
 }
 
 export default function ProjectsPage() {
-  const { projects, loading, deleteProject } = useProjects();
+  const { projects, loading, deleteProject, removeSelfFromProject } = useProjects();
   const [pendingDelete, setPendingDelete] = useState<Project | null>(null);
   const [sortModeState, setSortModeState] = useState<ProjectSortMode>(() => getSortMode());
   const [customOrderState, setCustomOrderState] = useState<string[]>(() => getCustomOrder());
@@ -310,7 +330,7 @@ export default function ProjectsPage() {
 
               <button
                 type="button"
-                title="Delete project"
+                title="Remove project"
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); setPendingDelete(project); }}
                 className="absolute top-3 right-3 z-10 p-1 text-muted/20 group-hover:text-muted hover:!text-danger transition-colors rounded"
               >
@@ -345,9 +365,14 @@ export default function ProjectsPage() {
       </div>
 
       {pendingDelete && (
-        <DeleteProjectModal
+        <ProjectRemovalModal
           project={pendingDelete}
-          onConfirm={async () => {
+          onRemove={async () => {
+            const result = await removeSelfFromProject(pendingDelete.id);
+            if (result.result === 'removed') setPendingDelete(null);
+            return result;
+          }}
+          onDelete={async () => {
             await deleteProject(pendingDelete.id);
             setPendingDelete(null);
           }}

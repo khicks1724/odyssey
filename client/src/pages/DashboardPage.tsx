@@ -79,6 +79,7 @@ export default function DashboardPage() {
   const { stats, loading: statsLoading } = useDashboardStats();
   const { projects: rawProjects } = useProjects();
   const projects = sortProjects(rawProjects, getSortMode());
+  const [projectMemberCounts, setProjectMemberCounts] = useState<Record<string, number>>({});
   const { deadlines, loading: deadlinesLoading } = useUpcomingDeadlines();
   const { data: activityData } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
@@ -116,6 +117,28 @@ export default function DashboardPage() {
         }
       });
   }, [insight?.project_id]);
+
+  useEffect(() => {
+    const projectIds = projects.map((p) => p.id);
+    if (projectIds.length === 0) {
+      setProjectMemberCounts({});
+      return;
+    }
+
+    supabase
+      .from('project_members')
+      .select('project_id')
+      .in('project_id', projectIds)
+      .then(({ data, error }) => {
+        if (error || !data) return;
+        const counts = data.reduce<Record<string, number>>((acc, row) => {
+          const projectId = row.project_id as string;
+          acc[projectId] = (acc[projectId] ?? 0) + 1;
+          return acc;
+        }, {});
+        setProjectMemberCounts(counts);
+      });
+  }, [projects]);
 
   const handleRepoClick = (repo: string, type: 'github' | 'gitlab') =>
     setRepoTreeTarget({ repo, type });
@@ -306,6 +329,14 @@ export default function DashboardPage() {
                 <span className="text-xs text-heading font-sans font-semibold truncate group-hover:text-accent transition-colors">
                   {p.name}
                 </span>
+              </div>
+              <div className="mt-2 pl-5">
+                <p className="text-[10px] text-muted font-mono">
+                  Created {new Date(p.created_at).toLocaleDateString()}
+                </p>
+                <p className="text-[10px] text-muted font-mono">
+                  {projectMemberCounts[p.id] ?? 1} member{(projectMemberCounts[p.id] ?? 1) === 1 ? '' : 's'}
+                </p>
               </div>
             </Link>
           ))}

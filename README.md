@@ -1,450 +1,485 @@
 # Odyssey
 
-> **AI-powered project management platform** — track goals, unify activity across GitHub, GitLab, Microsoft 365, and Teams, and get intelligent suggestions powered by Claude, GPT-4o, or Gemini.
-
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Features](#features)
-- [AI Integration](#ai-integration)
-- [Integrations](#integrations)
-- [Theme System](#theme-system)
-- [Database Schema](#database-schema)
-- [Environment Variables](#environment-variables)
-- [Running Locally](#running-locally)
-- [Building for Production](#building-for-production)
-
----
+> AI-assisted project operations for engineering teams, with project dashboards, task tracking, repo-aware analysis, reports, file previews, and multi-source activity in one workspace.
 
 ## Overview
 
-Odyssey is a full-stack project management dashboard built for small engineering teams. It connects to your GitHub/GitLab repos, Microsoft 365 workspace, and file uploads to give you a single unified view of project activity. Three AI providers (Anthropic Claude, OpenAI GPT-4o, Google Gemini) are available and auto-routed based on task complexity — simple questions get fast Haiku responses, complex analysis uses Sonnet or GPT-4o.
+Odyssey is a full-stack project management platform built around:
 
-The AI doesn't just answer questions: it can propose goal changes (create, update, delete), suggest deadline extensions based on commit velocity, and analyze the entire project and generate an **Intelligent Update** — a ranked list of suggestions you can accept or dismiss individually or all at once.
+- project-level task and milestone tracking
+- AI chat, AI insights, standups, task guidance, intelligent updates, and report generation
+- GitHub and GitLab repository context
+- Microsoft 365 document import
+- Supabase-backed auth, data, storage, and realtime updates
 
----
+The app is designed to work in two main modes:
+
+1. local development on a single machine
+2. shared internal hosting on a machine that users reach by IP address or hostname
+
+For the code as it exists in this repository, the supported backend model is Supabase. A plain SQL database is not a drop-in replacement because the app depends on Supabase Auth, Storage, Realtime, RLS, and RPC behavior.
+
+## Current State
+
+Odyssey currently includes:
+
+- persistent project dashboards with AI-generated summaries
+- per-project tabs for overview, activity, tasks, metrics, reports, documents, integrations, and settings
+- long-form project ID join codes that owners can regenerate or edit
+- QR-based project invites with expiry and token redemption
+- project privacy and join-request flows
+- drag-reorderable project lists with shared ordering reflected in the dashboard
+- always-available AI chat panel, including outside a specific project
+- project inference in AI chat when the user references a project by name
+- AI report generation with follow-up regeneration in a different format
+- clickable repo names, file paths, and task references across AI-rendered markdown
+- repo/file preview flows for GitHub and GitLab sources
+- theme system with multiple built-in themes, including Odyssey Dark, USA, Digital Trident, NPS, Claude, GitHub Dark, Nord, and Dracula variants
 
 ## Tech Stack
 
 | Layer | Technology |
-|---|---|
-| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS 4 |
-| **Backend** | Node.js, Fastify 5, TypeScript |
-| **Database** | Supabase (PostgreSQL + Auth + Storage + Realtime) |
-| **AI** | Anthropic Claude (Haiku / Sonnet / Opus), OpenAI GPT-4o, Google Gemini |
-| **Routing** | React Router 7 |
-| **Markdown** | react-markdown + remark-gfm |
-| **Document Parsing** | pdf-parse, mammoth (DOCX) |
-| **Hosting** | Vercel (frontend), Railway (backend) |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite, Tailwind CSS 4 |
+| Backend | Node.js, Fastify 5, TypeScript |
+| Database | Supabase Postgres |
+| Auth | Supabase Auth |
+| Storage | Supabase Storage |
+| Realtime | Supabase Realtime |
+| AI providers | Anthropic, OpenAI, Google Gemini |
+| Routing | React Router 7 |
+| Markdown rendering | `react-markdown` + `remark-gfm` |
+| Document/report tooling | `pdf-parse`, `mammoth`, `docx`, `jspdf`, `pptxgenjs` |
 
----
+## Architecture
 
-## Project Structure
-
-```
-odyssey/
-├── client/                         # React frontend (Vite)
-│   ├── src/
-│   │   ├── components/             # UI components
-│   │   │   ├── layout/             # AppLayout, Sidebar
-│   │   │   ├── GoalCard.tsx        # Goal display card
-│   │   │   ├── ProjectChat.tsx     # AI chat panel (right-side)
-│   │   │   ├── IntelligentUpdatePanel.tsx  # AI suggestions panel
-│   │   │   ├── Timeline.tsx        # Unified event timeline
-│   │   │   ├── ContributionGraph.tsx       # Activity heatmap
-│   │   │   ├── FileViewer.tsx      # GitHub/GitLab file browser
-│   │   │   ├── GoalMetrics.tsx     # Analytics charts
-│   │   │   ├── ThemeSwitcher.tsx   # Theme selector dropdown
-│   │   │   └── AIAgentDropdown.tsx # AI model selector
-│   │   ├── hooks/                  # Custom React hooks
-│   │   │   ├── useDashboard.ts     # Dashboard stats & insights
-│   │   │   ├── useGoals.ts         # Goal CRUD
-│   │   │   ├── useEvents.ts        # Event feed
-│   │   │   └── useProjects.ts      # Project management
-│   │   ├── lib/                    # Core utilities & contexts
-│   │   │   ├── theme.tsx           # 10 built-in themes + ThemeProvider
-│   │   │   ├── auth.tsx            # Supabase auth context
-│   │   │   ├── supabase.ts         # Supabase client
-│   │   │   ├── ai-agent.tsx        # AI model selector context
-│   │   │   └── chat-panel.tsx      # Persistent chat state context
-│   │   ├── pages/                  # Route-level page components
-│   │   │   ├── DashboardPage.tsx   # Overview & stats
-│   │   │   ├── ProjectDetailPage.tsx  # Goals, chat, timeline
-│   │   │   ├── ProjectsPage.tsx    # Project list
-│   │   │   └── SettingsPage.tsx    # Integrations & profile
-│   │   └── types/                  # Shared TypeScript interfaces
-│   └── package.json
-│
-├── server/                         # Fastify API backend
-│   ├── src/
-│   │   ├── index.ts                # Server setup, route registration
-│   │   ├── ai-providers.ts         # Multi-model LLM router
-│   │   └── routes/
-│   │       ├── ai.ts               # Chat, Intelligent Update, Insights
-│   │       ├── github.ts           # GitHub API proxy & file browser
-│   │       ├── gitlab.ts           # GitLab API proxy (self-hosted)
-│   │       ├── microsoft.ts        # Microsoft 365 OAuth2 + Graph API
-│   │       ├── uploads.ts          # File upload + text extraction
-│   │       ├── webhooks.ts         # GitHub webhook handler
-│   │       └── health.ts           # Health check
-│   └── package.json
-│
-└── supabase/                       # Database migrations (SQL)
-    ├── schema.sql                  # Core tables + RLS policies
-    └── migration-*.sql             # Incremental schema updates
+```mermaid
+flowchart LR
+  U[Browser] --> C[React / Vite Client]
+  C --> A[Fastify API Server]
+  C --> S[(Supabase Auth + Postgres + Storage + Realtime)]
+  A --> S
+  A --> AI[Anthropic / OpenAI / Gemini]
+  A --> GH[GitHub API]
+  A --> GL[GitLab API]
+  A --> MS[Microsoft Graph]
 ```
 
----
+## Repository Layout
 
-## Features
+```text
+Odyssey/
+  client/                 React + Vite frontend
+  server/                 Fastify backend
+  supabase/               Base schema and incremental migrations
+  setup.md                Detailed setup and deployment guide
+```
 
-### Goal Tracking
+High-value frontend areas:
 
-- Create, edit, and delete goals with deadlines, categories, status, and progress percentage
-- **Kanban board** with columns: Not Started → In Progress → In Review → Complete
-- Goals completed more than 7 days ago are automatically moved to a hidden "archived" section in the Complete column — click **Show archived goals** to reveal them with a faded treatment
-- **Status color coding**: red (not started), orange (in progress), yellow (in review), green (complete)
-- Risk scoring per goal; overdue and at-risk goals surfaced in the dashboard
+- `client/src/pages/DashboardPage.tsx`
+- `client/src/pages/ProjectDetailPage.tsx`
+- `client/src/components/ProjectChat.tsx`
+- `client/src/components/ReportsTab.tsx`
+- `client/src/components/MarkdownWithFileLinks.tsx`
+- `client/src/components/ProjectQRCode.tsx`
+- `client/src/components/GoalEditModal.tsx`
+- `client/src/lib/theme.tsx`
 
-### Activity Timeline
+High-value backend areas:
 
-- Unified event feed from all connected sources: GitHub commits, GitLab commits, Microsoft Teams messages, OneDrive file edits, OneNote pages, manual uploads, and Odyssey-internal goal updates
-- Contribution heatmap (GitHub-style) showing activity density per day
-- Filter by source, event type, or date range
-- Supabase Realtime pushes new events without a page reload
+- `server/src/index.ts`
+- `server/src/routes/ai.ts`
+- `server/src/routes/github.ts`
+- `server/src/routes/gitlab.ts`
+- `server/src/routes/microsoft.ts`
+- `server/src/routes/uploads.ts`
+- `server/src/routes/webhooks.ts`
 
-### Project Dashboard
+## Feature Areas
 
-- At-a-glance stats: active projects, goals tracked, events this week
-- Upcoming deadlines widget with days-remaining countdown
-- AI-generated project summary (status, next steps, future features) — persisted per project, regenerated on demand
-- Recent commits feed from linked GitHub/GitLab repos
+### Projects And Dashboard
 
-### File & Document Management
+- multi-project dashboard with top-level health indicators
+- hoverable dashboard stat cards with detail popovers
+- project ordering by name, creation recency, or custom drag order
+- shared project ordering reflected in both the projects page and dashboard
+- project settings with editable project ID code, start date, description, privacy, and member controls
 
-- Upload PDF, DOCX, TXT, CSV, JSON, and other files to Supabase Storage
-- Automatic text extraction (up to 50 KB) for inclusion in AI context
-- Preview files in-app with a dedicated file viewer
-- Browse GitHub/GitLab repo trees and view raw file content directly in the dashboard (capped at 512 KB)
+### Tasks And Execution Tracking
 
-### Reports & Analytics
+- task creation and editing with status, progress, category, line of effort, deadline, multi-assignee support, dependencies, comments, and AI guidance
+- risk labels and project-level risk reporting
+- task detail modal with markdown-rendered AI guidance and clickable repo/file/task references
+- timeline, activity, and metrics views for project execution
 
-- Goal metrics dashboard with completion rate charts
-- Contribution heatmap by date
-- Activity breakdown by event source and type
-- On-track rate per project
+### AI Features
 
----
+- global AI chat panel
+- project AI chat with repo, task, event, and document context
+- AI-generated project insights
+- intelligent update flow that proposes project/task changes
+- 2-week standup generation and storage
+- report generation to PDF, DOCX, or PPTX
+- follow-up report edits through chat, including format changes after the first generation
+- themed AI error popups that interpret common provider failures such as missing keys, billing/quota issues, or service unavailability
 
-## AI Integration
+### Repo And File Awareness
 
-### Model Selection
+- GitHub repo linking, browsing, commit ingestion, and file preview
+- GitLab repo linking, browsing, commit ingestion, and file preview
+- recursive file indexing for relative-path resolution
+- clickable repo names and file references across AI output
+- markdown-aware linking that can resolve:
+  - full file paths
+  - repo-qualified paths
+  - suffix paths
+  - bare filenames when they map cleanly
 
-Use the **AI Agent dropdown** in the top navigation to choose a provider:
+### Documents And Reports
 
-| Option | Behavior |
-|---|---|
-| **Auto** | Haiku for short/simple queries, Sonnet for complex ones |
-| **Claude Haiku** | Fast responses, lightweight DB-only context |
-| **Claude Sonnet** | Full context including GitHub commits and documents |
-| **Claude Opus** | Highest capability |
-| **GPT-4o** | OpenAI alternative |
-| **Gemini Pro** | Google alternative |
+- project document upload to Supabase Storage
+- document text extraction for AI context
+- Microsoft 365 document import flows
+- saved reports per project
+- goal reports, attachments, and comments
 
-### Auto-Routing Logic
+### Access And Collaboration
 
-When set to **Auto**, the server analyzes the last user message:
+- project creation and ownership
+- invite by project ID code
+- QR-based invite generation and redemption
+- private project join requests
+- GitHub username-based member adds
+- member role management
 
-- Contains analysis keywords (`analyz`, `comprehensive`, `summarize`, `deep dive`, etc.) → **Sonnet**
-- Longer than 80 words → **Sonnet**
-- Longer than 20 words → **Sonnet**
-- Short/simple message (e.g., "hello", "what are my goals?") → **Haiku**
+### Theming
 
-Haiku-routed messages use a **lightweight context** (database queries only — no GitHub/GitLab API calls), reducing response time from ~5–20 seconds down to ~200 ms.
+Odyssey currently ships with these built-in themes:
 
-### AI Chat Panel
+- Odyssey Dark
+- Odyssey Light
+- One Dark Pro
+- Dark Modern
+- Light Modern
+- Claude Dark
+- Claude Light
+- NPS Dark
+- NPS Light
+- USA
+- Digital Trident
+- GitHub Dark
+- Nord
+- Dracula
 
-Click **AI Chat** in the top navigation (only visible when a project is open) to open the chat panel on the right side of the screen. Drag the divider to resize it.
+The theme system also drives AI markdown token styling, including distinct theme-aware colors for:
 
-- Full multi-turn conversation about the active project
-- The AI receives project goals, recent events, and document excerpts as context
-- **Proposed actions**: when the AI suggests creating, updating, or deleting a goal, it presents an action card with **Approve** and **Decline** buttons — no changes happen without your confirmation
-- Responses rendered with full GitHub-flavored Markdown (headers, bold, lists, code blocks)
-- Hover over any assistant message to reveal a **copy button** in the top-right corner
-- Chat history persists when you close and reopen the panel; clears automatically when you switch to a different project
+- clickable repos
+- clickable files/programs
+- clickable task references
+- non-clickable formatted tokens
 
-### Intelligent Update Panel
+## AI Model Behavior
 
-The **Intelligent Update** button on a project page runs a full project analysis and returns a prioritized list of AI suggestions, displayed in the same right-side panel as the chat.
+The UI exposes an AI model selector with:
 
-Each suggestion includes:
+- `Auto`
+- Anthropic Claude models
+- OpenAI models when configured
+- Google Gemini models when configured
 
-| Field | Description |
-|---|---|
-| **Type** | Create Goal, Update Goal, Remove Goal, Extend Deadline, Move Deadline Up |
-| **Priority** | High / Medium / Low |
-| **Why?** | Expandable AI reasoning for the suggestion |
-| **Accept** | Applies the change immediately to the database |
-| **Dismiss** | Marks as rejected without applying |
+Provider availability depends on server-side keys. If a provider key is missing, that provider stays unavailable in the UI. If a request fails at runtime, the app now surfaces a themed error modal instead of a raw browser alert.
 
-Use **Accept All** in the footer to apply all pending suggestions at once.
+Main AI surfaces:
 
-### Project Insights
-
-The **Insights** section on the dashboard contains an AI-generated summary of the entire project:
-
-- **Status overview** — current project health assessment
-- **Next steps** — ordered list of recommended immediate actions
-- **Future features** — longer-horizon ideas and enhancements
-
-Insights are stored in the database (one row per project) and can be regenerated at any time. The provider that generated each insight is displayed for transparency.
-
----
+- dashboard AI summary
+- project AI insights
+- project AI chat
+- task AI guidance
+- intelligent update panel
+- report generation chat
 
 ## Integrations
 
+### Supabase
+
+Supabase is the primary application backend and is required for full functionality.
+
+Used for:
+
+- auth
+- relational data
+- row-level security
+- storage buckets
+- realtime subscriptions
+- RPCs for invite/join flows
+
 ### GitHub
 
-Connect a GitHub repository to pull in commit history, file trees, and repository metadata.
+GitHub integration supports:
 
-**Supported operations:**
-- Recent commits with author, date, and message (default 30, up to 100)
-- Repo metadata: stars, open issues, primary language, default branch
-- Recursive file tree browser (up to 500 files)
-- Raw file content viewer (up to 512 KB)
-- GitHub user search for assigning collaborators
+- repository linking
+- commit history ingestion
+- file tree browsing
+- file preview
+- AI repo-aware context
+- webhook ingestion for activity normalization
 
-**Webhooks:**
+### GitLab
 
-Configure a webhook in your GitHub repo settings pointing to `/api/webhooks/github`. Odyssey verifies HMAC-SHA256 signatures and normalizes events into the unified activity timeline.
+GitLab integration supports:
 
-Supported events: `push`, `pull_request`, `issues`, `issue_comment`, `create`, `delete`, `release`
+- repository linking
+- commit history ingestion
+- file tree browsing
+- file preview
+- AI repo-aware context
 
-### GitLab (Self-Hosted)
-
-Connect to a self-hosted GitLab instance (configured via `GITLAB_HOST` env var).
-
-- Fetch commits, README, and repo metadata
-- Browse file trees and preview raw files
-- Link multiple GitLab repos per project
+The preferred server env names are `GITLAB_TOKEN` and `GITLAB_HOST`.
+For backward compatibility, the server still accepts the older `GITLAB_NPS_TOKEN` and `GITLAB_NPS_HOST` names.
 
 ### Microsoft 365
 
-OAuth2 integration with Azure AD. After connecting your account in Settings, Odyssey can access:
+Microsoft integration supports:
 
-- **OneDrive** — files and folders
-- **OneNote** — notebooks, sections, and pages (HTML stripped to plaintext for AI)
-- **Teams** — basic team access
+- OneDrive document access
+- OneNote content access
+- Teams-related browsing paths where configured
 
-Tokens are stored AES-256-GCM encrypted in the database and automatically refreshed before expiry.
-
----
-
-## Theme System
-
-Odyssey ships with 10 built-in themes. All colors are applied as CSS custom properties on the document root, so switching themes takes effect instantly without a reload. The selected theme persists to `localStorage`.
-
-| Theme | Style |
-|---|---|
-| **Odyssey Dark** | Default — deep navy with blue accent |
-| **Odyssey Light** | Clean light variant of the brand theme |
-| **One Dark Pro** | Atom editor-inspired dark theme |
-| **Dark Modern** | Contemporary charcoal |
-| **Light Modern** | Contemporary light gray |
-| **Claude Dark** | Anthropic-inspired dark theme |
-| **Claude Light** | Anthropic-inspired light theme |
-| **GitHub Dark** | GitHub VS Code dark theme |
-| **Nord** | Arctic/Nordic cool-blue palette |
-| **Dracula** | High-contrast purple/pink dark theme |
-
-**Custom properties used throughout the app:**
-
-```css
---color-bg        /* Page background */
---color-surface   /* Card / panel background */
---color-surface2  /* Elevated surface (input, hover states) */
---color-border    /* Border color */
---color-accent    /* Primary accent (buttons, links) */
---color-accent2   /* Secondary accent */
---color-accent3   /* Tertiary accent (success actions) */
---color-danger    /* Error / destructive actions */
---color-text      /* Body text */
---color-muted     /* Secondary / placeholder text */
---color-heading   /* Heading text */
-```
-
----
-
-## Database Schema
-
-All tables have Row-Level Security (RLS) enabled. Users can only access data for projects they own or are members of.
-
-### Core Tables
-
-| Table | Purpose |
-|---|---|
-| `profiles` | Extended user profile linked to Supabase Auth |
-| `projects` | Top-level project container with owner |
-| `project_members` | Many-to-many: users ↔ projects with roles |
-| `goals` | Goals with status, deadline, progress, category, assignee |
-| `events` | Unified activity log from all sources |
-| `integrations` | Per-project connection config for GitHub / GitLab / Teams |
-| `project_insights` | One AI-generated summary row per project |
-| `user_connections` | Encrypted OAuth tokens for Microsoft 365 |
-
-### Goal Statuses
-
-| Value | Meaning |
-|---|---|
-| `not_started` | Work hasn't begun |
-| `in_progress` | Actively being worked on |
-| `in_review` | Under review / awaiting sign-off |
-| `complete` | Done |
-
-### Event Sources
-
-`github` · `gitlab` · `teams` · `onedrive` · `onenote` · `manual` · `local`
-
----
+This is backed by an Azure app registration and Microsoft Graph on the server.
 
 ## Environment Variables
 
-### Server (`server/.env`)
+### Client
+
+Create `client/.env.local`:
 
 ```env
-PORT=3001
-CLIENT_URL=http://localhost:5173
-
-# Supabase (service role key — never expose to client)
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_KEY=your-service-role-key
-
-# AI Providers — at least one required; Claude recommended
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-GOOGLE_AI_API_KEY=AIza...
-
-# GitHub
-GITHUB_TOKEN=ghp_...                    # Optional — raises rate limit
-GITHUB_WEBHOOK_SECRET=your-secret       # Must match GitHub webhook config
-
-# Microsoft 365 (optional)
-MICROSOFT_CLIENT_ID=your-azure-app-id
-MICROSOFT_CLIENT_SECRET=your-azure-secret
-MICROSOFT_REDIRECT_URI=http://localhost:3001/api/microsoft/auth/callback
-MICROSOFT_TOKEN_ENCRYPT_KEY=           # 64-char hex string (see below)
-
-# GitLab (optional — for self-hosted instances)
-GITLAB_HOST=https://your-gitlab-instance.com
-GITLAB_TOKEN=glpat-...
+VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+VITE_API_URL=
 ```
 
-**Generate a Microsoft token encryption key:**
-```bash
+### Server
+
+Create `server/.env`:
+
+```env
+NODE_ENV=development
+HOST=0.0.0.0
+PORT=3001
+
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+
+CLIENT_URL=http://localhost:5173
+CLIENT_DIST_PATH=
+
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GOOGLE_AI_API_KEY=
+
+GITHUB_TOKEN=
+GITHUB_WEBHOOK_SECRET=
+
+GITLAB_TOKEN=
+GITLAB_HOST=https://YOUR_HOST_URL
+
+MICROSOFT_CLIENT_ID=
+MICROSOFT_CLIENT_SECRET=
+MICROSOFT_REDIRECT_URI=http://localhost:3001/api/microsoft/auth/callback
+MICROSOFT_TOKEN_ENCRYPT_KEY=
+```
+
+Generate a Microsoft token encryption key:
+
+```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-### Client (`client/.env.local`)
-
-```env
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-```
-
----
-
 ## Running Locally
 
-### Prerequisites
+1. Clone the repository.
+2. Install dependencies in the root, `client`, and `server`.
+3. Create a Supabase project.
+4. Apply `supabase/schema.sql`.
+5. Apply all checked-in migrations in numeric order.
+6. Create `client/.env.local`.
+7. Create `server/.env`.
+8. Add at least one AI provider key.
+9. Start the API server.
+10. Start the client.
 
-- Node.js 20+
-- A [Supabase](https://supabase.com) project (free tier works)
-- At least one AI API key (Anthropic Claude recommended)
+Install dependencies:
 
-### 1. Install Dependencies
-
-```bash
-cd client && npm install
-cd ../server && npm install
-```
-
-### 2. Set Up the Database
-
-1. Open your Supabase project → **SQL Editor**
-2. Run `supabase/schema.sql`
-3. Run each migration file in order (`migration-005-improvements.sql` through the latest numbered file)
-
-### 3. Configure Environment
-
-```bash
-# Server
+```powershell
+npm install
+cd client
+npm install
+cd ..
 cd server
-cp .env.example .env
-# Fill in: SUPABASE_URL, SUPABASE_SERVICE_KEY, and at least one AI API key
-
-# Client
-cd ../client
-cp .env.example .env.local
-# Fill in: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+npm install
+cd ..
 ```
 
-### 4. Start Dev Servers
+Start the server:
 
-```bash
-# Terminal 1 — Backend (auto-reloads on save)
+```powershell
 cd server
 npm run dev
-# → http://localhost:3001
+```
 
-# Terminal 2 — Frontend
+Start the client:
+
+```powershell
 cd client
 npm run dev
-# → http://localhost:5173
 ```
 
-On startup the server logs which AI providers are detected:
-```
-[AI] Available providers: claude-haiku, claude-sonnet, claude-opus
-```
+Default local URLs:
 
-### 5. First Login
+- frontend: `http://localhost:5173`
+- API: `http://localhost:3001`
 
-1. Go to `http://localhost:5173`
-2. Create an account with your email (Supabase sends a confirmation link)
-3. Create a new project and start adding goals
+The Vite dev server proxies `/api` requests to `http://localhost:3001`.
 
----
+## Internal Network Hosting
 
-## Building for Production
+Odyssey supports shared internal hosting on a machine reachable by IP address or hostname.
 
-```bash
-# Frontend
+Recommended production-style internal setup:
+
+1. build the client
+2. build the server
+3. set `NODE_ENV=production`
+4. set `HOST=0.0.0.0`
+5. set `CLIENT_DIST_PATH=../client/dist`
+6. run the built Fastify server
+
+Build steps:
+
+```powershell
 cd client
-npm run build         # Outputs to client/dist/
-
-# Backend
+npm run build
+cd ..
 cd server
-npm run build         # Compiles TypeScript to server/dist/
-npm start             # Runs the compiled build
+npm run build
+npm run start
 ```
 
-The frontend `dist/` folder is served by Vercel. The backend is deployed to Railway as a Node.js service with environment variables set in the Railway dashboard.
+Users then connect to:
 
----
+- `http://YOUR_SERVER_IP:3001`
 
-## Security Notes
+You can also front the server with a reverse proxy such as:
 
-- All API routes validate Supabase JWT tokens before accessing data
-- RLS policies enforce row-level access at the database level — direct API calls still cannot read other teams' data
-- GitHub webhook payloads are verified with HMAC-SHA256 before processing
-- Microsoft OAuth tokens are stored AES-256-GCM encrypted — never in plaintext
-- GitHub and GitLab `owner`/`repo` URL parameters are validated with regex to prevent path traversal
-- File uploads are limited to 50 MB; text extraction is capped at 50 KB
+- Caddy
+- Nginx
+- IIS
 
----
+## Database Notes
 
-*Built with React, Fastify, Supabase, and Claude.*
+The repository contains:
+
+- `supabase/schema.sql`
+- `supabase/migration-*.sql`
+
+Important checked-in migrations cover:
+
+- policies and recursion fixes
+- goal tracking improvements
+- user connections
+- project insights
+- document storage
+- standup reports
+- saved reports
+- task dependencies
+- comments
+- delete-project cascade handling
+- invite codes and privacy
+- QR invite tokens
+- hardened project ID codes
+- hardened project deletion via RPC
+- notifications and shared chat foundations
+- chat-thread membership recovery for project chats
+- project-chat membership repair for users with existing project access
+
+There are also goal report / goal attachment features in the UI that may require supplemental SQL depending on your target environment. See [`setup.md`](./setup.md) for the detailed operator guide and the manual SQL required for those pieces.
+
+## Security Model
+
+- Supabase RLS is enabled across core tables
+- data access is scoped to project owners and members
+- server-side keys stay on the backend only
+- GitHub webhooks are signed
+- Microsoft tokens are encrypted before storage
+- AI provider keys are server-side only
+
+## Project Status And Known Assumptions
+
+This README reflects the repository in its current state, not an idealized deployment.
+
+Important assumptions:
+
+- Supabase is the intended backend
+- AI features require at least one valid provider key
+- repo-aware features require GitHub and/or GitLab server tokens
+- Microsoft 365 features require Azure app registration
+- full operator setup is documented in [`setup.md`](./setup.md)
+
+## Setup Documentation
+
+For the full deployment and environment manual, including:
+
+- database bootstrap order
+- Supabase auth configuration
+- local development setup
+- LAN/internal hosting setup
+- supplemental SQL for report/attachment support
+- troubleshooting and validation
+
+read:
+
+- [`setup.md`](./setup.md)
+
+## Scripts
+
+### Root
+
+No main orchestration scripts are defined at the root. Install dependencies from the root and run the client/server separately.
+
+### Client
+
+```text
+npm run dev
+npm run build
+npm run lint
+npm run preview
+```
+
+### Server
+
+```text
+npm run dev
+npm run build
+npm run start
+```
+
+## Recommended Smoke Test
+
+After setup, verify:
+
+- you can sign in
+- you can create a project
+- you can create and edit tasks
+- AI chat responds
+- AI insights generate
+- a repo can be linked and browsed
+- file links in AI output are clickable
+- a report can be generated
+- a QR invite can be created
+- a project can be joined by project ID code
+
+## License / Ownership
+
+No explicit open-source license is declared in this repository. If you intend to distribute or commercialize the code outside your organization, add a license file and any required contribution or deployment policy documentation.

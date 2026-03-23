@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { supabase } from '../lib/supabase.js';
 
-const GITLAB_TOKEN = process.env.GITLAB_NPS_TOKEN ?? '';
-const GITLAB_HOST = process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+const GITLAB_TOKEN = process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN ?? '';
+const GITLAB_HOST = process.env.GITLAB_HOST ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
 
 async function glGet(repo: string, path: string): Promise<unknown> {
   const encoded = encodeURIComponent(repo);

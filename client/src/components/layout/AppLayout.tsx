@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { MessageCircle, X } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ThemeSwitcher from '../ThemeSwitcher';
@@ -18,6 +18,7 @@ const PANEL_DEFAULT = 380;
 const MAIN_MIN = 500;
 
 export default function AppLayout() {
+  const location = useLocation();
   const { open, setOpen, iuOpen, setIuOpen, projectId, projectName, onGoalMutated } = useChatPanel();
   const { projects } = useProjects();
   const anyPanelOpen = open || iuOpen;
@@ -85,7 +86,7 @@ export default function AppLayout() {
 
         {/* Content row: main + optional chat panel */}
         <div className="flex-1 flex overflow-hidden min-h-0">
-          <main className="flex-1 overflow-y-auto min-w-0">
+          <main className={`flex-1 overflow-y-auto min-w-0 ${location.pathname.startsWith('/chat') ? 'bg-surface' : ''}`}>
             <Outlet />
           </main>
 

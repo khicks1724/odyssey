@@ -152,3 +152,42 @@ export interface RiskAssessment {
   level: 'low' | 'medium' | 'high' | 'critical';
   factors: string[];
 }
+
+export interface NotificationItem {
+  id: string;
+  user_id: string;
+  actor_id: string | null;
+  project_id: string | null;
+  kind: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  metadata: Record<string, unknown> | null;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface ChatThread {
+  id: string;
+  kind: 'project' | 'direct';
+  project_id: string | null;
+  related_project_id: string | null;
+  direct_key: string | null;
+  title: string | null;
+  ai_mode: boolean;
+  ai_mode_by: string | null;
+  ai_mode_started_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessageRow {
+  id: string;
+  thread_id: string;
+  sender_id: string | null;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}

@@ -56,7 +56,7 @@ import GoalEditModal from '../components/GoalEditModal';
 import GoalReportModal from '../components/GoalReportModal';
 import ReportsTab from '../components/ReportsTab';
 import ProjectQRCode from '../components/ProjectQRCode';
-import { useProject, useJoinRequests, deleteProjectCascade } from '../hooks/useProjects';
+import { useProject, useJoinRequests, deleteProjectCascade, removeSelfFromProjectAccess } from '../hooks/useProjects';
 import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
@@ -111,6 +111,90 @@ interface ScanResults {
 
 const API_BASE = '/api';
 
+function DeleteProjectModal({
+  projectName,
+  onRemove,
+  onDelete,
+  busy,
+  onClose,
+}: {
+  projectName: string;
+  onRemove: () => Promise<{ result: 'removed' | 'delete_required' }>;
+  onDelete: () => Promise<void>;
+  busy: boolean;
+  onClose: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'remove' | 'delete'>('remove');
+  const valid = typed.trim().toLowerCase() === mode;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!valid || busy) return;
+    setError(null);
+    try {
+      if (mode === 'remove') {
+        const result = await onRemove();
+        if (result.result === 'delete_required') {
+          setMode('delete');
+          setTyped('');
+        }
+        return;
+      }
+      await onDelete();
+    } catch (err: any) {
+      setError(err?.message ?? `Failed to ${mode} project. Please try again.`);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title={mode === 'remove' ? 'Remove Project' : 'Delete Project'}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {mode === 'remove' ? (
+          <p className="text-xs text-muted leading-relaxed">
+            This will remove <span className="font-semibold text-heading">{projectName}</span> from your project list. The project will remain in Odyssey for any other members.
+          </p>
+        ) : (
+          <p className="text-xs text-muted leading-relaxed">
+            You are the only member of <span className="font-semibold text-heading">{projectName}</span>. Deleting it will permanently remove all associated tasks, events, reports, invites, linked repos, and project data.
+          </p>
+        )}
+
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
+            Type <span className="text-danger font-mono">{mode}</span> to confirm
+          </label>
+          <input
+            type="text"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            autoFocus
+            placeholder={mode}
+            className="w-full px-4 py-2.5 bg-surface2 border border-border text-heading text-sm font-mono placeholder:text-muted/40 focus:outline-none focus:border-danger/50 transition-colors"
+          />
+        </div>
+
+        {error && <p className="text-xs text-danger font-mono">{error}</p>}
+
+        <div className="flex gap-3 pt-1">
+          <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:bg-surface2 transition-colors">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!valid || busy}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-danger/10 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : mode === 'remove' ? <LogOut size={12} /> : <Trash2 size={12} />}
+            {busy ? (mode === 'remove' ? 'Removing...' : 'Deleting...') : mode === 'remove' ? 'Remove' : 'Delete'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export default function ProjectDetailPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
@@ -124,6 +208,7 @@ export default function ProjectDetailPage() {
   const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
   const { status: msStatus } = useMicrosoftIntegration();
   const [deletingProject, setDeletingProject] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [leavingProject, setLeavingProject] = useState(false);
   const [inviteRole, setInviteRole] = useState<'member' | 'owner'>('member');
   const [copySuccess, setCopySuccess] = useState(false);
@@ -132,28 +217,30 @@ export default function ProjectDetailPage() {
 
   const handleDeleteProject = async () => {
     if (!projectId || !project) return;
-    if (!window.confirm(`Permanently delete "${project.name}"?\n\nThis will remove all tasks, events, and data. This cannot be undone.`)) return;
     setDeletingProject(true);
     try {
       await deleteProjectCascade(projectId);
       navigate('/projects');
     } catch (err) {
       console.error('Failed to delete project:', err);
-      alert('Failed to delete project. Please try again.');
       setDeletingProject(false);
+      throw err;
     }
   };
 
-  const handleLeaveProject = async () => {
-    if (!projectId || !user) return;
-    if (!window.confirm('Leave this project? You will lose access unless re-invited.')) return;
+  const handleRemoveProject = async () => {
+    if (!projectId || !user) return { result: 'removed' as const };
     setLeavingProject(true);
     try {
-      await supabase.from('project_members').delete().eq('project_id', projectId).eq('user_id', user.id);
-      navigate('/projects');
+      const result = await removeSelfFromProjectAccess(projectId, user.id);
+      if (result.result === 'removed') {
+        navigate('/projects');
+      }
+      return result;
     } catch (err) {
-      console.error('Failed to leave project:', err);
-      alert('Failed to leave project. Please try again.');
+      console.error('Failed to remove project:', err);
+      throw err;
+    } finally {
       setLeavingProject(false);
     }
   };
@@ -2411,37 +2498,18 @@ export default function ProjectDetailPage() {
               <Trash2 size={14} className="text-danger" />
               <h3 className="font-sans text-sm font-bold text-danger">Danger Zone</h3>
             </div>
-            {isOwner ? (
-              <>
-                <p className="text-xs text-muted mb-4">
-                  Permanently delete this project and all associated tasks, events, and data. This action cannot be undone.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleDeleteProject}
-                  disabled={deletingProject}
-                  className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {deletingProject ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                  {deletingProject ? 'Deleting…' : 'Delete Project'}
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="text-xs text-muted mb-4">
-                  Remove yourself from this project. You will lose access and will need to be re-invited.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleLeaveProject}
-                  disabled={leavingProject}
-                  className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {leavingProject ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
-                  {leavingProject ? 'Leaving…' : 'Leave Project'}
-                </button>
-              </>
-            )}
+            <p className="text-xs text-muted mb-4">
+              Remove this project from your view. If you are the only member, Odyssey will prompt you to delete it instead.
+            </p>
+            <button
+              type="button"
+              onClick={() => setDeleteModalOpen(true)}
+              disabled={deletingProject || leavingProject}
+              className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {deletingProject || leavingProject ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+              {deletingProject ? 'Deleting...' : leavingProject ? 'Removing...' : 'Remove Project'}
+            </button>
           </div>
         </div>
       )}
@@ -2454,6 +2522,18 @@ export default function ProjectDetailPage() {
         projectName={project.name}
         onClose={() => setOfficePickerOpen(false)}
         onImported={() => { /* events list refreshes automatically via useEvents */ }}
+      />
+    )}
+
+    {deleteModalOpen && project && (
+      <DeleteProjectModal
+        projectName={project.name}
+        busy={deletingProject || leavingProject}
+        onRemove={handleRemoveProject}
+        onDelete={handleDeleteProject}
+        onClose={() => {
+          if (!deletingProject && !leavingProject) setDeleteModalOpen(false);
+        }}
       />
     )}
 

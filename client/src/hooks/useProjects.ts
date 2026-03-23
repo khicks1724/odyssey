@@ -9,32 +9,152 @@ function notifyProjectsChanged() {
   window.dispatchEvent(new Event(PROJECTS_CHANGED_EVENT));
 }
 
+type RemoveProjectResult = {
+  result: 'removed' | 'delete_required';
+  new_owner_id?: string | null;
+  ownership_transferred?: boolean;
+};
+
+async function removeProjectBucketFiles(bucket: string, projectId: string) {
+  const prefix = `${projectId}`;
+  const { data, error } = await supabase.storage.from(bucket).list(prefix, {
+    limit: 1000,
+    sortBy: { column: 'name', order: 'asc' },
+  });
+
+  if (error || !data || data.length === 0) return;
+
+  const paths = data
+    .filter((item) => item.name)
+    .map((item) => `${prefix}/${item.name}`);
+
+  if (paths.length > 0) {
+    await supabase.storage.from(bucket).remove(paths);
+  }
+}
+
 // ─── Standalone cascade delete (safe to call from any component) ─────────────
 export async function deleteProjectCascade(id: string) {
-  const { data: goalRows } = await supabase.from('goals').select('id').eq('project_id', id);
-  const goalIds = (goalRows ?? []).map((g) => g.id);
-
-  if (goalIds.length > 0) {
-    await supabase.from('goal_comments').delete().in('goal_id', goalIds);
-    await supabase.from('goal_reports').delete().in('goal_id', goalIds);
-    await supabase.from('goal_ai_guidance').delete().in('goal_id', goalIds);
-    await supabase.from('time_logs').delete().in('goal_id', goalIds);
-    await supabase.from('goal_assignees').delete().in('goal_id', goalIds);
+  const { error } = await supabase.rpc('delete_project_cascade', { p_project_id: id });
+  if (!error) {
+    notifyProjectsChanged();
+    return;
   }
 
-  await supabase.from('goal_dependencies').delete().eq('project_id', id);
-  await supabase.from('goals').delete().eq('project_id', id);
-  await supabase.from('events').delete().eq('project_id', id);
-  await supabase.from('project_members').delete().eq('project_id', id);
-  await supabase.from('project_insights').delete().eq('project_id', id);
-  await supabase.from('saved_reports').delete().eq('project_id', id);
-  await supabase.from('integrations').delete().eq('project_id', id);
-  await supabase.from('standup_reports').delete().eq('project_id', id);
-  await supabase.from('join_requests').delete().eq('project_id', id);
+  const message = error.message.toLowerCase();
+  const missingRpc =
+    message.includes('could not find the function public.delete_project_cascade') ||
+    message.includes('schema cache') ||
+    message.includes('function public.delete_project_cascade');
 
-  const { error } = await supabase.from('projects').delete().eq('id', id);
-  if (error) throw error;
+  if (!missingRpc) throw error;
+
+  await Promise.allSettled([
+    removeProjectBucketFiles('project-documents', id),
+    removeProjectBucketFiles('goal-attachments', id),
+  ]);
+
+  const { error: fallbackError } = await supabase.from('projects').delete().eq('id', id);
+  if (fallbackError) throw fallbackError;
   notifyProjectsChanged();
+}
+
+async function removeSelfFromProjectFallback(projectId: string, userId: string): Promise<RemoveProjectResult> {
+  const [{ data: project, error: projectError }, { data: members, error: membersError }] = await Promise.all([
+    supabase.from('projects').select('id, owner_id').eq('id', projectId).single(),
+    supabase
+      .from('project_members')
+      .select('user_id, role, joined_at')
+      .eq('project_id', projectId)
+      .order('joined_at', { ascending: true }),
+  ]);
+
+  if (projectError) throw projectError;
+  if (membersError) throw membersError;
+
+  const distinctUsers = new Set<string>();
+  if (project?.owner_id) distinctUsers.add(project.owner_id);
+  for (const member of members ?? []) {
+    if (member.user_id) distinctUsers.add(member.user_id);
+  }
+
+  if (!distinctUsers.has(userId)) {
+    throw new Error('You are not a member of this project.');
+  }
+
+  if (distinctUsers.size <= 1) {
+    return { result: 'delete_required' };
+  }
+
+  let newOwnerId: string | null = null;
+  let ownershipTransferred = false;
+
+  if (project?.owner_id === userId) {
+    const replacement = (members ?? [])
+      .filter((member) => member.user_id !== userId)
+      .sort((a, b) => {
+        const aPriority = a.role === 'owner' ? 0 : 1;
+        const bPriority = b.role === 'owner' ? 0 : 1;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        return new Date(a.joined_at).getTime() - new Date(b.joined_at).getTime();
+      })[0];
+
+    if (!replacement?.user_id) {
+      throw new Error('Could not transfer ownership before removing you from this project.');
+    }
+
+    newOwnerId = replacement.user_id;
+    ownershipTransferred = true;
+
+    const { error: updateOwnerError } = await supabase
+      .from('projects')
+      .update({ owner_id: newOwnerId })
+      .eq('id', projectId);
+    if (updateOwnerError) throw updateOwnerError;
+
+    if (replacement.role !== 'owner') {
+      const { error: promoteError } = await supabase
+        .from('project_members')
+        .update({ role: 'owner' })
+        .eq('project_id', projectId)
+        .eq('user_id', newOwnerId);
+      if (promoteError) throw promoteError;
+    }
+  }
+
+  const { error: removeError } = await supabase
+    .from('project_members')
+    .delete()
+    .eq('project_id', projectId)
+    .eq('user_id', userId);
+  if (removeError) throw removeError;
+
+  return {
+    result: 'removed',
+    new_owner_id: newOwnerId,
+    ownership_transferred: ownershipTransferred,
+  };
+}
+
+export async function removeSelfFromProjectAccess(projectId: string, userId: string): Promise<RemoveProjectResult> {
+  const { data, error } = await supabase.rpc('remove_self_from_project', { p_project_id: projectId });
+  if (!error) {
+    const result = (data as RemoveProjectResult | null) ?? { result: 'removed' as const };
+    if (result.result === 'removed') notifyProjectsChanged();
+    return result;
+  }
+
+  const message = error.message.toLowerCase();
+  const missingRpc =
+    message.includes('could not find the function public.remove_self_from_project') ||
+    message.includes('schema cache') ||
+    message.includes('function public.remove_self_from_project');
+
+  if (!missingRpc) throw error;
+
+  const result = await removeSelfFromProjectFallback(projectId, userId);
+  if (result.result === 'removed') notifyProjectsChanged();
+  return result;
 }
 
 export function useProjects() {
@@ -140,7 +260,16 @@ export function useProjects() {
     notifyProjectsChanged();
   };
 
-  return { projects, loading, createProject, updateProject, deleteProject, refetch: fetchProjects };
+  const removeSelfFromProject = async (id: string) => {
+    if (!user) throw new Error('Not authenticated');
+    const result = await removeSelfFromProjectAccess(id, user.id);
+    if (result.result === 'removed') {
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+    }
+    return result;
+  };
+
+  return { projects, loading, createProject, updateProject, deleteProject, removeSelfFromProject, refetch: fetchProjects };
 }
 
 export function useProject(id: string | undefined) {
@@ -155,6 +284,7 @@ export function useProject(id: string | undefined) {
       .select('*')
       .eq('id', id)
       .single();
+    if (error) setProject(null);
     if (!error && data) setProject(data);
     setLoading(false);
   }, [id]);

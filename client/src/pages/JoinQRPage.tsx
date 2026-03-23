@@ -3,7 +3,7 @@
  *
  * Authenticated users are redirected here after scanning a QR code.
  * Unauthenticated users are bounced to /login with a `next` param so
- * they come back here after signing in via GitHub.
+ * they come back here after signing in.
  */
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -82,13 +82,13 @@ export default function JoinQRPage() {
             <QrCode size={36} className="text-accent mx-auto" />
             <h2 className="font-sans text-lg font-bold text-heading">Sign in to join</h2>
             <p className="text-sm text-muted">
-              You need to sign in with GitHub before joining this project.
+              You need to sign in before joining this project.
             </p>
             <Link
               to={`/login?next=/join/qr/${token}`}
               className="inline-flex items-center gap-2 px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md"
             >
-              Sign in with GitHub
+              Sign in to continue
               <ArrowRight size={12} />
             </Link>
           </div>

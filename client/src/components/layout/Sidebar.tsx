@@ -1,6 +1,8 @@
 import {
   LayoutDashboard,
   FolderKanban,
+  Bell,
+  MessageSquare,
   Settings,
   LogOut,
   ChevronLeft,
@@ -10,11 +12,13 @@ import {
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { useProjects } from '../../hooks/useProjects';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/projects', icon: FolderKanban, label: 'Projects' },
+  { to: '/chat', icon: MessageSquare, label: 'Chat' },
+  { to: '/notifications', icon: Bell, label: 'Notifications' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -25,50 +29,77 @@ export default function Sidebar() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const switcherRef = useRef<HTMLDivElement | null>(null);
+  const routeCollapsed = location.pathname.startsWith('/chat');
+  const sidebarCollapsed = routeCollapsed || collapsed;
 
   // Detect current project from URL
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
   const currentProjectId = projectMatch?.[1];
   const currentProject = projects.find((p) => p.id === currentProjectId);
 
+  useEffect(() => {
+    if (!switcherOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!switcherRef.current) return;
+      if (!switcherRef.current.contains(event.target as Node)) {
+        setSwitcherOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [switcherOpen]);
+
+  useEffect(() => {
+    setSwitcherOpen(false);
+  }, [location.pathname]);
+
   return (
     <aside
       className={`flex flex-col border-r border-border bg-surface h-screen sticky top-0 transition-all duration-200 ${
-        collapsed ? 'w-16' : 'w-60'
+        sidebarCollapsed ? 'w-16' : 'w-60'
       }`}
     >
       {/* Brand */}
-      <div className={`flex items-center border-b border-border h-16 px-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
-        {!collapsed && (
+      <div className={`flex items-center border-b border-border h-16 px-3 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
+        {!sidebarCollapsed && (
           <NavLink to="/" end className="font-serif text-4xl font-bold italic text-heading flex-1 text-center hover:opacity-80 transition-opacity">
             <span className="text-accent">Odyssey</span>
           </NavLink>
         )}
         <button
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={() => {
+            if (routeCollapsed) return;
+            setCollapsed(!collapsed);
+          }}
           className="p-1 rounded hover:bg-surface2 text-muted hover:text-heading transition-colors shrink-0"
+          disabled={routeCollapsed}
         >
           <ChevronLeft
             size={16}
-            className={`transition-transform ${collapsed ? 'rotate-180' : ''}`}
+            className={`transition-transform ${sidebarCollapsed ? 'rotate-180' : ''}`}
           />
         </button>
       </div>
 
       {/* New Project */}
-      <div className="px-3 pt-4 pb-2">
-        <NavLink
-          to="/projects/new"
-          className="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-sans font-semibold tracking-wider uppercase border border-accent/30 text-accent hover:bg-accent/5 transition-colors"
-        >
-          <Plus size={14} />
-          {!collapsed && 'New Project'}
-        </NavLink>
-      </div>
+      {projects.length === 0 && (
+        <div className="px-3 pt-4 pb-2">
+          <NavLink
+            to="/projects/new"
+            className="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-sans font-semibold tracking-wider uppercase border border-accent/30 text-accent hover:bg-accent/5 transition-colors"
+          >
+            <Plus size={14} />
+            {!sidebarCollapsed && 'New Project'}
+          </NavLink>
+        </div>
+      )}
 
       {/* Project Switcher */}
-      {!collapsed && projects.length > 0 && (
-        <div className="px-3 pb-2 relative">
+      {!sidebarCollapsed && projects.length > 0 && (
+        <div ref={switcherRef} className="px-3 pt-5 pb-3 relative">
           <button
             onClick={() => setSwitcherOpen(!switcherOpen)}
             className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md text-xs border border-border text-muted hover:text-heading hover:bg-surface2 transition-colors"
@@ -115,7 +146,7 @@ export default function Sidebar() {
             }
           >
             <Icon size={16} />
-            {!collapsed && label}
+            {!sidebarCollapsed && label}
           </NavLink>
         ))}
       </nav>
@@ -131,7 +162,7 @@ export default function Sidebar() {
                 className="w-7 h-7 rounded-full"
               />
             )}
-            {!collapsed && (
+            {!sidebarCollapsed && (
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-heading truncate">
                   {user.user_metadata?.user_name ?? user.email}

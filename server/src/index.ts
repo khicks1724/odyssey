@@ -57,8 +57,8 @@ try {
   if (!process.env.GITHUB_WEBHOOK_SECRET) console.warn('WARNING: GITHUB_WEBHOOK_SECRET not set — webhook signature verification disabled');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
-  if (process.env.GITLAB_NPS_TOKEN) console.log('GitLab (NPS) integration active');
-  else console.warn('WARNING: GITLAB_NPS_TOKEN not set — GitLab integration disabled');
+  if (process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN) console.log('GitLab integration active');
+  else console.warn('WARNING: GITLAB_TOKEN not set — GitLab integration disabled');
   console.log(`Supabase service key loaded: ${process.env.SUPABASE_SERVICE_KEY ? 'YES' : 'NO'}`);
 } catch (err) {
   server.log.error(err);
