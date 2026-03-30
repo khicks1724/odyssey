@@ -4,6 +4,7 @@ import type { Goal } from '../types';
 import { useGoalDependencies } from '../hooks/useGoalDependencies';
 import type { FileRef } from '../hooks/useProjectFilePaths';
 import MarkdownWithFileLinks from './MarkdownWithFileLinks';
+import { supabase } from '../lib/supabase';
 
 const API_BASE = '/api';
 
@@ -88,9 +89,13 @@ export default function GoalEditModal({
     if (!projectId) return;
     setGuidanceLoading(true);
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      const aiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) aiHeaders['Authorization'] = `Bearer ${authToken}`;
       const res = await fetch(`${API_BASE}/ai/task-guidance`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders,
         body: JSON.stringify({
           agent: agent ?? 'auto',
           projectId,

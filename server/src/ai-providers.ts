@@ -156,14 +156,22 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
     throw new Error(`GenAI.mil API ${res.status} (model: ${model}): ${body}`);
   }
 
-  const data = await res.json() as { choices?: { message?: { content?: string } }[] };
+  const raw = await res.text();
+  let data: { choices?: { message?: { content?: string } }[] };
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`GenAI.mil non-JSON response: ${raw.slice(0, 300)}`);
+  }
+  console.log('[GenAI.mil] response keys:', Object.keys(data));
+  console.log('[GenAI.mil] choices[0]:', JSON.stringify(data.choices?.[0])?.slice(0, 300));
   const text = data.choices?.[0]?.message?.content ?? '';
   return { text, provider: 'gemini-pro' };
 }
 
 /** Google OAuth bearer token (linked Google account) */
 async function callGeminiWithBearer(msg: ChatMessage, accessToken: string): Promise<ChatResult> {
-  const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent';
+  const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
   const body = {
     system_instruction: { parts: [{ text: msg.system }] },
     contents: [{ role: 'user', parts: [{ text: msg.user }] }],
@@ -206,7 +214,7 @@ async function callGemini(msg: ChatMessage, apiKeyOverride?: string): Promise<Ch
 
   // Standard Google AI Studio API key (AIza...)
   const genAI = new GoogleGenerativeAI(credential);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-05-20' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
   const result = await model.generateContent({
     systemInstruction: msg.system,

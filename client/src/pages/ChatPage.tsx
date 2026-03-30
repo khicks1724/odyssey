@@ -571,9 +571,13 @@ export default function ChatPage() {
     const projectId = requireProject();
     if (!projectId) return;
     await postSystem('Generating standup report…', '/standup');
+    const { data: sessionData } = await supabase.auth.getSession();
+    const authToken = sessionData.session?.access_token;
+    const aiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) aiHeaders['Authorization'] = `Bearer ${authToken}`;
     const res = await fetch('/api/ai/standup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: aiHeaders,
       body: JSON.stringify({ projectId }),
     });
     const data = await res.json();
@@ -619,9 +623,13 @@ export default function ChatPage() {
     const projectId = requireProject();
     if (!projectId) return;
     await postSystem('Generating project status report…', '/report');
+    const { data: sessionData2 } = await supabase.auth.getSession();
+    const authToken2 = sessionData2.session?.access_token;
+    const aiHeaders2: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken2) aiHeaders2['Authorization'] = `Bearer ${authToken2}`;
     const res = await fetch('/api/ai/project-insights', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: aiHeaders2,
       body: JSON.stringify({ projectId }),
     });
     const data = await res.json();
