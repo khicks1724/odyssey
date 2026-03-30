@@ -32,9 +32,9 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
     keyUrl: 'https://platform.openai.com/api-keys',
   },
   google: {
-    label: 'Google (Gemini)',
-    hint: 'Used for Gemini Pro model',
-    placeholder: 'AIza…',
+    label: 'Google / GenAI.mil (Gemini 2.5 Flash)',
+    hint: 'Gemini 2.5 Flash — supports Google AI Studio keys (AIza…) and GenAI.mil DoD keys (STARK_…)',
+    placeholder: 'AIza… (Google AI Studio) or STARK_… (GenAI.mil)',
     keyUrl: 'https://aistudio.google.com/app/apikey',
   },
 };

@@ -106,7 +106,7 @@ async function callGPT(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatR
   return { text: completion.choices[0]?.message?.content || '', provider: 'gpt-4o' };
 }
 
-// ── Gemini Pro (Google) ─────────────────────────────────────────
+// ── Gemini (Google / GenAI.mil) ─────────────────────────────────
 
 interface GoogleOAuthCred {
   access_token: string;
@@ -125,12 +125,52 @@ function parseGoogleCred(credential: string): GoogleOAuthCred | null {
   }
 }
 
+/** GenAI.mil (DoD) keys start with STARK_ and use an OpenAI-compatible endpoint */
+function isGenAiMilKey(key: string): boolean {
+  return key.startsWith('STARK_') || key.startsWith('STARK-');
+}
+
+/** GenAI.mil — OpenAI-compatible /v1/chat/completions endpoint */
+async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<ChatResult> {
+  const res = await fetch('https://api.genai.mil/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'gemini-2.5-flash',
+      messages: [
+        { role: 'system', content: msg.system },
+        { role: 'user', content: msg.user },
+      ],
+      max_tokens: msg.maxTokens ?? 2048,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('GenAI.mil key is invalid or unauthorized.');
+    }
+    if (res.status === 429) {
+      throw new Error('GenAI.mil rate limit exceeded. Wait a moment and retry.');
+    }
+    throw new Error(`GenAI.mil API ${res.status}: ${text}`);
+  }
+
+  const data = await res.json() as { choices?: { message?: { content?: string } }[] };
+  const text = data.choices?.[0]?.message?.content ?? '';
+  return { text, provider: 'gemini-pro' };
+}
+
+/** Google OAuth bearer token (linked Google account) */
 async function callGeminiWithBearer(msg: ChatMessage, accessToken: string): Promise<ChatResult> {
-  const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+  const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent';
   const body = {
     system_instruction: { parts: [{ text: msg.system }] },
     contents: [{ role: 'user', parts: [{ text: msg.user }] }],
-    generationConfig: { maxOutputTokens: msg.maxTokens || 500 },
+    generationConfig: { maxOutputTokens: msg.maxTokens || 2048 },
   };
 
   const res = await fetch(GEMINI_URL, {
@@ -156,20 +196,25 @@ async function callGemini(msg: ChatMessage, apiKeyOverride?: string): Promise<Ch
   const credential = apiKeyOverride ?? process.env.GOOGLE_AI_API_KEY;
   if (!credential) throw new Error('GOOGLE_AI_API_KEY not set');
 
-  // If the stored credential is a JSON OAuth object, use bearer token auth
+  // GenAI.mil (DoD) — STARK_ prefix, OpenAI-compatible endpoint
+  if (isGenAiMilKey(credential)) {
+    return callGeminiGenAiMil(msg, credential);
+  }
+
+  // Google OAuth linked account
   const oauthCred = parseGoogleCred(credential);
   if (oauthCred) {
     return callGeminiWithBearer(msg, oauthCred.access_token);
   }
 
-  // Plain API key — use the SDK
+  // Standard Google AI Studio API key (AIza...)
   const genAI = new GoogleGenerativeAI(credential);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-05-20' });
 
   const result = await model.generateContent({
     systemInstruction: msg.system,
     contents: [{ role: 'user', parts: [{ text: msg.user }] }],
-    generationConfig: { maxOutputTokens: msg.maxTokens || 500 },
+    generationConfig: { maxOutputTokens: msg.maxTokens ?? 2048 },
   });
 
   return { text: result.response.text(), provider: 'gemini-pro' };
@@ -191,7 +236,7 @@ export function getAvailableProviders(): { id: AIProvider; name: string; availab
     { id: 'claude-sonnet', name: 'Claude Sonnet',  available: !!process.env.ANTHROPIC_API_KEY },
     { id: 'claude-opus',   name: 'Claude Opus',    available: !!process.env.ANTHROPIC_API_KEY },
     { id: 'gpt-4o',        name: 'GPT-4o',         available: !!process.env.OPENAI_API_KEY },
-    { id: 'gemini-pro',    name: 'Gemini Pro',      available: !!process.env.GOOGLE_AI_API_KEY },
+    { id: 'gemini-pro',    name: 'Gemini 2.5 Flash', available: !!process.env.GOOGLE_AI_API_KEY },
   ];
 }
 

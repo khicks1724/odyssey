@@ -21,7 +21,7 @@ const MODEL_LABELS: Record<AIAgentValue, string> = {
   'claude-sonnet': 'Claude Sonnet 4.6',
   'claude-opus': 'Claude Opus 4.6',
   'gpt-4o': 'OpenAI GPT-4o',
-  'gemini-pro': 'Google Gemini',
+  'gemini-pro': 'Google Gemini 2.5 Flash',
 };
 
 function normalizeErrorMessage(error: unknown) {
@@ -48,8 +48,8 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
     return {
       title: 'AI Credits Required',
       message: agent === 'auto'
-        ? 'The selected provider in Auto mode does not have usable credits right now. Try another model or add billing credits.'
-        : `${selectedModel} does not currently have usable credits. Choose another model or add billing credits for this provider.`,
+        ? 'The selected provider in Auto mode does not have usable credits. Try another model or add billing credits for this provider.'
+        : `${selectedModel} has no usable credits on the configured API key. To use your own key, go to Settings → AI Models and enter a personal API key. Otherwise enable billing at console.cloud.google.com or platform.openai.com.`,
       detail,
     };
   }

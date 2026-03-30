@@ -9,7 +9,7 @@ const agentMeta: Record<AIAgentValue, { name: string; shortName: string; descrip
   'claude-sonnet': { name: 'Claude Sonnet 4.6', shortName: 'Sonnet', description: 'Balanced · great for analysis & chat',                colorClass: 'aid-sonnet' },
   'claude-opus':   { name: 'Claude Opus 4.6',   shortName: 'Opus',   description: 'Most capable · used for deep project insights',       colorClass: 'aid-opus'   },
   'gpt-4o':        { name: 'GPT-4o',            shortName: 'GPT-4o', description: 'OpenAI flagship model',                               colorClass: 'aid-gpt4o'  },
-  'gemini-pro':    { name: 'Gemini Pro',         shortName: 'Gemini', description: 'Google Gemini 2.0 Flash',                            colorClass: 'aid-gemini' },
+  'gemini-pro':    { name: 'Gemini 2.5 Flash',    shortName: 'Gemini', description: 'Google AI · Gemini 2.5 Flash (preview)',            colorClass: 'aid-gemini' },
 };
 
 const DISPLAY_ORDER: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
