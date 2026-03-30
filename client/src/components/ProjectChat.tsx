@@ -375,9 +375,14 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     setError(null);
 
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      const authHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) authHeaders['Authorization'] = `Bearer ${authToken}`;
+
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({
           agent,
           projectId: targetProjectId,

@@ -417,10 +417,15 @@ export default function ChatPage() {
     let fullText = '';
     let finalProvider = '';
 
+    const { data: sessionData } = await supabase.auth.getSession();
+    const authToken = sessionData.session?.access_token;
+    const aiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) aiHeaders['Authorization'] = `Bearer ${authToken}`;
+
     try {
       const res = await fetch('/api/ai/chat-stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders,
         body: JSON.stringify({ agent, projectId, messages: convo, attachments: wireAttachments.length ? wireAttachments : undefined }),
       });
 
@@ -534,9 +539,13 @@ export default function ChatPage() {
       .filter((m) => m.role !== 'system')
       .slice(-20)
       .map((m) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, content: m.content }));
+    const { data: sessionData } = await supabase.auth.getSession();
+    const authToken = sessionData.session?.access_token;
+    const aiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) aiHeaders['Authorization'] = `Bearer ${authToken}`;
     const res = await fetch('/api/ai/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: aiHeaders,
       body: JSON.stringify({ agent, projectId, systemOverride, messages: [...convo, { role: 'user', content: userPrompt }] }),
     });
     const data = await res.json();
