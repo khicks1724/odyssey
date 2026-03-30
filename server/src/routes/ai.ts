@@ -344,9 +344,10 @@ ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.repla
         system: `You categorize project goals into topic categories. Respond ONLY with valid JSON — no markdown, no explanation. The JSON should be an object mapping goal IDs to category names.`,
         user: `Project: ${projectName}\n\nGoals:\n${goalsList}\n\nAvailable categories: ${categories.join(', ')}\n\nAssign each goal to the single most relevant category. Return JSON like: {"goal-id-1": "Category", "goal-id-2": "Category"}`,
         maxTokens: 512,
+        jsonMode: true,
       });
 
-      const parsed = JSON.parse(result.text);
+      const parsed = JSON.parse(extractJson(result.text));
       return { categories: parsed, provider: result.provider };
     } catch (err) {
       server.log.error(err);
@@ -400,9 +401,10 @@ ${readme || 'No README found'}
 
 Analyze which goals are completed and suggest new goals.`,
         maxTokens: 1200,
+        jsonMode: true,
       });
 
-      const parsed = JSON.parse(result.text);
+      const parsed = JSON.parse(extractJson(result.text));
       return {
         completed: parsed.completed || [],
         suggested: parsed.suggested || [],
@@ -525,9 +527,10 @@ ${truncated}
 
 Analyze this document and extract structured insights.`,
         maxTokens: 1024,
+        jsonMode: true,
       });
 
-      const parsed = JSON.parse(result.text);
+      const parsed = JSON.parse(extractJson(result.text));
       return {
         summary: parsed.summary || '',
         keyPoints: parsed.keyPoints || [],
@@ -617,9 +620,10 @@ ${docsContext}
 
 Analyze which goals these documents show progress on, who did the work, and when.`,
         maxTokens: 2000,
+        jsonMode: true,
       });
 
-      const parsed = JSON.parse(result.text);
+      const parsed = JSON.parse(extractJson(result.text));
       const updates = parsed.updates ?? [];
 
       // Apply goal updates to DB
@@ -1361,9 +1365,9 @@ AESTHETIC QUALITY REQUIREMENTS — be hypercritical about these:
             system: SECTION_SYSTEM,
             user: `${contextBlock}\n\nWrite the section titled: "${sectionTitle}"`,
             maxTokens: 1200,
+            jsonMode: true,
           });
-          const t2 = r2.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-          const sec = JSON.parse(t2);
+          const sec = JSON.parse(extractJson(r2.text));
           if (sec && typeof sec.title === 'string') return sec;
         } catch { /* fall through to placeholder */ }
         return { title: sectionTitle, body: 'Data unavailable for this section.', bullets: [] };
