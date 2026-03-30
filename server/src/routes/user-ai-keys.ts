@@ -158,6 +158,36 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
     },
   );
 
+  // GET /api/user/ai-keys/:provider/reveal — return the decrypted key for display
+  server.get<{ Params: { provider: string } }>(
+    '/user/ai-keys/:provider/reveal',
+    async (request, reply) => {
+      const userId = await getUserFromRequest(request.headers.authorization);
+      if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+      const { provider } = request.params;
+      if (!VALID_PROVIDERS.includes(provider as Provider)) {
+        return reply.status(400).send({ error: `provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
+      }
+
+      const { data, error } = await supabase
+        .from('user_ai_keys')
+        .select('encrypted_key, iv, auth_tag')
+        .eq('user_id', userId)
+        .eq('provider', provider)
+        .single();
+
+      if (error || !data) return reply.status(404).send({ error: 'No key stored for this provider' });
+
+      try {
+        const plaintext = decryptUserKey(data.encrypted_key, data.iv, data.auth_tag);
+        return { key: plaintext };
+      } catch {
+        return reply.status(500).send({ error: 'Failed to decrypt key' });
+      }
+    },
+  );
+
   // DELETE /api/user/ai-keys/:provider — remove a user's key for a provider
   server.delete<{ Params: { provider: string } }>(
     '/user/ai-keys/:provider',

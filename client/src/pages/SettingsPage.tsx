@@ -63,6 +63,8 @@ function AiProviderCard({
   const meta = AI_PROVIDER_META[provider];
   const [inputKey, setInputKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [revealing, setRevealing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
@@ -70,6 +72,37 @@ function AiProviderCard({
 
   const hasKey = status?.hasKey ?? false;
   const isOAuth = status?.credentialType === 'oauth';
+
+  const handleToggleReveal = async () => {
+    if (inputKey) {
+      // User is typing — just toggle visibility of the input field
+      setShowKey((v) => !v);
+      return;
+    }
+    if (showKey) {
+      // Hide
+      setShowKey(false);
+      setRevealedKey(null);
+      return;
+    }
+    if (!hasKey || isOAuth) return;
+    // Fetch the saved key to display
+    setRevealing(true);
+    try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) throw new Error('Not authenticated');
+      const res = await fetch(`/api/user/ai-keys/${provider}/reveal`, {
+        headers: { Authorization: authHeader },
+      });
+      if (!res.ok) throw new Error('Could not retrieve key');
+      const data = await res.json() as { key: string };
+      setRevealedKey(data.key);
+      setShowKey(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to reveal key');
+    }
+    setRevealing(false);
+  };
 
   const handleSave = async () => {
     const trimmed = inputKey.trim();
@@ -185,20 +218,22 @@ function AiProviderCard({
           <div className="relative flex-1">
             <input
               type={showKey ? 'text' : 'password'}
-              value={inputKey}
-              onChange={(e) => setInputKey(e.target.value)}
+              value={revealedKey !== null && !inputKey ? revealedKey : inputKey}
+              onChange={(e) => { setRevealedKey(null); setInputKey(e.target.value); }}
               placeholder={hasKey && !isOAuth ? '••••••••••••••••' : meta.placeholder}
+              readOnly={revealedKey !== null && !inputKey}
               className="w-full px-3 py-1.5 pr-8 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
               onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
             />
             <button
               type="button"
-              onClick={() => setShowKey((v) => !v)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
+              onClick={handleToggleReveal}
+              disabled={revealing}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors disabled:opacity-40"
               tabIndex={-1}
               aria-label={showKey ? 'Hide key' : 'Show key'}
             >
-              {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
+              {revealing ? <Loader2 size={12} className="animate-spin" /> : showKey ? <EyeOff size={12} /> : <Eye size={12} />}
             </button>
           </div>
 

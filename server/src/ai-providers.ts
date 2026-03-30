@@ -151,10 +151,10 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
   if (!res.ok) {
     const text = await res.text();
     if (res.status === 401 || res.status === 403) {
-      throw new Error('GenAI.mil key is invalid or unauthorized.');
+      throw new Error(`GenAI.mil key is invalid or unauthorized. (${res.status}: ${text})`);
     }
     if (res.status === 429) {
-      throw new Error('GenAI.mil rate limit exceeded. Wait a moment and retry.');
+      throw new Error(`GenAI.mil rate limit exceeded. (${res.status}: ${text})`);
     }
     throw new Error(`GenAI.mil API ${res.status}: ${text}`);
   }
