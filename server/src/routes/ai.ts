@@ -460,6 +460,7 @@ ${ctx.eventsText.slice(0, 2000)}
 
 ${codeBlock}`,
         maxTokens: 3000,
+        jsonMode: true,
       }, userApiKey);
 
       let raw = extractJson(result.text);
@@ -1516,6 +1517,7 @@ ${eventsText}
 
 Generate the standup summary.`,
         maxTokens: 800,
+        jsonMode: true,
       }, userApiKey);
 
       const raw = extractJson(result.text);
@@ -1605,6 +1607,7 @@ ${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.github
 
 Analyze everything and suggest specific improvements to the goal structure and deadlines.`,
         maxTokens: 3000,
+        jsonMode: true,
       }, userApiKey);
 
       const parsed = JSON.parse(extractJson(result.text));

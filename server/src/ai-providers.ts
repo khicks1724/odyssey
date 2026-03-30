@@ -17,6 +17,8 @@ interface ChatMessage {
   maxTokens?: number;
   /** Vision images (Claude + GPT-4o only) */
   images?: ImageAttachment[];
+  /** Request strict JSON output (OpenAI-compatible providers only) */
+  jsonMode?: boolean;
 }
 
 interface ChatResult {
@@ -101,6 +103,7 @@ async function callGPT(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatR
       { role: 'system', content: msg.system },
       { role: 'user', content: userContent as any },
     ],
+    ...(msg.jsonMode ? { response_format: { type: 'json_object' } } : {}),
   });
 
   return { text: completion.choices[0]?.message?.content || '', provider: 'gpt-4o' };
@@ -148,6 +151,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
         { role: 'user', content: msg.user },
       ],
       max_tokens: msg.maxTokens ?? 2048,
+      ...(msg.jsonMode ? { response_format: { type: 'json_object' } } : {}),
     }),
   });
 
