@@ -428,6 +428,7 @@ Analyze which goals are completed and suggest new goals.`,
       return reply.status(400).send({ error: 'projectId is required' });
     }
 
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId);
 
     const codeBlock = [
@@ -459,7 +460,7 @@ ${ctx.eventsText.slice(0, 2000)}
 
 ${codeBlock}`,
         maxTokens: 3000,
-      });
+      }, userApiKey);
 
       let raw = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
       // If the response was truncated mid-JSON, attempt to close it gracefully
@@ -1406,6 +1407,8 @@ AESTHETIC QUALITY REQUIREMENTS — be hypercritical about these:
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
+
     const now = new Date();
     const since = new Date(now);
     since.setDate(since.getDate() - 14);
@@ -1514,7 +1517,7 @@ ${eventsText}
 
 Generate the standup summary.`,
         maxTokens: 800,
-      });
+      }, userApiKey);
 
       const raw = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
       const parsed = JSON.parse(raw);
