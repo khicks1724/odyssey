@@ -132,8 +132,8 @@ function isGenAiMilKey(key: string): boolean {
 
 /** GenAI.mil — OpenAI-compatible /v1/chat/completions endpoint */
 async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<ChatResult> {
-  // Allow override via env; fall back to known GenAI.mil model identifiers
-  const model = process.env.GENAI_MIL_MODEL ?? 'gemini-2.0-flash';
+  // Allow override via env; GenAI.mil confirmed model ID per their docs
+  const model = process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash';
 
   const res = await fetch('https://api.genai.mil/v1/chat/completions', {
     method: 'POST',
