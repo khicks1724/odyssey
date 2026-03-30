@@ -485,9 +485,6 @@ ${codeBlock}`,
       if (msg.includes('credit balance') || msg.includes('billing')) {
         return reply.status(402).send({ error: 'API key has no credits. Switch to a different AI model or add billing.' });
       }
-      if (msg.includes('quota') || msg.includes('429') || msg.includes('rate limit') || err?.status === 429) {
-        return reply.status(429).send({ error: 'Rate limit hit — wait a minute and try again, or switch to a different model.' });
-      }
       return reply.status(500).send({ error: msg });
     }
   });
@@ -1150,7 +1147,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
       if (msg.includes('credit') || msg.includes('billing')) return reply.status(402).send({ error: 'API key has no credits.' });
-      if (msg.includes('rate') || msg.includes('429')) return reply.status(429).send({ error: 'Rate limit — try again shortly.' });
+      // Pass through the real error so the client can display the actual provider message
       return reply.status(500).send({ error: msg });
     }
   });
@@ -1250,9 +1247,8 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
     } catch (err: any) {
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
-      if (msg.includes('credit') || msg.includes('billing')) send({ type: 'error', message: 'API key has no credits.' });
-      else if (msg.includes('rate') || msg.includes('429')) send({ type: 'error', message: 'Rate limit — try again shortly.' });
-      else send({ type: 'error', message: msg });
+      // Pass the full error message through so the client can display the real reason
+      send({ type: 'error', message: msg });
     }
 
     res.end();

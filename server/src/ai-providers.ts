@@ -132,6 +132,9 @@ function isGenAiMilKey(key: string): boolean {
 
 /** GenAI.mil — OpenAI-compatible /v1/chat/completions endpoint */
 async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<ChatResult> {
+  // Allow override via env; fall back to known GenAI.mil model identifiers
+  const model = process.env.GENAI_MIL_MODEL ?? 'gemini-2.0-flash';
+
   const res = await fetch('https://api.genai.mil/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -139,7 +142,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'gemini-2.5-flash',
+      model,
       messages: [
         { role: 'system', content: msg.system },
         { role: 'user', content: msg.user },
@@ -149,14 +152,8 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
   });
 
   if (!res.ok) {
-    const text = await res.text();
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(`GenAI.mil key is invalid or unauthorized. (${res.status}: ${text})`);
-    }
-    if (res.status === 429) {
-      throw new Error(`GenAI.mil rate limit exceeded. (${res.status}: ${text})`);
-    }
-    throw new Error(`GenAI.mil API ${res.status}: ${text}`);
+    const body = await res.text();
+    throw new Error(`GenAI.mil API ${res.status} (model: ${model}): ${body}`);
   }
 
   const data = await res.json() as { choices?: { message?: { content?: string } }[] };
