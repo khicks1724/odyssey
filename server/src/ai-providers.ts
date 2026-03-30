@@ -171,7 +171,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
 
 /** Google OAuth bearer token (linked Google account) */
 async function callGeminiWithBearer(msg: ChatMessage, accessToken: string): Promise<ChatResult> {
-  const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent';
   const body = {
     system_instruction: { parts: [{ text: msg.system }] },
     contents: [{ role: 'user', parts: [{ text: msg.user }] }],
@@ -214,7 +214,7 @@ async function callGemini(msg: ChatMessage, apiKeyOverride?: string): Promise<Ch
 
   // Standard Google AI Studio API key (AIza...)
   const genAI = new GoogleGenerativeAI(credential);
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' }, { apiVersion: 'v1' });
 
   const result = await model.generateContent({
     systemInstruction: msg.system,
