@@ -166,7 +166,7 @@ const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(
     return (
       <div ref={containerRef} className="relative">
         {/* Always-visible search bar */}
-        <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-md bg-[var(--color-surface2)] w-72 transition-colors ${open ? 'border-[var(--color-accent)]/50' : 'border-[var(--color-border)]'}`}>
+        <div className={`flex items-center gap-2 px-3 py-1.5 border rounded-md bg-[var(--color-surface2)] w-52 transition-colors ${open ? 'border-[var(--color-accent)]/50' : 'border-[var(--color-border)]'}`}>
           {aiLoading
             ? <Loader2 size={13} className="shrink-0 text-[var(--color-accent)] animate-spin" />
             : <Search size={13} className="shrink-0 text-[var(--color-muted)]" />

@@ -3,6 +3,8 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { MessageCircle, X } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ThemeSwitcher from '../ThemeSwitcher';
+import FontSwitcher from '../FontSwitcher';
+import FontSizeControl from '../FontSizeControl';
 import AIAgentDropdown from '../AIAgentDropdown';
 import DateTime from '../DateTime';
 import ProjectChat from '../ProjectChat';
@@ -66,6 +68,8 @@ export default function AppLayout() {
           <DateTime />
           <div className="flex items-center gap-2">
             <AIAgentDropdown />
+            <FontSizeControl />
+            <FontSwitcher />
             <ThemeSwitcher />
             {/* Chat toggle — only shown when a project is active */}
             <button

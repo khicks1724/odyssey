@@ -5,6 +5,8 @@ import './Timeline.css';
 import CalendarView from './CalendarView';
 import { Clock, CalendarDays } from 'lucide-react';
 
+type GroupBy = 'category' | 'loe' | 'assignee';
+
 /* ─── Category colors ─── */
 const CATEGORY_COLORS: Record<string, { bg: string; border: string; label: string }> = {
   'Testing':    { bg: 'rgba(232,85,85,0.35)',    border: '#e85555', label: '#e85555' },
@@ -15,6 +17,24 @@ const CATEGORY_COLORS: Record<string, { bg: string; border: string; label: strin
   'DevOps':     { bg: 'rgba(220,112,112,0.35)',  border: '#dc7070', label: '#dc7070' },
 };
 const DEFAULT_CATEGORY = { bg: 'rgba(90,106,126,0.3)', border: '#5a6a7e', label: '#5a6a7e' };
+
+/* ─── Rotating palette for LOE / Assignee grouping ─── */
+const GROUP_PALETTE: { bg: string; border: string; label: string }[] = [
+  { bg: 'rgba(59,142,234,0.35)',  border: '#3b8eea', label: '#3b8eea' },
+  { bg: 'rgba(82,201,142,0.35)', border: '#52c98e', label: '#52c98e' },
+  { bg: 'rgba(232,162,53,0.35)', border: '#e8a235', label: '#e8a235' },
+  { bg: 'rgba(189,147,249,0.35)',border: '#bd93f9', label: '#bd93f9' },
+  { bg: 'rgba(232,85,85,0.35)',  border: '#e85555', label: '#e85555' },
+  { bg: 'rgba(139,233,253,0.35)',border: '#8be9fd', label: '#8be9fd' },
+  { bg: 'rgba(255,184,108,0.35)',border: '#ffb86c', label: '#ffb86c' },
+  { bg: 'rgba(220,112,112,0.35)',border: '#dc7070', label: '#dc7070' },
+];
+
+function makeGroupColorMap(keys: string[]): Map<string, { bg: string; border: string; label: string }> {
+  const map = new Map<string, { bg: string; border: string; label: string }>();
+  keys.forEach((k, i) => map.set(k, GROUP_PALETTE[i % GROUP_PALETTE.length]));
+  return map;
+}
 
 const DAY_MS = 86_400_000;
 const ROW_H = 36;
@@ -32,23 +52,29 @@ function cv(vars: Record<string, string | number>): React.CSSProperties {
   return vars as unknown as React.CSSProperties;
 }
 
-function catColor(goal: Goal) {
-  return CATEGORY_COLORS[goal.category ?? ''] ?? DEFAULT_CATEGORY;
-}
-
 interface MemberInfo { user_id: string; display_name: string | null; }
 interface HoverState { id: string; y: number; }
 
-function GoalTooltip({ goal, members, y }: { goal: Goal; members: MemberInfo[]; y: number }) {
-  const c = catColor(goal);
+function getGoalGroupKey(goal: Goal, groupBy: GroupBy, members: MemberInfo[]): string {
+  if (groupBy === 'category') return goal.category ?? '';
+  if (groupBy === 'loe') return goal.loe ?? '';
+  const ids = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
+  if (ids.length === 0) return '';
+  return members.find((m) => m.user_id === ids[0])?.display_name ?? ids[0] ?? '';
+}
+
+function GoalTooltip({ goal, members, y, color }: {
+  goal: Goal;
+  members: MemberInfo[];
+  y: number;
+  color: { bg: string; border: string; label: string };
+}) {
   const assigneeIds: string[] = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
   const assigneeNames = assigneeIds.map((id) => members.find((m) => m.user_id === id)?.display_name ?? 'Unknown');
   const statusLabels: Record<string, string> = {
     not_started: 'Not Started', in_progress: 'In Progress', in_review: 'In Review', complete: 'Complete',
   };
-
-  const style = cv({ '--tlo-color': c.border, top: `${y}px`, left: '190px', transform: 'translateY(-50%)' });
-
+  const style = cv({ '--tlo-color': color.border, top: `${y}px`, left: '190px', transform: 'translateY(-50%)' });
   return (
     <div className="tlo-tooltip tl-tooltip-fixed" {...({ style } as any)}>
       <div className="tlo-tooltip-bar" />
@@ -106,6 +132,7 @@ interface TimelinePageProps {
 
 export default function TimelinePage({ goals, members = [], projectId = '', onGoalClick, onCreateGoalForDate }: TimelinePageProps) {
   const [view, setView] = useState<'timeline' | 'calendar'>('timeline');
+  const [groupBy, setGroupBy] = useState<GroupBy>('category');
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [hovered, setHovered] = useState<HoverState | null>(null);
@@ -116,10 +143,17 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
   const goalsWithDeadline = goals
     .filter((g) => g.deadline)
     .sort((a, b) => {
-      const ai = CATEGORY_KEY_ORDER.indexOf(a.category ?? '');
-      const bi = CATEGORY_KEY_ORDER.indexOf(b.category ?? '');
-      const catDiff = (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-      if (catDiff !== 0) return catDiff;
+      const ak = getGoalGroupKey(a, groupBy, members);
+      const bk = getGoalGroupKey(b, groupBy, members);
+      if (groupBy === 'category') {
+        const ai = CATEGORY_KEY_ORDER.indexOf(a.category ?? '');
+        const bi = CATEGORY_KEY_ORDER.indexOf(b.category ?? '');
+        const catDiff = (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+        if (catDiff !== 0) return catDiff;
+      } else {
+        const kDiff = ak.localeCompare(bk);
+        if (kDiff !== 0) return kDiff;
+      }
       return new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime();
     });
 
@@ -133,19 +167,18 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [goalsWithDeadline.length]);
 
-  // Scroll-wheel zoom — zoom toward cursor position
+  // Scroll-wheel zoom
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const handler = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return; // only zoom when Ctrl/Cmd held
+      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
-      const cursorX = e.clientX - rect.left + el.scrollLeft; // px from canvas left
+      const cursorX = e.clientX - rect.left + el.scrollLeft;
       setPxPerDay((prev) => {
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
         const next = Math.min(MAX_PPD, Math.max(MIN_PPD, prev * factor));
-        // Adjust scroll so the point under cursor stays fixed
         requestAnimationFrame(() => {
           if (el) el.scrollLeft = (cursorX / prev) * next - (e.clientX - rect.left);
         });
@@ -172,11 +205,10 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
     if (el) { el.style.cursor = 'grab'; el.style.userSelect = ''; }
   }, []);
 
-  // Calendar view — always renderable regardless of deadlines
+  // Calendar view
   if (view === 'calendar') {
     return (
       <div className="tl-cal-wrap flex flex-col">
-        {/* View toggle strip */}
         <div className="flex items-center gap-1 px-4 py-2 border border-border bg-surface rounded-t-lg border-b-0 shrink-0">
           <span className="text-[10px] text-muted uppercase tracking-widest font-mono mr-2">View</span>
           <button type="button" onClick={() => setView('timeline')}
@@ -202,7 +234,11 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
   }
 
   if (goalsWithDeadline.length === 0) {
-    return <div className="tl-root border border-border bg-surface p-12 text-center flex-1"><p className="text-xs text-muted tracking-wide">Add goals with deadlines to see the timeline</p></div>;
+    return (
+      <div className="tl-root border border-border bg-surface p-12 text-center flex-1">
+        <p className="text-xs text-muted tracking-wide">Add goals with deadlines to see the timeline</p>
+      </div>
+    );
   }
 
   const now = new Date();
@@ -212,18 +248,34 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
   const totalWidth = totalDays * pxPerDay;
   const todayOff   = ((now.getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay;
 
-  // Build grouped rows (section headers + goal rows)
-  type SectionRow = { type: 'section'; category: string; top: number };
+  // Build group color map
+  const uniqueGroupKeys = [...new Set(goalsWithDeadline.map((g) => getGoalGroupKey(g, groupBy, members)))];
+  const groupColorMap: Map<string, { bg: string; border: string; label: string }> =
+    groupBy === 'category'
+      ? (() => {
+          const m = new Map<string, { bg: string; border: string; label: string }>();
+          Object.entries(CATEGORY_COLORS).forEach(([k, v]) => m.set(k, v));
+          return m;
+        })()
+      : makeGroupColorMap(uniqueGroupKeys);
+
+  function goalColor(goal: Goal) {
+    return groupColorMap.get(getGoalGroupKey(goal, groupBy, members)) ?? DEFAULT_CATEGORY;
+  }
+
+  // Build grouped rows
+  type SectionRow = { type: 'section'; label: string; colorKey: string; top: number };
   type GoalRow    = { type: 'goal'; goal: Goal; top: number };
   const groupedRows: Array<SectionRow | GoalRow> = [];
   let curTop = 0;
-  let curCat: string | undefined = undefined;
+  let curGroupKey: string | undefined = undefined;
   for (const goal of goalsWithDeadline) {
-    const cat = goal.category ?? '';
-    if (cat !== curCat) {
-      groupedRows.push({ type: 'section', category: cat || 'Uncategorized', top: curTop });
+    const key = getGoalGroupKey(goal, groupBy, members);
+    if (key !== curGroupKey) {
+      const label = key || (groupBy === 'category' ? 'Uncategorized' : 'Unassigned');
+      groupedRows.push({ type: 'section', label, colorKey: key, top: curTop });
       curTop += SECTION_H;
-      curCat = cat;
+      curGroupKey = key;
     }
     groupedRows.push({ type: 'goal', goal, top: curTop });
     curTop += ROW_H;
@@ -245,13 +297,12 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
     wCur.setDate(wCur.getDate() + 7);
   }
 
-  const usedCatSet = new Set(goalsWithDeadline.map((g) => g.category).filter(Boolean)) as Set<string>;
-  const usedCategories = CATEGORY_KEY_ORDER.filter((c) => usedCatSet.has(c));
   const hoveredGoal = hovered ? goalsWithDeadline.find((g) => g.id === hovered.id) : null;
+  const hoveredColor = hoveredGoal ? goalColor(hoveredGoal) : DEFAULT_CATEGORY;
 
   return (
     <div className="tl-root border border-border bg-surface flex flex-col">
-      {/* Legend + view toggle + zoom hint */}
+      {/* Legend + view toggle + group by */}
       <div className="flex items-center gap-4 px-6 py-3 border-b border-border flex-wrap shrink-0">
         {/* View toggle */}
         <div className="flex items-center gap-0.5 bg-surface2 rounded p-0.5 shrink-0">
@@ -264,44 +315,55 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
             <CalendarDays size={11} /> Calendar
           </button>
         </div>
-        <span className="text-[10px] text-muted uppercase tracking-widest font-mono">Categories</span>
-        {usedCategories.map((cat) => {
-          const c = CATEGORY_COLORS[cat] ?? DEFAULT_CATEGORY;
+
+        {/* Group by picker */}
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-[10px] text-muted uppercase tracking-widest font-mono">Group:</span>
+          {(['category', 'loe', 'assignee'] as GroupBy[]).map((g) => (
+            <button key={g} type="button" onClick={() => setGroupBy(g)}
+              className={`px-2.5 py-1 rounded text-[10px] font-mono transition-colors ${
+                groupBy === g ? 'bg-surface2 text-heading' : 'text-muted hover:text-heading hover:bg-surface2/50'
+              }`}>
+              {g === 'loe' ? 'LOE' : g.charAt(0).toUpperCase() + g.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        {/* Dynamic group legend swatches */}
+        {uniqueGroupKeys.map((key) => {
+          const c = groupColorMap.get(key) ?? DEFAULT_CATEGORY;
+          const label = key || (groupBy === 'category' ? 'Uncategorized' : 'Unassigned');
           return (
-            <div key={cat} className="flex items-center gap-1.5">
+            <div key={key || '__empty'} className="flex items-center gap-1.5">
               <span className="tl-cat-swatch" {...({ style: cv({ '--tl-cat': c.border }) } as any)} />
-              <span className="text-[10px] font-mono tl-cat-label" {...({ style: cv({ '--tl-cat-label': c.label }) } as any)}>{cat}</span>
+              <span className="text-[10px] font-mono tl-cat-label" {...({ style: cv({ '--tl-cat-label': c.label }) } as any)}>{label}</span>
             </div>
           );
         })}
+
         <span className="ml-auto text-[9px] text-muted/50 font-mono">Ctrl + scroll to zoom</span>
       </div>
 
       {/* Body: fixed label col + scrollable chart */}
       <div className="flex flex-1 overflow-hidden">
-
         {/* Label column */}
         <div className="tl-label-col shrink-0 border-r border-border bg-surface flex flex-col">
           <div className="tl-header-row border-b border-border/40" />
           {groupedRows.map((row, i) => {
             if (row.type === 'section') {
-              const c = CATEGORY_COLORS[row.category] ?? DEFAULT_CATEGORY;
+              const c = groupColorMap.get(row.colorKey) ?? DEFAULT_CATEGORY;
               return (
-                <div
-                  key={`sec-${i}`}
-                  className="tl-section-row"
-                  {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}
-                >
+                <div key={`sec-${i}`} className="tl-section-row"
+                  {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}>
                   <span className="tl-section-dot" />
-                  <span className="tl-section-lbl">{row.category}</span>
+                  <span className="tl-section-lbl">{row.label}</span>
                 </div>
               );
             }
             const { goal } = row;
-            const c = catColor(goal);
+            const c = goalColor(goal);
             return (
-              <div
-                key={goal.id}
+              <div key={goal.id}
                 className={`tl-row tl-label-hover flex items-center px-3 gap-2 border-b border-border/30 ${onGoalClick ? 'cursor-pointer' : ''}`}
                 {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}
                 onMouseEnter={(e) => {
@@ -379,10 +441,15 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
               const barW        = Math.max(deadlineOff - createdOff, 24);
               const fillW       = (goal.progress / 100) * barW;
               const barTop      = HEADER_H + row.top + (ROW_H - 18) / 2;
-              const c           = catColor(goal);
+              const c           = goalColor(goal);
 
               return (
-                <div key={goal.id} className={`tl-bar-wrap ${onGoalClick ? 'cursor-pointer' : ''}`} {...({ style: cv({ '--tl-top': `${barTop}px`, '--tl-left': `${createdOff}px`, '--tl-w': `${barW}px` }) } as any)} title={`${goal.title} — ${goal.progress}%`} onClick={() => onGoalClick?.(goal)}>
+                <div key={goal.id}
+                  className={`tl-bar-wrap ${onGoalClick ? 'cursor-pointer' : ''}`}
+                  {...({ style: cv({ '--tl-top': `${barTop}px`, '--tl-left': `${createdOff}px`, '--tl-w': `${barW}px` }) } as any)}
+                  title={`${goal.title} — ${goal.progress}%`}
+                  onClick={() => onGoalClick?.(goal)}
+                >
                   <div className="tl-bar-track" {...({ style: cv({ '--tl-bg': c.bg, '--tl-border': `${c.border}40` }) } as any)} />
                   <div className="tl-bar-fill"  {...({ style: cv({ '--tl-bg': c.border, '--tl-w': `${fillW}px` }) } as any)} />
                   <div className="tl-bar-dot"   {...({ style: cv({ '--tl-bg': c.border }) } as any)} />
@@ -403,9 +470,9 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
         </div>
       </div>
 
-      {/* Fixed-position tooltip — renders outside overflow:hidden so it never clips */}
+      {/* Fixed-position tooltip */}
       {hovered && hoveredGoal && (
-        <GoalTooltip goal={hoveredGoal} members={members} y={hovered.y} />
+        <GoalTooltip goal={hoveredGoal} members={members} y={hovered.y} color={hoveredColor} />
       )}
     </div>
   );

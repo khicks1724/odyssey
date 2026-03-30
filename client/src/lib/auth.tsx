@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { User, Session } from '@supabase/supabase-js';
+import type { User, Session, UserIdentity } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+
+export type OAuthProvider = 'github' | 'google' | 'azure';
 
 interface AuthContextValue {
   user: User | null;
@@ -9,6 +11,10 @@ interface AuthContextValue {
   signInWithGitHub: () => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signInWithMicrosoft: () => Promise<void>;
+  linkIdentity: (provider: OAuthProvider) => Promise<void>;
+  unlinkIdentity: (identity: UserIdentity) => Promise<void>;
+  refreshUser: () => Promise<void>;
+  connectGoogleAI: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -62,12 +68,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  const linkIdentity = async (provider: OAuthProvider) => {
+    const { data, error } = await supabase.auth.linkIdentity({
+      provider,
+      options: { redirectTo: getRedirectTo() },
+    });
+    if (error) throw error;
+    // Supabase redirects automatically, but navigate manually as fallback
+    if (data?.url) window.location.href = data.url;
+  };
+
+  const connectGoogleAI = async () => {
+    // Request the Gemini scope so provider_token can call Google AI APIs.
+    // offline access gives us a refresh_token for the callback to store.
+    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent('/settings')}&connect_google_ai=1`;
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo,
+        scopes: 'https://www.googleapis.com/auth/generative-language',
+        queryParams: { access_type: 'offline', prompt: 'consent' },
+      },
+    });
+  };
+
+  const unlinkIdentity = async (identity: UserIdentity) => {
+    const { error } = await supabase.auth.unlinkIdentity(identity);
+    if (error) throw error;
+    // Refresh user so identities list updates
+    const { data } = await supabase.auth.getUser();
+    if (data.user) setUser(data.user);
+  };
+
+  const refreshUser = async () => {
+    const { data } = await supabase.auth.getUser();
+    if (data.user) setUser(data.user);
+  };
+
   const signOut = async () => {
     await supabase.auth.signOut();
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signInWithGitHub, signInWithGoogle, signInWithMicrosoft, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, signInWithGitHub, signInWithGoogle, signInWithMicrosoft, linkIdentity, unlinkIdentity, refreshUser, connectGoogleAI, signOut }}>
       {children}
     </AuthContext.Provider>
   );

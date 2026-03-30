@@ -620,7 +620,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         )}
 
         {messages.map((msg, i) => (
-          <div key={i}>
+          <div key={msg.id ?? i}>
             <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.role === 'assistant' ? (
                 <div className="relative group mr-2 max-w-[92%]">
@@ -634,23 +634,12 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                   </button>
                   <div className="pc-bubble px-3 py-2 rounded text-xs leading-relaxed bg-surface2 border border-border text-heading pc-md">
                     <MarkdownWithFileLinks
-                      className="block"
+                      block
                       filePaths={filePaths}
                       onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
                       onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
-                      extraComponents={{
-                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                        h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-heading">{children}</h1>,
-                        h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-heading">{children}</h2>,
-                        h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-heading">{children}</h3>,
-                        ul: ({ children }) => <ul className="mb-2 pl-4 space-y-0.5 list-disc leading-relaxed">{children}</ul>,
-                        ol: ({ children }) => <ol className="mb-2 pl-4 space-y-0.5 list-decimal leading-relaxed">{children}</ol>,
-                        pre: ({ children }) => <pre className="mb-2 overflow-x-auto max-w-full">{children}</pre>,
-                        blockquote: ({ children }) => <blockquote className="border-l-2 border-accent/40 pl-3 text-muted italic mb-2">{children}</blockquote>,
-                        hr: () => <hr className="border-border my-2" />,
-                      }}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>

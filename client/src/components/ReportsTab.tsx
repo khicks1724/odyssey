@@ -615,7 +615,7 @@ export default function ReportsTab({
                 }`}>
                   {msg.role === 'user' ? msg.content : (
                     <MarkdownWithFileLinks
-                      className="block"
+                      block
                       filePaths={filePaths}
                       onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
                       githubRepo={githubRepo}

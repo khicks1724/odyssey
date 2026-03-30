@@ -35,6 +35,13 @@ async function removeProjectBucketFiles(bucket: string, projectId: string) {
 
 // ─── Standalone cascade delete (safe to call from any component) ─────────────
 export async function deleteProjectCascade(id: string) {
+  // Clean up storage buckets via the Storage API first (DB function can't do this directly)
+  await Promise.allSettled([
+    removeProjectBucketFiles('project-documents', id),
+    removeProjectBucketFiles('goal-attachments', id),
+    removeProjectBucketFiles('project-assets', id),
+  ]);
+
   const { error } = await supabase.rpc('delete_project_cascade', { p_project_id: id });
   if (!error) {
     notifyProjectsChanged();
@@ -49,11 +56,7 @@ export async function deleteProjectCascade(id: string) {
 
   if (!missingRpc) throw error;
 
-  await Promise.allSettled([
-    removeProjectBucketFiles('project-documents', id),
-    removeProjectBucketFiles('goal-attachments', id),
-  ]);
-
+  // Fallback if RPC doesn't exist
   const { error: fallbackError } = await supabase.from('projects').delete().eq('id', id);
   if (fallbackError) throw fallbackError;
   notifyProjectsChanged();
@@ -293,7 +296,7 @@ export function useProject(id: string | undefined) {
     fetchProject();
   }, [fetchProject]);
 
-  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private' | 'invite_code'>>) => {
+  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private' | 'invite_code' | 'image_url'>>) => {
     if (!id) throw new Error('No project');
     const { data, error } = await supabase
       .from('projects')

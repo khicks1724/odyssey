@@ -8,6 +8,7 @@ export interface Project {
   start_date: string | null;
   invite_code: string | null;
   is_private: boolean;
+  image_url: string | null;
 }
 
 export interface JoinRequest {

@@ -1,26 +1,88 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import './ChatPage.css';
 import {
   Bot,
+  Check,
+  ChevronRight,
+  File,
+  FileText,
   FolderKanban,
+  Github,
+  GitBranch,
   Image as ImageIcon,
-  Link2,
   MessageCircle,
   MessageSquare,
   Paperclip,
   Plus,
   Search,
   Send,
-  Upload,
   X,
 } from 'lucide-react';
 import { useProjects } from '../hooks/useProjects';
 import { useChatMessages, useChatThreads, type ChatParticipant } from '../hooks/useChatThreads';
-import type { FileRef } from '../hooks/useProjectFilePaths';
+import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useProfile } from '../hooks/useProfile';
 import { supabase } from '../lib/supabase';
 import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+
+// ── Syntax highlight helpers ─────────────────────────────────────────────────
+const EXT_LANG: Record<string, string> = {
+  py: 'python', js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx',
+  json: 'json', yaml: 'yaml', yml: 'yaml', md: 'markdown', sh: 'bash',
+  html: 'html', css: 'css', toml: 'toml', rs: 'rust', go: 'go',
+  java: 'java', c: 'c', cpp: 'cpp', h: 'c', rb: 'ruby', php: 'php',
+  vue: 'html', svelte: 'html', kt: 'kotlin', swift: 'swift', cs: 'csharp',
+  sql: 'sql', r: 'r', scala: 'scala', ini: 'ini', cfg: 'ini',
+  txt: 'text', gitignore: 'bash', dockerfile: 'dockerfile',
+};
+function getLang(path: string): string {
+  const name = path.split('/').pop()?.toLowerCase() ?? '';
+  if (name === 'dockerfile' || name.startsWith('dockerfile.')) return 'dockerfile';
+  if (name === 'makefile') return 'makefile';
+  const ext = name.split('.').pop() ?? '';
+  return EXT_LANG[ext] ?? 'text';
+}
+
+// Warm, low-contrast theme that matches the app's parchment palette
+const odysseyCodeTheme: Record<string, React.CSSProperties> = {
+  'code[class*="language-"]': { color: '#1e3a5f', background: 'none', fontFamily: 'inherit', fontSize: '12px', lineHeight: '1.6' },
+  'pre[class*="language-"]':  { color: '#1e3a5f', background: '#ece7df', margin: 0, padding: '16px 20px', overflow: 'auto' },
+  comment:   { color: '#8a9bb0', fontStyle: 'italic' },
+  prolog:    { color: '#8a9bb0' },
+  doctype:   { color: '#8a9bb0' },
+  cdata:     { color: '#8a9bb0' },
+  punctuation: { color: '#6b7a8d' },
+  property:  { color: '#1e3a5f' },
+  keyword:   { color: '#2a5a8f', fontWeight: '600' },
+  tag:       { color: '#2a5a8f' },
+  'class-name': { color: '#3a7a6a', fontWeight: '600' },
+  boolean:   { color: '#b91c1c' },
+  constant:  { color: '#b91c1c' },
+  symbol:    { color: '#b91c1c' },
+  deleted:   { color: '#b91c1c' },
+  number:    { color: '#9a3a1a' },
+  selector:  { color: '#3a7a6a' },
+  'attr-name': { color: '#3a7a6a' },
+  string:    { color: '#2e6a3a' },
+  char:      { color: '#2e6a3a' },
+  builtin:   { color: '#2e6a3a' },
+  inserted:  { color: '#2e6a3a' },
+  operator:  { color: '#6b7a8d' },
+  entity:    { color: '#9a3a1a', cursor: 'help' },
+  url:       { color: '#2a5a8f', textDecoration: 'underline' },
+  variable:  { color: '#6b3a8a' },
+  atrule:    { color: '#2a5a8f', fontWeight: '600' },
+  'attr-value': { color: '#2e6a3a' },
+  function:  { color: '#1e3a5f', fontWeight: '600' },
+  'function-variable': { color: '#1e3a5f', fontWeight: '600' },
+  regex:     { color: '#9a3a1a' },
+  important: { color: '#b91c1c', fontWeight: '600' },
+  bold:      { fontWeight: '600' },
+  italic:    { fontStyle: 'italic' },
+};
 
 type PendingContext =
   | { id: string; type: 'text-file' | 'document'; name: string; textContent: string }
@@ -28,7 +90,23 @@ type PendingContext =
   | { id: string; type: 'repo'; name: string; repo: string; repoType: 'github' | 'gitlab' }
   | { id: string; type: 'copied-text'; name: string; textContent: string };
 
-const AI_EXIT_WORDS = new Set(['quit', 'exit', 'stop', 'end']);
+// ── Slash command registry ──────────────────────────────────────────────────
+interface SlashCommand {
+  command: string;
+  description: string;
+  usage: string;
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { command: '/ai',        usage: '/ai <prompt>',    description: 'Ask the AI a one-shot question'           },
+  { command: '/ai on',     usage: '/ai on',          description: 'Enable persistent AI mode for this chat'  },
+  { command: '/ai off',    usage: '/ai off',         description: 'Disable AI mode'                          },
+  { command: '/summarize', usage: '/summarize',      description: 'Summarize this conversation'               },
+  { command: '/standup',   usage: '/standup',        description: 'Generate a standup report for this project'},
+  { command: '/tasks',     usage: '/tasks',          description: 'List active project goals & their status'  },
+  { command: '/report',    usage: '/report',         description: 'Generate a quick project status snippet'   },
+  { command: '/note',      usage: '/note <text>',    description: 'Save a note to the project timeline'       },
+];
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -97,11 +175,20 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [creatingDm, setCreatingDm] = useState(false);
   const [dmCandidates, setDmCandidates] = useState<Array<{ id: string; display_name: string | null; avatar_url: string | null; project_id: string | null }>>([]);
-  const [contextText, setContextText] = useState('');
   const [contexts, setContexts] = useState<PendingContext[]>([]);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextView, setContextView] = useState<'main' | 'repos' | 'docs'>('main');
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashHighlight, setSlashHighlight] = useState(0);
+  const [streamingMsg, setStreamingMsg] = useState<{ content: string; status: string } | null>(null);
+  const [aiQueueLength, setAiQueueLength] = useState(0);
+  // Queue of prompts waiting for AI to finish current response
+  const aiQueueRef = useRef<Array<{ prompt: string; threadId: string }>>([]);
+  const aiProcessingRef = useRef(false);
   const [gitlabRepos, setGitlabRepos] = useState<string[]>([]);
   const [projectDocs, setProjectDocs] = useState<Array<{ id: string; name: string; text: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const contextRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const { messages, loading: messagesLoading, sendMessage, last24hMessages } = useChatMessages(selectedThreadId);
@@ -115,6 +202,13 @@ export default function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, selectedThreadId]);
+
+  // Clear the AI queue when the user switches threads
+  useEffect(() => {
+    aiQueueRef.current = [];
+    setAiQueueLength(0);
+    aiProcessingRef.current = false;
+  }, [selectedThreadId]);
 
   useEffect(() => {
     if (!user) return;
@@ -181,7 +275,33 @@ export default function ChatPage() {
   }, [selectedThread?.project_id, selectedThread?.related_project_id]);
 
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
-  const emptyFilePaths = useMemo(() => new Map<string, FileRef>(), []);
+
+  // Derive relatedProject early so we can pass github_repo to the file paths hook
+  const relatedProjectEarly = selectedThread
+    ? projectMap.get(selectedThread.project_id ?? selectedThread.related_project_id ?? '')
+    : null;
+
+  const { filePaths: chatFilePaths, fetchFileContent } = useProjectFilePaths(
+    relatedProjectEarly?.github_repo ?? null,
+    gitlabRepos,
+  );
+
+  const [filePreview, setFilePreview] = useState<{ ref: FileRef; content: string | null; loading: boolean } | null>(null);
+  const [repoPreview, setRepoPreview] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+
+  const handleChatFileClick = async (ref: FileRef) => {
+    setFilePreview({ ref, content: null, loading: true });
+    try {
+      const content = await fetchFileContent(ref);
+      setFilePreview({ ref, content, loading: false });
+    } catch {
+      setFilePreview({ ref, content: '(Could not load file content)', loading: false });
+    }
+  };
+
+  const handleRepoClick = (repo: string, type: 'github' | 'gitlab') => {
+    setRepoPreview({ repo, type });
+  };
 
   const getOtherParticipant = (threadId: string): ChatParticipant | null =>
     (participantsByThread[threadId] ?? []).find((person) => person.id !== user?.id) ?? null;
@@ -193,6 +313,15 @@ export default function ChatPage() {
       return projectMap.get(thread.project_id ?? '')?.name ?? thread.title ?? 'Project Chat';
     }
     return getOtherParticipant(threadId)?.display_name ?? 'Direct Message';
+  };
+
+  const getLastSender = (threadId: string) => {
+    const preview = lastMessageByThread[threadId];
+    if (!preview) return null;
+    if (preview.role === 'assistant') return 'AI';
+    if (preview.role === 'system') return 'System';
+    if (preview.sender_id === user?.id) return profile?.display_name ?? 'You';
+    return getOtherParticipant(threadId)?.display_name ?? 'Member';
   };
 
   const getPreviewText = (threadId: string) => {
@@ -222,16 +351,19 @@ export default function ChatPage() {
     direct: threadCards.filter((thread) => thread.kind === 'direct'),
   }), [threadCards]);
 
-  const relatedProject = selectedThread
-    ? projectMap.get(selectedThread.project_id ?? selectedThread.related_project_id ?? '')
-    : null;
+  const relatedProject = relatedProjectEarly;
 
-  const addCopiedTextContext = () => {
-    const trimmed = contextText.trim();
-    if (!trimmed) return;
-    setContexts((prev) => [...prev, { id: makeId(), type: 'copied-text', name: 'Copied text', textContent: trimmed }]);
-    setContextText('');
-  };
+  // Close context menu on outside click
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (contextRef.current && !contextRef.current.contains(e.target as Node)) {
+        setContextOpen(false);
+        setContextView('main');
+      }
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
 
   const addRepoContext = (repo: string, repoType: 'github' | 'gitlab') => {
     setContexts((prev) => [...prev, { id: makeId(), type: 'repo', name: repo, repo, repoType }]);
@@ -256,22 +388,18 @@ export default function ChatPage() {
     setContexts((prev) => [...prev, { id: makeId(), type: file.type.includes('pdf') ? 'document' : 'text-file', name: file.name, textContent: textContent.slice(0, 20000) }]);
   };
 
-  const invokeAI = async (prompt: string) => {
-    if (!selectedThread) return;
-    const projectId = selectedThread.project_id ?? selectedThread.related_project_id;
+  const invokeAI = async (prompt: string, threadId: string) => {
+    const thread = threads.find((t) => t.id === threadId);
+    if (!thread) return;
+    const projectId = thread.project_id ?? thread.related_project_id;
     if (!projectId) {
-      await sendMessage({ thread_id: selectedThread.id, sender_id: null, role: 'system', content: 'AI is only available in chats linked to a project context.', metadata: {} });
+      await sendMessage({ thread_id: threadId, sender_id: null, role: 'system', content: 'AI is only available in chats linked to a project context.', metadata: {} });
       return;
     }
 
     const convo = [...last24hMessages, {
-      id: 'pending',
-      thread_id: selectedThread.id,
-      sender_id: user?.id ?? null,
-      role: 'user' as const,
-      content: prompt,
-      metadata: null,
-      created_at: new Date().toISOString(),
+      id: 'pending', thread_id: threadId, sender_id: user?.id ?? null,
+      role: 'user' as const, content: prompt, metadata: null, created_at: new Date().toISOString(),
     }]
       .slice(-20)
       .map((msg) => ({
@@ -285,21 +413,234 @@ export default function ChatPage() {
       return { type: ctx.type === 'copied-text' ? 'document' : ctx.type, name: ctx.name, textContent: ctx.textContent };
     });
 
+    setStreamingMsg({ content: '', status: 'Loading context…' });
+    let fullText = '';
+    let finalProvider = '';
+
+    try {
+      const res = await fetch('/api/ai/chat-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent, projectId, messages: convo, attachments: wireAttachments.length ? wireAttachments : undefined }),
+      });
+
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(data.error ?? `AI request failed (${res.status})`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+          try {
+            const event = JSON.parse(raw);
+            if (event.type === 'status') {
+              setStreamingMsg((prev) => prev ? { ...prev, status: event.text } : null);
+            } else if (event.type === 'token') {
+              fullText += event.text as string;
+              setStreamingMsg({ content: fullText, status: '' });
+            } else if (event.type === 'done') {
+              fullText = event.message ?? fullText;
+              finalProvider = event.provider ?? '';
+            } else if (event.type === 'error') {
+              throw new Error(event.message ?? 'AI error');
+            }
+          } catch (parseErr) {
+            if (parseErr instanceof SyntaxError) continue;
+            throw parseErr;
+          }
+        }
+      }
+
+      if (fullText) {
+        await sendMessage({
+          thread_id: threadId,
+          sender_id: null,
+          role: 'assistant',
+          content: fullText,
+          metadata: { provider: finalProvider, ai_requested_by: user?.id ?? null },
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'An unknown error occurred';
+      await sendMessage({
+        thread_id: threadId,
+        sender_id: null,
+        role: 'system',
+        content: `⚠ AI error: ${msg}`,
+        metadata: { command: 'error' },
+      }).catch(() => {/* ignore secondary errors */});
+    } finally {
+      setStreamingMsg(null);
+    }
+  };
+
+  // Process AI queue one entry at a time
+  const processAIQueue = async () => {
+    if (aiProcessingRef.current) return;
+    aiProcessingRef.current = true;
+
+    while (aiQueueRef.current.length > 0) {
+      const next = aiQueueRef.current[0];
+      setAiQueueLength(aiQueueRef.current.length);
+      await invokeAI(next.prompt, next.threadId);
+      aiQueueRef.current.shift();
+      setAiQueueLength(aiQueueRef.current.length);
+    }
+
+    aiProcessingRef.current = false;
+  };
+
+  const enqueueAI = (prompt: string, threadId: string) => {
+    aiQueueRef.current.push({ prompt, threadId });
+    setAiQueueLength(aiQueueRef.current.length);
+    void processAIQueue();
+  };
+
+  // ── Slash command helpers ──────────────────────────────────────────────────
+
+  const postSystem = (content: string, cmd: string) =>
+    sendMessage({ thread_id: selectedThread!.id, sender_id: null, role: 'system', content, metadata: { command: cmd } });
+
+  const postAssistant = (content: string, provider?: string) =>
+    sendMessage({ thread_id: selectedThread!.id, sender_id: null, role: 'assistant', content, metadata: { provider, ai_requested_by: user?.id ?? null } });
+
+  const requireProject = (): string | null => {
+    const id = selectedThread?.project_id ?? selectedThread?.related_project_id ?? null;
+    if (!id) {
+      void postSystem('This command requires a project-linked chat.', 'error');
+    }
+    return id;
+  };
+
+  const invokeAIWithPrompt = async (systemOverride: string, userPrompt: string) => {
+    const projectId = requireProject();
+    if (!projectId) return;
+    const convo = messages
+      .filter((m) => m.role !== 'system')
+      .slice(-20)
+      .map((m) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, content: m.content }));
     const res = await fetch('/api/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent, projectId, messages: convo, attachments: wireAttachments.length ? wireAttachments : undefined }),
+      body: JSON.stringify({ agent, projectId, systemOverride, messages: [...convo, { role: 'user', content: userPrompt }] }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error ?? `AI request failed (${res.status})`);
+    if (!res.ok) throw new Error(data.error ?? `AI error ${res.status}`);
+    await postAssistant(data.message, data.provider);
+  };
 
-    await sendMessage({
-      thread_id: selectedThread.id,
-      sender_id: null,
-      role: 'assistant',
-      content: data.message,
-      metadata: { provider: data.provider, ai_requested_by: user?.id ?? null },
+  const runSummarize = async () => {
+    if (messages.length === 0) { await postSystem('Nothing to summarize yet.', '/summarize'); return; }
+    await postSystem('Summarizing conversation…', '/summarize');
+    const transcript = messages
+      .filter((m) => m.role !== 'system')
+      .slice(-30)
+      .map((m) => `${m.role === 'assistant' ? 'AI' : 'User'}: ${m.content}`)
+      .join('\n');
+    await invokeAIWithPrompt(
+      'You are a concise summarizer. Summarize the conversation transcript the user provides. Use bullet points. Be brief and factual.',
+      `Summarize this conversation:\n\n${transcript}`,
+    );
+  };
+
+  const runStandup = async () => {
+    const projectId = requireProject();
+    if (!projectId) return;
+    await postSystem('Generating standup report…', '/standup');
+    const res = await fetch('/api/ai/standup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
     });
+    const data = await res.json();
+    if (!res.ok) { await postSystem(`Standup failed: ${data.error ?? res.status}`, '/standup'); return; }
+    const lines = [
+      `**${data.highlights ?? '2-Week Standup'}**`,
+      '',
+      '**Accomplished**',
+      ...(data.accomplished ?? []).map((x: string) => `- ${x}`),
+      '',
+      '**In Progress**',
+      ...(data.inProgress ?? []).map((x: string) => `- ${x}`),
+      ...(data.blockers?.length ? ['', '**Blockers**', ...(data.blockers as string[]).map((x) => `- ${x}`)] : []),
+    ].join('\n');
+    await postAssistant(lines, data.provider);
+  };
+
+  const runTasks = async () => {
+    const projectId = requireProject();
+    if (!projectId) return;
+    const { data: goals, error } = await supabase
+      .from('goals')
+      .select('title, status, progress, deadline, category')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+      .limit(25);
+    if (error || !goals) { await postSystem('Could not fetch tasks.', '/tasks'); return; }
+    if (goals.length === 0) { await postSystem('No tasks found for this project.', '/tasks'); return; }
+    const statusIcon: Record<string, string> = {
+      completed: '✓', in_progress: '◑', not_started: '○', blocked: '✗', on_hold: '⏸',
+    };
+    const lines = goals.map((g) => {
+      const icon = statusIcon[g.status] ?? '○';
+      const pct = g.progress != null ? ` ${g.progress}%` : '';
+      const due = g.deadline ? ` · due ${new Date(g.deadline).toLocaleDateString()}` : '';
+      const cat = g.category ? ` [${g.category}]` : '';
+      return `${icon} **${g.title}**${pct}${due}${cat}`;
+    });
+    await postAssistant(`**Project Tasks (${goals.length})**\n\n${lines.join('\n')}`);
+  };
+
+  const runReport = async () => {
+    const projectId = requireProject();
+    if (!projectId) return;
+    await postSystem('Generating project status report…', '/report');
+    const res = await fetch('/api/ai/project-insights', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    });
+    const data = await res.json();
+    if (!res.ok) { await postSystem(`Report failed: ${data.error ?? res.status}`, '/report'); return; }
+    const lines = [
+      `**Project Status**`,
+      '',
+      data.status ?? '',
+      ...(data.nextSteps?.length ? ['', '**Next Steps**', ...(data.nextSteps as string[]).map((x) => `- ${x}`)] : []),
+      ...(data.codeInsights?.length ? ['', '**Code Insights**', ...(data.codeInsights as string[]).map((x) => `- ${x}`)] : []),
+    ].join('\n');
+    await postAssistant(lines, data.provider);
+  };
+
+  const runNote = async (noteText: string) => {
+    const projectId = requireProject();
+    if (!projectId) return;
+    if (!noteText.trim()) { await postSystem('Usage: /note <your note text>', '/note'); return; }
+    const { error } = await supabase.from('events').insert({
+      project_id: projectId,
+      event_type: 'note',
+      title: noteText.trim(),
+      occurred_at: new Date().toISOString(),
+      source: 'manual',
+      metadata: { thread_id: selectedThread!.id, author_id: user?.id },
+    });
+    if (error) { await postSystem(`Failed to save note: ${error.message}`, '/note'); return; }
+    await postSystem(`Note saved to project timeline: "${noteText.trim()}"`, '/note');
   };
 
   const handleSend = async () => {
@@ -307,67 +648,180 @@ export default function ChatPage() {
     if (!selectedThread || !text || sending) return;
     setSending(true);
     try {
-      if (text.startsWith(',/ai')) {
+      // /ai on — enable persistent AI mode
+      if (text === '/ai on') {
         await updateThread(selectedThread.id, { ai_mode: true, ai_mode_by: user?.id ?? null, ai_mode_started_at: new Date().toISOString() });
         await sendMessage({
           thread_id: selectedThread.id,
           sender_id: null,
           role: 'system',
-          content: `${profile?.display_name ?? user?.email ?? 'A user'} enabled AI mode for this chat.`,
-          metadata: { command: ',/ai' },
+          content: `${profile?.display_name ?? user?.email ?? 'A user'} enabled AI mode. Every message will get an AI response. Type /ai off to stop.`,
+          metadata: { command: '/ai on' },
         });
-        const trailingPrompt = text.replace(',/ai', '').trim();
         setInput('');
-        if (trailingPrompt) {
-          await sendMessage({
-            thread_id: selectedThread.id,
-            sender_id: user?.id ?? null,
-            role: 'user',
-            content: trailingPrompt,
-            metadata: { ai_request: true, mode: 'persistent', contexts: lightweightContexts },
-          });
-          await invokeAI(trailingPrompt);
-        }
         setContexts([]);
         return;
       }
 
-      if (selectedThread.ai_mode && AI_EXIT_WORDS.has(text.toLowerCase())) {
+      // /ai off — disable persistent AI mode
+      if (text === '/ai off') {
         await updateThread(selectedThread.id, { ai_mode: false, ai_mode_by: null, ai_mode_started_at: null });
-        await sendMessage({
-          thread_id: selectedThread.id,
-          sender_id: null,
-          role: 'system',
-          content: `${profile?.display_name ?? user?.email ?? 'A user'} ended AI mode for this chat.`,
-          metadata: { command: 'exit-ai' },
-        });
+        await postSystem(`${profile?.display_name ?? user?.email ?? 'A user'} disabled AI mode.`, '/ai off');
         setInput('');
         setContexts([]);
         return;
       }
 
-      const oneShotAI = text.startsWith('./ai');
-      const prompt = oneShotAI ? text.replace('./ai', '').trim() : text;
+      // Other slash commands
+      if (text === '/summarize') { setInput(''); await runSummarize(); setContexts([]); return; }
+      if (text === '/standup')   { setInput(''); await runStandup();   setContexts([]); return; }
+      if (text === '/tasks')     { setInput(''); await runTasks();     setContexts([]); return; }
+      if (text === '/report')    { setInput(''); await runReport();    setContexts([]); return; }
+      if (text.startsWith('/note')) {
+        const noteText = text.slice(5).trim();
+        setInput('');
+        await runNote(noteText);
+        setContexts([]);
+        return;
+      }
 
+      // /ai <prompt> — one-shot AI invocation
+      const isSlashAI = text.startsWith('/ai ') || text === '/ai';
+      const prompt = isSlashAI ? text.slice(4).trim() : text;
+
+      if (isSlashAI && !prompt) {
+        setInput('');
+        return;
+      }
+
+      // Save the full text (including slash command) so it's visible in chat
       await sendMessage({
         thread_id: selectedThread.id,
         sender_id: user?.id ?? null,
         role: 'user',
-        content: prompt,
-        metadata: { contexts: lightweightContexts, ai_request: oneShotAI || selectedThread.ai_mode },
+        content: text,
+        metadata: { contexts: lightweightContexts, ai_request: isSlashAI || selectedThread.ai_mode },
       });
 
       setInput('');
-      if (oneShotAI || selectedThread.ai_mode) await invokeAI(prompt);
       setContexts([]);
+      // Enqueue AI — non-blocking so new messages can be sent while AI processes
+      if (isSlashAI || selectedThread.ai_mode) enqueueAI(prompt, selectedThread.id);
     } finally {
       setSending(false);
     }
   };
 
+  // ── Context menu popover ────────────────────────────────────────────────
+  const ctxItemCls = 'flex items-center gap-2 w-full px-3 py-2 text-[11px] text-left text-[var(--color-text)] hover:bg-[var(--color-surface2)] hover:text-[var(--color-heading)] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default';
+  const ctxPanelCls = 'absolute bottom-[calc(100%+8px)] left-0 z-60 w-[min(380px,calc(100vw-3rem))] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.35)] overflow-hidden';
+
+  function ContextMenu() {
+    if (contextView === 'repos') {
+      return (
+        <div className={ctxPanelCls}>
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface2)]">
+            <button type="button" onClick={() => setContextView('main')}
+              className="flex items-center gap-1 text-[10px] text-muted hover:text-heading transition-colors">
+              <ChevronRight size={11} className="rotate-180" /> Back
+            </button>
+            <span className="text-[10px] text-muted font-mono ml-auto">Repositories</span>
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            {!relatedProject?.github_repo && gitlabRepos.length === 0 && (
+              <div className="px-3 py-4 text-center text-[10px] text-muted">No repos linked to this project.</div>
+            )}
+            {relatedProject?.github_repo && (
+              <button type="button"
+                onClick={() => { addRepoContext(relatedProject.github_repo!, 'github'); setContextOpen(false); setContextView('main'); }}
+                className={ctxItemCls}>
+                <Github size={11} className="shrink-0" />
+                <span className="truncate flex-1 font-mono">{relatedProject.github_repo}</span>
+              </button>
+            )}
+            {gitlabRepos.map((repo) => (
+              <button key={repo} type="button"
+                onClick={() => { addRepoContext(repo, 'gitlab'); setContextOpen(false); setContextView('main'); }}
+                className={ctxItemCls}>
+                <GitBranch size={11} className="text-[#FC6D26] shrink-0" />
+                <span className="truncate flex-1 font-mono">{repo}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (contextView === 'docs') {
+      return (
+        <div className={ctxPanelCls}>
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface2)]">
+            <button type="button" onClick={() => setContextView('main')}
+              className="flex items-center gap-1 text-[10px] text-muted hover:text-heading transition-colors">
+              <ChevronRight size={11} className="rotate-180" /> Back
+            </button>
+            <span className="text-[10px] text-muted font-mono ml-auto">Project Documents</span>
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            {projectDocs.length === 0 && <div className="px-3 py-4 text-center text-[10px] text-muted">No documents found.</div>}
+            {projectDocs.map((doc) => (
+              <button key={doc.id} type="button"
+                onClick={() => {
+                  setContexts((prev) => [...prev, { id: makeId(), type: 'document', name: doc.name, textContent: doc.text.slice(0, 20000) }]);
+                  setContextOpen(false);
+                  setContextView('main');
+                }}
+                className={ctxItemCls}>
+                <FileText size={11} className="text-muted shrink-0" />
+                <span className="truncate flex-1">{doc.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className={ctxPanelCls}>
+        <div className="px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-surface2)]">
+          <span className="text-[10px] font-medium text-heading">Add context</span>
+        </div>
+        <div className="py-1">
+          <button type="button" onClick={() => { fileInputRef.current?.click(); setContextOpen(false); }}
+            className={ctxItemCls}>
+            <File size={11} className="text-accent shrink-0" />
+            <span>Upload file or image…</span>
+          </button>
+          <button type="button" onClick={() => setContextView('repos')}
+            className={`${ctxItemCls} justify-between`} disabled={!relatedProject}>
+            <div className="flex items-center gap-2">
+              <Github size={11} className="text-accent3 shrink-0" />
+              <span>Repo context</span>
+            </div>
+            <span className="flex items-center gap-1 text-muted text-[10px]">
+              {(relatedProject?.github_repo ? 1 : 0) + gitlabRepos.length}
+              <ChevronRight size={10} />
+            </span>
+          </button>
+          <button type="button" onClick={() => setContextView('docs')}
+            className={`${ctxItemCls} justify-between`} disabled={!relatedProject}>
+            <div className="flex items-center gap-2">
+              <FileText size={11} className="text-accent2 shrink-0" />
+              <span>Document context</span>
+            </div>
+            <span className="flex items-center gap-1 text-muted text-[10px]">
+              {projectDocs.length}
+              <ChevronRight size={10} />
+            </span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full min-h-0 bg-surface">
-      <div className="h-full min-h-0 grid grid-cols-[340px_minmax(0,1fr)]">
+      <div className="h-full min-h-0 grid grid-cols-[280px_minmax(0,1fr)]">
         <aside className="border-r border-border bg-surface2/40 flex flex-col min-h-0">
           <div className="px-5 pt-5 pb-4 border-b border-border/80">
             <div className="flex items-start justify-between gap-3 mb-4">
@@ -381,7 +835,7 @@ export default function ChatPage() {
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-accent/30 text-accent text-[11px] font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors"
               >
                 <Plus size={13} />
-                New DM
+                New Chat
               </button>
             </div>
 
@@ -455,14 +909,13 @@ export default function ChatPage() {
                             selectedThreadId === thread.id ? 'border-accent/40 bg-accent/8' : 'border-transparent hover:border-border hover:bg-surface'
                           }`}
                         >
-                          <Avatar label={title} kind="project" className="w-10 h-10 shrink-0" />
+                          <Avatar label={title} image={project?.image_url ?? null} kind="project" className="w-10 h-10 shrink-0" />
                           <div className="min-w-0 flex-1 text-left">
                             <div className="flex items-start justify-between gap-3">
                               <p className="text-sm font-semibold text-heading truncate">{title}</p>
                               {preview?.created_at && <span className="text-[10px] text-muted font-mono shrink-0">{formatTimestamp(preview.created_at)}</span>}
                             </div>
-                            <p className="text-[11px] text-muted mt-0.5 truncate">{project?.description || 'Project group conversation'}</p>
-                            <p className="text-[11px] text-muted/90 mt-1 line-clamp-2 break-words">{getPreviewText(thread.id)}</p>
+                            <p className="text-[11px] text-muted mt-0.5 truncate">{getLastSender(thread.id) ?? (project?.description || 'Project group conversation')}</p>
                           </div>
                         </button>
                       );
@@ -498,8 +951,7 @@ export default function ChatPage() {
                               <p className="text-sm font-semibold text-heading truncate">{title}</p>
                               {preview?.created_at && <span className="text-[10px] text-muted font-mono shrink-0">{formatTimestamp(preview.created_at)}</span>}
                             </div>
-                            <p className="text-[11px] text-muted mt-0.5 truncate">{threadProject ? `Linked to ${threadProject.name}` : 'Direct conversation'}</p>
-                            <p className="text-[11px] text-muted/90 mt-1 line-clamp-2 break-words">{getPreviewText(thread.id)}</p>
+                            <p className="text-[11px] text-muted mt-0.5 truncate">{getLastSender(thread.id) ?? (threadProject ? `Linked to ${threadProject.name}` : 'Direct conversation')}</p>
                           </div>
                         </button>
                       );
@@ -514,47 +966,47 @@ export default function ChatPage() {
         <section className="min-h-0 flex flex-col bg-surface">
           {selectedThread ? (
             <>
-              <div className="px-6 py-5 border-b border-border bg-surface">
-                <div className="flex items-start justify-between gap-4">
+              <div className="px-5 py-3 border-b border-border bg-surface">
+                <div className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-3 min-w-0">
                     <Avatar
                       label={getThreadTitle(selectedThread.id)}
-                      image={selectedThread.kind === 'direct' ? getOtherParticipant(selectedThread.id)?.avatar_url : null}
+                      image={selectedThread.kind === 'direct' ? getOtherParticipant(selectedThread.id)?.avatar_url : (relatedProject?.image_url ?? null)}
                       kind={selectedThread.kind}
-                      className="w-11 h-11 shrink-0"
+                      className="w-9 h-9 shrink-0"
                     />
                     <div className="min-w-0">
-                      <h2 className="text-xl font-sans font-bold text-heading truncate">{getThreadTitle(selectedThread.id)}</h2>
-                      <p className="text-sm text-muted mt-1 truncate">
+                      <h2 className="text-base font-sans font-bold text-heading truncate">{getThreadTitle(selectedThread.id)}</h2>
+                      <p className="text-xs text-muted truncate">
                         {selectedThread.kind === 'project'
                           ? 'Project chat'
                           : relatedProject
-                            ? `Direct message tied to ${relatedProject.name}`
+                            ? `DM · ${relatedProject.name}`
                             : 'Direct message'}
-                        {selectedThread.ai_mode ? ' | AI mode on' : ''}
+                        {selectedThread.ai_mode ? ' · AI mode on' : ''}
                       </p>
                     </div>
                   </div>
-                  <div className="shrink-0 text-[11px] text-muted font-mono">
+                  <div className="shrink-0 text-[10px] text-muted font-mono">
                     {lastMessageByThread[selectedThread.id]?.created_at ? `Updated ${formatTimestamp(lastMessageByThread[selectedThread.id]!.created_at)}` : 'Ready'}
                   </div>
                 </div>
               </div>
 
-              <div className="flex-1 min-h-0 overflow-y-auto px-8 py-6 bg-surface">
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 bg-surface">
                 {messagesLoading ? (
-                  <div className="space-y-5">
-                    {Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-24 rounded-3xl bg-border/50 animate-pulse" />)}
+                  <div className="space-y-3">
+                    {Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-16 rounded-2xl bg-border/50 animate-pulse" />)}
                   </div>
                 ) : messages.length === 0 ? (
                   <div className="h-full flex items-center justify-center text-center">
                     <div>
                       <MessageSquare size={28} className="text-muted/40 mx-auto mb-4" />
-                      <p className="text-base text-muted">No messages yet. Start the conversation or use `./ai` for one AI prompt.</p>
+                      <p className="text-base text-muted">No messages yet. Start the conversation or type <span className="font-mono text-accent">/ai</span> to invoke AI.</p>
                     </div>
                   </div>
                 ) : (
-                  <div className="max-w-5xl mx-auto space-y-5">
+                  <div className="max-w-4xl mx-auto space-y-3">
                     {messages.map((message) => {
                       const mine = message.sender_id && message.sender_id === user?.id;
                       const sender =
@@ -565,23 +1017,23 @@ export default function ChatPage() {
                       const metadata = (message.metadata ?? {}) as { provider?: string };
 
                       return (
-                        <div key={message.id} className={`flex gap-3 ${mine ? 'justify-end' : 'justify-start'}`}>
+                        <div key={message.id} className={`flex gap-2.5 ${mine ? 'justify-end' : 'justify-start'}`}>
                           {!mine && (
                             <Avatar
                               label={sender.label}
                               image={sender.avatar}
                               kind={sender.kind}
-                              className="w-9 h-9 shrink-0 mt-1"
+                              className="w-8 h-8 shrink-0 mt-0.5"
                             />
                           )}
-                          <div className={`max-w-[78%] ${mine ? 'items-end' : 'items-start'} flex flex-col`}>
-                            <div className={`flex items-center gap-2 mb-1 ${mine ? 'justify-end' : 'justify-start'} w-full`}>
-                              <span className="text-xs text-heading font-semibold">{sender.label}</span>
+                          <div className={`max-w-[72%] ${mine ? 'items-end' : 'items-start'} flex flex-col`}>
+                            <div className={`flex items-center gap-2 mb-0.5 ${mine ? 'justify-end' : 'justify-start'} w-full`}>
+                              <span className="text-[11px] text-heading font-semibold">{sender.label}</span>
                               <span className="text-[10px] text-muted font-mono">{new Date(message.created_at).toLocaleString()}</span>
                               {metadata.provider && <span className="text-[10px] text-accent2 font-mono">{metadata.provider}</span>}
                             </div>
                             <div
-                              className={`rounded-[1.5rem] border px-5 py-4 shadow-sm ${
+                              className={`rounded-2xl border px-3.5 py-2.5 shadow-sm ${
                                 mine
                                   ? 'bg-accent/12 border-accent/25 text-heading'
                                   : message.role === 'assistant'
@@ -591,65 +1043,61 @@ export default function ChatPage() {
                                       : 'bg-surface2 border-border text-heading'
                               }`}
                             >
-                              <div className="text-sm leading-7 whitespace-pre-wrap break-words">
-                                {message.role === 'assistant' ? (
-                                  <MarkdownWithFileLinks filePaths={emptyFilePaths} onFileClick={() => {}} githubRepo={relatedProject?.github_repo ?? null} gitlabRepos={gitlabRepos}>
-                                    {message.content}
-                                  </MarkdownWithFileLinks>
-                                ) : message.content}
-                              </div>
+                              {message.role === 'assistant' ? (
+                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedProject?.github_repo ?? null} gitlabRepos={gitlabRepos} className="text-sm leading-snug break-words cp-prose">
+                                  {message.content}
+                                </MarkdownWithFileLinks>
+                              ) : (
+                                <div className="text-sm leading-snug whitespace-pre-wrap break-words">{message.content}</div>
+                              )}
                             </div>
                           </div>
                         </div>
                       );
                     })}
+                    {/* Live streaming bubble */}
+                    {streamingMsg && (
+                      <div className="flex gap-2.5 justify-start">
+                        <Avatar label="AI" kind="project" className="w-8 h-8 shrink-0 mt-0.5" />
+                        <div className="max-w-[72%] flex flex-col items-start">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[11px] text-heading font-semibold">AI</span>
+                            {streamingMsg.status && !streamingMsg.content && (
+                              <span className="text-[10px] text-muted font-mono animate-pulse">{streamingMsg.status}</span>
+                            )}
+                          </div>
+                          <div className="rounded-2xl border border-accent2/25 bg-surface2 px-3.5 py-2.5 shadow-sm text-heading">
+                            {streamingMsg.content ? (
+                              <div className="text-sm leading-snug break-words cp-prose">
+                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedProject?.github_repo ?? null} gitlabRepos={gitlabRepos}>
+                                  {streamingMsg.content}
+                                </MarkdownWithFileLinks>
+                                <span className="inline-block w-0.5 h-[1em] bg-accent2 opacity-75 animate-pulse align-middle ml-0.5" />
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <span className="cp-dot cp-dot--1" />
+                                <span className="cp-dot cp-dot--2" />
+                                <span className="cp-dot cp-dot--3" />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <div ref={bottomRef} />
                   </div>
                 )}
               </div>
-              <div className="border-t border-border bg-surface px-6 py-4">
-                <div className="max-w-5xl mx-auto space-y-3">
-                  {relatedProject && (
-                    <div className="flex flex-wrap gap-2">
-                      {relatedProject.github_repo && (
-                        <button
-                          type="button"
-                          onClick={() => addRepoContext(relatedProject.github_repo!, 'github')}
-                          className="px-3 py-1.5 rounded-full border border-border text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors"
-                        >
-                          + Repo: {relatedProject.github_repo}
-                        </button>
-                      )}
-                      {gitlabRepos.map((repo) => (
-                        <button
-                          key={repo}
-                          type="button"
-                          onClick={() => addRepoContext(repo, 'gitlab')}
-                          className="px-3 py-1.5 rounded-full border border-border text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors"
-                        >
-                          + Repo: {repo}
-                        </button>
-                      ))}
-                      {projectDocs.map((doc) => (
-                        <button
-                          key={doc.id}
-                          type="button"
-                          onClick={() => setContexts((prev) => [...prev, { id: makeId(), type: 'document', name: doc.name, textContent: doc.text.slice(0, 20000) }])}
-                          className="px-3 py-1.5 rounded-full border border-border text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors"
-                        >
-                          + Doc: {doc.name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
+              <div className="border-t border-border bg-surface px-5 py-3">
+                <div className="max-w-4xl mx-auto space-y-2">
                   {contexts.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {contexts.map((ctx) => (
                         <span key={ctx.id} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border bg-surface2 text-[11px] font-mono text-heading">
                           {ctx.type === 'image' ? <ImageIcon size={12} className="text-accent2" /> : <Paperclip size={12} className="text-accent" />}
                           {ctx.name}
-                          <button type="button" onClick={() => removeContext(ctx.id)} className="text-muted hover:text-danger">
+                          <button type="button" title={`Remove ${ctx.name}`} onClick={() => removeContext(ctx.id)} className="text-muted hover:text-danger">
                             <X size={11} />
                           </button>
                         </span>
@@ -657,62 +1105,146 @@ export default function ChatPage() {
                     </div>
                   )}
 
-                  <div className="rounded-[1.5rem] border border-border bg-surface2 p-3">
-                    <div className="flex items-end gap-3">
-                      <div className="flex flex-col gap-2 pb-1">
+                  {/* Slash command palette — floats above the input card */}
+                  {slashOpen && (() => {
+                    const filtered = SLASH_COMMANDS.filter((cmd) =>
+                      input.trim() === '/' || cmd.command.startsWith(input.trim())
+                    );
+                    if (filtered.length === 0) return null;
+                    const hi = Math.min(slashHighlight, filtered.length - 1);
+                    return (
+                      <div className="rounded-2xl border border-border bg-surface shadow-xl overflow-hidden">
+                        <div className="px-4 py-2 border-b border-border bg-surface2 flex items-center gap-2">
+                          <span className="text-[10px] tracking-[0.18em] uppercase text-accent font-semibold font-mono">/</span>
+                          <span className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold">Slash Commands</span>
+                          <span className="ml-auto text-[10px] text-muted/60 font-mono">↑↓ navigate · Tab/Enter select</span>
+                        </div>
+                        {filtered.map((cmd, idx) => (
+                          <button
+                            key={cmd.command}
+                            type="button"
+                            onClick={() => {
+                              setInput(cmd.command === '/ai' ? '/ai ' : cmd.command === '/note' ? '/note ' : cmd.command);
+                              setSlashOpen(false);
+                              setSlashHighlight(0);
+                            }}
+                            className={`w-full flex items-center gap-4 px-4 py-2.5 text-left transition-colors ${idx === hi ? 'bg-surface2' : 'hover:bg-surface2'}`}
+                          >
+                            {idx === hi && <span className="w-1 h-4 rounded-full bg-accent shrink-0 -ml-1" />}
+                            <span className="text-[11px] font-mono font-semibold text-accent w-36 shrink-0">{cmd.usage}</span>
+                            <span className="text-[11px] text-muted">{cmd.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  <div className="rounded-2xl border border-border bg-surface2 p-2">
+
+                    <div className="flex items-end gap-2">
+                      <div className="relative shrink-0 pb-0.5" ref={contextRef}>
                         <button
                           type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="w-10 h-10 rounded-xl border border-border text-muted hover:text-heading hover:bg-surface transition-colors flex items-center justify-center"
-                          title="Upload file"
+                          onClick={() => { setContextOpen((o) => !o); setContextView('main'); setSlashOpen(false); }}
+                          className="w-8 h-8 rounded-lg border border-border text-muted hover:text-heading hover:bg-surface transition-colors flex items-center justify-center"
+                          title="Add context"
                         >
-                          <Upload size={15} />
+                          <Plus size={13} />
                         </button>
-                        <button
-                          type="button"
-                          onClick={addCopiedTextContext}
-                          disabled={!contextText.trim()}
-                          className="w-10 h-10 rounded-xl border border-border text-muted hover:text-heading hover:bg-surface transition-colors flex items-center justify-center disabled:opacity-40"
-                          title="Add copied text context"
-                        >
-                          <Link2 size={15} />
-                        </button>
+                        {contextOpen && <ContextMenu />}
                       </div>
 
                       <textarea
                         value={input}
-                        onChange={(e) => setInput(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setInput(val);
+                          setSlashOpen(val.startsWith('/'));
+                          setSlashHighlight(0);
+                          if (!val.startsWith('/')) setContextOpen(false);
+                        }}
                         onKeyDown={(e) => {
+                          if (e.key === 'Escape') { setSlashOpen(false); setSlashHighlight(0); return; }
+
+                          // Slash palette navigation
+                          if (slashOpen) {
+                            const filtered = SLASH_COMMANDS.filter((cmd) =>
+                              input.trim() === '/' || cmd.command.startsWith(input.trim())
+                            );
+                            if (filtered.length > 0) {
+                              if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
+                                e.preventDefault();
+                                setSlashHighlight((h) => (h + 1) % filtered.length);
+                                return;
+                              }
+                              if (e.key === 'ArrowUp' || (e.key === 'Tab' && e.shiftKey)) {
+                                e.preventDefault();
+                                setSlashHighlight((h) => (h - 1 + filtered.length) % filtered.length);
+                                return;
+                              }
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                const cmd = filtered[Math.min(slashHighlight, filtered.length - 1)];
+                                setInput(cmd.command === '/ai' ? '/ai ' : cmd.command === '/note' ? '/note ' : cmd.command);
+                                setSlashOpen(false);
+                                setSlashHighlight(0);
+                                return;
+                              }
+                            }
+                          }
+
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
+                            setSlashOpen(false);
+                            setSlashHighlight(0);
                             void handleSend();
                           }
                         }}
-                        rows={3}
-                        placeholder="Type a message. Use `./ai` for one prompt or `,/ai` to keep AI mode on."
-                        className="flex-1 min-h-[88px] px-4 py-3 rounded-2xl border border-border bg-surface text-sm text-heading placeholder:text-muted/60 resize-none focus:outline-none focus:border-accent/40"
+                        rows={2}
+                        placeholder={selectedThread?.ai_mode
+                          ? 'AI mode on — every message gets a response. Type /ai off to stop.'
+                          : 'Message… or type / for slash commands'}
+                        className="flex-1 min-h-[56px] px-3 py-2 rounded-xl border border-border bg-surface text-sm text-heading placeholder:text-muted/60 resize-none focus:outline-none focus:border-accent/40"
                       />
 
                       <button
                         type="button"
-                        onClick={() => void handleSend()}
+                        onClick={() => { setSlashOpen(false); void handleSend(); }}
                         disabled={!input.trim() || sending}
-                        className="w-11 h-11 mb-1 rounded-xl border border-accent/30 text-accent hover:bg-accent/5 transition-colors flex items-center justify-center disabled:opacity-40"
+                        className="w-8 h-8 rounded-lg border border-accent/30 text-accent hover:bg-accent/5 transition-colors flex items-center justify-center disabled:opacity-40"
                         title="Send"
                       >
                         <Send size={15} />
                       </button>
                     </div>
 
-                    <div className="mt-3">
-                      <textarea
-                        value={contextText}
-                        onChange={(e) => setContextText(e.target.value)}
-                        rows={2}
-                        placeholder="Paste extra context to attach to the next AI request or message."
-                        className="w-full px-4 py-3 rounded-2xl border border-border bg-surface text-xs text-heading placeholder:text-muted/60 resize-none focus:outline-none focus:border-accent2/40"
-                      />
-                    </div>
+                    {(selectedThread?.ai_mode || streamingMsg || aiQueueLength > 0) && (
+                      <div className="mt-1.5 flex items-center justify-between px-1">
+                        <div className="flex items-center gap-2">
+                          {selectedThread?.ai_mode && (
+                            <span className="text-[10px] text-accent2 font-mono">AI mode active</span>
+                          )}
+                          {streamingMsg && (
+                            <span className="text-[10px] text-accent2 font-mono animate-pulse">responding…</span>
+                          )}
+                          {aiQueueLength > 0 && !streamingMsg && (
+                            <span className="text-[10px] text-muted font-mono">{aiQueueLength} queued</span>
+                          )}
+                          {aiQueueLength > 0 && streamingMsg && (
+                            <span className="text-[10px] text-muted font-mono">+{aiQueueLength} queued</span>
+                          )}
+                        </div>
+                        {selectedThread?.ai_mode && (
+                          <button
+                            type="button"
+                            onClick={() => { setInput('/ai off'); void handleSend(); }}
+                            className="text-[10px] text-muted hover:text-heading transition-colors"
+                          >
+                            /ai off
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -731,6 +1263,7 @@ export default function ChatPage() {
       <input
         ref={fileInputRef}
         type="file"
+        title="Attach a file"
         className="hidden"
         multiple={false}
         onChange={(e) => {
@@ -739,6 +1272,88 @@ export default function ChatPage() {
           e.currentTarget.value = '';
         }}
       />
+
+      {/* Repo browser modal */}
+      {repoPreview && (() => {
+        const repoFiles = Array.from(chatFilePaths.values())
+          .filter((ref) => ref.repo === repoPreview.repo && ref.type === repoPreview.type)
+          .reduce((acc, ref) => {
+            if (!acc.find((r) => r.path === ref.path)) acc.push(ref);
+            return acc;
+          }, [] as FileRef[])
+          .sort((a, b) => a.path.localeCompare(b.path));
+        return (
+          <div className="fixed inset-0 z-50 bg-heading/40 flex items-center justify-center p-6" onClick={() => setRepoPreview(null)}>
+            <div className="bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  {repoPreview.type === 'github' ? <Github size={14} className="text-muted shrink-0" /> : <GitBranch size={14} className="text-muted shrink-0" />}
+                  <span className="font-mono text-sm text-[var(--color-code-repo)] font-semibold truncate">{repoPreview.repo}</span>
+                </div>
+                <button type="button" title="Close" onClick={() => setRepoPreview(null)} className="text-muted hover:text-heading transition-colors ml-4 shrink-0">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto py-2">
+                {repoFiles.length === 0 ? (
+                  <p className="text-sm text-muted px-5 py-3">No files indexed yet — file paths will appear after the repo is fetched.</p>
+                ) : repoFiles.map((ref) => (
+                  <button
+                    key={ref.path}
+                    type="button"
+                    onClick={() => { setRepoPreview(null); void handleChatFileClick(ref); }}
+                    className="w-full flex items-center gap-2 px-5 py-1.5 text-left hover:bg-surface2 transition-colors group"
+                  >
+                    <File size={11} className="text-muted shrink-0" />
+                    <span className="font-mono text-xs text-[var(--color-code-file)] group-hover:underline truncate">{ref.path}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* File preview modal */}
+      {filePreview && (
+        <div
+          className="fixed inset-0 z-50 bg-heading/40 flex items-center justify-center p-6"
+          onClick={() => setFilePreview(null)}
+        >
+          <div
+            className="bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <File size={13} className="text-[var(--color-code-file)] shrink-0" />
+                <span className="font-mono text-sm text-[var(--color-code-file)] truncate">{filePreview.ref.path}</span>
+                <span className="text-[10px] text-muted font-mono shrink-0">{filePreview.ref.repo}</span>
+              </div>
+              <button type="button" title="Close" onClick={() => setFilePreview(null)} className="text-muted hover:text-heading transition-colors ml-4 shrink-0">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto">
+              {filePreview.loading ? (
+                <p className="text-sm text-muted px-5 py-4">Loading…</p>
+              ) : (
+                <SyntaxHighlighter
+                  language={getLang(filePreview.ref.path)}
+                  useInlineStyles={true}
+                  style={odysseyCodeTheme}
+                  showLineNumbers
+                  lineNumberStyle={{ color: '#8a9bb0', fontSize: '11px', minWidth: '2.5em', paddingRight: '1em', userSelect: 'none' }}
+                  customStyle={{ margin: 0, background: 'transparent', fontSize: '12px', lineHeight: '1.6', padding: '16px 20px' }}
+                  wrapLongLines={false}
+                >
+                  {filePreview.content ?? ''}
+                </SyntaxHighlighter>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

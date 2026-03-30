@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth, AuthProvider } from './lib/auth';
 import { ThemeProvider } from './lib/theme';
+import { FontThemeProvider } from './lib/font-theme';
 import { TimeFormatProvider } from './lib/time-format';
 import { AIAgentProvider } from './lib/ai-agent';
 import { ChatPanelProvider } from './lib/chat-panel';
 import AppLayout from './components/layout/AppLayout';
+import ErrorBoundary from './components/ErrorBoundary';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
 import DashboardPage from './pages/DashboardPage';
@@ -34,13 +36,13 @@ function AppRoutes() {
       {/* QR join — accessible outside AppLayout so unauthenticated users land here */}
       <Route path="/join/qr/:token" element={<JoinQRPage />} />
       <Route element={user ? <AppLayout /> : <Navigate to="/login" replace />}>
-        <Route index element={<DashboardPage />} />
-        <Route path="projects" element={<ProjectsPage />} />
-        <Route path="notifications" element={<NotificationsPage />} />
-        <Route path="chat" element={<ChatPage />} />
-        <Route path="projects/new" element={<NewProjectPage />} />
-        <Route path="projects/:projectId" element={<ProjectDetailPage />} />
-        <Route path="settings" element={<SettingsPage />} />
+        <Route index element={<ErrorBoundary label="Dashboard"><DashboardPage /></ErrorBoundary>} />
+        <Route path="projects" element={<ErrorBoundary label="Projects"><ProjectsPage /></ErrorBoundary>} />
+        <Route path="notifications" element={<ErrorBoundary label="Notifications"><NotificationsPage /></ErrorBoundary>} />
+        <Route path="chat" element={<ErrorBoundary label="Chat"><ChatPage /></ErrorBoundary>} />
+        <Route path="projects/new" element={<ErrorBoundary label="New Project"><NewProjectPage /></ErrorBoundary>} />
+        <Route path="projects/:projectId" element={<ErrorBoundary label="Project"><ProjectDetailPage /></ErrorBoundary>} />
+        <Route path="settings" element={<ErrorBoundary label="Settings"><SettingsPage /></ErrorBoundary>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -50,6 +52,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
+      <FontThemeProvider>
       <ThemeProvider>
         <TimeFormatProvider>
         <AIAgentProvider>
@@ -61,6 +64,7 @@ export default function App() {
         </AIAgentProvider>
         </TimeFormatProvider>
       </ThemeProvider>
+      </FontThemeProvider>
     </BrowserRouter>
   );
 }

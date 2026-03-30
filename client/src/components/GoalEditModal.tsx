@@ -7,8 +7,9 @@ import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 
 const API_BASE = '/api';
 
-const CATEGORIES = ['Testing', 'Seeker', 'Missile', 'Admin', 'Simulation', 'DevOps'];
-const LINES_OF_EFFORT = ['Training', 'Simulation', 'JetsonCV', 'Image Capture', 'Flight Software', 'IR Camera Suite', 'Admin'];
+// Legacy fallbacks — overridden by per-project labels when provided
+const CATEGORIES: string[] = [];
+const LINES_OF_EFFORT: string[] = [];
 const STATUSES: { value: Goal['status']; label: string }[] = [
   { value: 'not_started', label: 'Not Started' },
   { value: 'in_progress', label: 'In Progress' },
@@ -36,6 +37,8 @@ interface GoalEditModalProps {
   filePaths?: Map<string, FileRef>;
   githubRepo?: string | null;
   gitlabRepos?: string[];
+  projectCategories?: string[];
+  projectLoes?: string[];
   onFileClick?: (ref: FileRef) => void;
   onRepoClick?: (repo: string, type: 'github' | 'gitlab') => void;
   onTaskClick?: (taskId: string) => void;
@@ -53,6 +56,8 @@ export default function GoalEditModal({
   filePaths = new Map(),
   githubRepo = null,
   gitlabRepos = [],
+  projectCategories = CATEGORIES,
+  projectLoes = LINES_OF_EFFORT,
   onFileClick,
   onRepoClick,
   onTaskClick,
@@ -232,7 +237,7 @@ export default function GoalEditModal({
                     className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                   >
                     <option value="">— None —</option>
-                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {projectCategories.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </div>
                 <div>
@@ -244,7 +249,7 @@ export default function GoalEditModal({
                     className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                   >
                     <option value="">— None —</option>
-                    {LINES_OF_EFFORT.map((l) => <option key={l} value={l}>{l}</option>)}
+                    {projectLoes.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </div>
               </div>
@@ -353,6 +358,7 @@ export default function GoalEditModal({
                   ) : guidance ? (
                     <div className="text-[12px] text-[var(--color-muted)] leading-relaxed">
                       <MarkdownWithFileLinks
+                        block
                         filePaths={filePaths}
                         onFileClick={onFileClick ?? (() => {})}
                         githubRepo={githubRepo}
@@ -360,14 +366,6 @@ export default function GoalEditModal({
                         onRepoClick={onRepoClick}
                         tasks={allGoals.map((g) => ({ id: g.id, title: g.title }))}
                         onTaskClick={onTaskClick}
-                        extraComponents={{
-                          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                          h1: ({ children }) => <h1 className="text-sm font-bold mb-2 mt-3 first:mt-0 text-[var(--color-heading)]">{children}</h1>,
-                          h2: ({ children }) => <h2 className="text-xs font-bold mb-1.5 mt-2.5 first:mt-0 text-[var(--color-heading)]">{children}</h2>,
-                          h3: ({ children }) => <h3 className="text-xs font-semibold mb-1 mt-2 first:mt-0 text-[var(--color-heading)]">{children}</h3>,
-                          ul: ({ children }) => <ul className="mb-2 pl-4 space-y-1 list-disc">{children}</ul>,
-                          ol: ({ children }) => <ol className="mb-2 pl-4 space-y-1 list-decimal">{children}</ol>,
-                        }}
                       >
                         {guidance}
                       </MarkdownWithFileLinks>

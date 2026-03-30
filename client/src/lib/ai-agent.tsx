@@ -14,6 +14,7 @@ interface AIAgentContextType {
   setAgent: (agent: AIAgentValue) => void;
   providers: ProviderInfo[];
   loading: boolean;
+  serverReachable: boolean;
   lastUsed: AIProvider | null;
   notifyModelUsed: (provider: AIProvider) => void;
 }
@@ -23,6 +24,7 @@ const AIAgentContext = createContext<AIAgentContextType>({
   setAgent: () => {},
   providers: [],
   loading: true,
+  serverReachable: true,
   lastUsed: null,
   notifyModelUsed: () => {},
 });
@@ -38,6 +40,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   });
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [serverReachable, setServerReachable] = useState(true);
   const [lastUsed, setLastUsed] = useState<AIProvider | null>(null);
 
   useEffect(() => {
@@ -49,6 +52,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       .then((data) => {
         const list: ProviderInfo[] = data.providers || [];
         setProviders(list);
+        setServerReachable(true);
         // If the stored agent is a specific model that isn't available, switch to auto
         if (agent !== 'auto') {
           const current = list.find((p) => p.id === agent);
@@ -58,7 +62,9 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
           }
         }
       })
-      .catch((err) => console.error('Failed to load AI providers:', err))
+      .catch(() => {
+        setServerReachable(false);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -72,7 +78,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, lastUsed, notifyModelUsed }}>
+    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, serverReachable, lastUsed, notifyModelUsed }}>
       {children}
     </AIAgentContext.Provider>
   );

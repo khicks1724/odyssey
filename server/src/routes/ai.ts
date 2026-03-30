@@ -1,8 +1,42 @@
 import type { FastifyInstance } from 'fastify';
-import { chat, getAvailableProviders, type AIProvider } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, type AIProvider } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
+import { decryptUserKey } from './user-ai-keys.js';
+import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
 
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
+
+// Map AIProvider to the service name stored in user_ai_keys table
+function providerToService(provider: AIProvider): 'anthropic' | 'openai' | 'google' {
+  if (provider === 'gpt-4o') return 'openai';
+  if (provider === 'gemini-pro') return 'google';
+  return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
+}
+
+// Look up the user's stored API key for the given provider (decrypted).
+// Returns undefined if not found or auth fails.
+async function getUserApiKey(authHeader: string | undefined, provider: AIProvider): Promise<string | undefined> {
+  if (!authHeader?.startsWith('Bearer ')) return undefined;
+  const token = authHeader.slice(7);
+  const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+  if (authErr || !user) return undefined;
+
+  const service = providerToService(provider);
+  const { data, error } = await supabase
+    .from('user_ai_keys')
+    .select('encrypted_key, iv, auth_tag')
+    .eq('user_id', user.id)
+    .eq('provider', service)
+    .maybeSingle();
+
+  if (error || !data) return undefined;
+
+  try {
+    return decryptUserKey(data.encrypted_key, data.iv, data.auth_tag);
+  } catch {
+    return undefined;
+  }
+}
 
 // Strip markdown code fences that models sometimes wrap JSON responses in.
 // e.g. ```json { ... } ``` → { ... }
@@ -71,30 +105,32 @@ interface AISummarizeBody {
   userQuestion?: string;
 }
 
+const MD_STYLE = `Use rich markdown formatting — the UI renders it fully. Use **bold** for key terms and task names, \`backticks\` for file names and identifiers, headers (## ###) to organize longer responses, bullet and numbered lists for structure, > blockquotes for caveats, and fenced code blocks for code. Never use emojis. Always refer to tasks by their title, never by ID.`;
+
 const systemPrompts: Record<string, string> = {
   activity_summary: `You are Odyssey's AI intelligence layer. Summarize recent project activity concisely. Focus on:
 - Key developments and progress
 - Notable patterns or changes in velocity
 - Areas of high/low activity
-Keep your response under 200 words. Use a professional, direct tone.`,
+Keep your response under 200 words. Use a professional, direct tone. ${MD_STYLE}`,
 
   deadline_risk: `You are Odyssey's deadline risk analyzer. Evaluate whether the project is on track for its goals. Consider:
 - Current progress vs. deadline proximity
 - Recent activity velocity
 - Goal completion rates
-Rate risk as: ON TRACK, AT RISK, or BEHIND SCHEDULE. Explain why in 2-3 sentences.`,
+Rate risk as: **ON TRACK**, **AT RISK**, or **BEHIND SCHEDULE**. Explain why in 2-3 sentences. ${MD_STYLE}`,
 
   contribution: `You are Odyssey's contribution analyst. Map who contributed what based on the event data. Focus on:
 - Which areas each contributor focused on
 - Volume and frequency of contributions
 - Key accomplishments per contributor
-Be factual and data-driven.`,
+Be factual and data-driven. ${MD_STYLE}`,
 
   project_history: `You are Odyssey's project historian. Tell the story of how this project evolved based on the event timeline. Focus on:
 - Major milestones and turning points
 - How different workstreams came together
 - The overall arc of development
-Write as a narrative, under 300 words.`,
+Write as a narrative, under 300 words. ${MD_STYLE}`,
 };
 
 export async function aiRoutes(server: FastifyInstance) {
@@ -745,44 +781,68 @@ Analyze which goals these documents show progress on, who did the work, and when
         }
       } catch { /* best-effort */ }
 
-      // 3. Code file reading — full source like GitLab
-      const CODE_EXTS_GH = new Set(['.py','.js','.ts','.jsx','.tsx','.json','.yaml','.yml','.md','.sh','.html','.css','.toml','.ini','.cfg','.rs','.go','.java','.c','.cpp','.h']);
+      // 3. Full source code — recursive tree fetch then prioritized file fetch
+      const BINARY_EXTS_GH = new Set(['.png','.jpg','.jpeg','.gif','.ico','.pdf','.zip','.tar','.gz','.bin','.onnx','.pt','.weights','.h264','.mp4','.so','.dylib','.exe','.wasm','.pkl','.npy','.npz','.db','.sqlite','.lock']);
+      const CODE_EXTS_GH = new Set(['.py','.js','.ts','.jsx','.tsx','.json','.yaml','.yml','.md','.sh','.html','.css','.toml','.ini','.cfg','.rs','.go','.java','.c','.cpp','.h','.txt','.gitignore','.env.example','.svelte','.vue','.rb','.php','.kt','.swift','.cs','.r','.scala','.jl']);
       const ENTRY_NAMES_GH = new Set(['main.py','app.py','index.ts','index.js','server.ts','server.js','main.ts','main.js','__init__.py','manage.py','run.py','wsgi.py','asgi.py']);
       const CONFIG_NAMES_GH = new Set(['package.json','requirements.txt','pyproject.toml','setup.py','Makefile','Dockerfile','docker-compose.yml','tsconfig.json','vite.config.ts','go.mod','cargo.toml']);
-      const tierGH = (f: { path: string }) => {
+      const tierGH = (f: { path: string; size?: number }) => {
         const name = f.path.split('/').pop()!.toLowerCase();
         if (name.startsWith('readme')) return 1;
         if (ENTRY_NAMES_GH.has(name)) return 2;
         if (CONFIG_NAMES_GH.has(name)) return 3;
         if (f.path.toLowerCase().endsWith('.md')) return 1;
+        const ext = '.' + name.split('.').pop()!;
+        if (['.py','.ts','.tsx','.js','.jsx'].includes(ext) && (f.size ?? Infinity) < 20_480) return 3;
         return 4;
       };
       try {
         const treeRes = await fetch(`${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree`);
         if (treeRes.ok) {
           const treeData = await treeRes.json() as { files: { path: string; size: number }[] };
-          const eligible = (treeData.files ?? []).filter((f) => {
-            const ext = '.' + f.path.toLowerCase().split('.').pop()!;
-            return CODE_EXTS_GH.has(ext) && f.size < 200_000;
+          const allFiles = treeData.files ?? [];
+          const skippedBinary: string[] = [];
+          const skippedLarge: string[] = [];
+          const eligible = allFiles.filter((f) => {
+            const lower = f.path.toLowerCase();
+            const ext = '.' + lower.split('.').pop()!;
+            if (BINARY_EXTS_GH.has(ext)) { skippedBinary.push(f.path); return false; }
+            if (!CODE_EXTS_GH.has(ext)) { return false; }
+            if ((f.size ?? 0) > 102_400) { skippedLarge.push(f.path); return false; }
+            return true;
           });
           eligible.sort((a, b) => tierGH(a) - tierGH(b));
-          const GH_BUDGET = 20_000;
+
+          const GH_BUDGET = 60_000; // ~15k tokens — keep total prompt under Anthropic's 200k limit
           let ghBytes = 0;
           const codeLines: string[] = [];
+          const skippedBudget: string[] = [];
+
           for (const f of eligible) {
-            if (ghBytes >= GH_BUDGET) break;
-            const maxChars = tierGH(f) <= 1 ? 5000 : tierGH(f) === 2 ? 3000 : tierGH(f) === 3 ? 2000 : 1200;
+            if (ghBytes >= GH_BUDGET) { skippedBudget.push(f.path); continue; }
             try {
               const fr = await fetch(`${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/file?path=${encodeURIComponent(f.path)}`);
               if (!fr.ok) continue;
               const fd = await fr.json() as { content?: string };
               if (!fd.content) continue;
-              const snippet = fd.content.slice(0, maxChars);
-              codeLines.push(`\n--- ${f.path} ---\n${snippet}${fd.content.length > maxChars ? '\n[truncated]' : ''}`);
+              const remaining = GH_BUDGET - ghBytes;
+              const snippet = fd.content.slice(0, remaining);
+              const truncated = fd.content.length > remaining;
+              codeLines.push(`### FILE: ${f.path}\n${snippet}${truncated ? '\n[...truncated — file exceeds remaining budget]' : ''}`);
               ghBytes += snippet.length;
-            } catch { /* skip */ }
+            } catch { /* skip unreadable */ }
           }
-          if (codeLines.length > 0) githubContext += `\n\nCODE FILES (${codeLines.length} files):\n${codeLines.join('\n')}`;
+
+          const summary = [
+            `## REPOSITORY: ${owner}/${repo}`,
+            `Files included: ${codeLines.length} / ${allFiles.length} total`,
+            `Estimated tokens: ~${Math.round(ghBytes / 4).toLocaleString()}`,
+            skippedBinary.length ? `Skipped (binary): ${skippedBinary.length} files` : '',
+            skippedLarge.length ? `Skipped (>100KB): ${skippedLarge.length} files` : '',
+            skippedBudget.length ? `Skipped (budget): ${skippedBudget.length} files` : '',
+          ].filter(Boolean).join('\n');
+
+          githubContext += `\n\n${summary}\n\n${codeLines.join('\n\n')}`;
         }
       } catch { /* best-effort */ }
     }
@@ -794,11 +854,12 @@ Analyze which goals these documents show progress on, who did the work, and when
       const repos: string[] = cfg.repos ?? (cfg.repo ? [cfg.repo] : []);
 
       if (repos.length > 0) {
-        const CODE_EXTS = new Set(['.py','.js','.ts','.jsx','.tsx','.json','.yaml','.yml','.md','.sh','.txt','.html','.css','.toml','.ini','.cfg','.rs','.go','.java','.c','.cpp','.h','.gitignore','.env.example']);
+        const BINARY_EXTS_GL = new Set(['.png','.jpg','.jpeg','.gif','.ico','.pdf','.zip','.tar','.gz','.bin','.onnx','.pt','.weights','.h264','.mp4','.so','.dylib','.exe','.wasm','.pkl','.npy','.npz','.db','.sqlite','.lock']);
+        const CODE_EXTS = new Set(['.py','.js','.ts','.jsx','.tsx','.json','.yaml','.yml','.md','.sh','.txt','.html','.css','.toml','.ini','.cfg','.rs','.go','.java','.c','.cpp','.h','.gitignore','.env.example','.svelte','.vue','.rb','.php','.kt','.swift','.cs','.r','.scala','.jl']);
         const ENTRY_NAMES = new Set(['main.py','app.py','index.ts','index.js','server.ts','server.js','main.ts','main.js','__init__.py','manage.py','run.py','wsgi.py','asgi.py']);
         const CONFIG_NAMES = new Set(['package.json','requirements.txt','pyproject.toml','setup.py','setup.cfg','Makefile','Dockerfile','docker-compose.yml','docker-compose.yaml','tsconfig.json','vite.config.ts','vite.config.js','.env.example','CMakeLists.txt','cargo.toml','go.mod']);
         const BASE = `http://localhost:${process.env.PORT ?? 3001}`;
-        const TOTAL_BUDGET = 60_000; // chars across all repos
+        const TOTAL_BUDGET = 100_000; // ~25k tokens across all repos
         let totalCharsUsed = 0;
 
         const repoResults = await Promise.allSettled(repos.map(async (repo) => {
@@ -846,54 +907,67 @@ Analyze which goals these documents show progress on, who did the work, and when
             }
           } catch { /* best-effort */ }
 
-          // 2. Code files — fetch tree then prioritized files
+          // 2. Full source code — recursive tree + prioritized file fetch
           try {
             const treeRes = await fetch(`${BASE}/api/gitlab/tree?repo=${encodeURIComponent(repo)}`);
             if (treeRes.ok) {
-              const treeData = await treeRes.json() as { files: { path: string }[] };
+              const treeData = await treeRes.json() as { files: { path: string; size?: number }[] };
               const allFiles = treeData.files ?? [];
 
-              // Filter by extension whitelist
+              const skippedBinary: string[] = [];
+              const skippedLarge: string[] = [];
               const eligible = allFiles.filter((f) => {
                 const lower = f.path.toLowerCase();
-                return CODE_EXTS.has('.' + lower.split('.').pop()!) || lower.endsWith('.env.example');
+                const ext = '.' + lower.split('.').pop()!;
+                if (BINARY_EXTS_GL.has(ext)) { skippedBinary.push(f.path); return false; }
+                if (!CODE_EXTS.has(ext) && !lower.endsWith('.env.example')) return false;
+                if ((f.size ?? 0) > 102_400) { skippedLarge.push(f.path); return false; }
+                return true;
               });
 
-              // Sort into priority tiers: 1=README, 2=entry, 3=config, 4=code
-              const tier = (f: { path: string }) => {
+              const tier = (f: { path: string; size?: number }) => {
                 const name = f.path.split('/').pop()!.toLowerCase();
-                const lower = f.path.toLowerCase();
                 if (name.startsWith('readme')) return 1;
                 if (ENTRY_NAMES.has(name)) return 2;
                 if (CONFIG_NAMES.has(name)) return 3;
-                if (lower.endsWith('.md')) return 1; // other .md docs
+                if (f.path.toLowerCase().endsWith('.md')) return 1;
+                const ext = '.' + name.split('.').pop()!;
+                if (['.py','.ts','.tsx','.js','.jsx'].includes(ext) && (f.size ?? Infinity) < 20_480) return 3;
                 return 4;
               };
               eligible.sort((a, b) => tier(a) - tier(b));
 
-              // Fetch each file within per-repo budget (20k chars per repo)
-              const REPO_BUDGET = 20_000;
+              const REPO_BUDGET = 60_000; // ~15k tokens per repo
               let repoBytesUsed = 0;
               const codeLines: string[] = [];
+              const skippedBudget: string[] = [];
 
               for (const f of eligible) {
-                if (repoBytesUsed >= REPO_BUDGET || totalCharsUsed >= TOTAL_BUDGET) break;
-                const maxChars = tier(f) <= 1 ? 5000 : tier(f) === 2 ? 3000 : tier(f) === 3 ? 2000 : 1200;
+                if (repoBytesUsed >= REPO_BUDGET || totalCharsUsed >= TOTAL_BUDGET) { skippedBudget.push(f.path); continue; }
                 try {
                   const fr = await fetch(`${BASE}/api/gitlab/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`);
                   if (!fr.ok) continue;
                   const fd = await fr.json() as { content?: string };
                   if (!fd.content) continue;
-                  const snippet = fd.content.slice(0, maxChars);
-                  codeLines.push(`\n--- ${f.path} ---\n${snippet}${fd.content.length > maxChars ? '\n[truncated]' : ''}`);
+                  const remaining = Math.min(REPO_BUDGET - repoBytesUsed, TOTAL_BUDGET - totalCharsUsed);
+                  const snippet = fd.content.slice(0, remaining);
+                  const truncated = fd.content.length > remaining;
+                  codeLines.push(`### FILE: ${f.path}\n${snippet}${truncated ? '\n[...truncated]' : ''}`);
                   repoBytesUsed += snippet.length;
                   totalCharsUsed += snippet.length;
                 } catch { /* skip unreadable file */ }
               }
 
-              if (codeLines.length > 0) {
-                repoCtx += `\nCODE FILES${repoLabel} (${codeLines.length} files):\n${codeLines.join('\n')}`;
-              }
+              const summary = [
+                `## REPOSITORY: ${repo}`,
+                `Files included: ${codeLines.length} / ${allFiles.length} total`,
+                `Estimated tokens: ~${Math.round(repoBytesUsed / 4).toLocaleString()}`,
+                skippedBinary.length ? `Skipped (binary): ${skippedBinary.length} files` : '',
+                skippedLarge.length ? `Skipped (>100KB): ${skippedLarge.length} files` : '',
+                skippedBudget.length ? `Skipped (budget): ${skippedBudget.length} files` : '',
+              ].filter(Boolean).join('\n');
+
+              repoCtx += `\n\n${summary}\n\n${codeLines.join('\n\n')}`;
             }
           } catch { /* best-effort */ }
 
@@ -943,11 +1017,35 @@ Analyze which goals these documents show progress on, who did the work, and when
     attachments?: ChatAttachment[];
   }
 
+  // Hard-cap: total system+user prompt must stay under ~160k tokens (640k chars)
+  // to leave room for the response and API overhead within Anthropic's 200k limit.
+  const MAX_PROMPT_CHARS = 640_000;
+  function capPromptSections(systemPrompt: string, githubSec: string, gitlabSec: string): { sys: string; gh: string; gl: string } {
+    const baseLen = systemPrompt.length - githubSec.length - gitlabSec.length;
+    const available = MAX_PROMPT_CHARS - baseLen;
+    if (available <= 0) return { sys: systemPrompt.slice(0, MAX_PROMPT_CHARS), gh: '', gl: '' };
+    const repoTotal = githubSec.length + gitlabSec.length;
+    if (repoTotal <= available) return { sys: systemPrompt, gh: githubSec, gl: gitlabSec };
+    const ratio = available / repoTotal;
+    const ghKeep = Math.floor(githubSec.length * ratio);
+    const glKeep = Math.floor(gitlabSec.length * ratio);
+    const gh = ghKeep > 50 ? githubSec.slice(0, ghKeep) + '\n[...truncated to fit context limit]' : '';
+    const gl = glKeep > 50 ? gitlabSec.slice(0, glKeep) + '\n[...truncated to fit context limit]' : '';
+    const newSys = systemPrompt.replace(githubSec, gh).replace(gitlabSec, gl);
+    return { sys: newSys, gh, gl };
+  }
+
   const CHAT_STYLE = `\n\nRESPONSE STYLE: Do not use emojis. Use rich markdown formatting throughout your responses — the UI renders it fully. Specifically: use \`backticks\` for ALL file names, function names, variable names, repo names, and code identifiers; use **bold** for key terms, task names, and important values; use *italics* for emphasis; use headers (##, ###) to organize longer responses; use bullet lists and numbered lists wherever structure aids clarity; use > blockquotes for notes or caveats; use fenced code blocks (\`\`\`) for any code snippets. Never output raw special characters as literal formatting — always apply the appropriate markdown element so the rendered output is visually clear and scannable.`;
 
   const CHAT_STYLE_WITH_REPO_PATHS = `${CHAT_STYLE} When referencing a file from a linked repository, prefer the most specific repo-qualified path you can infer such as \`repo-name/src/components/File.tsx\` or \`org/repo/src/components/File.tsx\`, not just \`src/components/File.tsx\`.`;
 
   server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
+    // Rate limiting: per-user (from JWT) or per-IP fallback
+    const rlKey = (request.headers['x-user-id'] as string | undefined) ?? request.ip;
+    if (isRateLimited(rlKey)) {
+      return reply.status(429).send({ error: `Rate limit exceeded — max 30 AI requests per minute. Retry in ${resetInSeconds(rlKey)}s.` });
+    }
+
     const { projectId, messages, reportMode, attachments } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
     const provider = reportMode
@@ -958,31 +1056,37 @@ Analyze which goals these documents show progress on, who did the work, and when
       return reply.status(400).send({ error: 'projectId and messages are required' });
     }
 
+    // Look up user's personal API key override for the selected provider
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
+
     // Always use full context so documents and repo code are available
     const ctx = await getCachedContext(projectId);
 
     const docsSection = ctx.documentsContext
       ? `\n\nUPLOADED DOCUMENTS (full text):\n${ctx.documentsContext}`
       : '';
+    // Pass full repo context — budgets are enforced during fetch (200k chars per repo)
     const githubSection = ctx.githubContext
-      ? `\n\nGITHUB (commits + source code):\n${ctx.githubContext.slice(0, 15_000)}`
+      ? `\n\nGITHUB (commits + full source code):\n${ctx.githubContext}`
       : '';
     const gitlabSection = ctx.gitlabContext
-      ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext.slice(0, 60_000)}`
+      ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext}`
       : '';
 
     const systemPrompt = reportMode
-      ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual tasks, code files, and activity from the project data below.${CHAT_STYLE_WITH_REPO_PATHS}
+      ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual tasks by their title, code files, and activity from the project data below. Never show task IDs to the user.${CHAT_STYLE_WITH_REPO_PATHS}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}
-TASKS:\n${ctx.goalsText}
+TASKS:\n${ctx.tasksText}
 ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
       : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE_WITH_REPO_PATHS}
+
+IMPORTANT: Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project?.github_repo}` : ''}
 
 TASKS (${ctx.goals.length} total):
-${ctx.goalsText}
+${ctx.tasksText}
 
 TEAM MEMBERS:
 ${ctx.membersText}
@@ -1020,13 +1124,15 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
       ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
       : transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
 
+    const { sys: cappedSystem } = capPromptSections(systemPrompt, githubSection, gitlabSection);
+
     try {
       const result = await chat(provider, {
-        system: systemPrompt,
+        system: cappedSystem,
         user: userContent,
-        maxTokens: 1500,
+        maxTokens: 4096,
         images: imageAttachments.length ? imageAttachments : undefined,
-      });
+      }, userApiKey);
 
       // Parse optional action tag
       let pendingAction: object | null = null;
@@ -1049,7 +1155,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
     }
   });
 
-  // ── Chat with streaming status (SSE) ─────────────────────────────────────
+  // ── Chat with real token streaming (SSE) ─────────────────────────────────
   server.post<{ Body: ChatBody }>('/ai/chat-stream', async (request, reply) => {
     reply.hijack();
     const res = reply.raw;
@@ -1060,7 +1166,15 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-    const { projectId, messages, reportMode } = request.body;
+    // Rate limiting: per-user (from JWT) or per-IP fallback
+    const rlKey = (request.headers['x-user-id'] as string | undefined) ?? request.ip;
+    if (isRateLimited(rlKey)) {
+      send({ type: 'error', message: `Rate limit exceeded — max 30 AI requests per minute. Retry in ${resetInSeconds(rlKey)}s.` });
+      res.end();
+      return;
+    }
+
+    const { projectId, messages, reportMode, attachments } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
     const provider = reportMode
       ? resolveProvider(request.body, 'claude-sonnet')
@@ -1072,50 +1186,63 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
       return;
     }
 
+    // Look up user's personal API key override for the selected provider
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
+
     try {
       send({ type: 'status', text: 'Loading project context…' });
-      // Always use full context so documents and repo code are available
       const ctx = await getCachedContext(projectId);
+      send({ type: 'status', text: 'Generating response…' });
 
-      send({ type: 'status', text: 'Consulting AI…' });
-
-      const docsSection2 = ctx.documentsContext
-        ? `\n\nUPLOADED DOCUMENTS (full text):\n${ctx.documentsContext}`
-        : '';
-      const githubSection2 = ctx.githubContext
-        ? `\n\nGITHUB (commits + source code):\n${ctx.githubContext.slice(0, 15_000)}`
-        : '';
-      const gitlabSection2 = ctx.gitlabContext
-        ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext.slice(0, 60_000)}`
-        : '';
+      const docsSection = ctx.documentsContext ? `\n\nUPLOADED DOCUMENTS (full text):\n${ctx.documentsContext}` : '';
+      const githubSection = ctx.githubContext ? `\n\nGITHUB (commits + full source code):\n${ctx.githubContext}` : '';
+      const gitlabSection = ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext}` : '';
 
       const systemPrompt = reportMode
-        ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific.${CHAT_STYLE_WITH_REPO_PATHS}
-
-PROJECT: ${ctx.project?.name ?? 'Unknown'}
-TASKS:\n${ctx.goalsText}
-ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection2}${githubSection2}${gitlabSection2}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE_WITH_REPO_PATHS}
-
-PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}
-TASKS (${ctx.goals.length} total):\n${ctx.goalsText}
-TEAM MEMBERS:\n${ctx.membersText}
-RECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection2}${githubSection2}${gitlabSection2}`;
+        ? `You are Odyssey's report advisor. Help the user plan a project report. Be concise and specific. Always refer to tasks by their title, never by ID.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}\nTASKS:\n${ctx.tasksText}\nACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
+        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project.github_repo}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose ONE action on goals at the end using: <action>{"type":"create_goal"|"update_goal"|"delete_goal","description":"...","args":{...}}</action>`;
 
       const history = messages.slice(-20);
       const lastMsg = history[history.length - 1]?.content ?? '';
       const transcript = history.slice(0, -1).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
-      const userContent = transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
 
-      const result = await chat(provider, { system: systemPrompt, user: userContent, maxTokens: 1500 });
+      // Build attachment prefix (same as non-stream endpoint)
+      let attachmentPrefix = '';
+      const imageAttachments: { base64: string; mimeType: string }[] = [];
+      for (const att of attachments ?? []) {
+        if (att.type === 'image' && att.base64 && att.mimeType) {
+          imageAttachments.push({ base64: att.base64, mimeType: att.mimeType });
+        } else if ((att.type === 'text-file' || att.type === 'document') && att.textContent) {
+          attachmentPrefix += `[Attached: ${att.name}]\n${att.textContent.slice(0, 20_000)}\n---\n\n`;
+        } else if (att.type === 'repo' && att.repo) {
+          attachmentPrefix += `[Repository context: ${att.repo} (${att.repoType ?? 'git'})]\n`;
+        }
+      }
+      const userContent = attachmentPrefix
+        ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
+        : transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
 
+      const { sys: cappedSystem } = capPromptSections(systemPrompt, githubSection, gitlabSection);
+
+      let fullText = '';
+      const result = await streamChat(
+        provider,
+        { system: cappedSystem, user: userContent, maxTokens: 4096, images: imageAttachments.length ? imageAttachments : undefined },
+        (chunk) => {
+          fullText += chunk;
+          send({ type: 'token', text: chunk });
+        },
+        userApiKey,
+      );
+
+      // Parse optional action tag from full accumulated text
       let pendingAction: object | null = null;
-      let displayMessage = result.text;
-      const actionMatch = result.text.match(/<action>([\s\S]*?)<\/action>/);
+      let displayMessage = result.text || fullText;
+      const actionMatch = displayMessage.match(/<action>([\s\S]*?)<\/action>/);
       if (actionMatch) {
         try {
           pendingAction = JSON.parse(actionMatch[1].trim());
-          displayMessage = result.text.replace(/<action>[\s\S]*?<\/action>/, '').trim();
+          displayMessage = displayMessage.replace(/<action>[\s\S]*?<\/action>/, '').trim();
         } catch { /* ignore */ }
       }
 
@@ -1123,7 +1250,9 @@ RECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection2}${githubSection
     } catch (err: any) {
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
-      send({ type: 'error', message: msg });
+      if (msg.includes('credit') || msg.includes('billing')) send({ type: 'error', message: 'API key has no credits.' });
+      else if (msg.includes('rate') || msg.includes('429')) send({ type: 'error', message: 'Rate limit — try again shortly.' });
+      else send({ type: 'error', message: msg });
     }
 
     res.end();

@@ -15,7 +15,7 @@ const agentMeta: Record<AIAgentValue, { name: string; shortName: string; descrip
 const DISPLAY_ORDER: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
 
 export default function AIAgentDropdown() {
-  const { agent, setAgent, providers, loading, lastUsed } = useAIAgent();
+  const { agent, setAgent, providers, loading, serverReachable, lastUsed } = useAIAgent();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -32,8 +32,9 @@ export default function AIAgentDropdown() {
   // Button dot uses last-used color when in Auto mode
   const buttonColorClass = agent === 'auto' ? (lastUsedMeta?.colorClass ?? 'aid-auto') : buttonMeta.colorClass;
 
+  // When server is unreachable, treat all as unavailable but show different reason
   const isAvailable = (id: AIAgentValue) =>
-    id === 'auto' || (providers.find((p) => p.id === id)?.available ?? false);
+    id === 'auto' || (serverReachable && (providers.find((p) => p.id === id)?.available ?? false));
 
   return (
     <div ref={ref} className="relative">
@@ -73,6 +74,13 @@ export default function AIAgentDropdown() {
             )}
           </div>
 
+          {!serverReachable && (
+            <div className="px-3 py-2 bg-[var(--color-danger,#ef4444)]/10 border-b border-[var(--color-border)]">
+              <p className="text-[10px] text-[var(--color-danger,#ef4444)]">
+                ⚠ Server offline — start the server to enable AI models.
+              </p>
+            </div>
+          )}
           {loading ? (
             <div className="px-3 py-6 text-center text-xs text-[var(--color-muted)]">Loading…</div>
           ) : (
@@ -115,6 +123,8 @@ export default function AIAgentDropdown() {
                       </span>
                     ) : available ? (
                       <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-muted)] shrink-0">Ready</span>
+                    ) : !serverReachable ? (
+                      <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-muted)] shrink-0">Offline</span>
                     ) : (
                       <span className="text-[10px] tracking-[0.08em] uppercase text-[var(--color-muted)] shrink-0">No Key</span>
                     )}

@@ -1,8 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
-import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
 import FilePreviewModal from '../components/FilePreviewModal';
 import RepoTreeModal from '../components/RepoTreeModal';
 import './ProjectDetailPage.css';
@@ -22,7 +19,6 @@ import {
   Link,
   Loader2,
   CheckCircle,
-  UserPlus,
   X,
   Settings,
   TrendingUp,
@@ -32,20 +28,18 @@ import {
   GitBranch,
   FileText,
   ExternalLink,
-  Pencil,
   ClipboardList,
-  ChevronDown,
-  ChevronUp,
-  RefreshCw,
-  ShieldAlert,
   Download,
   Table,
   Copy,
-  Lock,
-  Globe,
   LogOut,
   Check,
 } from 'lucide-react';
+import OverviewTab from '../components/project-tabs/OverviewTab';
+import ActivityTab from '../components/project-tabs/ActivityTab';
+import GoalsTab from '../components/project-tabs/GoalsTab';
+import SettingsTab from '../components/project-tabs/SettingsTab';
+import ErrorBoundary from '../components/ErrorBoundary';
 import GoalMetrics from '../components/GoalMetrics';
 import SearchPanel, { type SearchPanelHandle } from '../components/SearchPanel';
 import LogTimeModal from '../components/LogTimeModal';
@@ -57,7 +51,9 @@ import GoalReportModal from '../components/GoalReportModal';
 import ReportsTab from '../components/ReportsTab';
 import ProjectQRCode from '../components/ProjectQRCode';
 import { useProject, useJoinRequests, deleteProjectCascade, removeSelfFromProjectAccess } from '../hooks/useProjects';
-import { fetchOneDriveFiles, useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
+import { useProjectLabels } from '../hooks/useProjectLabels';
+import { useProjectPrompts, PROMPT_LABELS, type PromptFeature } from '../hooks/useProjectPrompts';
+import { useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
 import { useProjectTimeLogs } from '../hooks/useProjectTimeLogs';
@@ -65,11 +61,6 @@ import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useChatPanel } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
-import GoalCard from '../components/GoalCard';
-import ActivityFeed from '../components/ActivityFeed';
-import ProgressRing from '../components/ProgressRing';
-import CommitActivityCharts from '../components/CommitActivityCharts';
-import Timeline from '../components/Timeline';
 import TimelinePage from '../components/TimelinePage';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
@@ -206,12 +197,23 @@ export default function ProjectDetailPage() {
   const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
   const { goals, createGoal, updateGoal, deleteGoal, refetch: refetchGoals } = useGoals(projectId);
   const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
+  const { categories: projectCategories, loes: projectLoes, labels: projectLabels, addLabel, deleteLabel } = useProjectLabels(projectId);
+  const { getPrompt, savePrompt, resetPrompt, resetAllPrompts } = useProjectPrompts(projectId);
   const { status: msStatus } = useMicrosoftIntegration();
   const [deletingProject, setDeletingProject] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [leavingProject, setLeavingProject] = useState(false);
   const [inviteRole, setInviteRole] = useState<'member' | 'owner'>('member');
   const [copySuccess, setCopySuccess] = useState(false);
+  const [inviteTab, setInviteTab] = useState<'github' | 'email' | 'qr'>('github');
+  const [editPromptFeature, setEditPromptFeature] = useState<PromptFeature | null>(null);
+  const [editPromptText, setEditPromptText] = useState('');
+  const [resetPromptsTyped, setResetPromptsTyped] = useState('');
+  const [resetPromptsModalOpen, setResetPromptsModalOpen] = useState(false);
+  const [newLabelName, setNewLabelName] = useState('');
+  const [newLabelColor, setNewLabelColor] = useState('#6a9fd8');
+  const [newLabelType, setNewLabelType] = useState<'category' | 'loe'>('category');
+  const [imageUploading, setImageUploading] = useState(false);
 
   const isOwner = project?.owner_id === user?.id;
 
@@ -250,6 +252,26 @@ export default function ProjectDetailPage() {
     await navigator.clipboard.writeText(project.invite_code);
     setCopySuccess(true);
     setTimeout(() => setCopySuccess(false), 2000);
+  };
+
+  const handleImageUpload = async (file: File, inputEl?: HTMLInputElement | null) => {
+    if (!projectId) return;
+    setImageUploading(true);
+    try {
+      const ext = file.name.split('.').pop() ?? 'jpg';
+      const path = `project-images/${projectId}/avatar.${ext}`;
+      const { error: upErr } = await supabase.storage.from('project-assets').upload(path, file, { upsert: true });
+      if (upErr) throw upErr;
+      const { data: urlData } = supabase.storage.from('project-assets').getPublicUrl(path);
+      const newUrl = urlData.publicUrl + `?t=${Date.now()}`;
+      await updateProject({ image_url: newUrl });
+      // Clear file input so the same file can be re-uploaded if needed
+      if (inputEl) inputEl.value = '';
+    } catch (err) {
+      console.error('Image upload failed:', err);
+    } finally {
+      setImageUploading(false);
+    }
   };
 
   // Join requests (for owners to approve/deny)
@@ -1041,464 +1063,35 @@ export default function ProjectDetailPage() {
 
       {/* Tab Content */}
       {activeTab === 'overview' && (
-        <>
-          {/* Stats + Integrations + AI */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-px bg-border border border-border mb-8">
-            <div className="bg-surface p-6">
-              <h3 className="font-sans text-sm font-bold text-heading mb-4">Project Status</h3>
-              <div className="space-y-3">
-                <StatRow label="Tasks" value={`${completedGoals.length} / ${goals.length}`} />
-                <StatRow label="Overall Progress" value={`${overallProgress}%`} />
-                <StatRow label="Members" value={String(members.length || 1)} />
-                <StatRow label="Events" value={String(events.length)} />
-                {(() => {
-                  const now = Date.now();
-                  const overdueCount = goals.filter(
-                    (g) => g.deadline && new Date(g.deadline).getTime() < now && g.status !== 'complete'
-                  ).length;
-                  const soonCount = goals.filter((g) => {
-                    if (!g.deadline || g.status === 'complete') return false;
-                    const ms = new Date(g.deadline).getTime() - now;
-                    return ms > 0 && ms < 14 * 86_400_000 && g.progress < 75;
-                  }).length;
-                  const completionRate = goals.length > 0 ? completedGoals.length / goals.length : 0;
-
-                  let label: string;
-                  let color: string;
-                  if (overdueCount > 0) {
-                    label = `At Risk · ${overdueCount} overdue`;
-                    color = 'text-red-400';
-                  } else if (soonCount > 0) {
-                    label = `Caution · ${soonCount} due soon`;
-                    color = 'text-yellow-400';
-                  } else if (completionRate >= 0.5 || overallProgress >= 60) {
-                    label = 'On Track';
-                    color = 'text-green-500';
-                  } else if (goals.length === 0) {
-                    label = 'No tasks yet';
-                    color = 'text-muted';
-                  } else {
-                    label = 'Early Stage';
-                    color = 'text-muted';
-                  }
-                  return (
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono text-muted">Trajectory</span>
-                      <span className={`text-xs font-mono font-medium ${color}`}>{label}</span>
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
-            <div className="bg-surface p-6">
-              <h3 className="font-sans text-sm font-bold text-heading mb-4">Integrations</h3>
-              <div className="space-y-2">
-                <div className="flex items-center gap-3 p-3 border border-border rounded">
-                  <Github size={16} className={project.github_repo ? 'text-accent' : 'text-muted'} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-heading font-medium">GitHub</div>
-                    {project.github_repo ? (
-                      <a
-                        href={`https://github.com/${project.github_repo}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[10px] text-accent hover:underline truncate block"
-                      >
-                        {project.github_repo}
-                      </a>
-                    ) : (
-                      <div className="text-[10px] text-muted">Not connected</div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('settings')}
-                    className="text-[10px] text-accent hover:underline"
-                  >
-                    {project.github_repo ? 'Manage' : 'Connect'}
-                  </button>
-                </div>
-                <div className="flex items-center gap-3 p-3 border border-border rounded">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" className={gitlabRepos.length > 0 ? 'text-[#FC6D26]' : 'text-muted'}>
-                    <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
-                  </svg>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-heading font-medium">GitLab <span className="text-[9px] text-muted font-mono">NPS</span></div>
-                    {gitlabRepos.length > 0 ? (
-                      <div className="text-[10px] text-muted truncate">
-                        {gitlabRepos.length === 1 ? gitlabRepos[0] : `${gitlabRepos.length} repos linked`}
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-muted">Not connected</div>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('settings')}
-                    className="text-[10px] text-accent hover:underline"
-                  >
-                    {gitlabRepos.length > 0 ? 'Manage' : 'Connect'}
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className="bg-surface p-6 flex flex-col gap-5">
-              {/* AI Insights */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Sparkles size={14} className="text-accent" />
-                    <h3 className="font-sans text-sm font-bold text-heading">AI Insights</h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleGenerateInsights}
-                    disabled={insightsLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
-                               bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
-                               disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {insightsLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-                    {insightsLoading ? 'Analyzing…' : insights ? 'Regenerate' : 'Generate'}
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted leading-relaxed">
-                  {insights ? `Last run ${new Date(insights.generatedAt ?? '').toLocaleDateString()}` : 'Project status, next steps, and feature ideas.'}
-                </p>
-              </div>
-
-              <div className="border-t border-border" />
-
-              {/* 2-Week Standup */}
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <ClipboardList size={14} className="text-accent" />
-                    <h3 className="font-sans text-sm font-bold text-heading">2-Week Standup</h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleGenerateStandup}
-                    disabled={standupLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
-                               bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
-                               disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {standupLoading ? <Loader2 size={10} className="animate-spin" /> : <ClipboardList size={10} />}
-                    {standupLoading ? 'Generating…' : standup ? 'Regenerate' : 'Generate'}
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted leading-relaxed">
-                  {standup ? `${standup.totalCommits} commits · ${standup.period.from} → ${standup.period.to}` : 'Summarizes commits, goals, and activity from the last 14 days.'}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* AI Insights Results */}
-          {(insights || insightsLoading || insightsError) && (
-            <div className="border border-border bg-surface p-6 mb-8">
-              {/* Header row — always visible */}
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Sparkles size={14} className="text-accent" />
-                  <h3 className="font-sans text-sm font-bold text-heading">AI Insights</h3>
-                </div>
-                {insights && (
-                  <div className="flex flex-col items-end gap-0.5">
-                    {insights.generatedAt && (
-                      <div className="flex items-center gap-1 text-[10px] text-muted">
-                        <Clock size={9} />
-                        {new Date(insights.generatedAt).toLocaleString()}
-                      </div>
-                    )}
-                    {insights.provider && (
-                      <div className="flex items-center gap-1 text-[10px] text-muted">
-                        <CheckCircle size={9} className="text-green-500" />
-                        <span>{insights.provider}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {insightsLoading ? (
-                <div className="flex items-center justify-center gap-3 py-12">
-                  <Loader2 size={20} className="animate-spin text-accent" />
-                  <span className="text-sm text-muted">Analyzing project with AI…</span>
-                </div>
-              ) : insightsError ? (
-                <div className="flex items-center gap-3 p-4 border border-red-300/30 bg-red-500/5 rounded">
-                  <X size={16} className="text-red-400 shrink-0" />
-                  <div>
-                    <p className="text-xs font-medium text-heading mb-0.5">Insights generation failed</p>
-                    <p className="text-[11px] text-muted">{insightsError}</p>
-                    <p className="text-[10px] text-muted mt-1">Try selecting a different AI model from the dropdown and clicking Generate again.</p>
-                  </div>
-                </div>
-              ) : insights && (
-                <div className="space-y-6">
-
-                  {/* Project Status */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <BarChart3 size={14} className="text-accent" />
-                      <h4 className="font-sans text-base font-bold text-heading">Project Status</h4>
-                    </div>
-                    <div className="text-xs text-muted leading-relaxed pl-5">
-                      <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>
-                        {insights.status}
-                      </MarkdownWithFileLinks>
-                    </div>
-                  </div>
-
-                  {/* Next Steps */}
-                  {insights.nextSteps?.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <Target size={14} className="text-accent2" />
-                        <h4 className="font-sans text-base font-bold text-heading">What to Work on Next</h4>
-                      </div>
-                      <ul className="space-y-1.5 pl-5">
-                        {insights.nextSteps.map((step: string, i: number) => (
-                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-accent font-mono text-[10px] mt-0.5 shrink-0">{i + 1}.</span>
-                            <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{step}</MarkdownWithFileLinks>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Future Features */}
-                  {insights.futureFeatures?.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <Sparkles size={14} className="text-yellow-500" />
-                        <h4 className="font-sans text-base font-bold text-heading">Future Feature Ideas</h4>
-                      </div>
-                      <ul className="space-y-1.5 pl-5">
-                        {insights.futureFeatures.map((feat: string, i: number) => (
-                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-yellow-500 shrink-0">◆</span>
-                            <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{feat}</MarkdownWithFileLinks>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Code Insights */}
-                  {insights.codeInsights && insights.codeInsights.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <GitBranch size={14} className="text-accent3" />
-                        <h4 className="font-sans text-base font-bold text-heading">Codebase Analysis</h4>
-                      </div>
-                      <ul className="space-y-1.5 pl-5">
-                        {insights.codeInsights.map((obs: string, i: number) => (
-                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-accent3 font-mono text-[10px] mt-0.5 shrink-0">{'</>'}</span>
-                            <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{obs}</MarkdownWithFileLinks>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Standup Results */}
-          {(standup || standupLoading || standupError) && (
-            <div className="border border-border bg-surface p-6 mb-8">
-              <div className="flex items-center gap-2 mb-4">
-                <ClipboardList size={14} className="text-accent" />
-                <h3 className="font-sans text-sm font-bold text-heading">2-Week Standup</h3>
-              </div>
-
-              {standupLoading && (
-                <div className="flex items-center gap-3 py-8 justify-center">
-                  <Loader2 size={18} className="animate-spin text-accent" />
-                  <span className="text-sm text-muted">Analyzing 14 days of activity…</span>
-                </div>
-              )}
-
-              {standupError && (
-                <div className="flex items-center gap-3 p-4 border border-red-300/30 bg-red-500/5 rounded">
-                  <X size={16} className="text-red-400 shrink-0" />
-                  <div>
-                    <p className="text-xs font-medium text-heading mb-0.5">Standup generation failed</p>
-                    <p className="text-[11px] text-muted">{standupError}</p>
-                  </div>
-                </div>
-              )}
-
-              {standup && (
-                <div className="space-y-5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[10px] font-mono text-muted">
-                      {standup.period.from} → {standup.period.to}
-                    </span>
-                    {standup.commitSummary.map((r) => (
-                      <span
-                        key={r.repo}
-                        className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-border/60 text-muted"
-                      >
-                        <GitBranch size={9} />
-                        {r.repo.split('/').pop()} · {r.count}
-                      </span>
-                    ))}
-                    {standup.provider && (
-                      <span className="ml-auto text-[10px] text-muted font-mono">{standup.provider}</span>
-                    )}
-                  </div>
-
-                  {standup.highlights && (
-                    <div className="px-4 py-3 rounded bg-accent/8 border border-accent/15">
-                      <p className="text-xs text-heading leading-relaxed">{standup.highlights}</p>
-                    </div>
-                  )}
-
-                  {standup.accomplished.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <CheckCircle size={13} className="text-green-500" />
-                        <h4 className="font-sans text-base font-bold text-heading">Accomplished</h4>
-                      </div>
-                      <ul className="space-y-1.5 pl-5">
-                        {standup.accomplished.map((item, i) => (
-                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-green-500 shrink-0 mt-0.5">✓</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {standup.inProgress.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <TrendingUp size={13} className="text-accent" />
-                        <h4 className="font-sans text-base font-bold text-heading">In Progress</h4>
-                      </div>
-                      <ul className="space-y-1.5 pl-5">
-                        {standup.inProgress.map((item, i) => (
-                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-accent shrink-0 mt-0.5">→</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {standup.blockers.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <X size={13} className="text-red-400" />
-                        <h4 className="font-sans text-base font-bold text-heading">Blockers / Risks</h4>
-                      </div>
-                      <ul className="space-y-1.5 pl-5">
-                        {standup.blockers.map((item, i) => (
-                          <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
-                            <span className="text-red-400 shrink-0 mt-0.5">⚠</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Timeline */}
-          <div className="border border-border bg-surface p-6 mb-8">
-            <div className="flex items-center gap-2 mb-4">
-              <Clock size={14} className="text-accent2" />
-              <h3 className="font-sans text-sm font-bold text-heading">Timeline</h3>
-            </div>
-            <Timeline
-              goals={goals}
-              members={[
-                { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You' },
-                ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
-              ]}
-            />
-          </div>
-
-          {/* Recent Activity */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Activity size={14} className="text-accent" />
-              <h3 className="font-sans text-sm font-bold text-heading">Recent Activity</h3>
-            </div>
-            <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
-            <ActivityFeed
-              events={events.slice(0, 10)}
-              loading={eventsLoading}
-              emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub repo to start."}
-            />
-          </div>
-
-          {/* Team Members */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Users size={14} className="text-accent2" />
-                <h3 className="font-sans text-sm font-bold text-heading">Team Members</h3>
-                <span className="text-[10px] text-muted font-mono bg-surface2 px-1.5 py-0.5 rounded">{members.length + 1}</span>
-              </div>
-              <button type="button" onClick={() => setActiveTab('settings')}
-                className="text-[10px] text-accent hover:underline">
-                Manage →
-              </button>
-            </div>
-            <div className="space-y-px border border-border bg-border">
-              {/* Owner row — current user */}
-              <div className="flex items-center gap-3 bg-surface px-4 py-2.5">
-                {user?.user_metadata?.avatar_url
-                  ? <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                  : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center"><span className="text-[10px] text-accent font-bold">You</span></div>
-                }
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-heading font-medium truncate">{user?.user_metadata?.user_name ?? user?.email ?? 'You'}</div>
-                </div>
-                <span className="text-[9px] px-1.5 py-0.5 border border-accent3/30 text-accent3 rounded uppercase font-mono">Owner</span>
-              </div>
-              {members.map((m) => (
-                <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-2.5 group">
-                  {m.profile?.avatar_url
-                    ? <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                    : <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
-                        <span className="text-[10px] text-accent2 font-bold uppercase">{(m.profile?.display_name ?? '?')[0]}</span>
-                      </div>
-                  }
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-heading font-medium truncate">{m.profile?.display_name ?? m.user_id}</div>
-                  </div>
-                  <span className={`text-[9px] px-1.5 py-0.5 border rounded uppercase font-mono ${
-                    m.role === 'owner' ? 'border-accent3/30 text-accent3' : 'border-border text-muted'
-                  }`}>{m.role}</span>
-                  {m.role !== 'owner' && (
-                    <button
-                      type="button"
-                      title="Promote to owner"
-                      onClick={() => handlePromoteMember(m.user_id)}
-                      className="opacity-0 group-hover:opacity-100 text-[9px] px-2 py-0.5 border border-accent3/30 text-accent3 rounded hover:bg-accent3/10 transition-all"
-                    >
-                      Make Owner
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
+        <ErrorBoundary label="Overview Tab"><OverviewTab
+          project={project}
+          goals={goals}
+          completedGoals={completedGoals}
+          activeGoals={activeGoals}
+          overallProgress={overallProgress}
+          members={members}
+          events={events}
+          eventsLoading={eventsLoading}
+          user={user}
+          hasCommitData={hasCommitData}
+          setHasCommitData={setHasCommitData}
+          gitlabRepos={gitlabRepos}
+          filePaths={filePaths}
+          insights={insights}
+          insightsLoading={insightsLoading}
+          insightsError={insightsError}
+          standup={standup}
+          standupLoading={standupLoading}
+          standupError={standupError}
+          handleGenerateInsights={handleGenerateInsights}
+          handleGenerateStandup={handleGenerateStandup}
+          handleFileClick={handleFileClick}
+          handleRepoClick={handleRepoClick}
+          setEditGoal={setEditGoal}
+          setEditAutoGuidance={setEditAutoGuidance}
+          setActiveTab={setActiveTab}
+          handlePromoteMember={handlePromoteMember}
+        /></ErrorBoundary>
       )}
 
       {activeTab === 'timeline' && (
@@ -1506,362 +1099,60 @@ export default function ProjectDetailPage() {
           goals={goals}
           projectName={project.name}
           projectId={project.id}
-          members={members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null }))}
+          members={[
+            ...(user ? [{ user_id: user.id, display_name: user.user_metadata?.user_name ?? user.user_metadata?.full_name ?? user.email ?? 'You' }] : []),
+            ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
+          ]}
           onGoalClick={(g) => { setEditAutoGuidance(false); setEditGoal(g); }}
           onCreateGoalForDate={(dateStr) => { setNewGoalDeadline(dateStr); goalModal.onOpen(); }}
         />
       )}
 
       {activeTab === 'activity' && (
-        <div className="border border-border bg-surface p-6 space-y-8">
-          <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
-
-          {/* ── Recent Goal Progress ────────────────────────────────── */}
-          {(() => {
-            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-            const recentGoals = goals
-              .filter((g) => g.updated_at && g.updated_at > thirtyDaysAgo && g.status !== 'not_started')
-              .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
-              .slice(0, 8);
-
-            if (recentGoals.length === 0) return null;
-
-            const statusLabel: Record<string, string> = {
-              in_progress: 'In Progress',
-              in_review: 'In Review',
-              complete: 'Complete',
-              at_risk: 'At Risk',
-            };
-            const statusColor: Record<string, string> = {
-              not_started: 'text-[#D94F4F]',
-              in_progress:  'text-[#D97E2A]',
-              in_review:    'text-[#facc15]',
-              complete:     'text-[#6DBE7D]',
-              at_risk:      'text-[#D94F4F]',
-            };
-
-            return (
-              <section>
-                <h4 className="text-[10px] tracking-[0.2em] uppercase text-muted font-semibold mb-3">
-                  Recent Task Progress
-                </h4>
-                <div className="space-y-3">
-                  {recentGoals.map((g) => {
-                    const updatedBy = getAssignee(g.updated_by);
-                    const assignedTo = getAssignee(g.assigned_to);
-                    const actor = updatedBy ?? assignedTo;
-
-                    const relatedEvent = events.find(
-                      (e) => e.event_type === 'goal_progress_updated' &&
-                        (e.metadata as Record<string, unknown> | null)?.goal_id === g.id
-                    );
-                    const relatedMeta = relatedEvent?.metadata as Record<string, unknown> | null;
-                    const evidence = relatedMeta?.evidence as string | undefined;
-                    const completedBy = relatedMeta?.completed_by as string | undefined;
-
-                    const daysAgo = Math.floor(
-                      (Date.now() - new Date(g.updated_at).getTime()) / (1000 * 60 * 60 * 24)
-                    );
-                    const timeStr = daysAgo === 0 ? 'today' : daysAgo === 1 ? 'yesterday' : `${daysAgo}d ago`;
-                    const guidance = taskGuidance[g.id];
-                    const hasGuidance = !!guidance?.text;
-                    const isVisible = !!guidanceVisible[g.id];
-
-                    return (
-                      <div key={g.id} className="rounded border border-border/50 bg-surface2/30 hover:bg-surface2 transition-colors group">
-                        <div className="flex items-start gap-3 px-3 py-3">
-                          {/* Progress ring */}
-                          <div className="relative shrink-0">
-                            <ProgressRing progress={g.progress} size={44} />
-                            {g.status === 'complete' && (
-                              <CheckCircle size={10} className="absolute -top-0.5 -right-0.5 text-accent3" />
-                            )}
-                          </div>
-
-                          <div className="flex-1 min-w-0">
-                            {/* Title row */}
-                            <div className="flex items-start justify-between gap-2">
-                              <span className="text-sm text-heading font-semibold leading-snug">{g.title}</span>
-                              <div className="flex flex-col items-end shrink-0 gap-0.5">
-                                <button
-                                  type="button"
-                                  title={hasGuidance ? 'Regenerate guidance' : 'Get AI guidance'}
-                                  onClick={() => handleTaskGuidance(g)}
-                                  disabled={guidance?.loading}
-                                  className={`opacity-0 group-hover:opacity-100 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] hover:bg-accent/10 transition-all disabled:opacity-40 ${hasGuidance ? 'text-accent' : 'text-muted hover:text-accent'}`}
-                                >
-                                  {hasGuidance ? <RefreshCw size={10} /> : <Sparkles size={11} />}
-                                  {hasGuidance && <span className="font-mono">Regenerate</span>}
-                                </button>
-                                <span className="text-[10px] text-muted font-mono">{timeStr}</span>
-                              </div>
-                            </div>
-
-                            {/* Badges row */}
-                            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                              <span className={`text-[10px] font-semibold ${statusColor[g.status] ?? 'text-muted'}`}>
-                                {statusLabel[g.status] ?? g.status}
-                              </span>
-                              <span className="text-[10px] text-muted font-mono">{g.progress}%</span>
-                              {g.category && (
-                                <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{g.category}</span>
-                              )}
-                              {g.loe && (
-                                <span className="text-[9px] px-1.5 py-0.5 border border-accent2/30 rounded text-accent2 font-mono uppercase">{g.loe}</span>
-                              )}
-                              {actor && (
-                                <span className="text-[10px] text-muted">
-                                  {updatedBy ? `updated by ${updatedBy.display_name}` : assignedTo ? `assigned to ${assignedTo.display_name}` : ''}
-                                </span>
-                              )}
-                              {completedBy && (
-                                <span className="text-[10px] text-muted">work by {completedBy}</span>
-                              )}
-                            </div>
-
-                            {evidence && (
-                              <p className="text-[11px] text-muted mt-1 line-clamp-2 italic">{evidence}</p>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* AI Guidance panel — collapsible, text persists */}
-                        {(guidance?.loading || hasGuidance) && (
-                          <div className="border-t border-border/50">
-                            {/* Panel header with collapse toggle */}
-                            <button
-                              type="button"
-                              onClick={() => !guidance?.loading && setGuidanceVisible((prev) => ({ ...prev, [g.id]: !isVisible }))}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-surface2/50 transition-colors"
-                            >
-                              {guidance?.loading
-                                ? <Loader2 size={11} className="text-accent shrink-0 animate-spin" />
-                                : <Sparkles size={11} className="text-accent shrink-0" />
-                              }
-                              <span className="text-[10px] text-accent font-mono tracking-wide flex-1 text-left">
-                                {guidance?.loading ? 'Analyzing task…' : 'AI Guidance'}
-                              </span>
-                              {!guidance?.loading && (
-                                isVisible
-                                  ? <ChevronUp size={11} className="text-muted" />
-                                  : <ChevronDown size={11} className="text-muted" />
-                              )}
-                            </button>
-
-                            {/* Collapsible content — hidden while loading to avoid duplicate status */}
-                            {isVisible && !guidance?.loading && (
-                              <div className="px-3 pb-2.5">
-                                <div className="text-[11px] text-muted leading-relaxed min-w-0">
-                                  <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
-                                    components={{
-                                      p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
-                                      h1: ({ children }) => <h1 className="text-xs font-bold mb-1.5 mt-2 first:mt-0 text-heading">{children}</h1>,
-                                      h2: ({ children }) => <h2 className="text-xs font-bold mb-1 mt-2 first:mt-0 text-heading">{children}</h2>,
-                                      h3: ({ children }) => <h3 className="text-[11px] font-semibold mb-1 mt-1.5 first:mt-0 text-heading">{children}</h3>,
-                                      ul: ({ children }) => <ul className="mb-1.5 pl-4 space-y-0.5 list-disc">{children}</ul>,
-                                      ol: ({ children }) => <ol className="mb-1.5 pl-4 space-y-0.5 list-decimal">{children}</ol>,
-                                      strong: ({ children }) => <strong className="font-semibold text-heading">{children}</strong>,
-                                      em: ({ children }) => <em className="italic">{children}</em>,
-                                      code: ({ children }) => <code className="bg-surface border border-border rounded px-1 py-0.5 font-mono text-[10px]">{children}</code>,
-                                      a: ({ href, children }) => <a href={href} className="text-accent2 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                    }}
-                                  >
-                                    {guidance?.text ?? ''}
-                                  </ReactMarkdown>
-                                </div>
-                                {guidance?.provider && (
-                                  <div className="mt-1.5 text-[9px] text-muted/50 font-mono text-right">{guidance.provider}</div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            );
-          })()}
-
-          {/* ── Event Feed ───────────────────────────────────────────── */}
-          <section>
-            <h4 className="text-[10px] tracking-[0.2em] uppercase text-muted font-semibold mb-3">
-              All Activity
-            </h4>
-            <ActivityFeed
-              events={events}
-              loading={eventsLoading}
-              emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub or GitLab repo to start tracking."}
-            />
-          </section>
-        </div>
+        <ErrorBoundary label="Activity Tab"><ActivityTab
+          project={project}
+          goals={goals}
+          events={events}
+          eventsLoading={eventsLoading}
+          hasCommitData={hasCommitData}
+          setHasCommitData={setHasCommitData}
+          members={members}
+          user={user}
+          taskGuidance={taskGuidance}
+          guidanceVisible={guidanceVisible}
+          setGuidanceVisible={setGuidanceVisible}
+          handleTaskGuidance={handleTaskGuidance}
+          getAssignee={getAssignee}
+        /></ErrorBoundary>
       )}
 
       {activeTab === 'goals' && (
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-sans text-sm font-bold text-heading">Tasks ({goals.length})</h3>
-            <div className="flex items-center gap-2">
-              <SearchPanel
-                ref={searchRef}
-                projectId={projectId ?? null}
-                goals={goals}
-                events={events}
-                onGoalSelect={(id) => {
-                  const g = goals.find((g) => g.id === id);
-                  if (g) { setEditAutoGuidance(false); setEditGoal(g); }
-                }}
-                onEventSelect={() => setActiveTab('activity')}
-              />
-              <div className="flex items-center">
-                <button
-                  type="button"
-                  onClick={handleAssessRisk}
-                  disabled={riskAssessing}
-                  title="Run AI risk assessment on all tasks"
-                  className={`inline-flex items-center gap-2 px-4 py-2 border text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors disabled:opacity-50 ${riskReport ? 'rounded-l-md border-r-0 border-border text-muted' : 'rounded-md border-border text-muted'}`}
-                >
-                  {riskAssessing ? <Loader2 size={12} className="animate-spin" /> : <ShieldAlert size={12} />}
-                  {riskAssessing ? 'Assessing…' : 'Assess Risk'}
-                </button>
-                {riskReport && (
-                  <button
-                    type="button"
-                    onClick={() => setRiskPanelOpen(v => !v)}
-                    title={riskPanelOpen ? 'Hide risk report' : 'Show risk report'}
-                    className={`inline-flex items-center gap-1 px-2.5 py-2 border border-border text-xs font-mono rounded-r-md transition-colors ${riskPanelOpen ? 'bg-surface2 text-heading' : 'text-muted hover:bg-surface2 hover:text-heading'}`}
-                  >
-                    {riskPanelOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                  </button>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={handleSyncOfficeProgress}
-                disabled={syncingProgress}
-                title="Analyze imported Office documents and auto-update goal progress using AI"
-                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50"
-              >
-                {syncingProgress ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                Sync from Office
-              </button>
-              <button
-                type="button"
-                onClick={goalModal.onOpen}
-                className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-              >
-                <Plus size={14} /> Add Task
-              </button>
-            </div>
-          </div>
-
-          {syncResult && (
-            <div className="mb-4 border border-accent/20 bg-accent/5 rounded p-4 text-xs">
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-semibold text-accent">
-                  {syncResult.applied > 0 ? `Updated ${syncResult.applied} task${syncResult.applied > 1 ? 's' : ''} from Office documents` : 'Analysis complete — no changes needed'}
-                </span>
-                <button type="button" title="Dismiss" onClick={() => setSyncResult(null)} className="text-muted hover:text-heading"><X size={12} /></button>
-              </div>
-              <p className="text-muted leading-relaxed">{syncResult.summary}</p>
-              {syncResult.provider && <p className="text-[10px] text-muted/60 mt-1">via {syncResult.provider}</p>}
-            </div>
-          )}
-          {/* Risk Assessment Panel */}
-          {riskReport && riskPanelOpen && (() => {
-            const sorted = [...riskReport.assessments].sort((a, b) => b.score - a.score);
-            const counts = { critical: 0, high: 0, medium: 0, low: 0 } as Record<string, number>;
-            sorted.forEach(a => { if (counts[a.level] !== undefined) counts[a.level]++; });
-            const levelStyle: Record<string, string> = {
-              critical: 'text-[var(--color-danger)] border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5',
-              high:     'text-orange-400 border-orange-400/30 bg-orange-400/5',
-              medium:   'text-yellow-400 border-yellow-400/30 bg-yellow-400/5',
-              low:      'text-[var(--color-accent3)] border-[var(--color-accent3)]/30 bg-[var(--color-accent3)]/5',
-            };
-            return (
-              <div className="mb-4 border border-border rounded-lg overflow-hidden">
-                {/* Header */}
-                <div className="flex items-center justify-between px-4 py-2.5 bg-surface2 border-b border-border">
-                  <div className="flex items-center gap-2">
-                    <ShieldAlert size={12} className="text-muted" />
-                    <span className="text-xs font-semibold text-heading">Risk Assessment</span>
-                    <span className="text-[10px] text-muted font-mono">
-                      {new Date(riskReport.generatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {(['critical','high','medium','low'] as const).map(lvl => counts[lvl] > 0 && (
-                      <span key={lvl} className={`text-[9px] font-mono px-1.5 py-0.5 border rounded ${levelStyle[lvl]}`}>
-                        {counts[lvl]} {lvl}
-                      </span>
-                    ))}
-                    <button type="button" title="Close" onClick={() => setRiskPanelOpen(false)} className="text-muted hover:text-heading transition-colors ml-1">
-                      <X size={12} />
-                    </button>
-                  </div>
-                </div>
-                {/* Goal rows */}
-                <div className="divide-y divide-border/50 max-h-72 overflow-y-auto">
-                  {sorted.map(a => {
-                    const goal = goals.find(g => g.id === a.goalId);
-                    if (!goal) return null;
-                    return (
-                      <div key={a.goalId} className="flex items-start gap-3 px-4 py-2.5 hover:bg-surface2/50 transition-colors">
-                        <span className={`shrink-0 text-[9px] font-mono px-1.5 py-0.5 border rounded mt-0.5 ${levelStyle[a.level] ?? ''}`}>
-                          {a.level}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <button
-                            type="button"
-                            className="text-xs text-heading font-mono text-left hover:text-accent transition-colors truncate w-full"
-                            onClick={() => { setEditAutoGuidance(false); setEditGoal(goal); }}
-                          >
-                            {goal.title}
-                          </button>
-                          {a.factors.length > 0 && (
-                            <ul className="mt-0.5 space-y-0.5">
-                              {a.factors.map((f, i) => (
-                                <li key={i} className="text-[10px] text-muted font-mono flex items-start gap-1">
-                                  <span className="shrink-0 mt-0.5 opacity-50">·</span>{f}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                        <span className="text-[10px] font-mono text-muted shrink-0">{a.score}/100</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })()}
-
-          {syncError && (
-            <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono">{syncError}</div>
-          )}
-
-          <GoalsKanban
-            goals={goals}
-            onUpdateStatus={(id, status) => {
-              const progressMap: Record<GoalStatus, number> = {
-                not_started: 0, in_progress: 40, in_review: 75, complete: 100,
-              };
-              updateGoal(id, { status, progress: progressMap[status] });
-            }}
-            onEdit={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}
-            onEditWithGuidance={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(true); setEditGoal(g); } }}
-            onDelete={deleteGoal}
-            onAdd={goalModal.onOpen}
-            getAssignee={getAssignee}
-            goalDependencies={goalDependencies}
-            timeLogTotals={timeLogTotals}
-            onLogTime={(id) => { const g = goals.find((g) => g.id === id); if (g) setLogTimeGoal(g); }}
-          />
-
-        </div>
+        <ErrorBoundary label="Goals Tab"><GoalsTab
+          goals={goals}
+          events={events}
+          projectId={projectId ?? null}
+          searchRef={searchRef}
+          riskAssessing={riskAssessing}
+          riskReport={riskReport}
+          riskPanelOpen={riskPanelOpen}
+          setRiskPanelOpen={setRiskPanelOpen}
+          syncingProgress={syncingProgress}
+          syncResult={syncResult}
+          setSyncResult={setSyncResult}
+          syncError={syncError}
+          goalDependencies={goalDependencies}
+          timeLogTotals={timeLogTotals}
+          getAssignee={getAssignee}
+          handleAssessRisk={handleAssessRisk}
+          handleSyncOfficeProgress={handleSyncOfficeProgress}
+          updateGoal={updateGoal}
+          deleteGoal={deleteGoal}
+          setEditGoal={setEditGoal}
+          setEditAutoGuidance={setEditAutoGuidance}
+          setActiveTab={setActiveTab}
+          goalModalOnOpen={goalModal.onOpen}
+          setLogTimeGoal={setLogTimeGoal}
+        /></ErrorBoundary>
       )}
 
       {activeTab === 'metrics' && (
@@ -1925,593 +1216,87 @@ export default function ProjectDetailPage() {
       )}
 
       {activeTab === 'settings' && (
-        <div className="space-y-8">
-
-          {/* Project ID Code + Privacy — owners only */}
-          {isOwner && project?.invite_code && (
-            <div className="border border-border bg-surface p-6">
-              <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-                <div className="flex items-center gap-2">
-                  <Lock size={14} className="text-accent" />
-                  <h3 className="font-sans text-sm font-bold text-heading">Project Access</h3>
-                </div>
-                {/* Public / Private toggle */}
-                <div className="flex items-center gap-1 border border-border rounded overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => updateProject({ is_private: false })}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${!project.is_private ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
-                  >
-                    <Globe size={10} />
-                    Public
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => updateProject({ is_private: true })}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${project.is_private ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
-                  >
-                    <Lock size={10} />
-                    Private
-                  </button>
-                </div>
-              </div>
-              <p className="text-[11px] text-muted mb-4">
-                {project.is_private
-                  ? 'Private — join requests require owner approval before access is granted.'
-                  : 'Public — anyone with the project ID code can join instantly.'}
-              </p>
-              <div className="flex items-center gap-3">
-                <div>
-                  <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1">Project ID Code</p>
-                  <span className="font-mono text-lg font-bold text-heading tracking-widest">
-                    {project.invite_code}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCopyInviteCode}
-                  title="Copy project ID code"
-                  className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
-                >
-                  {copySuccess ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
-                  {copySuccess ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Team Members + Invite — side by side */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="border border-border bg-surface p-6">
-              <div className="flex items-center gap-2 mb-6">
-                <Users size={14} className="text-accent2" />
-                <h3 className="font-sans text-sm font-bold text-heading">
-                  Team Members ({members.length})
-                </h3>
-              </div>
-              <div className="space-y-px border border-border bg-border">
-                {members.map((m) => {
-                  const isCurrentUser = m.user_id === user?.id;
-                  return (
-                    <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
-                      {m.profile?.avatar_url ? (
-                        <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                      ) : (
-                        <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
-                          <span className="text-[10px] text-accent2 font-bold uppercase">
-                            {(m.profile?.display_name ?? '?')[0]}
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs text-heading font-medium truncate">
-                          {m.profile?.display_name ?? m.user_id}
-                          {isCurrentUser && <span className="ml-1.5 text-[9px] text-muted">(you)</span>}
-                        </div>
-                        <div className="text-[10px] text-muted capitalize">{m.role}</div>
-                      </div>
-                      {/* Owners can remove/promote other members */}
-                      {isOwner && !isCurrentUser && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveMember(m.user_id)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all"
-                          title="Remove member"
-                        >
-                          <X size={12} />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Add members panel — owners only */}
-            {isOwner ? (
-              <div className="border border-border bg-surface p-6">
-                <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
-                  <div className="flex items-center gap-2">
-                  <UserPlus size={14} className="text-accent" />
-                    <h3 className="font-sans text-sm font-bold text-heading">Add Members</h3>
-                  </div>
-                  {projectId && <ProjectQRCode projectId={projectId} />}
-                </div>
-                <p className="text-[11px] text-muted mb-4">
-                  Search for a GitHub user — they must have signed into Odyssey at least once, or open a QR preview for a new user to scan.
-                </p>
-                {/* Role selector */}
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="text-[10px] tracking-[0.15em] uppercase text-muted">Invite as</span>
-                  <div className="flex items-center gap-1 border border-border rounded overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={() => setInviteRole('member')}
-                      className={`px-3 py-1 text-[10px] font-semibold tracking-wider uppercase transition-colors ${inviteRole === 'member' ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
-                    >
-                      Member
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setInviteRole('owner')}
-                      className={`px-3 py-1 text-[10px] font-semibold tracking-wider uppercase transition-colors ${inviteRole === 'owner' ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
-                    >
-                      Owner
-                    </button>
-                  </div>
-                </div>
-                <div className="flex gap-2 max-w-md mb-4">
-                  <input
-                    value={memberSearch}
-                    onChange={(e) => setMemberSearch(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
-                    placeholder="GitHub username…"
-                    className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleMemberSearch}
-                    disabled={memberSearching || memberSearch.trim().length < 2}
-                    className="px-4 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
-                  >
-                    {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-                    Search
-                  </button>
-                </div>
-                {memberResults.length > 0 && (
-                  <div className="space-y-px border border-border bg-border max-w-md">
-                    {memberResults.map((u) => (
-                      <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
-                        <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                        <div className="flex-1 min-w-0">
-                          <a href={u.html_url} target="_blank" rel="noopener noreferrer"
-                            className="text-xs text-heading font-medium hover:text-accent transition-colors">
-                            {u.login}
-                          </a>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleInviteMember(u)}
-                          disabled={inviting === u.login}
-                          className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5"
-                        >
-                          {inviting === u.login ? <Loader2 size={10} className="animate-spin" /> : <UserPlus size={10} />}
-                          {inviting === u.login ? 'Adding…' : `Add as ${inviteRole}`}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="border border-border bg-surface p-6 flex flex-col items-center justify-center text-center gap-3 min-h-[140px]">
-                <Users size={24} className="text-muted/30" />
-                <p className="text-xs text-muted">Only project owners can invite new members.</p>
-              </div>
-            )}
-          </div>
-
-          {/* Join Requests — owners only, shown when there are pending requests */}
-          {isOwner && joinRequests.length > 0 && (
-            <div className="border border-border bg-surface p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <UserPlus size={14} className="text-accent2" />
-                <h3 className="font-sans text-sm font-bold text-heading">
-                  Join Requests
-                  <span className="ml-2 text-[10px] font-mono bg-accent2/10 text-accent2 px-1.5 py-0.5 rounded">
-                    {joinRequests.length}
-                  </span>
-                </h3>
-              </div>
-              <div className="space-y-px border border-border bg-border">
-                {joinRequests.map((req) => (
-                  <div key={req.id} className="flex items-center gap-3 bg-surface px-4 py-3">
-                    {req.profile?.avatar_url ? (
-                      <img src={req.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                    ) : (
-                      <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
-                        <span className="text-[10px] text-accent2 font-bold uppercase">
-                          {(req.profile?.display_name ?? '?')[0]}
-                        </span>
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs text-heading font-medium truncate">
-                        {req.profile?.display_name ?? req.user_id}
-                      </div>
-                      <div className="text-[10px] text-muted">
-                        {new Date(req.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => respondJoinRequest(req.id, 'approve').then(() => refetchJoinRequests())}
-                        className="flex items-center gap-1 px-3 py-1 text-[10px] font-semibold border border-accent2/30 text-accent2 hover:bg-accent2/10 transition-colors rounded"
-                      >
-                        <Check size={10} />
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => respondJoinRequest(req.id, 'deny').then(() => refetchJoinRequests())}
-                        className="flex items-center gap-1 px-3 py-1 text-[10px] font-semibold border border-border text-muted hover:text-danger hover:border-danger/30 transition-colors rounded"
-                      >
-                        <X size={10} />
-                        Deny
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Project Name & Description */}
-          <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} />
-
-          {/* Microsoft 365 / Teams Folder */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-6">
-              <Link size={14} className="text-heading" />
-              <h3 className="font-sans text-sm font-bold text-heading">Microsoft 365 / Teams Folder</h3>
-            </div>
-            <p className="text-xs text-muted mb-5">
-              Link a OneDrive or Teams channel folder. Files from this folder will be included in AI insights generation.
-            </p>
-
-            {teamsFolder ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3 p-4 border border-accent/20 bg-accent/5 rounded">
-                  <Folder size={18} className="text-accent" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-heading font-medium truncate">{teamsFolder.name}</div>
-                    <div className="text-[10px] text-muted mt-0.5">Linked OneDrive folder</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await supabase.from('integrations').delete()
-                        .eq('project_id', projectId!).eq('type', 'teams');
-                      setTeamsFolder(null);
-                    }}
-                    className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
-                  >
-                    Unlink
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setTeamsFolderPickerOpen(true)}
-                  className="text-xs text-accent hover:underline"
-                >
-                  Change folder →
-                </button>
-              </div>
-            ) : msStatus?.connected ? (
-              <button
-                type="button"
-                onClick={() => setTeamsFolderPickerOpen(true)}
-                disabled={teamsFolderSaving}
-                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md disabled:opacity-50"
-              >
-                {teamsFolderSaving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-                Select Folder
-              </button>
-            ) : (
-              <p className="text-xs text-muted">
-                Connect your Microsoft 365 account in{' '}
-                <a href="/settings" className="text-accent hover:underline">Settings</a>{' '}
-                first, then come back to link a folder.
-              </p>
-            )}
-          </div>
-
-          {/* GitHub Repository */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-6">
-              <Github size={14} className="text-heading" />
-              <h3 className="font-sans text-sm font-bold text-heading">GitHub Repository</h3>
-            </div>
-
-            {project.github_repo ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3 p-4 border border-accent/20 bg-accent/5 rounded">
-                  <Github size={18} className="text-accent" />
-                  <div className="flex-1 min-w-0">
-                    <a
-                      href={`https://github.com/${project.github_repo}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-accent hover:underline font-mono"
-                    >
-                      {project.github_repo}
-                    </a>
-                    <div className="text-[10px] text-muted mt-0.5">Connected repository</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => updateProject({ github_repo: null })}
-                    className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-
-                {scanResults && (
-                  <div className="space-y-3 mt-4 border-t border-border pt-4">
-                    {scanResults.completed.length > 0 && (
-                      <div>
-                        <h4 className="text-[10px] tracking-[0.15em] uppercase text-accent3 mb-2">Goals likely completed</h4>
-                        <div className="space-y-1">
-                          {scanResults.completed.map((id) => {
-                            const g = goals.find((gl) => gl.id === id);
-                            return g ? (
-                              <div key={id} className="flex items-center gap-2 text-xs text-heading p-2 bg-accent3/5 rounded">
-                                <CheckCircle size={12} className="text-accent3" />
-                                <span>{g.title}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => updateGoal(id, { status: 'complete', progress: 100 })}
-                                  className="ml-auto text-[10px] text-accent3 hover:underline"
-                                >
-                                  Mark complete
-                                </button>
-                              </div>
-                            ) : null;
-                          })}
-                        </div>
-                      </div>
-                    )}
-                    {scanResults.suggested.length > 0 && (
-                      <div>
-                        <h4 className="text-[10px] tracking-[0.15em] uppercase text-accent2 mb-2">Suggested new goals</h4>
-                        <div className="space-y-1">
-                          {scanResults.suggested.map((s, i) => (
-                            <div key={i} className="flex items-center gap-2 text-xs text-heading p-2 bg-accent2/5 rounded">
-                              <Plus size={12} className="text-accent2" />
-                              <div className="flex-1">
-                                <span>{s.title}</span>
-                                <span className="text-[10px] text-muted ml-2">— {s.reason}</span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => createGoal({ title: s.title })}
-                                className="text-[10px] text-accent2 hover:underline"
-                              >
-                                Add
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-xs text-muted">
-                  Connect a GitHub repository to enable AI-powered goal analysis and activity tracking.
-                </p>
-                <div className="flex gap-2 max-w-md">
-                  <input
-                    value={repoInput}
-                    onChange={(e) => setRepoInput(e.target.value)}
-                    placeholder="https://github.com/owner/repo.git"
-                    className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSaveRepo}
-                    disabled={repoSaving || !repoInput.trim()}
-                    className="px-4 py-3 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
-                  >
-                    {repoSaving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
-                    Connect
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* GitLab Repository */}
-          <GitLabSection projectId={projectId!} onReposChanged={(repos) => setGitlabRepos(repos)} />
-
-          {/* Audit Log */}
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <ClipboardList size={14} className="text-heading" />
-                <h3 className="font-sans text-sm font-bold text-heading">Audit Log</h3>
-                <span className="text-[10px] text-muted font-mono">({events.length} events)</span>
-              </div>
-              <button
-                type="button"
-                onClick={handleExportAuditCSV}
-                className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs hover:text-heading hover:bg-surface2 transition-colors rounded font-mono"
-              >
-                <Download size={11} /> Export CSV
-              </button>
-            </div>
-
-            {/* Filters */}
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
-              <input
-                type="date"
-                value={auditFrom}
-                onChange={(e) => { setAuditFrom(e.target.value); setAuditPreset('custom'); }}
-                title="From date"
-                className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
-              <span className="text-[10px] text-muted">to</span>
-              <input
-                type="date"
-                value={auditTo}
-                onChange={(e) => { setAuditTo(e.target.value); setAuditPreset('custom'); }}
-                title="To date"
-                className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
-              {/* Presets */}
-              {((['2W', '1M', '3M', '6M', 'Full'] as const).map((label) => (
-                <button
-                  key={label}
-                  type="button"
-                  onClick={() => {
-                    const fmt = (d: Date) => d.toISOString().split('T')[0];
-                    const to = new Date();
-                    const from = new Date();
-                    if (label === '2W')        from.setDate(from.getDate() - 14);
-                    else if (label === '1M')   from.setMonth(from.getMonth() - 1);
-                    else if (label === '3M')   from.setMonth(from.getMonth() - 3);
-                    else if (label === '6M')   from.setMonth(from.getMonth() - 6);
-                    else if (label === 'Full') { setAuditFrom(project?.start_date ?? fmt(from)); setAuditTo(fmt(to)); setAuditPreset('Full'); return; }
-                    setAuditFrom(fmt(from));
-                    setAuditTo(fmt(to));
-                    setAuditPreset(label);
-                  }}
-                  className={`px-2.5 py-1 text-[10px] border rounded transition-colors font-mono ${
-                    auditPreset === label
-                      ? 'bg-[var(--color-accent)] text-[var(--color-accent-fg)] border-[var(--color-accent)]'
-                      : 'border-border text-muted hover:text-heading hover:bg-surface2'
-                  }`}
-                >
-                  {label}
-                </button>
-              )))}
-              <button
-                type="button"
-                onClick={() => setAuditPreset('custom')}
-                className={`px-2.5 py-1 text-[10px] border rounded transition-colors font-mono ${
-                  auditPreset === 'custom'
-                    ? 'bg-[var(--color-accent)] text-[var(--color-accent-fg)] border-[var(--color-accent)]'
-                    : 'border-border text-muted hover:text-heading hover:bg-surface2'
-                }`}
-              >
-                Custom
-              </button>
-              <select
-                value={auditType}
-                onChange={(e) => setAuditType(e.target.value)}
-                title="Filter by event type"
-                className="px-2 py-1 bg-surface2 border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
-              >
-                <option value="">All types</option>
-                {[...new Set(events.map((e) => e.event_type))].sort().map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-              {auditType && (
-                <button type="button" onClick={() => setAuditType('')}
-                  className="text-[10px] text-muted hover:text-heading transition-colors">
-                  Clear type
-                </button>
-              )}
-            </div>
-
-            {/* Table */}
-            {(() => {
-              const filtered = events.filter((e) => {
-                if (auditFrom && e.occurred_at < auditFrom) return false;
-                if (auditTo && e.occurred_at > auditTo + 'T23:59:59Z') return false;
-                if (auditType && e.event_type !== auditType) return false;
-                return true;
-              });
-              const totalPages = Math.ceil(filtered.length / AUDIT_PAGE_SIZE);
-              const paginated = filtered.slice(auditPage * AUDIT_PAGE_SIZE, (auditPage + 1) * AUDIT_PAGE_SIZE);
-
-              return (
-                <>
-                  <div className="overflow-x-auto border border-border rounded">
-                    <table className="w-full text-[10px] font-mono">
-                      <thead>
-                        <tr className="border-b border-border bg-surface2">
-                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Timestamp</th>
-                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Source</th>
-                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Type</th>
-                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider">Title</th>
-                          <th className="text-left px-3 py-2 text-muted uppercase tracking-wider hidden md:table-cell">Summary</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {paginated.length === 0 ? (
-                          <tr><td colSpan={5} className="px-3 py-6 text-center text-muted">No events match the current filters</td></tr>
-                        ) : paginated.map((e) => (
-                          <tr key={e.id} className="hover:bg-surface2 transition-colors">
-                            <td className="px-3 py-2 text-muted whitespace-nowrap">{new Date(e.occurred_at).toLocaleString()}</td>
-                            <td className="px-3 py-2 text-accent">{e.source}</td>
-                            <td className="px-3 py-2 text-muted">{e.event_type}</td>
-                            <td className="px-3 py-2 text-heading truncate max-w-[200px]">{e.title ?? '—'}</td>
-                            <td className="px-3 py-2 text-muted truncate max-w-[200px] hidden md:table-cell">{e.summary ?? '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Pagination */}
-                  {totalPages > 1 && (
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="text-[10px] text-muted font-mono">
-                        {filtered.length} events · page {auditPage + 1}/{totalPages}
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <button type="button" onClick={() => setAuditPage((p) => Math.max(0, p - 1))} disabled={auditPage === 0}
-                          className="text-[10px] px-2 py-1 border border-border rounded hover:bg-surface2 disabled:opacity-40 transition-colors font-mono">
-                          ← Prev
-                        </button>
-                        <button type="button" onClick={() => setAuditPage((p) => Math.min(totalPages - 1, p + 1))} disabled={auditPage >= totalPages - 1}
-                          className="text-[10px] px-2 py-1 border border-border rounded hover:bg-surface2 disabled:opacity-40 transition-colors font-mono">
-                          Next →
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-
-          {/* Danger Zone */}
-          <div className="border border-danger/30 bg-surface p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Trash2 size={14} className="text-danger" />
-              <h3 className="font-sans text-sm font-bold text-danger">Danger Zone</h3>
-            </div>
-            <p className="text-xs text-muted mb-4">
-              Remove this project from your view. If you are the only member, Odyssey will prompt you to delete it instead.
-            </p>
-            <button
-              type="button"
-              onClick={() => setDeleteModalOpen(true)}
-              disabled={deletingProject || leavingProject}
-              className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {deletingProject || leavingProject ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
-              {deletingProject ? 'Deleting...' : leavingProject ? 'Removing...' : 'Remove Project'}
-            </button>
-          </div>
-        </div>
+        <ErrorBoundary label="Settings Tab"><SettingsTab
+          project={project}
+          projectId={projectId!}
+          isOwner={isOwner}
+          members={members}
+          user={user}
+          joinRequests={joinRequests}
+          respondJoinRequest={respondJoinRequest}
+          refetchJoinRequests={refetchJoinRequests}
+          inviteRole={inviteRole}
+          setInviteRole={setInviteRole}
+          inviteTab={inviteTab}
+          setInviteTab={setInviteTab}
+          memberSearch={memberSearch}
+          setMemberSearch={setMemberSearch}
+          memberResults={memberResults}
+          memberSearching={memberSearching}
+          inviting={inviting}
+          copySuccess={copySuccess}
+          teamsFolder={teamsFolder}
+          setTeamsFolder={setTeamsFolder}
+          teamsFolderPickerOpen={teamsFolderPickerOpen}
+          setTeamsFolderPickerOpen={setTeamsFolderPickerOpen}
+          teamsFolderSaving={teamsFolderSaving}
+          setTeamsFolderSaving={setTeamsFolderSaving}
+          repoInput={repoInput}
+          setRepoInput={setRepoInput}
+          repoSaving={repoSaving}
+          scanResults={scanResults}
+          events={events}
+          auditFrom={auditFrom}
+          setAuditFrom={setAuditFrom}
+          auditTo={auditTo}
+          setAuditTo={setAuditTo}
+          auditPreset={auditPreset}
+          setAuditPreset={setAuditPreset}
+          auditType={auditType}
+          setAuditType={setAuditType}
+          auditPage={auditPage}
+          setAuditPage={setAuditPage}
+          AUDIT_PAGE_SIZE={AUDIT_PAGE_SIZE}
+          imageUploading={imageUploading}
+          newLabelName={newLabelName}
+          setNewLabelName={setNewLabelName}
+          newLabelColor={newLabelColor}
+          setNewLabelColor={setNewLabelColor}
+          newLabelType={newLabelType}
+          setNewLabelType={setNewLabelType}
+          projectLabels={projectLabels}
+          editPromptFeature={editPromptFeature}
+          setEditPromptFeature={setEditPromptFeature}
+          editPromptText={editPromptText}
+          setEditPromptText={setEditPromptText}
+          resetPromptsTyped={resetPromptsTyped}
+          setResetPromptsTyped={setResetPromptsTyped}
+          resetPromptsModalOpen={resetPromptsModalOpen}
+          setResetPromptsModalOpen={setResetPromptsModalOpen}
+          deletingProject={deletingProject}
+          leavingProject={leavingProject}
+          goals={goals}
+          updateProject={updateProject}
+          updateGoal={updateGoal}
+          createGoal={createGoal}
+          handleCopyInviteCode={handleCopyInviteCode}
+          handleSaveRepo={handleSaveRepo}
+          handleRepoScan={handleRepoScan}
+          scanLoading={scanLoading}
+          handleMemberSearch={handleMemberSearch}
+          handleInviteMember={handleInviteMember}
+          handleRemoveMember={handleRemoveMember}
+          handleImageUpload={handleImageUpload}
+          handleExportAuditCSV={handleExportAuditCSV}
+          addLabel={addLabel}
+          deleteLabel={deleteLabel}
+          getPrompt={getPrompt}
+          savePrompt={savePrompt}
+          resetPrompt={resetPrompt}
+          resetAllPrompts={resetAllPrompts}
+          setDeleteModalOpen={setDeleteModalOpen}
+          setGitlabRepos={setGitlabRepos}
+        /></ErrorBoundary>
       )}
     </div>
 
@@ -2644,6 +1429,8 @@ export default function ProjectDetailPage() {
         filePaths={filePaths}
         githubRepo={project.github_repo}
         gitlabRepos={gitlabRepos}
+        projectCategories={projectCategories.map((c) => c.name)}
+        projectLoes={projectLoes.map((l) => l.name)}
         onFileClick={handleFileClick}
         onRepoClick={handleRepoClick}
         onTaskClick={(id) => {
@@ -2700,375 +1487,7 @@ export default function ProjectDetailPage() {
     )}
     {aiErrorDialog}
 
-    {/* Teams Folder Picker modal */}
-    {teamsFolderPickerOpen && (
-      <TeamsFolderPickerModal
-        onSelect={async (folder) => {
-          setTeamsFolderSaving(true);
-          setTeamsFolderPickerOpen(false);
-          await supabase.from('integrations').upsert(
-            {
-              project_id: projectId,
-              type: 'teams',
-              config: { folder_id: folder.id, folder_name: folder.name },
-            },
-            { onConflict: 'project_id,type' },
-          );
-          setTeamsFolder(folder);
-          setTeamsFolderSaving(false);
-        }}
-        onClose={() => setTeamsFolderPickerOpen(false)}
-      />
-    )}
     </>
-  );
-}
-
-// ── Teams folder picker modal ─────────────────────────────────────────────────
-function TeamsFolderPickerModal({
-  onSelect,
-  onClose,
-}: {
-  onSelect: (folder: { id: string; name: string }) => void;
-  onClose: () => void;
-}) {
-  const [files, setFiles] = useState<Array<{ id: string; name: string; folder?: unknown; lastModifiedDateTime: string }>>([]);
-  const [folderStack, setFolderStack] = useState<{ id: string; name: string }[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const current = folderStack[folderStack.length - 1];
-    setLoading(true);
-    fetchOneDriveFiles({ folderId: current?.id }).then((data) => {
-      setFiles(data as Array<{ id: string; name: string; folder?: unknown; lastModifiedDateTime: string }>);
-      setLoading(false);
-    });
-  }, [folderStack]);
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-surface border border-border w-full max-w-lg max-h-[70vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-          <div>
-            <h2 className="font-sans text-sm font-bold text-heading">Select OneDrive / Teams Folder</h2>
-            <p className="text-[11px] text-muted font-mono">Choose a folder to link to this project</p>
-          </div>
-          <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-heading">
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-1 px-5 py-2 border-b border-border text-[11px] text-muted font-mono">
-          <button type="button" onClick={() => setFolderStack([])} className="hover:text-heading">My Drive</button>
-          {folderStack.map((f, i) => (
-            <span key={f.id} className="flex items-center gap-1">
-              <ChevronRight size={10} />
-              <button type="button" onClick={() => setFolderStack((p) => p.slice(0, i + 1))} className="hover:text-heading">
-                {f.name}
-              </button>
-            </span>
-          ))}
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-px bg-border">
-          {loading ? (
-            <div className="bg-surface flex items-center gap-2 p-4 text-xs text-muted">
-              <Loader2 size={12} className="animate-spin" /> Loading…
-            </div>
-          ) : (
-            <>
-              {/* Link current folder */}
-              {folderStack.length > 0 && (
-                <div className="bg-surface px-4 py-2 flex items-center justify-between mb-2 border border-accent/20">
-                  <span className="text-xs text-accent font-medium">
-                    Link "{folderStack[folderStack.length - 1].name}"
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(folderStack[folderStack.length - 1])}
-                    className="px-3 py-1 border border-accent/30 text-accent text-[10px] tracking-wider uppercase hover:bg-accent/5 rounded"
-                  >
-                    Select this folder
-                  </button>
-                </div>
-              )}
-              {files.filter((f) => !!f.folder).map((item) => (
-                <div key={item.id} className="bg-surface flex items-center gap-3 px-4 py-3 hover:bg-surface2 cursor-pointer group"
-                  onClick={() => setFolderStack((p) => [...p, { id: item.id, name: item.name }])}
-                >
-                  <Folder size={13} className="text-accent shrink-0" />
-                  <span className="text-xs text-heading flex-1 truncate">{item.name}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onSelect({ id: item.id, name: item.name }); }}
-                    className="opacity-0 group-hover:opacity-100 px-2 py-0.5 border border-accent/30 text-accent text-[10px] tracking-wider uppercase hover:bg-accent/5 rounded transition-opacity"
-                  >
-                    Link
-                  </button>
-                  <ChevronRight size={12} className="text-muted" />
-                </div>
-              ))}
-              {files.filter((f) => !!f.folder).length === 0 && (
-                <div className="bg-surface px-4 py-6 text-center text-xs text-muted">No folders here</div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Goals Kanban Board ───────────────────────────────────────────────────────
-type GoalStatus = import('../types').Goal['status'];
-
-const KANBAN_COLUMNS: { status: GoalStatus; label: string; color: string; accent: string }[] = [
-  { status: 'not_started', label: 'Not Started', color: 'text-[#D94F4F]', accent: 'border-[#D94F4F]/40' },
-  { status: 'in_progress', label: 'In Progress', color: 'text-[#D97E2A]', accent: 'border-[#D97E2A]/40' },
-  { status: 'in_review',   label: 'In Review',   color: 'text-[#facc15]', accent: 'border-[#facc15]/40' },
-  { status: 'complete',    label: 'Complete',     color: 'text-[#6DBE7D]', accent: 'border-[#6DBE7D]/40' },
-];
-
-interface GoalsKanbanProps {
-  goals: import('../types').Goal[];
-  onUpdateStatus: (id: string, status: GoalStatus) => void;
-  onEdit: (id: string) => void;
-  onEditWithGuidance: (id: string) => void;
-  onDelete: (id: string) => void;
-  onAdd: () => void;
-  getAssignee: (userId: string | null | undefined) => { display_name: string | null; avatar_url: string | null } | null;
-  goalDependencies?: import('../types').GoalDependency[];
-  timeLogTotals?: Map<string, number>;
-  onLogTime?: (goalId: string) => void;
-}
-
-const STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-function isStaleComplete(goal: import('../types').Goal): boolean {
-  if (goal.status !== 'complete') return false;
-  const updated = goal.updated_at ? new Date(goal.updated_at).getTime() : 0;
-  return Date.now() - updated > STALE_MS;
-}
-
-function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDelete, onAdd, getAssignee, goalDependencies = [], timeLogTotals = new Map(), onLogTime }: GoalsKanbanProps) {
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [dragOverCol, setDragOverCol] = useState<GoalStatus | null>(null);
-  const [showStale, setShowStale] = useState(false);
-
-  const handleDragStart = (e: React.DragEvent, goalId: string) => {
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('goalId', goalId);
-    setDraggingId(goalId);
-  };
-
-  const handleDragEnd = () => {
-    setDraggingId(null);
-    setDragOverCol(null);
-  };
-
-  const handleDragOver = (e: React.DragEvent, status: GoalStatus) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverCol(status);
-  };
-
-  const handleDrop = (e: React.DragEvent, status: GoalStatus) => {
-    e.preventDefault();
-    const goalId = e.dataTransfer.getData('goalId');
-    if (goalId) onUpdateStatus(goalId, status);
-    setDraggingId(null);
-    setDragOverCol(null);
-  };
-
-  if (goals.length === 0) {
-    return (
-      <div className="border border-border bg-surface p-12 text-center">
-        <Target size={32} className="text-border mx-auto mb-3" />
-        <p className="text-sm text-muted mb-4">No tasks yet. Add your first task to start tracking progress.</p>
-        <button type="button" onClick={onAdd}
-          className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md">
-          <Plus size={14} /> Add Task
-        </button>
-      </div>
-    );
-  }
-
-  const barColors: Record<GoalStatus, string> = {
-    not_started: 'bg-[#D94F4F]/50',
-    in_progress: 'bg-[#D97E2A]/70',
-    in_review:   'bg-[#facc15]/70',
-    complete:    'bg-[#6DBE7D]/70',
-  };
-
-  const riskDotColor = (score: number | null | undefined) => {
-    if (score == null) return null;
-    if (score >= 0.75) return 'bg-red-500';
-    if (score >= 0.5) return 'bg-orange-400';
-    if (score >= 0.25) return 'bg-yellow-400';
-    return 'bg-green-500';
-  };
-
-  const renderCard = (goal: import('../types').Goal, colStatus: GoalStatus, stale = false) => {
-    const assigneeList = (goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : [])).map(getAssignee).filter(Boolean);
-    const isDragging = draggingId === goal.id;
-    const barCls = barColors[colStatus];
-    const riskDot = riskDotColor(goal.risk_score);
-    const myDeps = goalDependencies.filter((d) => d.goal_id === goal.id);
-    const blockedDeps = myDeps.filter((d) => {
-      const depGoal = goals.find((g) => g.id === d.depends_on_goal_id);
-      return depGoal && depGoal.status !== 'complete';
-    });
-    const loggedHours = timeLogTotals.get(goal.id);
-    return (
-      <div
-        key={goal.id}
-        draggable
-        onDragStart={(e) => handleDragStart(e, goal.id)}
-        onDragEnd={handleDragEnd}
-        className={`group border rounded p-3 cursor-grab active:cursor-grabbing select-none transition-all ${
-          isDragging ? 'opacity-30' : 'hover:border-border/80 hover:shadow-sm'
-        } ${stale ? 'bg-surface border-border/30 opacity-40 saturate-0' : 'bg-surface2 border-border'}`}
-      >
-        <div className="flex items-start justify-between gap-1 mb-1.5">
-          <div className="flex items-center gap-1.5 flex-1 min-w-0">
-            {riskDot && <span className={`w-2 h-2 rounded-full shrink-0 ${riskDot}`} title={`Risk score: ${Math.round((goal.risk_score ?? 0) * 100)}`} />}
-            <div className="min-w-0">
-              <p className="text-xs text-heading font-medium leading-snug">{goal.title}</p>
-              {goal.loe && <p className="text-[9px] text-accent2 font-mono mt-0.5 truncate">{goal.loe}</p>}
-            </div>
-          </div>
-          <div className="flex items-center gap-0.5 shrink-0">
-            {onLogTime && (
-              <button type="button" title="Log time" onClick={(e) => { e.stopPropagation(); onLogTime(goal.id); }}
-                className="p-0.5 text-muted hover:text-accent2 transition-colors opacity-0 group-hover:opacity-100">
-                <Clock size={11} />
-              </button>
-            )}
-            <button type="button" title="Get AI guidance" onClick={(e) => { e.stopPropagation(); onEditWithGuidance(goal.id); }}
-              className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
-              <Sparkles size={11} />
-            </button>
-            <button type="button" title="Expand goal" onClick={() => onEdit(goal.id)}
-              className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
-              <ExternalLink size={11} />
-            </button>
-            <button type="button" title="Delete goal" onClick={() => onDelete(goal.id)}
-              className="p-0.5 text-muted hover:text-danger transition-colors">
-              <Trash2 size={11} />
-            </button>
-          </div>
-        </div>
-
-        <div className="mb-2">
-          <div className="h-1.5 bg-border rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-500 ${barCls}`}
-              style={{ width: `${goal.progress ?? 0}%` }}
-            />
-          </div>
-          <span className="text-[9px] text-muted font-mono">{goal.progress ?? 0}%</span>
-        </div>
-
-        <div className="flex items-center justify-between gap-1 flex-wrap">
-          <div className="flex items-center gap-1 flex-wrap">
-            {goal.deadline && (
-              <span className="text-[9px] text-muted font-mono">{new Date(goal.deadline).toLocaleDateString()}</span>
-            )}
-            {goal.category && (
-              <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">{goal.category}</span>
-            )}
-            {assigneeList.length > 0 && (
-              <div className="flex items-center gap-0.5 flex-wrap">
-                {assigneeList.slice(0, 2).map((a) => (
-                  <span key={a!.user_id} className="text-[9px] text-muted truncate max-w-[70px]">{a!.display_name}</span>
-                ))}
-                {assigneeList.length > 2 && (
-                  <span className="text-[9px] text-muted font-mono">+{assigneeList.length - 2}</span>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            {myDeps.length > 0 && (
-              <span className={`text-[9px] font-mono flex items-center gap-0.5 ${blockedDeps.length > 0 ? 'text-red-400' : 'text-muted'}`}
-                title={`${myDeps.length} dependenc${myDeps.length === 1 ? 'y' : 'ies'}${blockedDeps.length > 0 ? ` (${blockedDeps.length} blocking)` : ''}`}>
-                <Link size={8} />{myDeps.length}
-              </span>
-            )}
-            {loggedHours != null && loggedHours > 0 && (
-              <span className="text-[9px] text-muted font-mono flex items-center gap-0.5" title="Hours logged">
-                <Clock size={8} />{loggedHours.toFixed(1)}h
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div className="flex gap-3 overflow-x-auto pb-4 min-h-[60vh]">
-      {KANBAN_COLUMNS.map((col) => {
-        const allColGoals = goals.filter((g) => g.status === col.status);
-        const isComplete = col.status === 'complete';
-        const freshGoals = isComplete ? allColGoals.filter((g) => !isStaleComplete(g)) : allColGoals;
-        const staleGoals = isComplete ? allColGoals.filter((g) => isStaleComplete(g)) : [];
-        const isOver = dragOverCol === col.status;
-
-        return (
-          <div
-            key={col.status}
-            className={`flex flex-col flex-1 min-w-0 border rounded transition-colors ${
-              isOver ? `${col.accent} bg-surface2` : 'border-border bg-surface'
-            }`}
-            onDragOver={(e) => handleDragOver(e, col.status)}
-            onDragLeave={() => setDragOverCol(null)}
-            onDrop={(e) => handleDrop(e, col.status)}
-          >
-            {/* Column header */}
-            <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
-              <div className="flex items-center gap-2">
-                <span className={`text-[10px] font-bold uppercase tracking-wider ${col.color}`}>{col.label}</span>
-                <span className="text-[10px] text-muted bg-surface2 px-1.5 py-0.5 rounded font-mono">
-                  {freshGoals.length}{staleGoals.length > 0 ? `+${staleGoals.length}` : ''}
-                </span>
-              </div>
-            </div>
-
-            {/* Cards */}
-            <div className="flex flex-col gap-2 p-2 flex-1 overflow-y-auto">
-              {freshGoals.length === 0 && !isOver && (
-                <p className="text-[10px] text-muted/50 text-center py-4">No tasks here</p>
-              )}
-              {freshGoals.map((goal) => renderCard(goal, col.status, false))}
-
-              {/* Stale completed goals */}
-              {isComplete && staleGoals.length > 0 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setShowStale((v) => !v)}
-                    className="flex items-center gap-1.5 px-2 py-1.5 text-[10px] text-muted hover:text-heading border border-dashed border-border/50 rounded transition-colors mt-1"
-                  >
-                    <span className={`transition-transform ${showStale ? 'rotate-90' : ''}`}>▶</span>
-                    {showStale ? 'Hide' : 'Show'} {staleGoals.length} archived goal{staleGoals.length !== 1 ? 's' : ''}
-                  </button>
-                  {showStale && staleGoals.map((goal) => renderCard(goal, col.status, true))}
-                </>
-              )}
-
-              {/* Drop target hint when dragging */}
-              {isOver && draggingId && (
-                <div className={`border-2 border-dashed ${col.accent} rounded p-3 text-center text-[10px] text-muted`}>
-                  Drop here
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
   );
 }
 
@@ -4145,278 +2564,3 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
   );
 }
 
-// ── GitLab repo section (Settings tab) ───────────────────────────────────────
-function GitLabSection({ projectId, onReposChanged }: { projectId: string; onReposChanged?: (repos: string[]) => void }) {
-  const [linkedRepos, setLinkedRepos] = useState<string[]>([]);
-  const [repoInput, setRepoInput] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle()
-      .then(({ data }) => {
-        if (data?.config) {
-          const cfg = data.config as { repos?: string[]; repo?: string };
-          setLinkedRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
-        }
-      });
-  }, [projectId]);
-
-  const handleLink = async () => {
-    const raw = repoInput.trim();
-    if (!raw) return;
-    const path = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
-    if (linkedRepos.includes(path)) { setError('This repo is already linked.'); return; }
-    setSaving(true);
-    setError(null);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { setError('Not signed in — please refresh.'); return; }
-      const res = await fetch('/api/gitlab/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ projectId, repo: path }),
-      });
-      const data = await res.json() as { repos?: string[]; error?: string };
-      if (!res.ok) {
-        setError(data.error ?? 'Failed to link repo');
-      } else {
-        const updated = data.repos ?? [...linkedRepos, path];
-        setLinkedRepos(updated);
-        setRepoInput('');
-        onReposChanged?.(updated);
-      }
-    } catch {
-      setError('Network error — check server is running');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleUnlink = async (repo: string) => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      const res = await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const data = await res.json() as { repos?: string[] };
-      const updated = data.repos ?? linkedRepos.filter((r) => r !== repo);
-      setLinkedRepos(updated);
-      onReposChanged?.(updated);
-    } catch { /* ignore */ }
-  };
-
-  return (
-    <div className="border border-border bg-surface p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" className="text-[#FC6D26]">
-          <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
-        </svg>
-        <h3 className="font-sans text-sm font-bold text-heading">GitLab Repositories</h3>
-        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">NPS</span>
-        {linkedRepos.length > 0 && (
-          <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">{linkedRepos.length} linked</span>
-        )}
-      </div>
-
-      {/* Linked repos list */}
-      {linkedRepos.length > 0 && (
-        <div className="space-y-2 mb-5">
-          {linkedRepos.map((repo) => (
-            <div key={repo} className="flex items-center gap-3 p-3 border border-[#FC6D26]/20 bg-[#FC6D26]/5 rounded">
-              <div className="flex-1 min-w-0">
-                <div className="text-xs text-heading font-mono truncate">{repo}</div>
-              </div>
-              <button type="button" onClick={() => handleUnlink(repo)}
-                className="px-2.5 py-1 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded shrink-0">
-                Disconnect
-              </button>
-            </div>
-          ))}
-          <p className="text-[11px] text-muted">Commits and READMEs from all repos are included in AI insights and chat context.</p>
-        </div>
-      )}
-
-      {/* Add repo input — always visible */}
-      <div className="space-y-3">
-        {linkedRepos.length === 0 && (
-          <p className="text-xs text-muted">Link your NPS GitLab repositories. Paste a full URL or project path.</p>
-        )}
-        <div className="flex gap-2 max-w-lg">
-          <input
-            type="text"
-            value={repoInput}
-            onChange={(e) => setRepoInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleLink()}
-            placeholder="group/project-name or full URL"
-            title="GitLab repository path or URL"
-            className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-[#FC6D26]/50 transition-colors rounded"
-          />
-          <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
-            className="px-4 py-2.5 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
-            {linkedRepos.length > 0 ? 'Add' : 'Connect'}
-          </button>
-        </div>
-        {error && <p className="text-xs text-danger font-mono">{error}</p>}
-        <p className="text-[10px] text-muted">Must be on the NPS network or VPN for the server to reach gitlab.nps.edu</p>
-      </div>
-    </div>
-  );
-}
-
-// ── Project name / description editor (used in Settings tab) ─────────────────
-function ProjectNameForm({
-  project,
-  updateProject,
-  isOwner,
-}: {
-  project: { name: string; description?: string | null; start_date?: string | null; invite_code?: string | null };
-  updateProject: (updates: { name?: string; description?: string; start_date?: string | null; invite_code?: string }) => Promise<unknown>;
-  isOwner: boolean;
-}) {
-  const [name, setName] = useState(project.name);
-  const [description, setDescription] = useState(project.description ?? '');
-  const [startDate, setStartDate] = useState(project.start_date ?? '');
-  const [inviteCode, setInviteCode] = useState(project.invite_code ?? '');
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [copiedInviteCode, setCopiedInviteCode] = useState(false);
-
-  const dirty = name.trim() !== project.name
-    || description.trim() !== (project.description ?? '')
-    || startDate !== (project.start_date ?? '')
-    || (isOwner && inviteCode !== (project.invite_code ?? ''));
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setSaving(true);
-    await updateProject({
-      name: name.trim(),
-      description: description.trim() || undefined,
-      start_date: startDate || null,
-      invite_code: isOwner ? inviteCode : undefined,
-    });
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  const handleCopyInviteCode = async () => {
-    if (!inviteCode) return;
-    await navigator.clipboard.writeText(inviteCode);
-    setCopiedInviteCode(true);
-    setTimeout(() => setCopiedInviteCode(false), 1600);
-  };
-
-  return (
-    <div className="border border-border bg-surface p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <Settings size={14} className="text-heading" />
-        <h3 className="font-sans text-sm font-bold text-heading">Project Details</h3>
-      </div>
-      <form onSubmit={handleSave}>
-        <div className="flex flex-col xl:flex-row gap-5 items-start">
-          {/* Left column: Name + Start Date stacked */}
-          <div className="flex flex-col gap-3 w-full xl:w-[26rem] shrink-0">
-            <div>
-              <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Project Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                title="Project name"
-                placeholder="Project name"
-                className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Start Date</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                title="Project start date"
-                className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
-            </div>
-            {isOwner && (
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-3">
-                    <label className="block text-[10px] tracking-[0.2em] uppercase text-muted">Project ID Code</label>
-                    <button
-                      type="button"
-                      onClick={() => setInviteCode(generateProjectCode())}
-                      className="text-[10px] font-mono text-accent hover:underline"
-                    >
-                      Generate
-                    </button>
-                  </div>
-                </div>
-                <div className="flex items-stretch gap-2">
-                  <input
-                    type="text"
-                    value={inviteCode}
-                    onChange={(e) => setInviteCode(sanitizeProjectCode(e.target.value))}
-                    title="Project ID code"
-                    placeholder="Project ID code"
-                    className="min-w-0 flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono tracking-[0.12em] uppercase focus:outline-none focus:border-accent/50 transition-colors rounded"
-                  />
-                  {inviteCode.trim() && (
-                    <button
-                      type="button"
-                      onClick={handleCopyInviteCode}
-                      title="Copy project ID code"
-                      className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
-                    >
-                      {copiedInviteCode ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
-                      <span>{copiedInviteCode ? 'Copied' : 'Copy'}</span>
-                    </button>
-                  )}
-                </div>
-                <p className="mt-1 text-[10px] text-muted">
-                  {PROJECT_CODE_LENGTH}-character join code. Changing it invalidates the old code immediately.
-                </p>
-              </div>
-            )}
-          </div>
-          {/* Right column: Description */}
-          <div className="flex-1">
-            <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Description (optional)</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={7}
-              placeholder="What is this project about?"
-              className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
-            />
-          </div>
-        </div>
-        <div className="mt-3">
-          <button
-            type="submit"
-            disabled={saving || !dirty || !name.trim()}
-            className="flex items-center gap-2 px-5 py-2 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
-          >
-            {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <CheckCircle size={12} /> : null}
-            {saved ? 'Saved' : 'Save Changes'}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function StatRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between items-center text-xs">
-      <span className="text-muted">{label}</span>
-      <span className="text-heading font-sans font-semibold">{value}</span>
-    </div>
-  );
-}

@@ -21,6 +21,7 @@ export interface ChatThreadPreview {
 export function useChatThreads() {
   const { user } = useAuth();
   const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [threadIds, setThreadIds] = useState<string[]>([]);
   const [participantsByThread, setParticipantsByThread] = useState<Record<string, ChatParticipant[]>>({});
   const [lastMessageByThread, setLastMessageByThread] = useState<Record<string, ChatThreadPreview | null>>({});
   const [loading, setLoading] = useState(true);
@@ -41,14 +42,16 @@ export function useChatThreads() {
       .from('chat_thread_members')
       .select('thread_id')
       .eq('user_id', user.id);
-    const threadIds = (memberships ?? []).map((m) => m.thread_id);
-    if (threadIds.length === 0) {
+    const ids = (memberships ?? []).map((m) => m.thread_id);
+    setThreadIds(ids);
+    if (ids.length === 0) {
       setThreads([]);
       setParticipantsByThread({});
       setLastMessageByThread({});
       setLoading(false);
       return;
     }
+    const threadIds = ids;
 
     const [{ data: threadsData }, { data: memberRows }, { data: previewRows }] = await Promise.all([
       supabase.from('chat_threads').select('*').in('id', threadIds).order('updated_at', { ascending: false }),
@@ -106,6 +109,28 @@ export function useChatThreads() {
       supabase.removeChannel(channel);
     };
   }, [user, fetchThreads]);
+
+  // Keep lastMessageByThread up-to-date as new messages arrive
+  useEffect(() => {
+    if (!user || threadIds.length === 0) return;
+    const channel = supabase
+      .channel(`chat-previews:${user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
+        const row = payload.new as ChatThreadPreview;
+        if (!threadIds.includes(row.thread_id)) return;
+        setLastMessageByThread((prev) => {
+          const existing = prev[row.thread_id];
+          if (!existing || row.created_at > existing.created_at) {
+            return { ...prev, [row.thread_id]: row };
+          }
+          return prev;
+        });
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, threadIds]);
 
   const createDirectThread = async (otherUserId: string, relatedProjectId?: string | null) => {
     const { data, error } = await supabase.rpc('create_direct_chat_thread', {

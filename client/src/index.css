@@ -28,17 +28,61 @@
   --font-sans: "Syne", sans-serif;
   --font-mono: "DM Mono", monospace;
   --font-serif: "Fraunces", serif;
+  /* --font-ui controls the body/general UI text; overridden by font themes */
+  --font-ui: var(--font-mono);
+  --font-heading-display: var(--font-sans);
+  --font-scale: 1;
+  --font-tracking: normal;
 }
 
 body {
   background-color: var(--color-bg);
   color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 13px;
+  font-family: var(--font-ui);
+  /* 0.8125em = 13/16 — scales with the root font-size so all rem units stay proportional */
+  font-size: calc(0.8125em * var(--font-scale));
   line-height: 1.7;
+  letter-spacing: var(--font-tracking);
 }
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--color-bg); }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-muted); }
+
+/* ── Bahnschrift font theme ────────────────────────────────────────── */
+[data-font-theme="bahnschrift"] h1,
+[data-font-theme="bahnschrift"] h2,
+[data-font-theme="bahnschrift"] h3,
+[data-font-theme="bahnschrift"] .font-sans {
+  font-family: Bahnschrift, "Barlow Condensed", "DIN Alternate", Arial, sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ── Ubuntu font theme ─────────────────────────────────────────────── */
+[data-font-theme="ubuntu"] h1,
+[data-font-theme="ubuntu"] h2,
+[data-font-theme="ubuntu"] h3,
+[data-font-theme="ubuntu"] .font-sans {
+  font-family: "Ubuntu", "Segoe UI", system-ui, sans-serif;
+  font-weight: 700;
+}
+
+/* ── Consolas font theme ───────────────────────────────────────────── */
+[data-font-theme="consolas"] h1,
+[data-font-theme="consolas"] h2,
+[data-font-theme="consolas"] h3,
+[data-font-theme="consolas"] .font-sans {
+  font-family: Consolas, "Fira Code", "Cascadia Code", "Courier New", monospace;
+  font-weight: 700;
+}
+
+/* ── Courier New font theme ────────────────────────────────────────── */
+[data-font-theme="courier-new"] h1,
+[data-font-theme="courier-new"] h2,
+[data-font-theme="courier-new"] h3,
+[data-font-theme="courier-new"] .font-sans {
+  font-family: "Courier New", Courier, monospace;
+  font-weight: 700;
+}

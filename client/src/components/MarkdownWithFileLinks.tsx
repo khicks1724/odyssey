@@ -15,6 +15,8 @@ interface MarkdownWithFileLinksProps {
   tasks?: TaskRef[];
   onTaskClick?: (taskId: string) => void;
   className?: string;
+  /** Render as block-level elements (div root, proper p/ul/li/h* tags). Use for chat bubbles. */
+  block?: boolean;
   /** Extra ReactMarkdown component overrides merged on top of defaults */
   extraComponents?: Record<string, React.ComponentType<any>>;
 }
@@ -111,6 +113,7 @@ export default function MarkdownWithFileLinks({
   tasks = [],
   onTaskClick,
   className,
+  block = false,
   extraComponents = {},
 }: MarkdownWithFileLinksProps) {
   const refs = useMemo(() => {
@@ -119,9 +122,8 @@ export default function MarkdownWithFileLinks({
     return Array.from(unique.values());
   }, [filePaths]);
 
-  // Build a case-insensitive task title lookup once
   const taskMap = useMemo(() => {
-    const m = new Map<string, string>(); // lowercase title → id
+    const m = new Map<string, string>();
     for (const t of tasks) m.set(t.title.toLowerCase(), t.id);
     return m;
   }, [tasks]);
@@ -143,7 +145,6 @@ export default function MarkdownWithFileLinks({
       );
     }
 
-    // Check if the code text matches a task title
     if (onTaskClick && taskMap.size > 0) {
       const taskId = taskMap.get(text.toLowerCase());
       if (taskId) {
@@ -160,7 +161,6 @@ export default function MarkdownWithFileLinks({
       }
     }
 
-    // Check if the code text matches a linked repo name
     if (onRepoClick) {
       if (githubRepo && (text === githubRepo || text === githubRepo.split('/').pop())) {
         return (
@@ -202,18 +202,68 @@ export default function MarkdownWithFileLinks({
     return <TextWithFilePaths text={textContent} filePaths={filePaths} refs={refs} onFileClick={onFileClick} />;
   };
 
+  function extractText(node: React.ReactNode): string {
+    if (typeof node === 'string') return node;
+    if (typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractText).join('');
+    if (node && typeof node === 'object' && 'props' in (node as any)) {
+      return extractText((node as any).props?.children);
+    }
+    return '';
+  }
+
+  const repoButtonCls = 'font-mono text-[0.85em] bg-[var(--color-code-repo-bg)] text-[var(--color-code-repo)] px-1 py-0.5 rounded border border-[var(--color-code-repo-border)] hover:bg-[var(--color-code-repo-border)] cursor-pointer transition-colors underline-offset-2 hover:underline';
+
+  const strongRenderer = ({ children: c }: { children?: React.ReactNode }) => {
+    if (onRepoClick) {
+      const text = extractText(c).trim();
+      if (text) {
+        if (githubRepo && (text === githubRepo || text === githubRepo.split('/').pop())) {
+          return <button type="button" onClick={() => onRepoClick(githubRepo, 'github')} title={`Browse ${githubRepo}`} className={repoButtonCls}>{c}</button>;
+        }
+        for (const glRepo of gitlabRepos) {
+          if (text === glRepo || text === glRepo.split('/').pop()) {
+            return <button type="button" onClick={() => onRepoClick(glRepo, 'gitlab')} title={`Browse ${glRepo}`} className={repoButtonCls}>{c}</button>;
+          }
+        }
+      }
+    }
+    return <strong className="font-semibold text-[var(--color-heading)]">{c}</strong>;
+  };
+
+  const Root = block ? 'div' : 'span';
+
+  // Shared block-level components — used by all AI response surfaces
+  const blockComponents = block ? {
+    p:          ({ children: c }: { children?: React.ReactNode }) => <p className="mb-2 last:mb-0 leading-relaxed">{c}</p>,
+    ul:         ({ children: c }: { children?: React.ReactNode }) => <ul className="list-disc pl-5 my-2 space-y-1 leading-relaxed">{c}</ul>,
+    ol:         ({ children: c }: { children?: React.ReactNode }) => <ol className="list-decimal pl-5 my-2 space-y-1 leading-relaxed">{c}</ol>,
+    li:         ({ children: c }: { children?: React.ReactNode }) => <li className="leading-snug">{c}</li>,
+    h1:         ({ children: c }: { children?: React.ReactNode }) => <h1 className="text-sm font-bold text-[var(--color-heading)] mt-4 mb-1.5 first:mt-0 border-b border-[var(--color-border)] pb-1">{c}</h1>,
+    h2:         ({ children: c }: { children?: React.ReactNode }) => <h2 className="text-xs font-bold text-[var(--color-heading)] mt-3 mb-1 first:mt-0">{c}</h2>,
+    h3:         ({ children: c }: { children?: React.ReactNode }) => <h3 className="text-xs font-semibold text-[var(--color-heading)] mt-2.5 mb-0.5 first:mt-0">{c}</h3>,
+    blockquote: ({ children: c }: { children?: React.ReactNode }) => <blockquote className="border-l-2 border-[var(--color-accent)]/40 pl-3 my-2 text-[var(--color-muted)] italic">{c}</blockquote>,
+    hr:         () => <hr className="my-3 border-[var(--color-border)]" />,
+    pre:        ({ children: c }: { children?: React.ReactNode }) => <pre className="my-2 overflow-x-auto max-w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded p-2 text-[0.85em]">{c}</pre>,
+    table:      ({ children: c }: { children?: React.ReactNode }) => <div className="my-2 overflow-x-auto"><table className="text-[0.85em] border-collapse w-full">{c}</table></div>,
+    th:         ({ children: c }: { children?: React.ReactNode }) => <th className="border border-[var(--color-border)] px-2 py-1 text-left font-semibold bg-[var(--color-surface2)]">{c}</th>,
+    td:         ({ children: c }: { children?: React.ReactNode }) => <td className="border border-[var(--color-border)] px-2 py-1">{c}</td>,
+  } : {
+    p: ({ children: c }: { children?: React.ReactNode }) => <span>{c} </span>,
+  };
+
   return (
-    <span className={className}>
+    <Root className={className}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          p: ({ children: c }) => <span>{c}</span>,
-          strong: ({ children: c }) => <strong className="font-semibold text-[var(--color-heading)]">{c}</strong>,
-          em: ({ children: c }) => <em className="italic">{c}</em>,
+          ...blockComponents,
+          strong: strongRenderer,
+          em: ({ children: c }) => <em className="italic text-[var(--color-muted)]">{c}</em>,
           code: codeRenderer,
           text: textRenderer,
           a: ({ href, children: c }) => (
-            <a href={href} className="text-[var(--color-accent2)] underline" target="_blank" rel="noreferrer">
+            <a href={href} className="text-[var(--color-accent2)] underline underline-offset-2 hover:opacity-80 transition-opacity" target="_blank" rel="noreferrer">
               {c}
             </a>
           ),
@@ -222,6 +272,6 @@ export default function MarkdownWithFileLinks({
       >
         {children}
       </ReactMarkdown>
-    </span>
+    </Root>
   );
 }

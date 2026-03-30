@@ -154,29 +154,48 @@ export default function Sidebar() {
       {/* User */}
       {user && (
         <div className="border-t border-border px-3 py-3">
-          <div className="flex items-center gap-2">
-            {user.user_metadata?.avatar_url && (
-              <img
-                src={user.user_metadata.avatar_url as string}
-                alt=""
-                className="w-7 h-7 rounded-full"
-              />
-            )}
-            {!sidebarCollapsed && (
+          {sidebarCollapsed ? (
+            <div className="flex justify-center">
+              {user.user_metadata?.avatar_url ? (
+                <img
+                  src={user.user_metadata.avatar_url as string}
+                  alt=""
+                  className="w-7 h-7 rounded-full"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-surface2 flex items-center justify-center text-[10px] text-muted font-semibold">
+                  {(user.user_metadata?.user_name ?? user.email ?? '?')[0].toUpperCase()}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              {user.user_metadata?.avatar_url ? (
+                <img
+                  src={user.user_metadata.avatar_url as string}
+                  alt=""
+                  className="w-7 h-7 rounded-full shrink-0"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-surface2 flex items-center justify-center text-[10px] text-muted font-semibold shrink-0">
+                  {(user.user_metadata?.user_name ?? user.email ?? '?')[0].toUpperCase()}
+                </div>
+              )}
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-heading truncate">
                   {user.user_metadata?.user_name ?? user.email}
                 </div>
               </div>
-            )}
-            <button
-              onClick={signOut}
-              className="p-1 rounded hover:bg-surface2 text-muted hover:text-danger transition-colors"
-              title="Sign out"
-            >
-              <LogOut size={14} />
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={signOut}
+                className="p-1 rounded hover:bg-surface2 text-muted hover:text-danger transition-colors shrink-0"
+                title="Sign out"
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </aside>

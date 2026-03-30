@@ -187,10 +187,10 @@ export default function DashboardPage() {
           Dashboard
         </p>
         <h1 className="font-sans text-3xl font-extrabold text-heading tracking-tight">
-          Project Overview
+          At A Glance
         </h1>
         <p className="text-sm text-muted mt-1">
-          Everything your team is working on — in one place.
+          Everything you are working on, in one place.
         </p>
       </div>
 
@@ -419,6 +419,7 @@ export default function DashboardPage() {
               {/* Status */}
               <div className="text-xs text-heading leading-relaxed break-words min-w-0">
                 <MarkdownWithFileLinks
+                  block
                   filePaths={insightFilePaths}
                   onFileClick={handleFileClick}
                   githubRepo={insightProject?.github_repo}
