@@ -462,16 +462,15 @@ ${codeBlock}`,
         maxTokens: 3000,
       }, userApiKey);
 
-      let raw = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+      let raw = extractJson(result.text);
       // If the response was truncated mid-JSON, attempt to close it gracefully
       let parsed: any;
       try {
         parsed = JSON.parse(raw);
       } catch {
-        // Trim to the last complete top-level key by finding the last valid closing
         const lastBrace = raw.lastIndexOf('}');
         if (lastBrace > 0) raw = raw.slice(0, lastBrace + 1);
-        parsed = JSON.parse(raw); // re-throw if still broken
+        parsed = JSON.parse(raw);
       }
       return {
         status: parsed.status || '',
@@ -1519,7 +1518,7 @@ Generate the standup summary.`,
         maxTokens: 800,
       }, userApiKey);
 
-      const raw = result.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+      const raw = extractJson(result.text);
       const parsed = JSON.parse(raw);
 
       const standupResult = {
