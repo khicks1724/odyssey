@@ -1569,6 +1569,7 @@ Generate the standup summary.`,
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId);
 
     try {
@@ -1605,7 +1606,7 @@ ${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.github
 
 Analyze everything and suggest specific improvements to the goal structure and deadlines.`,
         maxTokens: 3000,
-      });
+      }, userApiKey);
 
       const parsed = JSON.parse(extractJson(result.text));
       return { suggestions: parsed.suggestions ?? [], provider: result.provider };
