@@ -1385,8 +1385,8 @@ RECENT ACTIVITY & DOCUMENTS:
 ${trimmedEvents}${trimmedGithub ? `\n\nGITHUB:\n${trimmedGithub}` : ''}${trimmedGitlab ? `\n\nGITLAB:\n${trimmedGitlab}` : ''}`;
 
     // ── Pass 1: generate metadata + section outlines — haiku is sufficient here ─
-    const haikuOk = getAvailableProviders().find((p) => p.id === 'claude-haiku')?.available ?? false;
-    const pass1Provider: AIProvider = haikuOk ? 'claude-haiku' : provider;
+    // Pass 1 requires structured JSON with many fields — use the main provider for reliability
+    const pass1Provider: AIProvider = provider;
 
     let pass1: Record<string, unknown>;
     try {
@@ -1426,12 +1426,14 @@ Return an object with:
   * An upcoming work / next steps section
   * Optionally: team contributions, code/commit activity (if git data exists), timeline analysis`,
         user: contextBlock + templateSection + '\n\nAnalyze the project data thoroughly and plan the full report structure as JSON.',
-        maxTokens: 1400,
+        maxTokens: 2500,
+        jsonMode: true,
       });
-      const t1 = r1.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+      const t1 = extractJson(r1.text);
       pass1 = JSON.parse(t1);
-    } catch {
-      return reply.status(500).send({ error: 'Failed to plan report structure. Try again.' });
+    } catch (err) {
+      console.error('Pass 1 failed:', err);
+      return reply.status(500).send({ error: `Failed to plan report structure: ${err instanceof Error ? err.message : String(err)}` });
     }
 
     const sectionTitles: string[] = Array.isArray(pass1.sectionTitles)
