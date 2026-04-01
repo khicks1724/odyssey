@@ -237,7 +237,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
       const { type, args } = s;
 
       if (type === 'create_goal') {
-        await supabase.from('goals').insert({
+        const { data: newGoal } = await supabase.from('goals').insert({
           project_id:  projectId,
           title:       overrides?.title       ?? (args.title as string),
           deadline:    overrides?.deadline    ?? (args.deadline as string) ?? null,
@@ -247,7 +247,21 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
           assignees:   overrides?.assignees   ?? [],
           status:      overrides?.status      ?? 'not_started',
           progress:    overrides?.progress    ?? 0,
-        });
+        }).select().single();
+        // Auto-generate AI guidance in background
+        if (newGoal?.id) {
+          const { data: sessionData } = await supabase.auth.getSession();
+          const authToken = sessionData.session?.access_token;
+          const guidanceHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (authToken) guidanceHeaders['Authorization'] = `Bearer ${authToken}`;
+          fetch('/api/ai/task-guidance', {
+            method: 'POST',
+            headers: guidanceHeaders,
+            body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
+          }).then((r) => r.ok ? r.json() : null).then((data) => {
+            if (data?.guidance) supabase.from('goals').update({ ai_guidance: data.guidance }).eq('id', newGoal.id).catch(() => {});
+          }).catch(() => {});
+        }
       } else if (type === 'update_goal') {
         const baseUpdates = args.updates as Record<string, unknown>;
         const merged = overrides ? { ...baseUpdates, ...overrides } : baseUpdates;

@@ -199,9 +199,17 @@ export default function ChatPage() {
     }
   }, [threads, selectedThreadId]);
 
+  const needsInstantScroll = useRef(false);
+  // When thread switches, flag that the next scroll should be instant
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, selectedThreadId]);
+    needsInstantScroll.current = true;
+  }, [selectedThreadId]);
+
+  useEffect(() => {
+    const behavior = needsInstantScroll.current ? 'instant' : 'smooth';
+    needsInstantScroll.current = false;
+    bottomRef.current?.scrollIntoView({ behavior });
+  }, [messages]);
 
   // Clear the AI queue when the user switches threads
   useEffect(() => {

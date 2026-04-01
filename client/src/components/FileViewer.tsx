@@ -119,10 +119,10 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
   // Custom style overrides — use app surface color so it matches the theme
   const highlighterStyle: SyntaxHighlighterProps['customStyle'] = {
     margin: 0,
-    padding: '1rem 1.25rem',
+    padding: '1rem 0',
     background: 'transparent',
     fontSize: '12px',
-    lineHeight: '1.6',
+    lineHeight: '1.65',
   };
 
   return (
@@ -135,10 +135,10 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 
       {/* Slide-in panel */}
-      <div className="relative z-10 w-full max-w-4xl flex flex-col bg-[#1a1b26] shadow-2xl border-l border-white/10 overflow-hidden">
+      <div className="relative z-10 w-full max-w-4xl flex flex-col bg-[#21252b] shadow-2xl border-l border-white/10 overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 shrink-0">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/10 bg-[#282c34] shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/60 font-mono uppercase tracking-wider shrink-0">
               {lang}
@@ -204,7 +204,7 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
               style={oneDark}
               customStyle={highlighterStyle}
               showLineNumbers
-              lineNumberStyle={{ color: 'rgba(255,255,255,0.2)', minWidth: '3em', paddingRight: '1em', userSelect: 'none', fontSize: '11px' }}
+              lineNumberStyle={{ color: '#636d83', minWidth: '3.5em', paddingRight: '1.5em', userSelect: 'none', fontSize: '11px' }}
               wrapLongLines={false}
             >
               {content}

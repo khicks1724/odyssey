@@ -1,3 +1,20 @@
 .chat-panel {
   width: var(--chat-panel-w, 380px);
 }
+
+.chat-panel--closed {
+  width: 0 !important;
+  border-left: none !important;
+}
+
+.app-scalable {
+  zoom: var(--app-zoom, 1);
+  /* Counteract zoom so the outer h-screen container never exceeds the viewport.
+     Without this, zoom > 1 makes the div visually taller than 100vh, causing body scroll. */
+  height: calc(100vh / var(--app-zoom, 1)) !important;
+}
+
+/* Counter-zoom the header so it stays visually fixed regardless of A+/A- setting */
+.app-header-fixed {
+  zoom: calc(1 / var(--app-zoom, 1));
+}

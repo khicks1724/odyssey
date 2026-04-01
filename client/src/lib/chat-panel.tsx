@@ -1,4 +1,7 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import type { ReportContent } from './report-download';
+
+export type ReportFormat = 'docx' | 'pptx' | 'pdf';
 
 export interface MessageAttachment {
   type: 'image' | 'text-file' | 'document' | 'repo';
@@ -21,6 +24,8 @@ export interface ChatMessage {
     args: Record<string, unknown>;
   };
   actionState?: 'pending' | 'approved' | 'denied';
+  /** Populated when the AI generated a downloadable report */
+  reportReady?: { data: ReportContent; format: ReportFormat };
 }
 
 interface ChatPanelCtx {

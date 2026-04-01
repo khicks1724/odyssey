@@ -5,15 +5,14 @@ import { useState, useEffect } from 'react';
 // All Tailwind rem-based classes (text-xs, text-sm, etc.) scale proportionally.
 const STEPS = [-3, -2, -1, 0, 1, 2, 3] as const;
 type Step = typeof STEPS[number];
-const ROOT_BASE = 16; // px
+const ROOT_BASE = 16; // px — used only for zoom ratio calculation
 const LS_KEY = 'odyssey-font-size-step';
 
-function rootPxForStep(step: Step | number): number {
-  return ROOT_BASE + step; // 13–19px
-}
-
 function applyStep(step: number) {
-  document.documentElement.style.fontSize = `${rootPxForStep(step)}px`;
+  // Use CSS zoom on the content area so the top header bar is unaffected.
+  // rem units always reference the html font-size, so we never touch that.
+  const zoom = (ROOT_BASE + step) / ROOT_BASE;
+  document.documentElement.style.setProperty('--app-zoom', String(zoom));
 }
 
 export default function FontSizeControl() {

@@ -943,12 +943,12 @@ export default function ProjectDetailPage() {
 
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newGoalTitle.trim()) return;
-    await createGoal({
+    if (!newGoalTitle.trim() || !newGoalDeadline || !newGoalCategory || !newGoalLoe) return;
+    const newGoal = await createGoal({
       title: newGoalTitle,
-      deadline: newGoalDeadline || undefined,
-      category: newGoalCategory.trim() || undefined,
-      loe: newGoalLoe || undefined,
+      deadline: newGoalDeadline,
+      category: newGoalCategory,
+      loe: newGoalLoe,
       assignees: newGoalAssignees,
     });
     setNewGoalTitle('');
@@ -957,6 +957,16 @@ export default function ProjectDetailPage() {
     setNewGoalLoe('');
     setNewGoalAssignees([]);
     goalModal.onClose();
+    // Auto-generate AI guidance in background after creation
+    if (newGoal?.id) {
+      fetch(`${API_BASE}/ai/task-guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
+      }).then((r) => r.ok ? r.json() : null).then((data) => {
+        if (data?.guidance) updateGoal(newGoal.id, { ai_guidance: data.guidance }).catch(() => {});
+      }).catch(() => {});
+    }
   };
 
   // Build assignee lookup from members + current user
@@ -1140,6 +1150,8 @@ export default function ProjectDetailPage() {
           events={events}
           projectId={projectId ?? null}
           searchRef={searchRef}
+          projectCategories={projectCategories.map((c) => c.name)}
+          projectLoes={projectLoes.map((l) => l.name)}
           riskAssessing={riskAssessing}
           riskReport={riskReport}
           riskPanelOpen={riskPanelOpen}
@@ -1345,11 +1357,12 @@ export default function ProjectDetailPage() {
           />
         </div>
         <div>
-          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Deadline (optional)</label>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Deadline</label>
           <input
             type="date"
             value={newGoalDeadline}
             onChange={(e) => setNewGoalDeadline(e.target.value)}
+            required
             title="Task deadline"
             className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
           />
@@ -1360,16 +1373,12 @@ export default function ProjectDetailPage() {
             <select
               value={newGoalCategory}
               onChange={(e) => setNewGoalCategory(e.target.value)}
+              required
               title="Task category"
               className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
             >
-              <option value="">— None —</option>
-              <option value="Testing">Testing</option>
-              <option value="Seeker">Seeker</option>
-              <option value="Missile">Missile</option>
-              <option value="Admin">Admin</option>
-              <option value="Simulation">Simulation</option>
-              <option value="DevOps">DevOps</option>
+              <option value="">— Select —</option>
+              {projectCategories.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
             </select>
           </div>
           <div>
@@ -1377,17 +1386,12 @@ export default function ProjectDetailPage() {
             <select
               value={newGoalLoe}
               onChange={(e) => setNewGoalLoe(e.target.value)}
+              required
               title="Line of Effort"
               className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
             >
-              <option value="">— None —</option>
-              <option value="Training">Training</option>
-              <option value="Simulation">Simulation</option>
-              <option value="JetsonCV">JetsonCV</option>
-              <option value="Image Capture">Image Capture</option>
-              <option value="Flight Software">Flight Software</option>
-              <option value="IR Camera Suite">IR Camera Suite</option>
-              <option value="Admin">Admin</option>
+              <option value="">— Select —</option>
+              {projectLoes.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
             </select>
           </div>
         </div>
@@ -1449,6 +1453,7 @@ export default function ProjectDetailPage() {
           }
         }}
         onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
+        onSilentSave={async (id, updates) => { await updateGoal(id, updates); }}
         onClose={handleGoalEditClose}
       />
     )}

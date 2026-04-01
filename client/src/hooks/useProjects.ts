@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { Project, JoinRequest } from '../types';
+import { generateProjectCode } from '../lib/project-code';
 
 const PROJECTS_CHANGED_EVENT = 'odyssey:projects-changed';
 
@@ -227,7 +228,7 @@ export function useProjects() {
     if (!user) throw new Error('Not authenticated');
     const { data, error } = await supabase
       .from('projects')
-      .insert({ name, description, owner_id: user.id })
+      .insert({ name, description, owner_id: user.id, invite_code: generateProjectCode() })
       .select()
       .single();
 

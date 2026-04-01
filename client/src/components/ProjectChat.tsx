@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Send, Loader2, Bot, Check, Ban, Plus, Pencil, Trash2, Copy, CheckCheck,
-  X, FileText, Github, GitBranch, Image, File, ChevronRight,
+  X, FileText, Github, GitBranch, Image, File, ChevronRight, ChevronDown,
+  Download, TableIcon,
 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
-import { useChatPanel, type ChatMessage as Message, type MessageAttachment } from '../lib/chat-panel';
+import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat } from '../lib/chat-panel';
+import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV } from '../lib/report-download';
 import { supabase } from '../lib/supabase';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 import MarkdownWithFileLinks from './MarkdownWithFileLinks';
@@ -111,6 +113,16 @@ function AttachmentPill({ att }: { att: MessageAttachment }) {
 
 // ── Main component ──────────────────────────────────────────────────────────
 
+// Detect intent to generate a downloadable report/document
+const GENERATE_INTENT = /\b(generate|create|make|build|produce|export|download|write|put together|compile)\b.{0,60}\b(report|doc|docx|pptx|pdf|powerpoint|word|presentation|summary|slide\s*deck|slides|deck|brief(?:ing)?|document)\b/i;
+
+function detectReportFormat(text: string): ReportFormat | null {
+  if (/\bpptx\b|powerpoint|slides?\s*deck|presentation/i.test(text)) return 'pptx';
+  if (/\bpdf\b/i.test(text)) return 'pdf';
+  if (/\bdocx?\b|word\s*doc/i.test(text)) return 'docx';
+  return null;
+}
+
 function inferProjectFromPrompt(text: string, projects: Project[], fallbackProjectId: string | null) {
   const normalized = text.toLowerCase();
   const matchedProject = projects.find((project) => {
@@ -144,11 +156,25 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   const [resourcesReady, setResourcesReady] = useState(false);
   const { filePaths } = useProjectFilePaths(githubRepo, gitlabRepos);
   const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string } | null>(null);
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const projectPickerRef = useRef<HTMLDivElement>(null);
 
-  const bottomRef   = useRef<HTMLDivElement>(null);
-  const inputRef    = useRef<HTMLTextAreaElement>(null);
+  const bottomRef    = useRef<HTMLDivElement>(null);
+  const messagesRef  = useRef<HTMLDivElement>(null);
+  const inputRef     = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contextRef  = useRef<HTMLDivElement>(null);
+
+  // Close project picker on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (projectPickerRef.current && !projectPickerRef.current.contains(e.target as Node)) {
+        setProjectPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   // ── Fetch project resources ──────────────────────────────────────────────
 
@@ -230,7 +256,17 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   // ── Scroll & focus ───────────────────────────────────────────────────────
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
+  // Reset textarea height when input is cleared (e.g. after send)
+  useEffect(() => {
+    if (!input && inputRef.current) {
+      inputRef.current.style.height = '0px';
+      inputRef.current.style.height = inputRef.current.scrollHeight + 'px';
+    }
+  }, [input]);
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50); }, []);
 
   // ── Copy ────────────────────────────────────────────────────────────────
@@ -379,6 +415,45 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
       const authToken = sessionData.session?.access_token;
       const authHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
       if (authToken) authHeaders['Authorization'] = `Bearer ${authToken}`;
+
+      // Detect report generation intent — route to generate-report endpoint
+      if (GENERATE_INTENT.test(text) && !overrideText) {
+        const fmt: ReportFormat = detectReportFormat(text) ?? 'pdf';
+        const fmtLabel = fmt === 'pptx' ? 'PowerPoint slide deck' : fmt === 'docx' ? 'Word document' : 'PDF';
+        setMessages((prev) => [...prev, { role: 'assistant', content: `Got it — generating your ${fmtLabel} now…` }]);
+
+        const today = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+        const threeMonthsAgo = new Date(today);
+        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+        const fromStr = `${threeMonthsAgo.getFullYear()}-${pad(threeMonthsAgo.getMonth() + 1)}-${pad(threeMonthsAgo.getDate())}`;
+
+        const rRes = await fetch('/api/ai/generate-report', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({ agent, projectId: targetProjectId, format: fmt, prompt: text, dateFrom: fromStr, dateTo: todayStr }),
+        });
+        const rData = await rRes.json();
+        if (!rRes.ok) {
+          setError(rData.error ?? `Error ${rRes.status}`);
+          showAIError(rData.error ?? `Error ${rRes.status}`, rRes.status);
+        } else {
+          if (rData.provider) notifyModelUsed(rData.provider);
+          const fmtLabel2 = fmt === 'pptx' ? 'PowerPoint' : fmt === 'pdf' ? 'PDF' : 'Word';
+          setMessages((prev) => [
+            ...prev.slice(0, -1), // replace the "generating…" message
+            {
+              role: 'assistant',
+              content: `**${rData.title}** is ready — ${rData.sections?.length ?? 0} sections · ${fmtLabel2}`,
+              provider: rData.provider,
+              reportReady: { data: rData, format: fmt },
+            },
+          ]);
+        }
+        setLoading(false);
+        return;
+      }
 
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
@@ -600,15 +675,46 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
       <div className="pc-panel-header">
         <div className="flex items-center gap-2 min-w-0">
           <Bot size={14} className="text-accent shrink-0" />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-xs font-bold text-heading font-sans">Project AI</div>
-            <div className="text-[10px] text-muted font-mono truncate">{selectedProject?.name ?? projectName ?? 'No project selected'}</div>
+            {/* Clickable project switcher */}
+            <div className="relative" ref={projectPickerRef}>
+              <button
+                type="button"
+                onClick={() => setProjectPickerOpen((o) => !o)}
+                className="flex items-center gap-0.5 text-[10px] text-muted font-mono hover:text-heading transition-colors"
+              >
+                <span className="truncate max-w-[140px]">{selectedProject?.name ?? projectName ?? 'No project selected'}</span>
+                <ChevronDown size={9} className={`shrink-0 transition-transform ${projectPickerOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {projectPickerOpen && projects.length > 0 && (
+                <div className="absolute top-full left-0 mt-1 w-52 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-xl z-50 overflow-hidden">
+                  {projects.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        setResolvedProjectId(p.id);
+                        setProjectPickerOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--color-surface2)] ${
+                        p.id === resolvedProjectId ? 'text-[var(--color-accent)] font-semibold' : 'text-[var(--color-heading)]'
+                      }`}
+                    >
+                      {p.id === resolvedProjectId && <Check size={10} className="shrink-0 text-[var(--color-accent)]" />}
+                      {p.id !== resolvedProjectId && <span className="w-[10px] shrink-0" />}
+                      <span className="truncate">{p.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Messages */}
-      <div className="pc-messages flex-1 p-4 space-y-3">
+      <div ref={messagesRef} className="pc-messages flex-1 p-4 space-y-3">
         {messages.length === 0 && (
           <div className="text-center py-8">
             <Bot size={24} className="text-muted mx-auto mb-2" />
@@ -627,7 +733,34 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         {messages.map((msg, i) => (
           <div key={msg.id ?? i}>
             <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {msg.role === 'assistant' ? (
+              {msg.role === 'assistant' && msg.reportReady ? (
+                <div className="bg-surface2 border border-border rounded p-3 text-xs mr-2 max-w-[92%] space-y-2">
+                  <div className="flex items-center gap-1.5 text-accent3 font-medium">
+                    <FileText size={11} className="shrink-0" />
+                    <span>{msg.content}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button"
+                      onClick={async () => {
+                        const { data, format: fmt } = msg.reportReady!;
+                        if (fmt === 'docx') await downloadDocx(data);
+                        else if (fmt === 'pptx') await downloadPptx(data);
+                        else await downloadPdf(data);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1 bg-accent text-[var(--color-accent-fg)] text-[10px] font-medium rounded hover:bg-accent/90 transition-colors">
+                      <Download size={10} />
+                      Download {msg.reportReady.format.toUpperCase()}
+                    </button>
+                    {msg.reportReady.data.rawData?.goals?.length ? (
+                      <button type="button" onClick={() => exportGoalsCSV(msg.reportReady!.data)}
+                        className="flex items-center gap-1 text-[10px] text-muted hover:text-heading border border-border rounded px-2 py-1 hover:bg-surface2 transition-colors">
+                        <TableIcon size={9} /> Export CSV
+                      </button>
+                    ) : null}
+                  </div>
+                  {msg.provider && <div className="text-[9px] text-muted opacity-60">{msg.provider}</div>}
+                </div>
+              ) : msg.role === 'assistant' ? (
                 <div className="relative group mr-2 max-w-[92%]">
                   <button type="button" onClick={() => copyMessage(msg.content, i)} title="Copy response"
                     className="absolute -top-2 -right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity
@@ -755,12 +888,14 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
             }}
             onPaste={handlePaste}
-            placeholder="Ask or instruct the AI… (paste images, drag & drop files)"
+            placeholder="Prompt or add files…"
             rows={3}
             className="pc-input flex-1 bg-surface2 border border-border text-heading text-xs font-mono placeholder:text-muted/50 px-3 py-2 focus:outline-none focus:border-accent/50 transition-colors rounded"
             onInput={(e) => {
               const t = e.currentTarget;
-              t.style.height = 'auto';
+              // Clamp height without ever setting 'auto' — 'auto' collapses the
+              // textarea momentarily and triggers a layout shift / page scroll.
+              t.style.height = '0px';
               t.style.height = Math.min(t.scrollHeight, 120) + 'px';
             }}
           />

@@ -58,12 +58,12 @@ export default function AppLayout() {
   }, [panelWidth, onDividerMove, onDividerUp]);
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden app-scalable">
       <Sidebar />
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        {/* Top header */}
-        <header className="flex items-center justify-between px-6 h-11 shrink-0
+        {/* Top header — counter-zoomed so A+/A- never shifts its contents */}
+        <header className="app-header-fixed flex items-center justify-between px-6 h-11 shrink-0
                             border-b border-[var(--color-border)] bg-[var(--color-surface)]">
           <DateTime />
           <div className="flex items-center gap-2">
@@ -94,36 +94,37 @@ export default function AppLayout() {
             <Outlet />
           </main>
 
-          {anyPanelOpen && (open || (iuOpen && projectId)) && (
-            <>
-              {/* Draggable divider */}
-              <div
-                onMouseDown={onDividerDown}
-                className="chat-divider shrink-0 w-1 hover:w-1.5 cursor-col-resize transition-all
-                           bg-[var(--color-border)] hover:bg-[var(--color-accent)]/50 active:bg-[var(--color-accent)]"
-                title="Drag to resize"
-              />
+          {/* Draggable divider — hidden when no panel is open */}
+          <div
+            onMouseDown={onDividerDown}
+            className={`chat-divider shrink-0 w-1 hover:w-1.5 cursor-col-resize transition-all
+                        bg-[var(--color-border)] hover:bg-[var(--color-accent)]/50 active:bg-[var(--color-accent)]
+                        ${anyPanelOpen ? '' : 'hidden'}`}
+            title="Drag to resize"
+          />
 
-              {/* Right panel — shows either AI Chat or Intelligent Update */}
-              <div className="chat-panel shrink-0 flex flex-col overflow-hidden min-w-0 border-l border-[var(--color-border)] bg-[var(--color-surface)]">
-                {open && (
-                  <ProjectChat
-                    projectId={projectId}
-                    projectName={projectName ?? ''}
-                    projects={projects}
-                    onGoalMutated={onGoalMutated ?? undefined}
-                  />
-                )}
-                {iuOpen && (
-                  <IntelligentUpdatePanel
-                    projectId={projectId}
-                    onClose={() => setIuOpen(false)}
-                    onGoalMutated={onGoalMutated ?? (() => {})}
-                  />
-                )}
-              </div>
-            </>
-          )}
+          {/* Right panel — always in DOM, width collapses to 0 when closed to avoid scroll reset */}
+          <div
+            className={`chat-panel shrink-0 flex flex-col overflow-hidden min-w-0 border-l border-[var(--color-border)] bg-[var(--color-surface)]
+                        transition-[width] duration-200
+                        ${anyPanelOpen ? '' : 'chat-panel--closed'}`}
+          >
+            {open && (
+              <ProjectChat
+                projectId={projectId}
+                projectName={projectName ?? ''}
+                projects={projects}
+                onGoalMutated={onGoalMutated ?? undefined}
+              />
+            )}
+            {iuOpen && (
+              <IntelligentUpdatePanel
+                projectId={projectId}
+                onClose={() => setIuOpen(false)}
+                onGoalMutated={onGoalMutated ?? (() => {})}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -3,8 +3,17 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;       /* allow flex child to shrink inside a flex parent */
   overflow: hidden;
   min-width: 0;
+}
+
+/* Scroll area — constrained height so it never grows the page */
+.pc-messages {
+  flex: 1 1 0;         /* grow but start from 0, not content size */
+  min-height: 0;       /* critical: without this flex-1 won't clip */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* Header */
@@ -69,13 +78,6 @@
 
 .pc-md a {
   word-break: break-all;
-}
-
-/* Scroll area — no horizontal scroll ever */
-.pc-messages {
-  overflow-y: auto;
-  overflow-x: hidden;
-  min-height: 0;
 }
 
 /* + context button */
@@ -168,7 +170,13 @@
 }
 .pc-ctx-item:hover { background: var(--color-surface2); color: var(--color-heading); }
 .pc-ctx-item:disabled { opacity: 0.4; cursor: default; }
-.pc-ctx-item--active { color: var(--color-accent); }
+.pc-ctx-item--active {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.pc-ctx-item--active:hover {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
 
 /* Drag-over panel state */
 .pc-panel--drag { outline: 2px dashed var(--color-accent); outline-offset: -2px; }

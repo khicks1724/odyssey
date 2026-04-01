@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { chat, streamChat, getAvailableProviders, type AIProvider } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, isGenAiMilKey, type AIProvider } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import { decryptUserKey } from './user-ai-keys.js';
 import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
@@ -11,6 +11,37 @@ function providerToService(provider: AIProvider): 'anthropic' | 'openai' | 'goog
   if (provider === 'gpt-4o') return 'openai';
   if (provider === 'gemini-pro') return 'google';
   return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
+}
+
+// Prefer order when auto-selecting from stored user keys
+const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gemini-pro', 'gpt-4o'];
+
+/**
+ * Resolve the best available provider for a given auth token.
+ * When the user has a personal key stored in the DB, prefer that service.
+ * Falls back to env-var availability, then to `fallback`.
+ */
+async function resolveAutoProvider(authHeader: string | undefined, fallback: AIProvider): Promise<AIProvider> {
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    const { data: { user } } = await supabase.auth.getUser(token);
+    if (user) {
+      const { data: keys } = await supabase
+        .from('user_ai_keys')
+        .select('provider')
+        .eq('user_id', user.id);
+      if (keys && keys.length > 0) {
+        const storedServices = new Set(keys.map((k: { provider: string }) => k.provider));
+        // Pick the first provider (in preference order) whose service has a stored key
+        for (const p of AUTO_PROVIDER_PREFERENCE) {
+          if (storedServices.has(providerToService(p))) return p;
+        }
+      }
+    }
+  }
+  // Fall back to env-var availability
+  const envAvailable = getAvailableProviders().find((p) => p.available);
+  return envAvailable?.id ?? fallback;
 }
 
 // Look up the user's stored API key for the given provider (decrypted).
@@ -41,15 +72,24 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
 // Strip markdown code fences that models sometimes wrap JSON responses in.
 // e.g. ```json { ... } ``` → { ... }
 function extractJson(text: string): string {
-  // Strip code fences
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  // Extract JSON from ```json ... ``` fences only — do NOT match bash/sh/etc. fences
+  // which would grab shell code instead of JSON when the model wraps both in code blocks.
+  const fenced = text.match(/```json\s*([\s\S]*?)```/);
   let raw = fenced ? fenced[1].trim() : text.trim();
 
-  // Find the outermost JSON object/array in case of preamble text
+  // Find the outermost JSON object/array — strips any conversational preamble
+  // e.g. "Of course, here is the JSON: {..." → "{..."
   const firstBrace = raw.indexOf('{');
   const firstBracket = raw.indexOf('[');
-  const start = firstBrace === -1 ? firstBracket : firstBracket === -1 ? firstBrace : Math.min(firstBrace, firstBracket);
+  const start = firstBrace === -1 ? firstBracket
+    : firstBracket === -1 ? firstBrace
+    : Math.min(firstBrace, firstBracket);
   if (start > 0) raw = raw.slice(start);
+  // Also trim everything after the final closing brace/bracket
+  const lastBrace = raw.lastIndexOf('}');
+  const lastBracket = raw.lastIndexOf(']');
+  const end = Math.max(lastBrace, lastBracket);
+  if (end >= 0 && end < raw.length - 1) raw = raw.slice(0, end + 1);
 
   // Strip JS-style line comments (// ...) — invalid in JSON
   raw = raw.replace(/\/\/[^\n]*/g, '');
@@ -423,13 +463,15 @@ Analyze which goals are completed and suggest new goals.`,
   }
 
   server.post<{ Body: ProjectInsightsBody }>('/ai/project-insights', async (request, reply) => {
-    const provider = resolveProvider(request.body, 'claude-sonnet');
     const { projectId } = request.body;
 
     if (!projectId) {
       return reply.status(400).send({ error: 'projectId is required' });
     }
 
+    const provider = (request.body.agent && request.body.agent !== 'auto')
+      ? resolveProvider(request.body, 'claude-sonnet')
+      : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId);
 
@@ -684,7 +726,7 @@ Analyze which goals these documents show progress on, who did the work, and when
       { data: members },
       { data: gitlabInteg },
     ] = await Promise.all([
-      supabase.from('projects').select('name, description, github_repo').eq('id', projectId).single(),
+      supabase.from('projects').select('name, description, github_repo, created_at').eq('id', projectId).single(),
       supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(50),
       supabase.from('project_members').select('user_id, role, profiles:user_id(display_name)').eq('project_id', projectId),
@@ -852,8 +894,15 @@ Analyze which goals these documents show progress on, who did the work, and when
     // GitLab data (multi-repo support) — commits + README + code files
     let gitlabContext = '';
     if (gitlabInteg?.config) {
-      const cfg = gitlabInteg.config as { repos?: string[]; repo?: string; host?: string };
+      const cfg = gitlabInteg.config as { repos?: string[]; repo?: string; host?: string; token?: string };
       const repos: string[] = cfg.repos ?? (cfg.repo ? [cfg.repo] : []);
+      // User-stored token takes priority over server env var
+      const glToken = cfg.token || process.env.GITLAB_TOKEN || process.env.GITLAB_NPS_TOKEN || '';
+      const glHost  = cfg.host  || process.env.GITLAB_HOST  || process.env.GITLAB_NPS_HOST  || 'https://gitlab.nps.edu';
+      // Headers to forward token+host to internal routes
+      const glHeaders: Record<string, string> = {};
+      if (glToken) glHeaders['x-gitlab-token'] = glToken;
+      if (glHost)  glHeaders['x-gitlab-host']  = glHost;
 
       if (repos.length > 0) {
         const BINARY_EXTS_GL = new Set(['.png','.jpg','.jpeg','.gif','.ico','.pdf','.zip','.tar','.gz','.bin','.onnx','.pt','.weights','.h264','.mp4','.so','.dylib','.exe','.wasm','.pkl','.npy','.npz','.db','.sqlite','.lock']);
@@ -870,7 +919,7 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1. Commits + README
           try {
-            const r = await fetch(`${BASE}/api/gitlab/recent?repo=${encodeURIComponent(repo)}`);
+            const r = await fetch(`${BASE}/api/gitlab/recent?repo=${encodeURIComponent(repo)}`, { headers: glHeaders });
             if (r.ok) {
               const rd = await r.json() as { commits?: string[]; readme?: string };
               if (rd.commits?.length) repoCtx += `GitLab${repoLabel} commits:\n${rd.commits.slice(0, 10).join('\n')}\n`;
@@ -880,8 +929,8 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1b. Recent commit diffs
           try {
-            const gitlabToken = process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN;
-            const gitlabHost = (gitlabInteg?.config as { host?: string } | null)?.host ?? process.env.GITLAB_HOST ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+            const gitlabToken = glToken;
+            const gitlabHost  = glHost;
             const encoded = encodeURIComponent(repo);
             const commitsRes = await fetch(
               `${gitlabHost}/api/v4/projects/${encoded}/repository/commits?per_page=6&order_by=created_at&sort=desc`,
@@ -911,7 +960,7 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 2. Full source code — recursive tree + prioritized file fetch
           try {
-            const treeRes = await fetch(`${BASE}/api/gitlab/tree?repo=${encodeURIComponent(repo)}`);
+            const treeRes = await fetch(`${BASE}/api/gitlab/tree?repo=${encodeURIComponent(repo)}`, { headers: glHeaders });
             if (treeRes.ok) {
               const treeData = await treeRes.json() as { files: { path: string; size?: number }[] };
               const allFiles = treeData.files ?? [];
@@ -947,7 +996,7 @@ Analyze which goals these documents show progress on, who did the work, and when
               for (const f of eligible) {
                 if (repoBytesUsed >= REPO_BUDGET || totalCharsUsed >= TOTAL_BUDGET) { skippedBudget.push(f.path); continue; }
                 try {
-                  const fr = await fetch(`${BASE}/api/gitlab/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`);
+                  const fr = await fetch(`${BASE}/api/gitlab/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`, { headers: glHeaders });
                   if (!fr.ok) continue;
                   const fd = await fr.json() as { content?: string };
                   if (!fd.content) continue;
@@ -1050,13 +1099,16 @@ Analyze which goals these documents show progress on, who did the work, and when
 
     const { projectId, messages, reportMode, attachments } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
-    const provider = reportMode
-      ? resolveProvider(request.body, 'claude-sonnet')
-      : resolveProviderForChat(request.body, lastMessage);
 
     if (!projectId || !messages?.length) {
       return reply.status(400).send({ error: 'projectId and messages are required' });
     }
+
+    // Resolve provider: explicit selection wins; auto picks based on user's stored keys
+    const explicitAgent = request.body.agent && request.body.agent !== 'auto';
+    const provider = explicitAgent
+      ? (reportMode ? resolveProvider(request.body, 'claude-sonnet') : resolveProviderForChat(request.body, lastMessage))
+      : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
 
     // Look up user's personal API key override for the selected provider
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
@@ -1083,7 +1135,7 @@ TASKS:\n${ctx.tasksText}
 ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
       : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE_WITH_REPO_PATHS}
 
-IMPORTANT: Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.
+IMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project?.github_repo}` : ''}
 
@@ -1126,14 +1178,18 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
       ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
       : transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
 
-    const { sys: cappedSystem } = capPromptSections(systemPrompt, githubSection, gitlabSection);
+    // GenAI.mil has a 1M-token (~4M char) context window — pass the full context
+    // uncapped so repo/doc contents aren't truncated before reaching the model.
+    const usingGenAiMil = provider === 'gemini-pro' && userApiKey ? isGenAiMilKey(userApiKey) : false;
+    const finalSystem = usingGenAiMil ? systemPrompt : capPromptSections(systemPrompt, githubSection, gitlabSection).sys;
 
     try {
       const result = await chat(provider, {
-        system: cappedSystem,
+        system: finalSystem,
         user: userContent,
         maxTokens: 4096,
         images: imageAttachments.length ? imageAttachments : undefined,
+        webSearch: !usingGenAiMil,
       }, userApiKey);
 
       // Parse optional action tag
@@ -1178,15 +1234,17 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     const { projectId, messages, reportMode, attachments } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
-    const provider = reportMode
-      ? resolveProvider(request.body, 'claude-sonnet')
-      : resolveProviderForChat(request.body, lastMessage);
 
     if (!projectId || !messages?.length) {
       send({ type: 'error', message: 'projectId and messages are required' });
       res.end();
       return;
     }
+
+    const explicitAgentStream = request.body.agent && request.body.agent !== 'auto';
+    const provider = explicitAgentStream
+      ? (reportMode ? resolveProvider(request.body, 'claude-sonnet') : resolveProviderForChat(request.body, lastMessage))
+      : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
 
     // Look up user's personal API key override for the selected provider
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
@@ -1202,7 +1260,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
       const systemPrompt = reportMode
         ? `You are Odyssey's report advisor. Help the user plan a project report. Be concise and specific. Always refer to tasks by their title, never by ID.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}\nTASKS:\n${ctx.tasksText}\nACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project.github_repo}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose ONE action on goals at the end using: <action>{"type":"create_goal"|"update_goal"|"delete_goal","description":"...","args":{...}}</action>`;
+        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project.github_repo}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose ONE action on goals at the end using: <action>{"type":"create_goal"|"update_goal"|"delete_goal","description":"...","args":{...}}</action>`;
 
       const history = messages.slice(-20);
       const lastMsg = history[history.length - 1]?.content ?? '';
@@ -1224,12 +1282,13 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
         ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
         : transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
 
-      const { sys: cappedSystem } = capPromptSections(systemPrompt, githubSection, gitlabSection);
+      const usingGenAiMilStream = provider === 'gemini-pro' && userApiKey ? isGenAiMilKey(userApiKey) : false;
+      const finalSystemStream = usingGenAiMilStream ? systemPrompt : capPromptSections(systemPrompt, githubSection, gitlabSection).sys;
 
       let fullText = '';
       const result = await streamChat(
         provider,
-        { system: cappedSystem, user: userContent, maxTokens: 4096, images: imageAttachments.length ? imageAttachments : undefined },
+        { system: finalSystemStream, user: userContent, maxTokens: 4096, images: imageAttachments.length ? imageAttachments : undefined, webSearch: !usingGenAiMilStream },
         (chunk) => {
           fullText += chunk;
           send({ type: 'token', text: chunk });
@@ -1271,8 +1330,21 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
   server.post<{ Body: GenerateReportBody }>('/ai/generate-report', async (request, reply) => {
     const provider = resolveProvider(request.body, 'claude-sonnet');
-    const { projectId, prompt, dateFrom, dateTo } = request.body;
+    const { projectId, prompt, format, dateFrom, dateTo } = request.body;
     if (!projectId || !prompt) return reply.status(400).send({ error: 'projectId and prompt are required' });
+
+    // Fetch the project's report template for the requested format (if any)
+    const { data: templateEvents } = await supabase
+      .from('events')
+      .select('metadata')
+      .eq('project_id', projectId)
+      .eq('event_type', 'report_template')
+      .filter('metadata->>template_type', 'eq', format ?? 'docx')
+      .limit(1);
+    const templateMeta = templateEvents?.[0]?.metadata as { extracted_text?: string; filename?: string } | null;
+    const templateSection = templateMeta?.extracted_text
+      ? `\n\nREPORT TEMPLATE (follow this structure, layout, and style closely — mirror the section headings, tone, and formatting from the template below):\nTemplate file: ${templateMeta.filename ?? 'uploaded template'}\n${templateMeta.extracted_text.slice(0, 8000)}`
+      : '';
 
     const ctx = await getCachedContext(projectId);
 
@@ -1318,18 +1390,43 @@ ${trimmedEvents}${trimmedGithub ? `\n\nGITHUB:\n${trimmedGithub}` : ''}${trimmed
 
     let pass1: Record<string, unknown>;
     try {
+      const now = new Date();
+      const monthYear = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
       const r1 = await chat(pass1Provider, {
-        system: `You are a project report planner. Return ONLY valid JSON — no markdown, no explanation.
+        system: `You are a senior project analyst and report planner. Return ONLY valid JSON — no markdown, no explanation.
+Today's date is ${now.toISOString().slice(0, 10)} (${monthYear}).
 
 Return an object with:
-- "title": string (report title, max 70 chars)
-- "subtitle": string (e.g. "Project Status Report — March 2026")
+- "title": string (report title, max 70 chars — specific to this project and period)
+- "subtitle": string — must use the CURRENT month and year: "${monthYear}" (e.g. "Project Status Report — ${monthYear}")
 - "projectName": string
-- "generatedAt": ISO date string
-- "executiveSummary": string (3-4 sentences: overall health, key wins, risks, outlook)
-- "sectionTitles": array of 5-7 strings — the exact section titles to include, chosen based on the data. Always include at least one section with a figure or chart where the data supports it (e.g. task status breakdown, progress by category, timeline, team contributions).`,
-        user: contextBlock + '\n\nPlan the report structure as JSON.',
-        maxTokens: 700,
+- "generatedAt": ISO date string (today: "${now.toISOString()}")
+- "reportingPeriod": string (e.g. "Q2 2026" or "April 2026" based on today's date)
+- "overallHealthScore": number 0-100 (weighted: completion rate 40%, on-time delivery 30%, recent activity 30%)
+- "overallHealthLabel": string — one of "On Track", "At Risk", "Behind Schedule", "Ahead of Schedule"
+- "executiveSummary": string (4-5 sentences covering: overall health score rationale, most significant accomplishments this period, top 2 risks or blockers, forward-looking outlook with specific milestones on the horizon)
+- "keyMetrics": object with:
+  - "tasksComplete": number
+  - "tasksInProgress": number
+  - "tasksNotStarted": number
+  - "overallProgress": number (0-100, weighted average across all tasks)
+  - "tasksOverdue": number (deadline passed, not complete)
+  - "tasksDueSoon": number (deadline within 14 days, not complete)
+  - "categoriesCount": number
+- "accomplishments": array of 4-6 specific strings — concrete things completed or meaningfully advanced this period (cite task names, percentages, dates where possible)
+- "blockers": array of 2-4 specific strings — tasks or areas that are stalled, overdue, or at risk, with specifics
+- "upcomingMilestones": array of 3-5 strings — near-term deadlines and tasks to watch, with dates
+- "recommendations": array of 3-5 actionable recommendation strings for the team
+- "sectionTitles": array of 6-8 strings — exact section titles tailored to this project's data. Must include:
+  * An executive/overview section
+  * A task status & progress section (with figures)
+  * A category breakdown section (with figures if multiple categories exist)
+  * An accomplishments section
+  * A risks & blockers section
+  * An upcoming work / next steps section
+  * Optionally: team contributions, code/commit activity (if git data exists), timeline analysis`,
+        user: contextBlock + templateSection + '\n\nAnalyze the project data thoroughly and plan the full report structure as JSON.',
+        maxTokens: 1400,
       });
       const t1 = r1.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
       pass1 = JSON.parse(t1);
@@ -1342,29 +1439,44 @@ Return an object with:
       : ['Project Status Overview', 'Goal Progress', 'Team Contributions', 'Code & Commits', 'Risks & Recommendations'];
 
     // ── Pass 2: all sections in parallel — major speedup ───────────────────────
-    const SECTION_SYSTEM = `You write one section of a project report as JSON. Return ONLY valid JSON — no markdown, no explanation.
+    const SECTION_SYSTEM = `You write one section of a comprehensive project report as JSON. Return ONLY valid JSON — no markdown, no explanation.
+Today's date is ${new Date().toISOString().slice(0, 10)}.
 
 Return an object with:
 - "title": string (the section title)
-- "body": string (2-3 sentences of specific analysis using real names, percentages, dates from the data)
-- "bullets": array of 4-6 specific, data-driven bullet strings
-- "table": optional — include ONLY if this section benefits from a table. Object with "headers": string[] and "rows": string[][] (max 10 rows, max 4 columns). CRITICAL table rules: every cell value must be short enough to fit in its column — use abbreviations if needed, never let text wrap more than 2 lines per cell, keep header text under 20 characters.
-- "figure": optional — include if this section benefits from a visual figure (bar chart, pie chart, progress chart, timeline, etc.). Object with "type": "bar"|"pie"|"progress"|"timeline", "title": string, and "data": array of {label: string, value: number} objects. Only include figures where you have actual numeric data from the project.
+- "body": string (3-5 sentences of deep, specific analysis — cite real task names, categories, percentages, team members, dates, and commit activity from the data. Do not write generic filler. Every sentence should contain a specific data point.)
+- "bullets": array of 5-8 specific, data-driven bullet strings. Each bullet must reference real data (task names, numbers, percentages, dates). Mix positive accomplishments with gaps/risks where relevant.
+- "table": optional — include when this section has structured data that benefits from tabular comparison. Object with "headers": string[] and "rows": string[][] (max 12 rows, max 5 columns). Rules: cell text max 35 chars, headers max 18 chars, abbreviate if needed.
+- "figure": optional — include when real numeric data supports a visualization. Object with "type": "bar"|"pie"|"progress"|"timeline", "title": string, and "data": array of {label: string, value: number} objects. Only use actual numbers from the project data — never fabricate.
+- "callout": optional — a single highlighted insight string (the most important takeaway for this section, max 100 chars). Use for executive/overview and risk sections.
+- "subSections": optional array — for long sections, break into 2-3 sub-sections each with "heading": string and "text": string (2-3 sentences each).
 
-AESTHETIC QUALITY REQUIREMENTS — be hypercritical about these:
-- Table cell text must never overflow its cell boundary. If a value is long, truncate or abbreviate it.
-- Tables must have consistent column widths — no column should dominate. Keep all cell text under 40 characters.
-- Bullet points must be concise — each bullet under 120 characters. Never write paragraph-length bullets.
-- Body text must be exactly 2-3 sentences — not one long run-on sentence.
-- Figures must only be included when real numeric data exists to populate them — never include empty or fabricated chart data.`;
+QUALITY REQUIREMENTS:
+- Every bullet must be specific and data-driven — under 130 characters, no vague filler like "the team is making progress".
+- Body must be 3-5 sentences, not one long run-on. Start with the most important insight.
+- Tables: consistent columns, no overflow, abbreviate long values.
+- Figures: only real data, meaningful labels, no dummy values.
+- For risk/blocker sections: be direct and specific about what is at risk and why.
+- For accomplishments sections: cite specific completed tasks, progress jumps, and dates.`;
+
+    // Build a compact pass1 summary to give each section writer context
+    const pass1Summary = JSON.stringify({
+      overallHealthScore: pass1.overallHealthScore,
+      overallHealthLabel: pass1.overallHealthLabel,
+      keyMetrics: pass1.keyMetrics,
+      accomplishments: pass1.accomplishments,
+      blockers: pass1.blockers,
+      upcomingMilestones: pass1.upcomingMilestones,
+      recommendations: pass1.recommendations,
+    });
 
     const sectionResults = await Promise.all(
       sectionTitles.map(async (sectionTitle) => {
         try {
           const r2 = await chat(provider, {
             system: SECTION_SYSTEM,
-            user: `${contextBlock}\n\nWrite the section titled: "${sectionTitle}"`,
-            maxTokens: 1200,
+            user: `${contextBlock}${templateSection}\n\nREPORT METADATA (use this context):\n${pass1Summary}\n\nWrite the section titled: "${sectionTitle}"`,
+            maxTokens: 1800,
             jsonMode: true,
           });
           const sec = JSON.parse(extractJson(r2.text));
@@ -1379,6 +1491,7 @@ AESTHETIC QUALITY REQUIREMENTS — be hypercritical about these:
       ...pass1,
       sections,
       generatedAt: (pass1.generatedAt as string) || new Date().toISOString(),
+      subtitle: (pass1.subtitle as string) || `Project Status Report — ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`,
       provider,
     };
 
@@ -1407,10 +1520,12 @@ AESTHETIC QUALITY REQUIREMENTS — be hypercritical about these:
   }
 
   server.post<{ Body: StandupBody }>('/ai/standup', async (request, reply) => {
-    const provider = resolveProvider(request.body);
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
+    const provider = (request.body.agent && request.body.agent !== 'auto')
+      ? resolveProvider(request.body, 'claude-haiku')
+      : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
 
     const now = new Date();
@@ -1570,12 +1685,69 @@ Generate the standup summary.`,
   }
 
   server.post<{ Body: IntelligentUpdateBody }>('/ai/intelligent-update', async (request, reply) => {
-    const provider = resolveProvider(request.body, 'claude-haiku');
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
+    const provider = (request.body.agent && request.body.agent !== 'auto')
+      ? resolveProvider(request.body, 'claude-haiku')
+      : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId);
+
+    // ── Fetch project labels (categories + LOEs) ─────────────────────────────
+    const { data: labelsData } = await supabase
+      .from('project_labels')
+      .select('type, name')
+      .eq('project_id', projectId)
+      .order('created_at');
+    const projectCategories = (labelsData ?? []).filter((l: any) => l.type === 'category').map((l: any) => l.name as string);
+    const projectLoes       = (labelsData ?? []).filter((l: any) => l.type === 'loe').map((l: any) => l.name as string);
+
+    // ── Compute context signals to guide suggestion volume ───────────────────
+    const goalCount       = ctx.goals.length;
+    const repoContextLen  = (ctx.githubContext?.length ?? 0) + (ctx.gitlabContext?.length ?? 0);
+    const docContextLen   = ctx.documentsContext?.length ?? 0;
+    const hasRepos        = repoContextLen > 200;
+    const hasDocs         = docContextLen > 200;
+    const contextRich     = hasRepos || hasDocs;
+    const contextVeryRich = (hasRepos && hasDocs) || repoContextLen > 10_000 || docContextLen > 5_000;
+
+    // How many days since project was created
+    const projectCreatedAt = ctx.project?.created_at ? new Date(ctx.project.created_at) : null;
+    const projectAgeDays   = projectCreatedAt ? Math.floor((Date.now() - projectCreatedAt.getTime()) / 86_400_000) : 999;
+    const projectIsNew     = projectAgeDays <= 14;
+
+    // Determine suggestion volume range and creation bias
+    let minSuggestions: number;
+    let maxSuggestions: number;
+    let creationBias: string;
+
+    if (goalCount === 0) {
+      // Brand new project — generate a full initial task list from available context
+      minSuggestions = contextVeryRich ? 15 : contextRich ? 10 : 6;
+      maxSuggestions = contextVeryRich ? 25 : contextRich ? 18 : 10;
+      creationBias = 'STRONGLY BIAS toward create_goal — the project has no tasks yet. Build a complete task breakdown that covers everything visible in the repos, documents, and project description.';
+    } else if (goalCount <= 5 && contextRich) {
+      // Very few tasks but lots of context — the project is under-tracked
+      minSuggestions = contextVeryRich ? 12 : 8;
+      maxSuggestions = contextVeryRich ? 20 : 14;
+      creationBias = 'STRONGLY BIAS toward create_goal — there are very few tasks relative to the available context. The project is clearly under-tracked. Add tasks to cover all significant work visible in repos/documents.';
+    } else if (goalCount <= 10 && contextRich) {
+      // Moderate tasks, rich context
+      minSuggestions = 6;
+      maxSuggestions = contextVeryRich ? 14 : 10;
+      creationBias = 'MODERATELY BIAS toward create_goal — the task list appears incomplete relative to the scope visible in repos/documents. Fill in missing areas.';
+    } else if (goalCount > 20 && !projectIsNew) {
+      // Mature project with many tasks — focus on maintenance
+      minSuggestions = 3;
+      maxSuggestions = 8;
+      creationBias = 'Focus primarily on update_goal, extend_deadline, contract_deadline, and delete_goal. Only create new tasks for clear gaps not covered by any existing task.';
+    } else {
+      // Default balanced range
+      minSuggestions = 4;
+      maxSuggestions = 10;
+      creationBias = 'Balance create_goal with updates. Create tasks for any work visible in the context that has no corresponding task.';
+    }
 
     try {
       const result = await chat(provider, {
@@ -1589,19 +1761,38 @@ Return an object with one key:
   - "type": "create_goal" | "update_goal" | "delete_goal" | "extend_deadline" | "contract_deadline"
   - "priority": "high" | "medium" | "low"
   - "title": string (short label shown in the UI, max 60 chars)
-  - "reasoning": string (2-3 sentences explaining WHY this is suggested based on the actual data)
+  - "reasoning": string (2-3 sentences explaining WHY this is suggested, referencing actual data)
   - "args": object matching the type:
-    - create_goal: {title, deadline?, category?, assignedTo?}
-    - update_goal: {goalId, updates: {title?, status?, progress?, deadline?, category?, assigned_to?}}
+    - create_goal: {title, deadline, category, loe, assignedTo?}
+    - update_goal: {goalId, updates: {title?, status?, progress?, deadline?, category?, loe?, assigned_to?}}
     - delete_goal: {goalId, goalTitle}
     - extend_deadline: {goalId, goalTitle, currentDeadline, suggestedDeadline, reason}
     - contract_deadline: {goalId, goalTitle, currentDeadline, suggestedDeadline, reason}
 
-Be specific and reference actual task IDs, names, dates. Generate 3-8 suggestions. Prioritize the most impactful ones.`,
+REQUIRED FIELDS FOR create_goal — every create_goal suggestion MUST include ALL three of these or it will be rejected:
+1. "deadline": ISO date string (YYYY-MM-DD). Estimate a realistic deadline based on task complexity and project context. Today is ${new Date().toISOString().split('T')[0]}.
+2. "category": MUST be one of the project's defined categories listed below. Pick the best fit.
+3. "loe": MUST be one of the project's defined lines of effort listed below. Pick the best fit.
+
+PROJECT LABELS (you MUST use ONLY these exact values):
+- Available categories: ${projectCategories.length > 0 ? projectCategories.map(c => `"${c}"`).join(', ') : '(none defined — omit category field)'}
+- Available lines of effort: ${projectLoes.length > 0 ? projectLoes.map(l => `"${l}"`).join(', ') : '(none defined — omit loe field)'}
+
+SUGGESTION VOLUME: Generate between ${minSuggestions} and ${maxSuggestions} suggestions. More is better when context is rich — do not artificially limit suggestions if there is genuine work to capture.
+
+CREATION BIAS: ${creationBias}
+
+CONTEXT SIGNALS (use to calibrate):
+- Existing tasks: ${goalCount}
+- Repo context available: ${hasRepos ? 'yes (' + Math.round(repoContextLen / 1000) + 'k chars)' : 'no'}
+- Document context available: ${hasDocs ? 'yes (' + Math.round(docContextLen / 1000) + 'k chars)' : 'no'}
+- Project age: ${projectAgeDays <= 1 ? 'brand new (today)' : projectAgeDays + ' days old'}
+
+Be specific and reference actual task IDs, names, dates, file names, and commit messages from the context.`,
         user: `PROJECT: ${ctx.project?.name ?? 'Unknown'}
 
-TASKS:
-${ctx.goalsText}
+TASKS (${goalCount} total):
+${ctx.goalsText || 'None — project has no tasks yet.'}
 
 TEAM:
 ${ctx.membersText}
@@ -1609,13 +1800,59 @@ ${ctx.membersText}
 RECENT ACTIVITY & DOCUMENTS:
 ${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + source code):\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}
 
-Analyze everything and suggest specific improvements to the goal structure and deadlines.`,
-        maxTokens: 3000,
+Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list from scratch based on all available context.' : 'Suggest specific improvements to the task structure, deadlines, and coverage.'} Remember: every create_goal MUST have deadline, category, and loe filled in.`,
+        maxTokens: 4000,
         jsonMode: true,
       }, userApiKey);
 
-      const parsed = JSON.parse(extractJson(result.text));
-      return { suggestions: parsed.suggestions ?? [], provider: result.provider };
+      let raw = extractJson(result.text);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // Attempt graceful recovery if response was truncated mid-JSON
+        const lastBrace = raw.lastIndexOf('}');
+        if (lastBrace > 0) raw = raw.slice(0, lastBrace + 1);
+        parsed = JSON.parse(raw);
+      }
+
+      // ── Validate + sanitise create_goal suggestions ───────────────────────
+      const today = new Date().toISOString().split('T')[0];
+
+      const suggestions: any[] = (parsed.suggestions ?? []).filter((s: any) => {
+        if (s.type !== 'create_goal') return true; // non-create suggestions always pass through
+
+        const args = s.args ?? {};
+
+        // Must have a title
+        if (!args.title?.trim()) return false;
+
+        // Must have a deadline — if missing or invalid, drop the suggestion
+        if (!args.deadline || typeof args.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(args.deadline)) return false;
+        // Deadline must be in the future (or today)
+        if (args.deadline < today) args.deadline = today;
+
+        // Must have a category that exists in the project labels (if any defined)
+        if (projectCategories.length > 0) {
+          if (!args.category) return false;
+          // Case-insensitive match — normalise to the canonical casing from project labels
+          const match = projectCategories.find(c => c.toLowerCase() === args.category.toLowerCase());
+          if (!match) return false;
+          args.category = match; // normalise casing
+        }
+
+        // Must have a loe that exists in the project labels (if any defined)
+        if (projectLoes.length > 0) {
+          if (!args.loe) return false;
+          const match = projectLoes.find(l => l.toLowerCase() === args.loe.toLowerCase());
+          if (!match) return false;
+          args.loe = match; // normalise casing
+        }
+
+        return true;
+      });
+
+      return { suggestions, provider: result.provider };
     } catch (err: any) {
       server.log.error(err);
       const msg = err?.message ?? 'Failed to run intelligent update';
@@ -1660,13 +1897,11 @@ Analyze everything and suggest specific improvements to the goal structure and d
   server.post<{ Body: TaskGuidanceBody }>('/ai/task-guidance', async (request, reply) => {
     const { agent, projectId, taskTitle, taskStatus, taskProgress, taskCategory, taskLoe } = request.body;
     if (!projectId || !taskTitle) return reply.status(400).send({ error: 'projectId and taskTitle are required' });
-    // Prefer haiku for lightweight guidance; fall back to first available provider if haiku is unavailable
-    const haikuAvailable = getAvailableProviders().find((p) => p.id === 'claude-haiku')?.available ?? false;
-    const provider = agent && agent !== 'auto'
+    // Prefer haiku for lightweight guidance; for auto, pick based on what the user actually has
+    const provider = (agent && agent !== 'auto')
       ? resolveProvider({ agent }, 'claude-haiku')
-      : haikuAvailable
-        ? 'claude-haiku'
-        : (getAvailableProviders().find((p) => p.available)?.id ?? 'claude-haiku');
+      : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId);
 
     const repoCtx = [
@@ -1689,11 +1924,11 @@ ${repoCtx}
 
 Give me the 4-6 most impactful next steps to make concrete progress on this task right now.`,
         maxTokens: 500,
-      });
+      }, userApiKey);
       return { guidance: result.text, provider: result.provider };
     } catch (err: any) {
       server.log.error(err);
-      return reply.status(500).send({ error: 'Failed to generate guidance' });
+      return reply.status(500).send({ error: err?.message ?? 'Failed to generate guidance' });
     }
   });
 

@@ -3,15 +3,18 @@ import { ChevronLeft, ChevronRight, Plus, Flag, X, Calendar, Loader2 } from 'luc
 import type { Goal } from '../types';
 import { supabase } from '../lib/supabase';
 
-const CATEGORY_COLORS: Record<string, string> = {
-  Testing:    '#e85555',
-  Seeker:     '#3b8eea',
-  Missile:    '#e8a235',
-  Admin:      '#bd93f9',
-  Simulation: '#52c98e',
-  DevOps:     '#dc7070',
-};
+const GROUP_PALETTE = [
+  '#3b8eea', '#52c98e', '#e8a235', '#bd93f9',
+  '#e85555', '#8be9fd', '#ffb86c', '#dc7070',
+];
 const DEFAULT_COLOR = '#5a6a7e';
+
+function makeCatColorMap(goals: Goal[]): Map<string, string> {
+  const keys = [...new Set(goals.map((g) => g.category ?? '').filter(Boolean))];
+  const map = new Map<string, string>();
+  keys.forEach((k, i) => map.set(k, GROUP_PALETTE[i % GROUP_PALETTE.length]));
+  return map;
+}
 
 const DAYS   = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -27,8 +30,7 @@ interface CalendarViewProps {
   onCreateGoalForDate: (dateStr: string) => void;
 }
 
-function TaskPill({ g, onClick }: { g: Goal; onClick: () => void }) {
-  const color = CATEGORY_COLORS[g.category ?? ''] ?? DEFAULT_COLOR;
+function TaskPill({ g, color, onClick }: { g: Goal; color: string; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -79,6 +81,9 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  const catColorMap = makeCatColorMap(goals);
+  const catColor = (g: Goal) => catColorMap.get(g.category ?? '') ?? DEFAULT_COLOR;
 
   const year  = current.getFullYear();
   const month = current.getMonth();
@@ -156,11 +161,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-sm" style={{ background: '#bd93f9' }} />
-            <span className="text-[9px] font-mono text-[var(--color-muted)] uppercase tracking-wider">Milestone</span>
-          </div>
-          {Object.entries(CATEGORY_COLORS).map(([cat, color]) => (
+          {[...catColorMap.entries()].map(([cat, color]) => (
             <div key={cat} className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-sm" style={{ background: color }} />
               <span className="text-[9px] font-mono text-[var(--color-muted)]">{cat}</span>
@@ -248,7 +249,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                           );
                         }
                         const g = item.g;
-                        return <TaskPill key={`g-${g.id}-${ii}`} g={g} onClick={() => onGoalClick(g)} />;
+                        return <TaskPill key={`g-${g.id}-${ii}`} g={g} color={catColor(g)} onClick={() => onGoalClick(g)} />;
                       })}
 
                       {overflow > 0 && (
@@ -292,7 +293,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                           </div>
                         ))}
                         {dayGoals.map(g => (
-                          <TaskPill key={g.id} g={g} onClick={() => { onGoalClick(g); setExpandedDay(null); }} />
+                          <TaskPill key={g.id} g={g} color={catColor(g)} onClick={() => { onGoalClick(g); setExpandedDay(null); }} />
                         ))}
                       </div>
                     </div>

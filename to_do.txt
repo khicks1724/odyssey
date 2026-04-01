@@ -1,8 +1,1 @@
-If I logout of the webapp and then log in with my github account will it 
-show my projects as they were? Do they persist?  Can I link any other account 
-verifications or sign in methods to my account, like microsoft? I should also 
-be able to login with my microsoft account and have it tied to my openai, google,
- claude, github and gitlab accounts if that is possible. Do this in the most 
- practical, simple, efficient way possible if it is possible. I also want new 
- users to be able to login with any of these methods and tether them all together
-  as well.
+when i hit enter in the right pane project chat the page slides up and i cant scroll. I dont want the page to move up when i hit enter. If the content in the project chat overflows the project chat pane then i should be able to scroll inside of the pane but not scroll the page to blank space like the earlier errors

@@ -35,6 +35,11 @@
   --font-tracking: normal;
 }
 
+html, body {
+  height: 100%;
+  overflow: hidden; /* Prevent body-level scroll — all scrolling is inside the app shell */
+}
+
 body {
   background-color: var(--color-bg);
   color: var(--color-text);

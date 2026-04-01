@@ -5,17 +5,8 @@ import './Timeline.css';
 import CalendarView from './CalendarView';
 import { Clock, CalendarDays } from 'lucide-react';
 
-type GroupBy = 'category' | 'loe' | 'assignee';
+type GroupBy = 'category';
 
-/* ─── Category colors ─── */
-const CATEGORY_COLORS: Record<string, { bg: string; border: string; label: string }> = {
-  'Testing':    { bg: 'rgba(232,85,85,0.35)',    border: '#e85555', label: '#e85555' },
-  'Seeker':     { bg: 'rgba(59,142,234,0.35)',   border: '#3b8eea', label: '#3b8eea' },
-  'Missile':    { bg: 'rgba(232,162,53,0.35)',   border: '#e8a235', label: '#e8a235' },
-  'Admin':      { bg: 'rgba(189,147,249,0.35)',  border: '#bd93f9', label: '#bd93f9' },
-  'Simulation': { bg: 'rgba(82,201,142,0.35)',   border: '#52c98e', label: '#52c98e' },
-  'DevOps':     { bg: 'rgba(220,112,112,0.35)',  border: '#dc7070', label: '#dc7070' },
-};
 const DEFAULT_CATEGORY = { bg: 'rgba(90,106,126,0.3)', border: '#5a6a7e', label: '#5a6a7e' };
 
 /* ─── Rotating palette for LOE / Assignee grouping ─── */
@@ -43,7 +34,6 @@ const HEADER_H = 40;
 const AXIS_H = 36;
 const MIN_PPD = 8;
 const MAX_PPD = 140;
-const CATEGORY_KEY_ORDER = Object.keys(CATEGORY_COLORS);
 
 function fmtDate(d: Date) { return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
 function fmtMonth(d: Date) { return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }); }
@@ -132,7 +122,7 @@ interface TimelinePageProps {
 
 export default function TimelinePage({ goals, members = [], projectId = '', onGoalClick, onCreateGoalForDate }: TimelinePageProps) {
   const [view, setView] = useState<'timeline' | 'calendar'>('timeline');
-  const [groupBy, setGroupBy] = useState<GroupBy>('category');
+  const groupBy: GroupBy = 'category';
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const [hovered, setHovered] = useState<HoverState | null>(null);
@@ -145,15 +135,8 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
     .sort((a, b) => {
       const ak = getGoalGroupKey(a, groupBy, members);
       const bk = getGoalGroupKey(b, groupBy, members);
-      if (groupBy === 'category') {
-        const ai = CATEGORY_KEY_ORDER.indexOf(a.category ?? '');
-        const bi = CATEGORY_KEY_ORDER.indexOf(b.category ?? '');
-        const catDiff = (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-        if (catDiff !== 0) return catDiff;
-      } else {
-        const kDiff = ak.localeCompare(bk);
-        if (kDiff !== 0) return kDiff;
-      }
+      const kDiff = ak.localeCompare(bk);
+      if (kDiff !== 0) return kDiff;
       return new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime();
     });
 
@@ -251,13 +234,7 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
   // Build group color map
   const uniqueGroupKeys = [...new Set(goalsWithDeadline.map((g) => getGoalGroupKey(g, groupBy, members)))];
   const groupColorMap: Map<string, { bg: string; border: string; label: string }> =
-    groupBy === 'category'
-      ? (() => {
-          const m = new Map<string, { bg: string; border: string; label: string }>();
-          Object.entries(CATEGORY_COLORS).forEach(([k, v]) => m.set(k, v));
-          return m;
-        })()
-      : makeGroupColorMap(uniqueGroupKeys);
+    makeGroupColorMap(uniqueGroupKeys);
 
   function goalColor(goal: Goal) {
     return groupColorMap.get(getGoalGroupKey(goal, groupBy, members)) ?? DEFAULT_CATEGORY;
@@ -316,23 +293,10 @@ export default function TimelinePage({ goals, members = [], projectId = '', onGo
           </button>
         </div>
 
-        {/* Group by picker */}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-[10px] text-muted uppercase tracking-widest font-mono">Group:</span>
-          {(['category', 'loe', 'assignee'] as GroupBy[]).map((g) => (
-            <button key={g} type="button" onClick={() => setGroupBy(g)}
-              className={`px-2.5 py-1 rounded text-[10px] font-mono transition-colors ${
-                groupBy === g ? 'bg-surface2 text-heading' : 'text-muted hover:text-heading hover:bg-surface2/50'
-              }`}>
-              {g === 'loe' ? 'LOE' : g.charAt(0).toUpperCase() + g.slice(1)}
-            </button>
-          ))}
-        </div>
-
-        {/* Dynamic group legend swatches */}
+        {/* Category color legend */}
         {uniqueGroupKeys.map((key) => {
           const c = groupColorMap.get(key) ?? DEFAULT_CATEGORY;
-          const label = key || (groupBy === 'category' ? 'Uncategorized' : 'Unassigned');
+          const label = key || 'Uncategorized';
           return (
             <div key={key || '__empty'} className="flex items-center gap-1.5">
               <span className="tl-cat-swatch" {...({ style: cv({ '--tl-cat': c.border }) } as any)} />

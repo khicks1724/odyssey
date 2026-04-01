@@ -6,18 +6,23 @@ function cv(vars: Record<string, string | number>): React.CSSProperties {
   return vars as unknown as React.CSSProperties;
 }
 
-const CATEGORY_COLORS: Record<string, { color: string; track: string }> = {
-  'Testing':    { color: '#e85555', track: 'rgba(232,85,85,0.18)' },
-  'Seeker':     { color: '#3b8eea', track: 'rgba(59,142,234,0.18)' },
-  'Missile':    { color: '#e8a235', track: 'rgba(232,162,53,0.18)' },
-  'Admin':      { color: '#bd93f9', track: 'rgba(189,147,249,0.18)' },
-  'Simulation': { color: '#52c98e', track: 'rgba(82,201,142,0.18)' },
-  'DevOps':     { color: '#dc7070', track: 'rgba(220,112,112,0.18)' },
-};
+const GROUP_PALETTE: { color: string; track: string }[] = [
+  { color: '#3b8eea', track: 'rgba(59,142,234,0.18)' },
+  { color: '#52c98e', track: 'rgba(82,201,142,0.18)' },
+  { color: '#e8a235', track: 'rgba(232,162,53,0.18)' },
+  { color: '#bd93f9', track: 'rgba(189,147,249,0.18)' },
+  { color: '#e85555', track: 'rgba(232,85,85,0.18)' },
+  { color: '#8be9fd', track: 'rgba(139,233,253,0.18)' },
+  { color: '#ffb86c', track: 'rgba(255,184,108,0.18)' },
+  { color: '#dc7070', track: 'rgba(220,112,112,0.18)' },
+];
 const DEFAULT_COLOR = { color: '#5a6a7e', track: 'rgba(90,106,126,0.18)' };
 
-function catColor(goal: Goal) {
-  return CATEGORY_COLORS[goal.category ?? ''] ?? DEFAULT_COLOR;
+function makeCatColorMap(goals: Goal[]): Map<string, { color: string; track: string }> {
+  const keys = [...new Set(goals.map((g) => g.category ?? ''))];
+  const map = new Map<string, { color: string; track: string }>();
+  keys.forEach((k, i) => map.set(k, GROUP_PALETTE[i % GROUP_PALETTE.length]));
+  return map;
 }
 
 interface MemberInfo { user_id: string; display_name: string | null; }
@@ -100,6 +105,9 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
     .filter((g) => g.deadline)
     .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime());
 
+  const catColorMap = makeCatColorMap(goalsWithDeadline);
+  const catColor = (goal: Goal) => catColorMap.get(goal.category ?? '') ?? DEFAULT_COLOR;
+
   if (goalsWithDeadline.length === 0) {
     return (
       <div className="py-8 text-center">
@@ -133,73 +141,74 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
         </div>
       </div>
 
-      {/* Track */}
+      {/* Track — grouped by category */}
       <div className="tlo-track-outer border border-border rounded bg-surface">
-        {goalsWithDeadline.map((goal, idx) => {
-          const deadlineMs  = new Date(goal.deadline!).getTime();
-          const deadlinePct = toPct(deadlineMs);
-          const progressPct = `${((goal.progress / 100) * parseFloat(deadlinePct)).toFixed(3)}%`;
-          const c = catColor(goal);
-          const isHovered = hovered === goal.id;
+        {(() => {
+          // Build ordered list of [category, goals[]] preserving deadline sort within each group
+          const categoryOrder = [...new Set(goalsWithDeadline.map((g) => g.category ?? ''))];
+          const groups = categoryOrder.map((cat) => ({
+            cat,
+            goals: goalsWithDeadline.filter((g) => (g.category ?? '') === cat),
+          }));
+          let firstGoal = true;
 
-          return (
-            <div
-              key={goal.id}
-              className={`tlo-row${idx < goalsWithDeadline.length - 1 ? ' tlo-row-border' : ''}`}
-              {...({ style: cv({ '--tlo-color': c.color }) } as any)}
-              onMouseEnter={() => setHovered(goal.id)}
-              onMouseLeave={() => setHovered(null)}
-            >
-              {/* Label bin */}
-              <div className="tlo-label tlo-label-hover">
-                <span className="tlo-cat-dot" />
-                <span className="text-[10px] font-mono truncate tlo-cat-text" title={goal.title}>
-                  {goal.title}
-                </span>
-              </div>
-
-              {isHovered && (
-                <GoalTooltip goal={goal} members={members} color={c.color} />
-              )}
-
-              {/* Chart area */}
-              <div className="tlo-chart">
-                {/* Today line */}
-                <div
-                  className="tlo-today"
-                  {...({ style: cv({ '--tlo-now': nowPct }) } as any)}
-                >
-                  {idx === 0 && (
-                    <span className="tlo-today-lbl text-[9px] text-accent font-mono">
-                      {now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </span>
-                  )}
+          return groups.map(({ cat, goals: groupGoals }) => {
+            const c = catColorMap.get(cat) ?? DEFAULT_COLOR;
+            return (
+              <div key={cat}>
+                {/* Section header */}
+                <div className="tlo-section" {...({ style: cv({ '--tlo-color': c.color }) } as any)}>
+                  <span className="tlo-section-lbl">{cat || 'Uncategorized'}</span>
+                  <div className="tlo-section-line" />
                 </div>
 
-                {/* Background track */}
-                <div
-                  className="tlo-track"
-                  {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)}
-                />
+                {groupGoals.map((goal, idxInGroup) => {
+                  const deadlineMs  = new Date(goal.deadline!).getTime();
+                  const deadlinePct = toPct(deadlineMs);
+                  const progressPct = `${((goal.progress / 100) * parseFloat(deadlinePct)).toFixed(3)}%`;
+                  const isHovered   = hovered === goal.id;
+                  const isFirst     = firstGoal;
+                  if (firstGoal) firstGoal = false;
 
-                {/* Progress fill */}
-                <div
-                  className="tlo-fill"
-                  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)}
-                />
+                  return (
+                    <div
+                      key={goal.id}
+                      className={`tlo-row${idxInGroup < groupGoals.length - 1 ? ' tlo-row-border' : ''}`}
+                      {...({ style: cv({ '--tlo-color': c.color }) } as any)}
+                      onMouseEnter={() => setHovered(goal.id)}
+                      onMouseLeave={() => setHovered(null)}
+                    >
+                      <div className="tlo-label tlo-label-hover">
+                        <span className="tlo-cat-dot" />
+                        <span className="text-[10px] font-mono truncate tlo-cat-text" title={goal.title}>
+                          {goal.title}
+                        </span>
+                      </div>
 
-                {/* Deadline dot */}
-                <div
-                  className="tlo-dot"
-                  {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)}
-                />
+                      {isHovered && (
+                        <GoalTooltip goal={goal} members={members} color={c.color} />
+                      )}
 
-                {/* Progress % */}
-                <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
+                      <div className="tlo-chart">
+                        <div className="tlo-today" {...({ style: cv({ '--tlo-now': nowPct }) } as any)}>
+                          {isFirst && (
+                            <span className="tlo-today-lbl text-[9px] text-accent font-mono">
+                              {now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          )}
+                        </div>
+                        <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
+                        <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
+                        <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />
+                        <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-          );
-        })}
+            );
+          });
+        })()}
       </div>
     </div>
   );

@@ -178,7 +178,7 @@ const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(
             onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
             onFocus={() => setOpen(true)}
             onKeyDown={handleKeyDown}
-            placeholder="Search tasks, activity…"
+            placeholder="Search tasks…"
             className="flex-1 bg-transparent text-[var(--color-heading)] text-xs font-mono placeholder:text-[var(--color-muted)]/50 focus:outline-none"
           />
           {query && (
@@ -186,9 +186,6 @@ const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(
               className="text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
               <X size={12} />
             </button>
-          )}
-          {!query && (
-            <kbd className="hidden sm:inline-flex text-[9px] text-[var(--color-muted)]/60 border border-[var(--color-border)] rounded px-1 py-0.5 font-mono shrink-0">⌃K</kbd>
           )}
         </div>
 

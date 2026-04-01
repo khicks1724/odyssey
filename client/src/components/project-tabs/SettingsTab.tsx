@@ -61,6 +61,10 @@ interface JoinRequest {
 function GitLabSection({ projectId, onReposChanged }: { projectId: string; onReposChanged?: (repos: string[]) => void }) {
   const [linkedRepos, setLinkedRepos] = React.useState<string[]>([]);
   const [repoInput, setRepoInput] = React.useState('');
+  const [tokenInput, setTokenInput] = React.useState('');
+  const [hostInput, setHostInput] = React.useState('');
+  const [savedToken, setSavedToken] = React.useState(false); // whether a token is already stored
+  const [showToken, setShowToken] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -68,8 +72,10 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
     supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle()
       .then(({ data }) => {
         if (data?.config) {
-          const cfg = data.config as { repos?: string[]; repo?: string };
+          const cfg = data.config as { repos?: string[]; repo?: string; token?: string; host?: string };
           setLinkedRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
+          setSavedToken(!!cfg.token);
+          if (cfg.host) setHostInput(cfg.host);
         }
       });
   }, [projectId]);
@@ -84,10 +90,13 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { setError('Not signed in — please refresh.'); return; }
+      const body: Record<string, string> = { projectId, repo: path };
+      if (tokenInput.trim()) body['token'] = tokenInput.trim();
+      if (hostInput.trim()) body['host'] = hostInput.trim();
       const res = await fetch('/api/gitlab/link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ projectId, repo: path }),
+        body: JSON.stringify(body),
       });
       const data = await res.json() as { repos?: string[]; error?: string };
       if (!res.ok) {
@@ -96,6 +105,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
         const updated = data.repos ?? [...linkedRepos, path];
         setLinkedRepos(updated);
         setRepoInput('');
+        if (tokenInput.trim()) { setSavedToken(true); setTokenInput(''); }
         onReposChanged?.(updated);
       }
     } catch {
@@ -120,6 +130,8 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
     } catch { /* ignore */ }
   };
 
+  const inputCls = 'w-full px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-[#FC6D26]/50 transition-colors rounded';
+
   return (
     <div className="border border-border bg-surface p-6">
       <div className="flex items-center gap-2 mb-6">
@@ -127,9 +139,11 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
           <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
         </svg>
         <h3 className="font-sans text-sm font-bold text-heading">GitLab Repositories</h3>
-        <span className="text-[9px] px-1.5 py-0.5 border border-border text-muted rounded font-mono">NPS</span>
         {linkedRepos.length > 0 && (
           <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">{linkedRepos.length} linked</span>
+        )}
+        {savedToken && (
+          <span className="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-400 rounded font-mono">token saved</span>
         )}
       </div>
 
@@ -146,32 +160,76 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
               </button>
             </div>
           ))}
-          <p className="text-[11px] text-muted">Commits and READMEs from all repos are included in AI insights and chat context.</p>
+          <p className="text-[11px] text-muted">Commits, README, and source files from all repos are included in AI insights and chat context.</p>
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className="space-y-3 max-w-lg">
         {linkedRepos.length === 0 && (
-          <p className="text-xs text-muted">Link your NPS GitLab repositories. Paste a full URL or project path.</p>
+          <p className="text-xs text-muted">Link GitLab repositories so the AI can read commits, README, and source files.</p>
         )}
-        <div className="flex gap-2 max-w-lg">
+
+        {/* Host */}
+        <div>
+          <label className="block text-[10px] text-muted font-mono mb-1 uppercase tracking-wider">GitLab Host</label>
           <input
             type="text"
-            value={repoInput}
-            onChange={(e) => setRepoInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleLink()}
-            placeholder="group/project-name or full URL"
-            title="GitLab repository path or URL"
-            className="flex-1 px-4 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-[#FC6D26]/50 transition-colors rounded"
+            value={hostInput}
+            onChange={(e) => setHostInput(e.target.value)}
+            placeholder="https://gitlab.nps.edu (default)"
+            className={inputCls}
           />
-          <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
-            className="px-4 py-2.5 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
-            {linkedRepos.length > 0 ? 'Add' : 'Connect'}
-          </button>
         </div>
+
+        {/* Personal access token */}
+        <div>
+          <label className="block text-[10px] text-muted font-mono mb-1 uppercase tracking-wider">
+            Personal Access Token {savedToken && <span className="text-green-400 normal-case">(saved — enter new to replace)</span>}
+          </label>
+          <div className="relative">
+            <input
+              type={showToken ? 'text' : 'password'}
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder={savedToken ? '••••••••••••••••' : 'glpat-xxxxxxxxxxxxxxxxxxxx'}
+              className={`${inputCls} pr-10`}
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken((v) => !v)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
+              title={showToken ? 'Hide token' : 'Show token'}
+            >
+              {showToken
+                ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              }
+            </button>
+          </div>
+          <p className="text-[10px] text-muted mt-1">Create at GitLab → Settings → Access Tokens. Needs <span className="font-mono">read_repository</span> scope.</p>
+        </div>
+
+        {/* Repo path */}
+        <div>
+          <label className="block text-[10px] text-muted font-mono mb-1 uppercase tracking-wider">Repository Path</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={repoInput}
+              onChange={(e) => setRepoInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleLink()}
+              placeholder="group/project-name or full URL"
+              className={inputCls}
+            />
+            <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
+              className="px-4 py-2.5 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2 shrink-0">
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
+              {linkedRepos.length > 0 ? 'Add' : 'Connect'}
+            </button>
+          </div>
+        </div>
+
         {error && <p className="text-xs text-danger font-mono">{error}</p>}
-        <p className="text-[10px] text-muted">Must be on the NPS network or VPN for the server to reach gitlab.nps.edu</p>
       </div>
     </div>
   );
@@ -182,10 +240,14 @@ function ProjectNameForm({
   project,
   updateProject,
   isOwner,
+  imageUploading,
+  handleImageUpload,
 }: {
-  project: { name: string; description?: string | null; start_date?: string | null; invite_code?: string | null };
-  updateProject: (updates: { name?: string; description?: string; start_date?: string | null; invite_code?: string }) => Promise<unknown>;
+  project: { name: string; description?: string | null; start_date?: string | null; invite_code?: string | null; image_url?: string | null };
+  updateProject: (updates: { name?: string; description?: string; start_date?: string | null; invite_code?: string; image_url?: string | null }) => Promise<unknown>;
   isOwner: boolean;
+  imageUploading?: boolean;
+  handleImageUpload?: (file: File, inputEl?: HTMLInputElement | null) => void;
 }) {
   const [name, setName] = React.useState(project.name);
   const [description, setDescription] = React.useState(project.description ?? '');
@@ -229,19 +291,49 @@ function ProjectNameForm({
         <h3 className="font-sans text-sm font-bold text-heading">Project Details</h3>
       </div>
       <form onSubmit={handleSave}>
-        <div className="flex flex-col xl:flex-row gap-5 items-start">
+        <div className="flex flex-col xl:flex-row gap-5 xl:items-stretch">
           <div className="flex flex-col gap-3 w-full xl:w-[26rem] shrink-0">
-            <div>
-              <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Project Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                title="Project name"
-                placeholder="Project name"
-                className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
+            {/* Project image + name side-by-side */}
+            <div className="flex items-start gap-4">
+              {/* Image thumbnail with upload on hover */}
+              <div className="relative group shrink-0">
+                <div className="w-16 h-16 rounded-lg border border-border bg-surface2 overflow-hidden flex items-center justify-center">
+                  {project.image_url
+                    ? <img src={project.image_url} alt="Project" className="w-full h-full object-cover" />
+                    : <span className="text-xl font-bold text-muted/40">{project.name[0]?.toUpperCase()}</span>
+                  }
+                </div>
+                {/* Hover overlay with upload/remove */}
+                <label className="absolute inset-0 rounded-lg flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                  title="Upload project image">
+                  {imageUploading
+                    ? <Loader2 size={14} className="animate-spin text-white" />
+                    : <Plus size={14} className="text-white" />
+                  }
+                  <input type="file" accept="image/*" className="sr-only" disabled={imageUploading}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload?.(f, e.target); e.target.value = ''; }} />
+                </label>
+                {/* Remove button below image */}
+                {project.image_url && (
+                  <button type="button" title="Remove image"
+                    onClick={() => updateProject({ image_url: null })}
+                    className="absolute -bottom-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white flex items-center justify-center border border-surface hover:bg-danger/80 transition-colors">
+                    <X size={9} />
+                  </button>
+                )}
+              </div>
+              <div className="flex-1">
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Project Name</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  title="Project name"
+                  placeholder="Project name"
+                  className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+                />
+              </div>
             </div>
             <div>
               <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Start Date</label>
@@ -294,14 +386,13 @@ function ProjectNameForm({
               </div>
             )}
           </div>
-          <div className="flex-1">
+          <div className="flex-1 flex flex-col pb-[20px]">
             <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Description (optional)</label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              rows={7}
               placeholder="What is this project about?"
-              className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
+              className="flex-1 w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
             />
           </div>
         </div>
@@ -589,6 +680,73 @@ function SettingsTab({
 }: SettingsTabProps) {
   const { status: msStatus } = useMicrosoftIntegration();
 
+  // ── Report Templates ──────────────────────────────────────────────────────
+  const [templates, setTemplates] = React.useState<{
+    id: string; templateType: 'docx' | 'pptx' | 'pdf'; filename: string; sizeBytes: number; uploadedAt: string;
+  }[]>([]);
+  const [templateUploading, setTemplateUploading] = React.useState<'docx' | 'pptx' | 'pdf' | null>(null);
+  const [templateError, setTemplateError] = React.useState<string | null>(null);
+  // One ref per template slot so the hidden inputs are stable across re-renders
+  const tmplInputDocx = React.useRef<HTMLInputElement>(null);
+  const tmplInputPptx = React.useRef<HTMLInputElement>(null);
+  const tmplInputPdf  = React.useRef<HTMLInputElement>(null);
+
+  React.useEffect(() => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) return;
+      const res = await fetch(`/api/projects/${projectId}/report-templates`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setTemplates(d.templates ?? []);
+      }
+    });
+  }, [projectId]);
+
+  const handleTemplateUpload = async (templateType: 'docx' | 'pptx' | 'pdf', file: File) => {
+    setTemplateUploading(templateType);
+    setTemplateError(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const form = new FormData();
+      form.append('projectId', projectId);
+      form.append('templateType', templateType);
+      form.append('filename', file.name);
+      form.append('file', file);
+      const res = await fetch('/api/uploads/report-template', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Upload failed' }));
+        setTemplateError(err.error ?? 'Upload failed');
+      } else {
+        const d = await res.json();
+        if (d.template) {
+          setTemplates((prev) => [...prev.filter((t) => t.templateType !== templateType), d.template]);
+        }
+      }
+    } catch (err: unknown) {
+      setTemplateError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setTemplateUploading(null);
+    }
+  };
+
+  const handleTemplateDelete = async (id: string, templateType: 'docx' | 'pptx' | 'pdf') => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    const res = await fetch('/api/uploads/report-template', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, eventId: id }),
+    });
+    if (res.ok) setTemplates((prev) => prev.filter((t) => t.templateType !== templateType));
+  };
+
   return (
     <div className="space-y-8">
 
@@ -871,7 +1029,7 @@ function SettingsTab({
       )}
 
       {/* Project Name & Description */}
-      <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} />
+      <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} imageUploading={imageUploading} handleImageUpload={handleImageUpload} />
 
       {/* Microsoft 365 / Teams Folder */}
       <div className="border border-border bg-surface p-6">
@@ -1041,6 +1199,212 @@ function SettingsTab({
       {/* GitLab Repository */}
       <GitLabSection projectId={projectId!} onReposChanged={(repos) => setGitlabRepos(repos)} />
 
+      {/* Report Templates */}
+      {isOwner && (
+        <div className="border border-border bg-surface p-6">
+          {/* Hidden file inputs — stable refs, never re-mounted */}
+          <input ref={tmplInputDocx} type="file" accept=".docx,.pdf" title="Word report template file" className="sr-only"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('docx', f); e.target.value = ''; }} />
+          <input ref={tmplInputPptx} type="file" accept=".pptx,.pdf" title="PowerPoint template file" className="sr-only"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('pptx', f); e.target.value = ''; }} />
+          <input ref={tmplInputPdf} type="file" accept=".docx,.pdf" title="PDF report template file" className="sr-only"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('pdf', f); e.target.value = ''; }} />
+
+          <div className="flex items-center gap-2 mb-2">
+            <FileText size={14} className="text-heading" />
+            <h3 className="font-sans text-sm font-bold text-heading">Report Templates</h3>
+          </div>
+          <p className="text-[11px] text-muted mb-5">
+            Upload a template file for each report type. The AI will analyze its structure and mirror the layout, headings, and style when generating reports.
+          </p>
+
+          {templateError && (
+            <p className="text-[11px] text-danger mb-3">{templateError}</p>
+          )}
+
+          <div className="flex flex-col gap-3">
+            {([
+              { type: 'docx' as const, label: 'Word Report (.docx)', ref: tmplInputDocx, hint: 'DOCX or PDF' },
+              { type: 'pptx' as const, label: 'PowerPoint (.pptx)', ref: tmplInputPptx, hint: 'PPTX or PDF' },
+              { type: 'pdf'  as const, label: 'PDF Report (.pdf)',  ref: tmplInputPdf,  hint: 'DOCX or PDF' },
+            ] as const).map(({ type, label, ref, hint }) => {
+              const existing = templates.find((t) => t.templateType === type);
+              const uploading = templateUploading === type;
+              return (
+                <div key={type} className="flex items-center justify-between gap-3 px-4 py-3 border border-border rounded bg-surface2/40">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <FileText size={13} className="text-muted shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-heading">{label}</p>
+                      {existing ? (
+                        <p className="text-[10px] text-muted truncate">{existing.filename} · {(existing.sizeBytes / 1024).toFixed(0)} KB</p>
+                      ) : (
+                        <p className="text-[10px] text-muted">No template — {hint}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      title={existing ? `Replace ${label} template` : `Upload ${label} template`}
+                      disabled={uploading}
+                      onClick={() => ref.current?.click()}
+                      className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface text-[10px] font-semibold tracking-wider uppercase transition-colors rounded disabled:opacity-40"
+                    >
+                      {uploading ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />}
+                      {uploading ? 'Uploading…' : existing ? 'Replace' : 'Upload'}
+                    </button>
+                    {existing && (
+                      <button type="button"
+                        title={`Remove ${label} template`}
+                        onClick={() => handleTemplateDelete(existing.id, existing.templateType)}
+                        className="flex items-center justify-center w-7 h-7 border border-danger/30 text-danger hover:bg-danger/5 transition-colors rounded">
+                        <X size={10} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Task Labels — Categories & LOEs */}
+      <div className="border border-border bg-surface p-6">
+        <div className="flex items-center gap-2 mb-5">
+          <Table size={14} className="text-heading" />
+          <h3 className="font-sans text-sm font-bold text-heading">Task Labels</h3>
+        </div>
+        <p className="text-[11px] text-muted mb-5">
+          Define project-specific categories and lines of effort. These appear in the task editor dropdowns.
+        </p>
+
+        {/* Add new label */}
+        {isOwner && (
+          <div className="flex items-center gap-2 mb-5 flex-wrap">
+            <div className="flex items-center gap-px border border-border rounded overflow-hidden">
+              {(['category', 'loe'] as const).map((t) => (
+                <button key={t} type="button" onClick={() => setNewLabelType(t)}
+                  className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${newLabelType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}>
+                  {t === 'category' ? 'Category' : 'LOE'}
+                </button>
+              ))}
+            </div>
+            <input value={newLabelName} onChange={(e) => setNewLabelName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { addLabel(newLabelType, newLabelName, newLabelColor); setNewLabelName(''); } }}
+              placeholder="Label name…"
+              className="px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded w-48" />
+            <LabelColorPicker value={newLabelColor} onChange={setNewLabelColor} />
+            <button type="button" onClick={() => { addLabel(newLabelType, newLabelName, newLabelColor); setNewLabelName(''); }}
+              disabled={!newLabelName.trim()}
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40">
+              <Plus size={11} /> Add
+            </button>
+          </div>
+        )}
+
+        {/* Existing labels by type */}
+        {(['category', 'loe'] as const).map((type) => {
+          const typeLabels = projectLabels.filter((l) => l.type === type);
+          if (typeLabels.length === 0) return null;
+          return (
+            <div key={type} className="mb-4">
+              <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-2">
+                {type === 'category' ? 'Categories' : 'Lines of Effort'}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {typeLabels.map((lbl) => (
+                  <div key={lbl.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border bg-surface2 group">
+                    {/* eslint-disable-next-line react/forbid-dom-props */}
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0 block" title={lbl.color}
+                      style={{ background: lbl.color }} />
+                    <span className="text-xs text-heading font-mono">{lbl.name}</span>
+                    {isOwner && (
+                      <button type="button" title={`Remove ${lbl.name}`} onClick={() => deleteLabel(lbl.id)}
+                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all ml-0.5">
+                        <X size={10} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        {projectLabels.length === 0 && (
+          <p className="text-[11px] text-muted/60 italic">No labels yet. Add your first category or line of effort above.</p>
+        )}
+      </div>
+
+      {/* Customize AI Prompts */}
+      <div className="border border-border bg-surface p-6">
+        <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className="text-accent" />
+            <h3 className="font-sans text-sm font-bold text-heading">Customize AI Prompts</h3>
+          </div>
+          <button type="button" onClick={() => setResetPromptsModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-danger hover:border-danger/30 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded">
+            <RefreshCw size={10} /> Reset All to Default
+          </button>
+        </div>
+        <p className="text-[11px] text-muted mb-5">
+          Edit the system prompt used by each AI feature. Customized prompts are saved to this project only.
+        </p>
+        <div className="space-y-px border border-border bg-border">
+          {(Object.keys(PROMPT_LABELS) as PromptFeature[]).map((feature) => {
+            const isCustom = !!getPrompt(feature);
+            return (
+              <div key={feature} className="flex items-center gap-3 bg-surface px-4 py-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-heading font-medium">{PROMPT_LABELS[feature]}</div>
+                  {isCustom && <div className="text-[10px] text-accent mt-0.5">Custom prompt active</div>}
+                  {!isCustom && <div className="text-[10px] text-muted mt-0.5">Using default prompt</div>}
+                </div>
+                <div className="flex items-center gap-2">
+                  {isCustom && (
+                    <button type="button" onClick={() => resetPrompt(feature)}
+                      className="text-[10px] text-muted hover:text-danger transition-colors flex items-center gap-1">
+                      <RefreshCw size={9} /> Reset
+                    </button>
+                  )}
+                  <button type="button"
+                    onClick={() => {
+                      setEditPromptFeature(feature);
+                      setEditPromptText(getPrompt(feature) ?? DEFAULT_PROMPTS[feature]);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded">
+                    <Pencil size={9} /> Edit
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="border border-danger/30 bg-surface p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Trash2 size={14} className="text-danger" />
+          <h3 className="font-sans text-sm font-bold text-danger">Danger Zone</h3>
+        </div>
+        <p className="text-xs text-muted mb-4">
+          Remove this project from your view. If you are the only member, Odyssey will prompt you to delete it instead.
+        </p>
+        <button
+          type="button"
+          onClick={() => setDeleteModalOpen(true)}
+          disabled={deletingProject || leavingProject}
+          className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {deletingProject || leavingProject ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+          {deletingProject ? 'Deleting...' : leavingProject ? 'Removing...' : 'Remove Project'}
+        </button>
+      </div>
+
       {/* Audit Log */}
       <div className="border border-border bg-surface p-6">
         <div className="flex items-center justify-between mb-4">
@@ -1193,177 +1557,6 @@ function SettingsTab({
             </>
           );
         })()}
-      </div>
-
-      {/* Project Image */}
-      {isOwner && (
-        <div className="border border-border bg-surface p-6">
-          <div className="flex items-center gap-2 mb-5">
-            <FileText size={14} className="text-heading" />
-            <h3 className="font-sans text-sm font-bold text-heading">Project Image</h3>
-          </div>
-          <div className="flex items-center gap-5">
-            {/* Preview */}
-            <div className="w-16 h-16 rounded-lg border border-border bg-surface2 overflow-hidden flex items-center justify-center shrink-0">
-              {project.image_url
-                ? <img src={project.image_url} alt="Project" className="w-full h-full object-cover" />
-                : <span className="text-xl font-bold text-muted/40">{project.name[0]?.toUpperCase()}</span>
-              }
-            </div>
-            <div className="flex flex-col gap-2">
-              <label className="flex items-center gap-2 px-4 py-2 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded cursor-pointer">
-                {imageUploading ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
-                {imageUploading ? 'Uploading…' : 'Upload Image'}
-                <input type="file" accept="image/*" className="sr-only" onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) handleImageUpload(f, e.target);
-                }} />
-              </label>
-              {project.image_url && (
-                <button type="button" onClick={() => updateProject({ image_url: null })}
-                  className="px-4 py-2 border border-danger/30 text-danger text-[10px] font-semibold tracking-wider uppercase hover:bg-danger/5 transition-colors rounded">
-                  Remove
-                </button>
-              )}
-              <p className="text-[10px] text-muted">Displays as a rounded square icon. PNG, JPG, or GIF.</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Task Labels — Categories & LOEs */}
-      <div className="border border-border bg-surface p-6">
-        <div className="flex items-center gap-2 mb-5">
-          <Table size={14} className="text-heading" />
-          <h3 className="font-sans text-sm font-bold text-heading">Task Labels</h3>
-        </div>
-        <p className="text-[11px] text-muted mb-5">
-          Define project-specific categories and lines of effort. These appear in the task editor dropdowns.
-        </p>
-
-        {/* Add new label */}
-        {isOwner && (
-          <div className="flex items-center gap-2 mb-5 flex-wrap">
-            <div className="flex items-center gap-px border border-border rounded overflow-hidden">
-              {(['category', 'loe'] as const).map((t) => (
-                <button key={t} type="button" onClick={() => setNewLabelType(t)}
-                  className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${newLabelType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}>
-                  {t === 'category' ? 'Category' : 'LOE'}
-                </button>
-              ))}
-            </div>
-            <input value={newLabelName} onChange={(e) => setNewLabelName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { addLabel(newLabelType, newLabelName, newLabelColor); setNewLabelName(''); } }}
-              placeholder="Label name…"
-              className="px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded w-48" />
-            <LabelColorPicker value={newLabelColor} onChange={setNewLabelColor} />
-            <button type="button" onClick={() => { addLabel(newLabelType, newLabelName, newLabelColor); setNewLabelName(''); }}
-              disabled={!newLabelName.trim()}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40">
-              <Plus size={11} /> Add
-            </button>
-          </div>
-        )}
-
-        {/* Existing labels by type */}
-        {(['category', 'loe'] as const).map((type) => {
-          const typeLabels = projectLabels.filter((l) => l.type === type);
-          if (typeLabels.length === 0) return null;
-          return (
-            <div key={type} className="mb-4">
-              <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-2">
-                {type === 'category' ? 'Categories' : 'Lines of Effort'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {typeLabels.map((lbl) => (
-                  <div key={lbl.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border bg-surface2 group">
-                    {/* eslint-disable-next-line react/forbid-dom-props */}
-                    <span className="w-2.5 h-2.5 rounded-full shrink-0 block" title={lbl.color}
-                      style={{ background: lbl.color }} />
-                    <span className="text-xs text-heading font-mono">{lbl.name}</span>
-                    {isOwner && (
-                      <button type="button" title={`Remove ${lbl.name}`} onClick={() => deleteLabel(lbl.id)}
-                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all ml-0.5">
-                        <X size={10} />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-
-        {projectLabels.length === 0 && (
-          <p className="text-[11px] text-muted/60 italic">No labels yet. Add your first category or line of effort above.</p>
-        )}
-      </div>
-
-      {/* Customize AI Prompts */}
-      <div className="border border-border bg-surface p-6">
-        <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-          <div className="flex items-center gap-2">
-            <Sparkles size={14} className="text-accent" />
-            <h3 className="font-sans text-sm font-bold text-heading">Customize AI Prompts</h3>
-          </div>
-          <button type="button" onClick={() => setResetPromptsModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-danger hover:border-danger/30 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded">
-            <RefreshCw size={10} /> Reset All to Default
-          </button>
-        </div>
-        <p className="text-[11px] text-muted mb-5">
-          Edit the system prompt used by each AI feature. Customized prompts are saved to this project only.
-        </p>
-        <div className="space-y-px border border-border bg-border">
-          {(Object.keys(PROMPT_LABELS) as PromptFeature[]).map((feature) => {
-            const isCustom = !!getPrompt(feature);
-            return (
-              <div key={feature} className="flex items-center gap-3 bg-surface px-4 py-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-heading font-medium">{PROMPT_LABELS[feature]}</div>
-                  {isCustom && <div className="text-[10px] text-accent mt-0.5">Custom prompt active</div>}
-                  {!isCustom && <div className="text-[10px] text-muted mt-0.5">Using default prompt</div>}
-                </div>
-                <div className="flex items-center gap-2">
-                  {isCustom && (
-                    <button type="button" onClick={() => resetPrompt(feature)}
-                      className="text-[10px] text-muted hover:text-danger transition-colors flex items-center gap-1">
-                      <RefreshCw size={9} /> Reset
-                    </button>
-                  )}
-                  <button type="button"
-                    onClick={() => {
-                      setEditPromptFeature(feature);
-                      setEditPromptText(getPrompt(feature) ?? DEFAULT_PROMPTS[feature]);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded">
-                    <Pencil size={9} /> Edit
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Danger Zone */}
-      <div className="border border-danger/30 bg-surface p-6">
-        <div className="flex items-center gap-2 mb-4">
-          <Trash2 size={14} className="text-danger" />
-          <h3 className="font-sans text-sm font-bold text-danger">Danger Zone</h3>
-        </div>
-        <p className="text-xs text-muted mb-4">
-          Remove this project from your view. If you are the only member, Odyssey will prompt you to delete it instead.
-        </p>
-        <button
-          type="button"
-          onClick={() => setDeleteModalOpen(true)}
-          disabled={deletingProject || leavingProject}
-          className="flex items-center gap-2 px-5 py-2 border border-danger/40 text-danger text-xs font-sans font-semibold tracking-wider uppercase hover:bg-danger/10 transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {deletingProject || leavingProject ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
-          {deletingProject ? 'Deleting...' : leavingProject ? 'Removing...' : 'Remove Project'}
-        </button>
       </div>
 
       {/* Teams Folder Picker modal */}

@@ -69,24 +69,9 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
   const [draggingId, setDraggingId] = React.useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = React.useState<GoalStatus | null>(null);
   const [showStale, setShowStale] = React.useState(false);
-  const [filterCategory, setFilterCategory] = React.useState('');
-  const [filterLoe, setFilterLoe] = React.useState('');
-  const [filterAssignee, setFilterAssignee] = React.useState('');
 
-  const allCategories = [...new Set(goals.map((g) => g.category).filter((c): c is string => !!c))];
-  const allLoes = [...new Set(goals.map((g) => g.loe).filter((l): l is string => !!l))];
-  const allAssigneeIds = [...new Set(goals.flatMap((g) => g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : [])))];
-
-  const filteredGoals = goals.filter((g) => {
-    if (filterCategory && g.category !== filterCategory) return false;
-    if (filterLoe && g.loe !== filterLoe) return false;
-    if (filterAssignee) {
-      const ids = g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : []);
-      if (!ids.includes(filterAssignee)) return false;
-    }
-    return true;
-  });
-  const isFiltered = !!(filterCategory || filterLoe || filterAssignee);
+  // Filtering is now handled by the parent (GoalsTab) — goals passed in are already filtered
+  const filteredGoals = goals;
 
   const handleDragStart = (e: React.DragEvent, goalId: string) => {
     e.dataTransfer.effectAllowed = 'move';
@@ -226,56 +211,6 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Filter bar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] text-muted uppercase tracking-widest font-mono shrink-0">Filter:</span>
-        {allCategories.length > 0 && (
-          <select
-            aria-label="Filter by category"
-            value={filterCategory}
-            onChange={(e) => setFilterCategory(e.target.value)}
-            className={`text-[10px] font-mono px-2 py-1 rounded border bg-surface2 transition-colors outline-none ${filterCategory ? 'border-accent text-heading' : 'border-border text-muted'}`}
-          >
-            <option value="">All Categories</option>
-            {allCategories.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        )}
-        {allLoes.length > 0 && (
-          <select
-            aria-label="Filter by LOE"
-            value={filterLoe}
-            onChange={(e) => setFilterLoe(e.target.value)}
-            className={`text-[10px] font-mono px-2 py-1 rounded border bg-surface2 transition-colors outline-none ${filterLoe ? 'border-accent text-heading' : 'border-border text-muted'}`}
-          >
-            <option value="">All LOE</option>
-            {allLoes.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-        )}
-        {allAssigneeIds.length > 0 && (
-          <select
-            aria-label="Filter by assignee"
-            value={filterAssignee}
-            onChange={(e) => setFilterAssignee(e.target.value)}
-            className={`text-[10px] font-mono px-2 py-1 rounded border bg-surface2 transition-colors outline-none ${filterAssignee ? 'border-accent text-heading' : 'border-border text-muted'}`}
-          >
-            <option value="">All Assignees</option>
-            {allAssigneeIds.map((id) => {
-              const a = getAssignee(id);
-              return <option key={id} value={id}>{a?.display_name ?? id}</option>;
-            })}
-          </select>
-        )}
-        {isFiltered && (
-          <button type="button" onClick={() => { setFilterCategory(''); setFilterLoe(''); setFilterAssignee(''); }}
-            className="text-[10px] font-mono text-muted hover:text-danger transition-colors px-2 py-1 border border-border rounded">
-            Clear
-          </button>
-        )}
-        {isFiltered && (
-          <span className="text-[10px] text-muted font-mono">{filteredGoals.length} of {goals.length} tasks</span>
-        )}
-      </div>
-
     <div className="flex gap-3 overflow-x-auto pb-4 min-h-[60vh]">
       {KANBAN_COLUMNS.map((col) => {
         const allColGoals = filteredGoals.filter((g) => g.status === col.status);
@@ -346,6 +281,8 @@ export interface GoalsTabProps {
   events: OdysseyEvent[];
   projectId: string | null;
   searchRef: React.RefObject<SearchPanelHandle>;
+  projectCategories?: string[];
+  projectLoes?: string[];
   riskAssessing: boolean;
   riskReport: {
     assessments: { goalId: string; score: number; level: string; factors: string[] }[];
@@ -376,6 +313,8 @@ function GoalsTab({
   events,
   projectId,
   searchRef,
+  projectCategories = [],
+  projectLoes = [],
   riskAssessing,
   riskReport,
   riskPanelOpen,
@@ -397,6 +336,23 @@ function GoalsTab({
   goalModalOnOpen,
   setLogTimeGoal,
 }: GoalsTabProps) {
+  const [filterCategory, setFilterCategory] = React.useState('');
+  const [filterLoe, setFilterLoe] = React.useState('');
+  const [filterAssignee, setFilterAssignee] = React.useState('');
+
+  const allAssigneeIds = [...new Set(goals.flatMap((g) => g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : [])))];
+  const isFiltered = !!(filterCategory || filterLoe || filterAssignee);
+
+  const filteredGoals = goals.filter((g) => {
+    if (filterCategory && g.category !== filterCategory) return false;
+    if (filterLoe && g.loe !== filterLoe) return false;
+    if (filterAssignee) {
+      const ids = g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : []);
+      if (!ids.includes(filterAssignee)) return false;
+    }
+    return true;
+  });
+
   const levelStyle: Record<string, string> = {
     critical: 'text-[var(--color-danger)] border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5',
     high:     'text-orange-400 border-orange-400/30 bg-orange-400/5',
@@ -408,11 +364,14 @@ function GoalsTab({
     not_started: 0, in_progress: 40, in_review: 75, complete: 100,
   };
 
+  const selectCls = (active: boolean) =>
+    `text-[10px] font-mono px-2 py-1.5 rounded border bg-surface2 transition-colors outline-none cursor-pointer h-[30px] ${active ? 'border-accent text-heading' : 'border-border text-muted'}`;
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-sans text-sm font-bold text-heading">Tasks ({goals.length})</h3>
-        <div className="flex items-center gap-2">
+      <div className="flex items-center mb-4 gap-2 min-w-0">
+        <h3 className="font-sans text-sm font-bold text-heading shrink-0">Tasks ({goals.length})</h3>
+        <div className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto">
           <SearchPanel
             ref={searchRef}
             projectId={projectId ?? null}
@@ -424,23 +383,57 @@ function GoalsTab({
             }}
             onEventSelect={() => setActiveTab('activity')}
           />
-          <div className="flex items-center">
+          {projectCategories.length > 0 && (
+            <select aria-label="Filter by category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className={selectCls(!!filterCategory)}>
+              <option value="">All Categories</option>
+              {projectCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+          {projectLoes.length > 0 && (
+            <select aria-label="Filter by LOE" value={filterLoe} onChange={(e) => setFilterLoe(e.target.value)} className={`${selectCls(!!filterLoe)} min-w-[11rem]`}>
+              <option value="">All Lines of Effort</option>
+              {projectLoes.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          )}
+          {allAssigneeIds.length > 0 && (
+            <select aria-label="Filter by assignee" value={filterAssignee} onChange={(e) => setFilterAssignee(e.target.value)} className={selectCls(!!filterAssignee)}>
+              <option value="">All Assignees</option>
+              {allAssigneeIds.map((id) => {
+                const a = getAssignee(id);
+                return <option key={id} value={id}>{a?.display_name ?? id}</option>;
+              })}
+            </select>
+          )}
+          {isFiltered && (
+            <button type="button" onClick={() => { setFilterCategory(''); setFilterLoe(''); setFilterAssignee(''); }}
+              className="text-[10px] font-mono text-muted hover:text-danger transition-colors px-2 py-1.5 border border-border rounded h-[30px]">
+              Clear
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={goalModalOnOpen}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md shrink-0"
+          >
+            <Plus size={12} /> Add Task
+          </button>
+          <div className="flex items-center shrink-0">
             <button
               type="button"
               onClick={handleAssessRisk}
               disabled={riskAssessing}
               title="Run AI risk assessment on all tasks"
-              className={`inline-flex items-center gap-2 px-4 py-2 border text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors disabled:opacity-50 ${riskReport ? 'rounded-l-md border-r-0 border-border text-muted' : 'rounded-md border-border text-muted'}`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 border text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors disabled:opacity-50 ${riskReport ? 'rounded-l-md border-r-0 border-border text-muted' : 'rounded-md border-border text-muted'}`}
             >
               {riskAssessing ? <Loader2 size={12} className="animate-spin" /> : <ShieldAlert size={12} />}
-              {riskAssessing ? 'Assessing…' : 'Assess Risk'}
+              {riskAssessing ? 'Assessing…' : 'Assess'}
             </button>
             {riskReport && (
               <button
                 type="button"
                 onClick={() => setRiskPanelOpen(v => !v)}
                 title={riskPanelOpen ? 'Hide risk report' : 'Show risk report'}
-                className={`inline-flex items-center gap-1 px-2.5 py-2 border border-border text-xs font-mono rounded-r-md transition-colors ${riskPanelOpen ? 'bg-surface2 text-heading' : 'text-muted hover:bg-surface2 hover:text-heading'}`}
+                className={`inline-flex items-center gap-1 px-2 py-1.5 border border-border text-xs font-mono rounded-r-md transition-colors ${riskPanelOpen ? 'bg-surface2 text-heading' : 'text-muted hover:bg-surface2 hover:text-heading'}`}
               >
                 {riskPanelOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
               </button>
@@ -451,17 +444,10 @@ function GoalsTab({
             onClick={handleSyncOfficeProgress}
             disabled={syncingProgress}
             title="Analyze imported Office documents and auto-update goal progress using AI"
-            className="inline-flex items-center gap-1.5 px-3 py-2 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50 shrink-0"
           >
             {syncingProgress ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
             Sync
-          </button>
-          <button
-            type="button"
-            onClick={goalModalOnOpen}
-            className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-          >
-            <Plus size={14} /> Add Task
           </button>
         </div>
       </div>
@@ -547,7 +533,7 @@ function GoalsTab({
       )}
 
       <GoalsKanban
-        goals={goals}
+        goals={filteredGoals}
         onUpdateStatus={(id, status) => {
           updateGoal(id, { status, progress: progressMap[status] });
         }}

@@ -44,6 +44,8 @@ interface GoalEditModalProps {
   onRepoClick?: (repo: string, type: 'github' | 'gitlab') => void;
   onTaskClick?: (taskId: string) => void;
   onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance'>>) => Promise<void>;
+  /** Silent background save — does NOT close the modal. Used for auto-persisting AI guidance. */
+  onSilentSave?: (id: string, updates: Partial<Pick<Goal, 'ai_guidance'>>) => Promise<void>;
   onClose: () => void;
 }
 
@@ -63,6 +65,7 @@ export default function GoalEditModal({
   onRepoClick,
   onTaskClick,
   onSave,
+  onSilentSave,
   onClose,
 }: GoalEditModalProps) {
   const [title,          setTitle]          = useState(goal.title);
@@ -109,9 +112,10 @@ export default function GoalEditModal({
       const data = await res.json();
       const text = res.ok ? (data.guidance ?? null) : null;
       setGuidance(text);
-      // Auto-save guidance to the task so it persists for next open
+      // Auto-save guidance to the task so it persists for next open.
+      // Use onSilentSave so the modal stays open (onSave closes the modal).
       if (text) {
-        onSave(goal.id, { ai_guidance: text }).catch(() => {});
+        (onSilentSave ?? onSave)(goal.id, { ai_guidance: text }).catch(() => {});
       }
     } catch {
       // keep existing guidance on error
@@ -192,12 +196,12 @@ export default function GoalEditModal({
               {/* Title */}
               <div>
                 <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Title</label>
-                <input
-                  type="text"
+                <textarea
                   title="Task title"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-sm font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
+                  rows={3}
+                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-sm font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded resize-none"
                   autoFocus
                 />
               </div>
@@ -295,56 +299,30 @@ export default function GoalEditModal({
                   title="Deadline"
                   className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
                 />
+                <div className="flex gap-2 mt-2">
+                  {([
+                    { label: '1W', days: 7 },
+                    { label: '2W', days: 14 },
+                    { label: '1M', months: 1 },
+                    { label: '2M', months: 2 },
+                  ] as { label: string; days?: number; months?: number }[]).map(({ label, days, months }) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => {
+                        const d = new Date();
+                        if (days) d.setDate(d.getDate() + days);
+                        if (months) d.setMonth(d.getMonth() + months);
+                        setDeadline(d.toISOString().split('T')[0]);
+                      }}
+                      className="flex-1 px-2 py-1 text-[10px] font-mono border border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-heading)] hover:bg-[var(--color-surface2)] transition-colors rounded"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {/* Dependencies */}
-              {otherGoals.length > 0 && (
-                <div>
-                  <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5 flex items-center gap-1">
-                    <Link size={9} />
-                    Depends On
-                  </label>
-                  <div className="border border-[var(--color-border)] rounded divide-y divide-[var(--color-border)]/50 max-h-36 overflow-y-auto">
-                    {otherGoals.map((g) => {
-                      const checked = dependencySet.has(g.id);
-                      return (
-                        <label key={g.id} className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-[var(--color-surface2)] transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              if (checked) removeDependency(g.id);
-                              else addDependency(g.id);
-                            }}
-                            className="w-3 h-3 shrink-0"
-                          />
-                          <span className="text-xs font-mono text-[var(--color-heading)] truncate flex-1">{g.title}</span>
-                          <span className={`text-[9px] font-mono px-1 rounded ${
-                            g.status === 'complete' ? 'text-[var(--color-accent3)]' : 'text-[var(--color-muted)]'
-                          }`}>{g.status.replace('_', ' ')}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {dependencies.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {dependencies.map(dep => {
-                        const g = allGoals.find(g => g.id === dep.depends_on_goal_id);
-                        if (!g) return null;
-                        return (
-                          <span key={dep.id} className="flex items-center gap-1 text-[9px] font-mono bg-[var(--color-surface2)] border border-[var(--color-border)] rounded px-1.5 py-0.5 text-[var(--color-muted)]">
-                            <Link size={7} />
-                            {g.title.slice(0, 30)}{g.title.length > 30 ? '…' : ''}
-                            <button type="button" title="Remove dependency" onClick={() => removeDependency(g.id)} className="ml-0.5 hover:text-[var(--color-danger)] transition-colors">
-                              <X size={7} />
-                            </button>
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             {/* AI Guidance panel — always shown when projectId present */}
