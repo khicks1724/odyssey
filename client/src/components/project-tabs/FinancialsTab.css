@@ -1,0 +1,16 @@
+/* FinancialsTab — dynamic bar/column chart helpers */
+
+/* Horizontal bar fill — width driven by --fin-pct */
+.fin-bar-fill {
+  width: var(--fin-pct, 0%);
+}
+
+/* Column chart wrapper — fixed 80 px tall */
+.fin-col-wrap {
+  height: 80px;
+}
+
+/* Column bar fill — height driven by --fin-h */
+.fin-col-fill {
+  height: var(--fin-h, 0%);
+}

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTabVisibility, ALL_TABS } from '../../hooks/useTabVisibility';
 import {
   Users,
   UserPlus,
@@ -595,6 +596,68 @@ export interface SettingsTabProps {
   resetAllPrompts: () => void;
   setDeleteModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setGitlabRepos: React.Dispatch<React.SetStateAction<string[]>>;
+}
+
+// ── Tab Visibility Section ────────────────────────────────────────────────────
+function TabVisibilitySection({ projectId }: { projectId: string }) {
+  const { isVisible, setTabVisible, lockedVisible } = useTabVisibility(projectId);
+  const [updated, setUpdated] = React.useState(false);
+
+  const handleUpdate = () => {
+    // Changes propagate instantly via the custom event in useTabVisibility.
+    // This button provides explicit confirmation feedback.
+    window.dispatchEvent(new CustomEvent('odyssey:tab-visibility-changed', { detail: projectId }));
+    setUpdated(true);
+    setTimeout(() => setUpdated(false), 2000);
+  };
+
+  return (
+    <div className="border border-border bg-surface p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Settings size={14} className="text-accent" />
+          <h3 className="font-sans text-sm font-bold text-heading">Tab Visibility</h3>
+        </div>
+        <button
+          type="button"
+          onClick={handleUpdate}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded border transition-all ${
+            updated
+              ? 'border-accent/30 bg-accent/10 text-accent'
+              : 'border-border text-muted hover:bg-surface2 hover:text-heading'
+          }`}
+        >
+          {updated ? <><Check size={11} /> Updated</> : 'Update'}
+        </button>
+      </div>
+      <p className="text-xs text-muted mb-4">Choose which tabs appear in the navigation bar for this project.</p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        {ALL_TABS.map((tab) => {
+          const locked = lockedVisible.includes(tab.id);
+          const visible = isVisible(tab.id);
+          return (
+            <label
+              key={tab.id}
+              className={`flex items-center gap-2 px-3 py-2 border rounded cursor-pointer select-none transition-colors ${
+                locked ? 'opacity-50 cursor-not-allowed border-border' :
+                visible ? 'border-accent/30 bg-accent/5' : 'border-border hover:border-border/80'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={visible}
+                disabled={locked}
+                onChange={(e) => setTabVisible(tab.id, e.target.checked)}
+                className="accent-[var(--color-accent)] w-3 h-3"
+              />
+              <span className="text-xs font-mono text-heading">{tab.label}</span>
+              {locked && <span className="text-[9px] text-muted/60 font-mono ml-auto">always on</span>}
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function SettingsTab({
@@ -1384,6 +1447,9 @@ function SettingsTab({
           })}
         </div>
       </div>
+
+      {/* Tab Visibility */}
+      <TabVisibilitySection projectId={projectId} />
 
       {/* Danger Zone */}
       <div className="border border-danger/30 bg-surface p-6">

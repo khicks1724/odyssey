@@ -232,12 +232,13 @@ export function useProjects() {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) throw new Error(error.message ?? error.details ?? JSON.stringify(error));
 
     // Auto-add owner as a project member
-    await supabase
+    const { error: memberError } = await supabase
       .from('project_members')
       .insert({ project_id: data.id, user_id: user.id, role: 'owner' });
+    if (memberError) console.warn('Failed to add owner as project member:', memberError.message);
 
     setProjects((prev) => [data, ...prev]);
     notifyProjectsChanged();

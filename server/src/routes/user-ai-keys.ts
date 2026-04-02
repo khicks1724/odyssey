@@ -26,8 +26,8 @@ import type { FastifyInstance } from 'fastify';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { supabase } from '../lib/supabase.js';
 
-type Provider = 'anthropic' | 'openai' | 'google';
-const VALID_PROVIDERS: Provider[] = ['anthropic', 'openai', 'google'];
+type Provider = 'anthropic' | 'openai' | 'google' | 'google_ai';
+const VALID_PROVIDERS: Provider[] = ['anthropic', 'openai', 'google', 'google_ai'];
 
 // ── Encryption helpers ─────────────────────────────────────────────────────
 
@@ -98,7 +98,7 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
       return reply.status(500).send({ error: 'Failed to fetch AI keys' });
     }
 
-    // Return status for all three providers (whether configured or not)
+    // Return status for all providers (whether configured or not)
     const configuredMap = new Map(
       (data ?? []).map((row: { provider: string; updated_at: string; credential_type: string }) => [
         row.provider,

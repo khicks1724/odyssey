@@ -1,0 +1,600 @@
+ODYSSEY MIGRATION INSTRUCTIONS
+SUPABASE -> AWS EC2 (EXTENSIVE GUIDE)
+Version: 1.0
+Date: 2026-04-01
+
+====================================================================
+0) PURPOSE AND SCOPE
+====================================================================
+This document is a complete migration playbook for moving the Odyssey web
+application from its current local + Supabase-centered setup to AWS with an
+EC2-centered deployment model.
+
+Primary objective:
+- Host and operate Odyssey on AWS.
+- Remove Supabase from runtime architecture.
+- Replace Supabase Auth, Database, Storage, and Realtime dependencies with
+  AWS-native or EC2-hosted alternatives.
+
+Hard requirement reflected in this guide:
+- Pure AWS footprint for infrastructure and managed services.
+- No Azure services.
+- No Supabase services after final cutover.
+
+What this guide includes:
+- Architecture decisions and tradeoffs.
+- Detailed phased migration steps.
+- Security and operations controls.
+- Validation, cutover, and rollback procedures.
+- Decommission checklist to ensure Supabase is fully removed.
+
+What this guide does not do:
+- It does not modify source code directly.
+- It does not provide proprietary credentials.
+
+====================================================================
+1) CURRENT-STATE SUMMARY (THIS REPOSITORY)
+====================================================================
+Repository topology (relevant portions):
+- client/ (Vite + React + TypeScript)
+- server/ (Fastify + TypeScript)
+- supabase/ (schema + 33 migrations)
+
+Current Supabase coupling is high:
+1. Browser calls Supabase directly for:
+   - Auth session lifecycle
+   - Table reads/writes
+   - Storage operations
+   - Realtime subscriptions
+   - RPC calls
+2. Server also uses Supabase service role client.
+3. Schema/business logic depends heavily on PostgreSQL + Supabase patterns
+   (RLS, policies, SQL functions/RPCs, triggers, storage policies, realtime).
+
+Examples of coupling points:
+- client/src/lib/supabase.ts
+- client/src/lib/auth.tsx
+- client/src/hooks/useChatThreads.ts
+- client/src/hooks/useProjects.ts
+- client/src/components/GoalReportModal.tsx
+- client/src/pages/ProjectDetailPage.tsx
+- server/src/lib/supabase.ts
+- server/src/routes/ai.ts
+- server/src/routes/uploads.ts
+- server/src/routes/microsoft.ts
+- server/src/routes/user-ai-keys.ts
+- server/src/routes/webhooks.ts
+- supabase/schema.sql
+- supabase/migration-*.sql
+
+Implication:
+This is an application architecture migration, not only a hosting migration.
+
+====================================================================
+2) TARGET-STATE OPTIONS ON AWS
+====================================================================
+Track A: EC2-heavy self-managed stack
+- EC2 for app server(s)
+- EC2 for PostgreSQL
+- EC2 for identity (Keycloak/custom)
+- EC2 for realtime service
+- S3 for object storage
+- IAM/CloudWatch/Route53/ACM for platform services
+
+Pros:
+- Maximum control over all components.
+
+Cons:
+- Highest operational burden.
+- More failure modes.
+- More patching, backup, failover, and security work.
+
+Track B: EC2 app tier + AWS managed core services (recommended)
+- EC2 for app server(s)
+- RDS PostgreSQL (or Aurora PostgreSQL)
+- Cognito for auth
+- S3 for storage
+- API Gateway WebSocket/AppSync for realtime (or poll where acceptable)
+- Secrets Manager/KMS/CloudWatch/ALB/Route53/ACM
+
+Pros:
+- Lower operational risk.
+- Faster migration.
+- Better managed durability and security controls.
+
+Cons:
+- Less low-level control than fully self-managed components.
+
+Recommendation:
+Use Track B unless a strict policy requires self-managed auth/database.
+
+====================================================================
+3) KEY DECISIONS YOU MUST LOCK BEFORE IMPLEMENTATION
+====================================================================
+1. Region strategy
+- Single region first (simpler), multi-region later.
+- Select region near users and compliance requirements.
+
+2. Environment model
+- Minimum: dev, staging, prod.
+- Prefer separate AWS accounts per environment.
+
+3. Database target
+- Strong recommendation: PostgreSQL-compatible target (RDS/Aurora Postgres).
+- Avoid MySQL or DynamoDB for first migration because of PostgreSQL-heavy
+  schema and function dependencies.
+
+4. Identity target
+- Cognito (recommended) vs EC2-hosted Keycloak/custom JWT service.
+
+5. Realtime strategy
+- Keep realtime only where needed (chat, notifications).
+- Convert non-critical live updates to polling initially.
+
+6. Deployment strategy
+- Blue/green or rolling.
+- Define cutover and rollback windows.
+
+====================================================================
+4) AWS FOUNDATION SETUP
+====================================================================
+4.1 AWS account and governance
+- Create or designate AWS organization/accounts.
+- Enforce MFA and least privilege IAM.
+- Create break-glass admin process.
+
+4.2 Networking baseline
+- VPC with at least 2 private subnets + 2 public subnets.
+- Internet Gateway + NAT Gateway as needed.
+- Security groups with least-access rules.
+- NACLs only if required by policy.
+
+4.3 DNS and TLS
+- Route53 hosted zone.
+- ACM certificates for domain(s).
+- ALB or reverse proxy TLS termination strategy.
+
+4.4 Observability baseline
+- CloudWatch logs for app and proxy.
+- CloudWatch metrics and alarms.
+- Centralized dashboards and alert routing.
+
+4.5 Secrets baseline
+- Store all secrets in AWS Secrets Manager or SSM Parameter Store.
+- KMS-managed encryption keys.
+- Rotation policy for API keys and encryption material.
+
+====================================================================
+5) EC2 INFRASTRUCTURE BUILD
+====================================================================
+5.1 Instance strategy
+- Start with 1-2 EC2 app instances in staging.
+- For production: Auto Scaling Group behind ALB.
+- Instance family: compute/general purpose based on profiling.
+
+5.2 OS and hardening
+- Use current LTS Linux AMI.
+- Disable password SSH, use key pair or SSM Session Manager.
+- Apply CIS baseline controls where required.
+- Regular patch schedule and emergency patch process.
+
+5.3 Runtime installation
+- Install Node.js LTS version used by app.
+- Install nginx/caddy for reverse proxy.
+- Configure systemd service for server process.
+- Build and deploy client static assets.
+
+5.4 Reverse proxy and routing
+- /api -> Fastify server
+- / -> static assets (if served from EC2)
+- Enable compression, sane timeouts, security headers.
+
+5.5 Example service model
+- odyssey-api.service (systemd)
+- Environment file sourced from SSM/Secrets Manager sync step.
+- Health endpoint consumed by ALB target group.
+
+====================================================================
+6) AUTH MIGRATION (SUPABASE AUTH -> AWS)
+====================================================================
+Two viable paths:
+
+Path 1: Cognito (recommended)
+- Create User Pool.
+- Configure OAuth/OIDC providers (Google/GitHub/Microsoft as needed).
+- Implement callback URLs for client.
+- Replace Supabase session retrieval with Cognito token workflow.
+- Validate JWT in Fastify middleware.
+
+Path 2: Self-managed auth on EC2
+- Deploy Keycloak or custom JWT auth service.
+- Configure identity providers and token issuance.
+- Implement refresh/session semantics.
+- Maintain key rotation and signing key management.
+
+Critical migration work items:
+1. Replace frontend auth calls currently relying on Supabase client.
+2. Replace backend token verification currently calling Supabase auth.
+3. Migrate user profile bootstrap logic from DB triggers to app/worker logic.
+4. Recreate provider-linking behavior if currently used.
+
+Security requirement:
+- No trust in unsigned client state.
+- API authorization enforced server-side.
+
+====================================================================
+7) DATABASE MIGRATION (SUPABASE POSTGRES -> AWS)
+====================================================================
+7.1 Recommended target
+- RDS PostgreSQL or Aurora PostgreSQL.
+
+7.2 Why PostgreSQL target is best for this repo
+- Existing schema uses JSONB, arrays, UUID patterns, triggers/functions,
+  and policy-centric SQL logic.
+- Non-PostgreSQL targets introduce major rewrite risk.
+
+7.3 Migration phases
+Phase A: Schema extraction and compatibility review
+- Export schema from Supabase.
+- Compare against target PG engine version.
+- Catalog incompatible extensions or SQL assumptions.
+
+Phase B: Data export/import
+- Use pg_dump/pg_restore or AWS DMS.
+- Run initial full load in staging.
+- Validate row counts and referential integrity.
+
+Phase C: Behavioral logic migration
+- Convert RLS policy behavior into explicit app authorization checks.
+- Reimplement RPC functions as API/service methods.
+- Reimplement trigger side effects in app/event workers.
+
+Phase D: Performance hardening
+- Rebuild indexes.
+- Validate query plans.
+- Add read replicas if required.
+
+7.4 RLS replacement strategy
+Current model:
+- Browser direct DB access with RLS enforcement.
+Future model:
+- Browser -> API only.
+- API authenticates user and enforces authorization.
+- DB access via server role with explicit authorization in code.
+
+7.5 RPC/function replacement checklist
+Identify and reimplement each function currently invoked from client/server,
+for example flows like:
+- project cascade deletion
+- join project by code
+- join request response
+- QR token redemption
+- chat membership sync
+- notification creation helpers
+
+7.6 Trigger replacement checklist
+Recreate trigger behaviors in application or worker layer, such as:
+- set updated_at
+- profile creation on signup
+- invite code generation and normalization
+- notification fanout on join-request changes
+
+====================================================================
+8) STORAGE MIGRATION (SUPABASE STORAGE -> S3)
+====================================================================
+8.1 Bucket mapping
+Map current logical buckets to S3 buckets/prefixes:
+- project-documents
+- goal-attachments
+- project-assets
+
+8.2 Access model
+- Prefer presigned URL upload/download for client operations.
+- Keep authorization in API before presign issuance.
+- Use IAM roles with least privilege.
+
+8.3 Data migration steps
+1. Enumerate all existing object keys and metadata.
+2. Export object manifest.
+3. Copy objects into S3 preserving key structure where practical.
+4. Verify counts, checksums (if available), and random sample opens.
+5. Freeze writes and run delta sync during cutover window.
+
+8.4 Security controls
+- Block public access at bucket level.
+- Enable default encryption (SSE-S3 or SSE-KMS).
+- Lifecycle rules for archival/deletion policy.
+- CloudTrail data events if required.
+
+====================================================================
+9) REALTIME MIGRATION
+====================================================================
+Current behavior depends on Supabase postgres_changes subscriptions.
+
+AWS replacement options:
+1. API Gateway WebSocket + backend pub/sub
+2. AppSync subscriptions
+3. EC2-hosted WebSocket service (self-managed)
+4. Polling fallback for low-priority channels
+
+Recommended pragmatic path:
+- Keep realtime for chat and notifications.
+- Convert dashboard/event feed updates to short polling first.
+
+Implementation checklist:
+- Define channels/topics and authorization model.
+- Define event payload schemas.
+- Add reconnect and backoff logic in client.
+- Add dead-letter/retry policy for event producer failures.
+
+====================================================================
+10) APPLICATION LAYER REFACTOR STRATEGY
+====================================================================
+10.1 Frontend
+- Remove direct supabase client usage from hooks/pages.
+- Replace with typed API client to Fastify endpoints.
+- Normalize auth token handling using new identity provider.
+
+10.2 Backend
+- Add centralized auth middleware and authorization policies.
+- Replace supabase SDK calls with DB access layer and S3 integration.
+- Extract business logic from SQL functions into service modules.
+
+10.3 API contracts
+- Define stable REST/JSON contracts.
+- Add validation schemas for all request/response payloads.
+- Version APIs where breaking changes are expected.
+
+10.4 Config and secrets
+- Replace SUPABASE_* env vars with AWS-centric settings.
+- Separate required env vars by environment profile.
+
+====================================================================
+11) CI/CD AND RELEASE ENGINEERING ON AWS
+====================================================================
+11.1 Build pipeline
+- Lint, type-check, test, build client and server artifacts.
+- Generate immutable version tags.
+
+11.2 Deploy pipeline
+- Deploy backend to EC2/ASG.
+- Deploy frontend to EC2 static root or S3+CloudFront.
+- Run post-deploy smoke tests.
+
+11.3 Release controls
+- Blue/green deployment preferred.
+- One-click rollback to prior known-good build.
+- Deployment freeze windows around major cutovers.
+
+====================================================================
+12) SECURITY HARDENING CHECKLIST
+====================================================================
+1. IAM
+- No wildcard admin roles for application runtime.
+- Separate deploy role from runtime role.
+
+2. Network
+- Database not publicly accessible.
+- Restrict inbound ports to ALB/SSH management path only.
+
+3. Secrets
+- No plaintext secrets in git or images.
+- Rotation policy and emergency rotation runbook.
+
+4. Encryption
+- TLS in transit everywhere.
+- Encryption at rest for DB, S3, snapshots, logs where required.
+
+5. Monitoring and audit
+- API access logs, auth logs, object access logs.
+- Alert on auth anomalies and repeated access failures.
+
+====================================================================
+13) TESTING AND VALIDATION PLAN
+====================================================================
+13.1 Functional parity tests
+- Auth login/logout/session refresh
+- Project create/join/leave
+- Goal CRUD and dependencies
+- Chat thread/message operations
+- Notifications read/unread
+- File upload/download/delete
+- AI routes and reports
+- Webhook ingestion
+- Microsoft/GitHub/GitLab integrations
+
+13.2 Data validation tests
+- Row count comparison per table.
+- Spot-check relational integrity.
+- Verify timestamps, decimals, and JSON fields.
+
+13.3 Performance tests
+- API latency under representative load.
+- DB query latency and p95 targets.
+- Upload/download throughput tests.
+
+13.4 Security tests
+- Token tampering rejection.
+- Unauthorized resource access checks.
+- Presigned URL expiration and scope validation.
+
+====================================================================
+14) CUTOVER RUNBOOK
+====================================================================
+ONE-DAY CLAUDE CODE EXECUTION WINDOW
+
+Hour 0-1 (Preparation and freeze)
+- Freeze architecture decisions and migration scope.
+- Confirm support staffing and incident channels.
+- Snapshot/backup all critical data stores.
+- Confirm DNS TTL adjustments.
+
+Hour 1-3 (Pre-cutover dry run)
+- Run migration scripts and validation scripts in the final target environment.
+- Validate rollback timing and ownership.
+- Confirm readiness gates for auth, DB, storage, and DNS changes.
+
+Hour 3-8 (Cutover)
+1. Enter maintenance window (if needed).
+2. Pause writes in old system or switch to controlled mode.
+3. Run final DB delta migration.
+4. Run final object storage delta migration.
+5. Point application to AWS auth/db/storage endpoints.
+6. Shift DNS/traffic.
+7. Run smoke tests.
+8. Monitor for error spikes and data issues.
+
+Hour 8-12 (Post-cutover validation and stabilization)
+- Validate user journeys and key integrations.
+- Monitor performance and error budgets.
+- Close open migration issues or execute rollback if trigger conditions are met.
+
+====================================================================
+15) ROLLBACK PLAN
+====================================================================
+Rollback triggers:
+- Critical auth failure.
+- Data integrity mismatch beyond tolerance.
+- Sustained API error rate breach.
+- Realtime subsystem critical outage impacting core workflows.
+
+Rollback steps:
+1. Repoint traffic to previous stable stack.
+2. Restore previous application configuration.
+3. If writes occurred on new stack, execute data reconciliation plan.
+4. Communicate incident status and ETA.
+
+Artifacts required before cutover:
+- Verified DB backup/snapshot.
+- Verified object manifest and backup.
+- Last known-good build artifacts.
+- DNS rollback commands and ownership.
+
+====================================================================
+16) SUPABASE DECOMMISSION CHECKLIST (MUST ALL BE TRUE)
+====================================================================
+Code and dependencies
+- No runtime dependency on @supabase/supabase-js in active deployment.
+- No source imports of Supabase client in client/server runtime paths.
+
+Configuration
+- No SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY in active envs.
+- No Supabase endpoints referenced in frontend build artifacts.
+
+Data and storage
+- All required DB data migrated and validated.
+- All required object files migrated and validated.
+
+Auth and access
+- All users authenticate via AWS-based identity path.
+- All API authorization enforced server-side.
+
+Operations
+- Observability dashboards and alarms active on AWS stack.
+- Backup and restore procedures tested on AWS targets.
+
+Shutdown sequence
+- Rotate/revoke old secrets and tokens.
+- Archive final exports and manifests.
+- Deactivate Supabase project only after acceptance sign-off.
+
+====================================================================
+17) RISK REGISTER (TOP RISKS)
+====================================================================
+Risk 1: Browser-direct DB access assumptions break during migration.
+Mitigation: Introduce API boundary early; block direct DB access in client.
+
+Risk 2: Hidden RLS/policy logic not replicated in API authorization.
+Mitigation: Build policy mapping matrix; run authorization regression tests.
+
+Risk 3: Supabase RPC/trigger behavior lost.
+Mitigation: Inventory each function/trigger and map to service-level logic.
+
+Risk 4: Realtime parity delays launch.
+Mitigation: Prioritize critical realtime only; poll lower-priority flows.
+
+Risk 5: Secret/token mishandling during transition.
+Mitigation: Use Secrets Manager + KMS; rotate keys at cutover.
+
+Risk 6: Data drift during final sync.
+Mitigation: Freeze writes or dual-write strategy with reconciliation scripts.
+
+====================================================================
+18) ESTIMATED PHASED TIMELINE (REFERENCE)
+====================================================================
+Day 1, Hour 0-1: Architecture lock + execution freeze
+Day 1, Hour 1-3: AWS readiness checks + dry-run validation
+Day 1, Hour 3-6: Auth/API switch + DB migration execution
+Day 1, Hour 6-8: Storage/realtime transition + traffic shift
+Day 1, Hour 8-12: Validation, stabilization, and decommission gating
+
+Total: one-day accelerated migration window executed through Claude Code.
+
+====================================================================
+19) MINIMUM TEAM ROLES
+====================================================================
+- Migration lead / architect
+- Backend engineer(s)
+- Frontend engineer(s)
+- DevOps / platform engineer
+- QA / test engineer
+- Security reviewer
+
+====================================================================
+20) FINAL EXECUTION CHECKLIST
+====================================================================
+Before implementation starts:
+- [ ] Choose Track A or Track B.
+- [ ] Approve region, account, and environment strategy.
+- [ ] Approve auth target.
+- [ ] Approve database target.
+- [ ] Approve realtime scope (must-have vs can-poll).
+
+Before cutover:
+- [ ] Same-day pre-cutover dry run complete.
+- [ ] Data validation scripts pass.
+- [ ] Security review passed.
+- [ ] Rollback procedure validated and on-call owners confirmed.
+- [ ] Business acceptance tests passed.
+
+After cutover:
+- [ ] Production smoke tests pass.
+- [ ] Error rates and latency within target.
+- [ ] User-reported critical issues triaged and resolved.
+- [ ] Supabase decommission checklist fully complete.
+
+====================================================================
+APPENDIX A: OLD->NEW CONFIG MAPPING TEMPLATE
+====================================================================
+Supabase-era config (example classes):
+- VITE_SUPABASE_URL
+- VITE_SUPABASE_ANON_KEY
+- SUPABASE_URL
+- SUPABASE_SERVICE_KEY
+
+AWS-era config (sample categories):
+- AUTH_ISSUER_URL
+- AUTH_AUDIENCE
+- DB_HOST
+- DB_PORT
+- DB_NAME
+- DB_USER
+- DB_PASSWORD (from Secrets Manager)
+- S3_BUCKET_PROJECT_DOCUMENTS
+- S3_BUCKET_GOAL_ATTACHMENTS
+- S3_BUCKET_PROJECT_ASSETS
+- AWS_REGION
+- KMS_KEY_ID
+- CLOUDWATCH_NAMESPACE
+
+====================================================================
+APPENDIX B: MIGRATION ACCEPTANCE CRITERIA
+====================================================================
+Migration is complete only when:
+1. All core user journeys run on AWS-hosted auth/db/storage paths.
+2. No runtime traffic reaches Supabase endpoints.
+3. Data consistency checks pass defined thresholds.
+4. Security and operational baselines are met.
+5. Rollback is no longer required and decommission is approved.
+
+END OF DOCUMENT

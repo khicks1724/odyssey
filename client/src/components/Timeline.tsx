@@ -89,8 +89,98 @@ function GoalTooltip({ goal, members, color }: { goal: Goal; members: MemberInfo
   );
 }
 
+// ── Tick line generator ──────────────────────────────────────────────────────
+
+interface Tick { pct: string; label: string; isMajor: boolean; }
+
+function buildTicks(viewStart: Date, viewEnd: Date, toPct: (ms: number) => string): Tick[] {
+  const ticks: Tick[] = [];
+  const rangeMs = viewEnd.getTime() - viewStart.getTime();
+  const days = rangeMs / (1000 * 60 * 60 * 24);
+
+  if (days <= 60) {
+    // Weekly ticks with day numbers
+    const cursor = new Date(viewStart);
+    cursor.setDate(cursor.getDate() + ((1 - cursor.getDay() + 7) % 7)); // advance to next Monday
+    cursor.setHours(0, 0, 0, 0);
+    while (cursor <= viewEnd) {
+      const pct = toPct(cursor.getTime());
+      ticks.push({
+        pct,
+        label: cursor.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        isMajor: cursor.getDate() <= 7, // first week of month = major
+      });
+      cursor.setDate(cursor.getDate() + 7);
+    }
+  } else {
+    // Monthly ticks
+    const cursor = new Date(viewStart.getFullYear(), viewStart.getMonth() + 1, 1);
+    while (cursor <= viewEnd) {
+      ticks.push({
+        pct: toPct(cursor.getTime()),
+        label: cursor.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+        isMajor: cursor.getMonth() === 0, // Jan = major (year boundary)
+      });
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+  return ticks;
+}
+
+// ── Filter bar ───────────────────────────────────────────────────────────────
+
+type GroupBy = 'category' | 'loe' | 'none';
+
+function FilterBar({
+  categories, loes, filterCat, filterLoe, groupBy,
+  onFilterCat, onFilterLoe, onGroupBy,
+}: {
+  categories: string[]; loes: string[];
+  filterCat: string; filterLoe: string; groupBy: GroupBy;
+  onFilterCat: (v: string) => void; onFilterLoe: (v: string) => void; onGroupBy: (v: GroupBy) => void;
+}) {
+  const selectCls = 'text-[10px] font-mono bg-surface border border-border text-muted px-2 py-1 focus:outline-none focus:border-accent/50 rounded';
+  const btnCls = (active: boolean) =>
+    `text-[10px] font-mono px-2 py-1 rounded border transition-colors ${active
+      ? 'bg-accent/10 border-accent/30 text-accent'
+      : 'bg-surface border-border text-muted hover:text-heading hover:border-border/80'}`;
+
+  return (
+    <div className="flex items-center gap-2 mb-3 flex-wrap">
+      {/* Category filter */}
+      {categories.length > 1 && (
+        <select value={filterCat} onChange={(e) => onFilterCat(e.target.value)} className={selectCls} title="Filter by category">
+          <option value="">All Categories</option>
+          {categories.map((c) => <option key={c} value={c}>{c || 'Uncategorized'}</option>)}
+        </select>
+      )}
+
+      {/* LOE filter */}
+      {loes.length > 1 && (
+        <select value={filterLoe} onChange={(e) => onFilterLoe(e.target.value)} className={selectCls} title="Filter by LOE">
+          <option value="">All LOE</option>
+          {loes.map((l) => <option key={l} value={l}>{l || 'No LOE'}</option>)}
+        </select>
+      )}
+
+      {/* Group by toggle */}
+      <div className="flex items-center gap-1 ml-auto">
+        <span className="text-[9px] text-muted/60 font-mono uppercase tracking-wider mr-1">Group by</span>
+        <button type="button" className={btnCls(groupBy === 'category')} onClick={() => onGroupBy('category')}>Category</button>
+        <button type="button" className={btnCls(groupBy === 'loe')} onClick={() => onGroupBy('loe')}>LOE</button>
+        <button type="button" className={btnCls(groupBy === 'none')} onClick={() => onGroupBy('none')}>None</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main export ──────────────────────────────────────────────────────────────
+
 export default function Timeline({ goals, members = [] }: TimelineProps) {
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [hovered, setHovered]   = useState<string | null>(null);
+  const [filterCat, setFilterCat] = useState('');
+  const [filterLoe, setFilterLoe] = useState('');
+  const [groupBy, setGroupBy]   = useState<GroupBy>('category');
 
   if (goals.length === 0) {
     return (
@@ -105,9 +195,6 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
     .filter((g) => g.deadline)
     .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime());
 
-  const catColorMap = makeCatColorMap(goalsWithDeadline);
-  const catColor = (goal: Goal) => catColorMap.get(goal.category ?? '') ?? DEFAULT_COLOR;
-
   if (goalsWithDeadline.length === 0) {
     return (
       <div className="py-8 text-center">
@@ -116,24 +203,79 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
     );
   }
 
-  const earliest = new Date(goalsWithDeadline[0].deadline!);
-  const latest = new Date(goalsWithDeadline[goalsWithDeadline.length - 1].deadline!);
-  const rangeStart = new Date(Math.min(now.getTime(), earliest.getTime()) - 7 * 24 * 60 * 60 * 1000);
-  const rangeEnd = new Date(latest.getTime() + 7 * 24 * 60 * 60 * 1000);
-  const viewStart = rangeStart;
-  const viewEnd   = rangeEnd;
+  // Collect unique categories + LOEs for filter dropdowns
+  const allCategories = [...new Set(goalsWithDeadline.map((g) => g.category ?? ''))];
+  const allLoes = [...new Set(goalsWithDeadline.map((g) => g.loe ?? '').filter(Boolean))];
+
+  // Apply filters
+  const filtered = goalsWithDeadline.filter((g) => {
+    if (filterCat && (g.category ?? '') !== filterCat) return false;
+    if (filterLoe && (g.loe ?? '') !== filterLoe) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    return (
+      <div>
+        <FilterBar categories={allCategories} loes={allLoes} filterCat={filterCat} filterLoe={filterLoe} groupBy={groupBy}
+          onFilterCat={setFilterCat} onFilterLoe={setFilterLoe} onGroupBy={setGroupBy} />
+        <div className="py-8 text-center">
+          <p className="text-xs text-muted tracking-wide">No goals match the current filters</p>
+        </div>
+      </div>
+    );
+  }
+
+  const catColorMap = makeCatColorMap(goalsWithDeadline);
+
+  // Build LOE color map using same palette
+  const loeColorMap = new Map<string, { color: string; track: string }>();
+  [...new Set(goalsWithDeadline.map((g) => g.loe ?? ''))].forEach((l, i) =>
+    loeColorMap.set(l, GROUP_PALETTE[i % GROUP_PALETTE.length])
+  );
+
+  const rowColor = (goal: Goal): { color: string; track: string } => {
+    if (groupBy === 'loe') return loeColorMap.get(goal.loe ?? '') ?? DEFAULT_COLOR;
+    return catColorMap.get(goal.category ?? '') ?? DEFAULT_COLOR;
+  };
+
+  // Timeline extents
+  const earliest = new Date(filtered[0].deadline!);
+  const latest   = new Date(filtered[filtered.length - 1].deadline!);
+  const viewStart = new Date(Math.min(now.getTime(), earliest.getTime()) - 7 * 24 * 60 * 60 * 1000);
+  const viewEnd   = new Date(latest.getTime() + 7 * 24 * 60 * 60 * 1000);
   const viewRange = viewEnd.getTime() - viewStart.getTime();
 
   const toPct = (ms: number): string =>
     `${Math.min(100, Math.max(0, ((ms - viewStart.getTime()) / viewRange) * 100)).toFixed(3)}%`;
 
-  const nowPct = toPct(now.getTime());
-
+  const nowPct  = toPct(now.getTime());
+  const ticks   = buildTicks(viewStart, viewEnd, toPct);
   const fmtDate = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+
+  // Build groups
+  type Group = { key: string; goals: Goal[]; color: { color: string; track: string } };
+  let groups: Group[];
+
+  if (groupBy === 'none') {
+    groups = [{ key: '', goals: filtered, color: DEFAULT_COLOR }];
+  } else {
+    const groupKey = (g: Goal) => groupBy === 'loe' ? (g.loe ?? '') : (g.category ?? '');
+    const colorMap = groupBy === 'loe' ? loeColorMap : catColorMap;
+    const order = [...new Set(filtered.map(groupKey))];
+    groups = order.map((k) => ({
+      key: k,
+      goals: filtered.filter((g) => groupKey(g) === k),
+      color: colorMap.get(k) ?? DEFAULT_COLOR,
+    }));
+  }
 
   return (
     <div>
-      {/* Date range header — animates with the zoom */}
+      <FilterBar categories={allCategories} loes={allLoes} filterCat={filterCat} filterLoe={filterLoe} groupBy={groupBy}
+        onFilterCat={setFilterCat} onFilterLoe={setFilterLoe} onGroupBy={setGroupBy} />
+
+      {/* Date range header */}
       <div className="tlo-header flex mb-2">
         <div className="tlo-date-row text-[10px] text-muted font-mono">
           <span className="tlo-date-label">{fmtDate(viewStart)}</span>
@@ -141,74 +283,91 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
         </div>
       </div>
 
-      {/* Track — grouped by category */}
+      {/* Track */}
       <div className="tlo-track-outer border border-border rounded bg-surface">
-        {(() => {
-          // Build ordered list of [category, goals[]] preserving deadline sort within each group
-          const categoryOrder = [...new Set(goalsWithDeadline.map((g) => g.category ?? ''))];
-          const groups = categoryOrder.map((cat) => ({
-            cat,
-            goals: goalsWithDeadline.filter((g) => (g.category ?? '') === cat),
-          }));
-          let firstGoal = true;
 
-          return groups.map(({ cat, goals: groupGoals }) => {
-            const c = catColorMap.get(cat) ?? DEFAULT_COLOR;
-            return (
-              <div key={cat}>
-                {/* Section header */}
-                <div className="tlo-section" {...({ style: cv({ '--tlo-color': c.color }) } as any)}>
-                  <span className="tlo-section-lbl">{cat || 'Uncategorized'}</span>
-                  <div className="tlo-section-line" />
+        {/* Tick header row */}
+        {ticks.length > 0 && (
+          <div className="tlo-tick-header">
+            <div className="tlo-label" style={{ background: 'var(--color-surface2)' }} />
+            <div className="tlo-chart tlo-tick-chart">
+              {ticks.map((t) => (
+                <div
+                  key={t.pct}
+                  className={`tlo-tick ${t.isMajor ? 'tlo-tick--major' : ''}`}
+                  style={{ left: t.pct }}
+                >
+                  <span className="tlo-tick-lbl">{t.label}</span>
                 </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-                {groupGoals.map((goal, idxInGroup) => {
-                  const deadlineMs  = new Date(goal.deadline!).getTime();
-                  const deadlinePct = toPct(deadlineMs);
-                  const progressPct = `${((goal.progress / 100) * parseFloat(deadlinePct)).toFixed(3)}%`;
-                  const isHovered   = hovered === goal.id;
-                  const isFirst     = firstGoal;
-                  if (firstGoal) firstGoal = false;
-
-                  return (
-                    <div
-                      key={goal.id}
-                      className={`tlo-row${idxInGroup < groupGoals.length - 1 ? ' tlo-row-border' : ''}`}
-                      {...({ style: cv({ '--tlo-color': c.color }) } as any)}
-                      onMouseEnter={() => setHovered(goal.id)}
-                      onMouseLeave={() => setHovered(null)}
-                    >
-                      <div className="tlo-label tlo-label-hover">
-                        <span className="tlo-cat-dot" />
-                        <span className="text-[10px] font-mono truncate tlo-cat-text" title={goal.title}>
-                          {goal.title}
-                        </span>
-                      </div>
-
-                      {isHovered && (
-                        <GoalTooltip goal={goal} members={members} color={c.color} />
-                      )}
-
-                      <div className="tlo-chart">
-                        <div className="tlo-today" {...({ style: cv({ '--tlo-now': nowPct }) } as any)}>
-                          {isFirst && (
-                            <span className="tlo-today-lbl text-[9px] text-accent font-mono">
-                              {now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                            </span>
-                          )}
-                        </div>
-                        <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
-                        <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
-                        <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />
-                        <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
-                      </div>
-                    </div>
-                  );
-                })}
+        {groups.map(({ key, goals: groupGoals, color: groupColor }, gi) => (
+          <div key={key || `group-${gi}`}>
+            {/* Section header (only when grouping is active) */}
+            {groupBy !== 'none' && (
+              <div className="tlo-section" {...({ style: cv({ '--tlo-color': groupColor.color }) } as any)}>
+                <span className="tlo-section-lbl">{key || (groupBy === 'loe' ? 'No LOE' : 'Uncategorized')}</span>
+                <div className="tlo-section-line" />
               </div>
-            );
-          });
-        })()}
+            )}
+
+            {groupGoals.map((goal, idxInGroup) => {
+              const c = rowColor(goal);
+              const deadlineMs  = new Date(goal.deadline!).getTime();
+              const deadlinePct = toPct(deadlineMs);
+              const progressPct = `${((goal.progress / 100) * parseFloat(deadlinePct)).toFixed(3)}%`;
+              const isHovered   = hovered === goal.id;
+              const isFirst     = gi === 0 && idxInGroup === 0;
+
+              return (
+                <div
+                  key={goal.id}
+                  className={`tlo-row${idxInGroup < groupGoals.length - 1 ? ' tlo-row-border' : ''}`}
+                  {...({ style: cv({ '--tlo-color': c.color }) } as any)}
+                  onMouseEnter={() => setHovered(goal.id)}
+                  onMouseLeave={() => setHovered(null)}
+                >
+                  <div className="tlo-label tlo-label-hover">
+                    <span className="tlo-cat-dot" />
+                    <span className="text-[10px] font-mono truncate tlo-cat-text" title={goal.title}>
+                      {goal.title}
+                    </span>
+                  </div>
+
+                  {isHovered && (
+                    <GoalTooltip goal={goal} members={members} color={c.color} />
+                  )}
+
+                  <div className="tlo-chart">
+                    {/* Tick grid lines behind bars */}
+                    {ticks.map((t) => (
+                      <div
+                        key={t.pct}
+                        className={`tlo-tick-line ${t.isMajor ? 'tlo-tick-line--major' : ''}`}
+                        style={{ left: t.pct }}
+                      />
+                    ))}
+
+                    <div className="tlo-today" {...({ style: cv({ '--tlo-now': nowPct }) } as any)}>
+                      {isFirst && (
+                        <span className="tlo-today-lbl text-[9px] text-accent font-mono">
+                          {now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </span>
+                      )}
+                    </div>
+                    <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
+                    <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
+                    <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />
+                    <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );

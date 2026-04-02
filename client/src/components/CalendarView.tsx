@@ -2,6 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Flag, X, Calendar, Loader2 } from 'lucide-react';
 import type { Goal } from '../types';
 import { supabase } from '../lib/supabase';
+import './TimelinePage.css';
+
+interface TimePeriod {
+  id: string;
+  name: string;
+  type: 'sprint' | 'phase';
+  start_date: string; // YYYY-MM-DD
+  end_date: string;   // YYYY-MM-DD
+}
 
 const GROUP_PALETTE = [
   '#3b8eea', '#52c98e', '#e8a235', '#bd93f9',
@@ -52,6 +61,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
 
   const [current, setCurrent] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
   const [milestones, setMilestones] = useState<MilestoneEvent[]>([]);
+  const [timePeriods, setTimePeriods] = useState<TimePeriod[]>([]);
   const [activeDayMenu, setActiveDayMenu] = useState<string | null>(null);
   const [milestoneInput, setMilestoneInput] = useState<{ date: string; title: string } | null>(null);
   const [milestoneLoading, setMilestoneLoading] = useState(false);
@@ -68,6 +78,11 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
       .then(({ data }) => {
         if (data) setMilestones(data.map(e => ({ id: e.id, title: e.title ?? 'Milestone', date: e.occurred_at.slice(0, 10) })));
       });
+    supabase
+      .from('time_periods')
+      .select('id, name, type, start_date, end_date')
+      .eq('project_id', projectId)
+      .then(({ data }) => { if (data) setTimePeriods(data as TimePeriod[]); });
   }, [projectId]);
 
   useEffect(() => {
@@ -84,6 +99,9 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
 
   const catColorMap = makeCatColorMap(goals);
   const catColor = (g: Goal) => catColorMap.get(g.category ?? '') ?? DEFAULT_COLOR;
+
+  const getTimePeriodForDate = (dateStr: string): TimePeriod | null =>
+    timePeriods.find((p) => p.start_date <= dateStr && p.end_date >= dateStr) ?? null;
 
   const year  = current.getFullYear();
   const month = current.getMonth();
@@ -198,6 +216,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
           const isExpanded    = expandedDay === dateStr;
           const dayNum        = dateStr ? parseInt(dateStr.slice(8)) : null;
           const isLastCol     = idx % 7 === 6;
+          const timePeriod    = dateStr ? getTimePeriodForDate(dateStr) : null;
 
           // Show at most 3 pills; remainder triggers "+N more"
           const allItems = [...dayMilestones.map(m => ({ type: 'ms' as const, m })), ...dayGoals.map(g => ({ type: 'goal' as const, g }))];
@@ -213,6 +232,10 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
             >
               {dateStr && (
                 <>
+                  {/* Sprint / phase top-border indicator */}
+                  {timePeriod && (
+                    <div className={`cal-sprint-bar cal-sprint-bar--${timePeriod.type}`} title={timePeriod.name} />
+                  )}
                   {/* Day number + add button */}
                   <div className="flex items-center justify-between px-1.5 pt-1 pb-0.5 shrink-0">
                     <span className={`inline-flex items-center justify-center w-5 h-5 text-[11px] font-mono rounded-full ${

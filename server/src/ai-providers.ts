@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro';
+export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil';
 
 // 'auto' is a client-side concept — server resolves it per endpoint before calling chat()
 export type AIProviderOrAuto = AIProvider | 'auto';
@@ -70,8 +70,10 @@ async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIP
 
   if (!response.ok) {
     const errBody = await response.text();
+    markProviderError(provider, response.status, errBody);
     throw new Error(`Anthropic API ${response.status}: ${errBody}`);
   }
+  clearProviderError(provider);
 
   const result = await response.json();
   // Extract text from all text blocks (web search may produce multiple content blocks)
@@ -123,9 +125,16 @@ async function callGPT(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatR
     ...(msg.jsonMode && !msg.webSearch ? { response_format: { type: 'json_object' } } : {}),
   };
 
-  const completion = await openai.chat.completions.create({ ...completionParams, stream: false });
-
-  return { text: completion.choices[0]?.message?.content || '', provider: 'gpt-4o' };
+  try {
+    const completion = await openai.chat.completions.create({ ...completionParams, stream: false });
+    clearProviderError('gpt-4o');
+    return { text: completion.choices[0]?.message?.content || '', provider: 'gpt-4o' };
+  } catch (err: any) {
+    const status = err?.status ?? err?.response?.status ?? 0;
+    const body = err?.message ?? String(err);
+    markProviderError('gpt-4o', status, body);
+    throw err;
+  }
 }
 
 // ── Gemini (Google / GenAI.mil) ─────────────────────────────────
@@ -320,7 +329,20 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
   console.log(`[GenAI.mil] chat_len=${chatPrompt.length} model=${model}`);
   const text = await rawCall(chatPrompt, msg.maxTokens ?? 2048, 0.7);
   console.log(`[GenAI.mil] chat_response_preview=${text.slice(0, 120)}`);
-  return { text, provider: 'gemini-pro' };
+  clearProviderError('genai-mil');
+  return { text, provider: 'genai-mil' };
+}
+
+/** Public wrapper for GenAI.mil called via the 'genai-mil' provider route */
+async function callGenAiMilProvider(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
+  const key = apiKeyOverride ?? process.env.GOOGLE_AI_API_KEY ?? '';
+  if (!key || !isGenAiMilKey(key)) throw new Error('No STARK API key configured. Add your GenAI.mil key in Settings → AI Models.');
+  try {
+    return await callGeminiGenAiMil(msg, key);
+  } catch (err: any) {
+    markProviderError('genai-mil', err?.status ?? 0, err?.message ?? String(err));
+    throw err;
+  }
 }
 
 /** Google OAuth bearer token (linked Google account) */
@@ -341,12 +363,14 @@ async function callGeminiWithBearer(msg: ChatMessage, accessToken: string): Prom
 
   if (!res.ok) {
     const text = await res.text();
+    markProviderError('gemini-pro', res.status, text);
     if (res.status === 401) {
       throw new Error('Google AI token expired — reconnect Google account in Settings → AI Models.');
     }
     throw new Error(`Google AI API ${res.status}: ${text}`);
   }
 
+  clearProviderError('gemini-pro');
   const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   return { text, provider: 'gemini-pro' };
@@ -391,15 +415,51 @@ const providers: Record<AIProvider, (msg: ChatMessage, apiKeyOverride?: string) 
   'claude-opus': callClaudeOpus,
   'gpt-4o': callGPT,
   'gemini-pro': callGemini,
+  'genai-mil': callGenAiMilProvider,
 };
 
-export function getAvailableProviders(): { id: AIProvider; name: string; available: boolean }[] {
+// ── Provider credit/error status cache ─────────────────────────────────────
+// Tracks per-provider error state so the UI can show "No Credits" vs "No Key"
+export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'error';
+
+const providerStatusCache = new Map<AIProvider, ProviderStatus>();
+
+export function markProviderError(provider: AIProvider, httpStatus: number, body: string) {
+  const b = body.toLowerCase();
+  if (httpStatus === 402 || b.includes('insufficient') || b.includes('quota') || b.includes('billing') || b.includes('credit') || b.includes('out of credits') || b.includes('exceeded')) {
+    providerStatusCache.set(provider, 'no_credits');
+  } else if (httpStatus === 401 || httpStatus === 403 || b.includes('invalid') || b.includes('authentication') || b.includes('unauthorized')) {
+    providerStatusCache.set(provider, 'invalid_key');
+  } else if (httpStatus >= 400) {
+    providerStatusCache.set(provider, 'error');
+  }
+}
+
+export function clearProviderError(provider: AIProvider) {
+  providerStatusCache.delete(provider);
+}
+
+export function getAvailableProviders(): { id: AIProvider; name: string; available: boolean; status: ProviderStatus }[] {
+  const anthropicKey  = !!process.env.ANTHROPIC_API_KEY;
+  const openaiKey     = !!process.env.OPENAI_API_KEY;
+  const googleRaw     = process.env.GOOGLE_AI_API_KEY ?? '';
+  // GenAI.mil uses a STARK_ key stored in GOOGLE_AI_API_KEY
+  const hasStarkKey   = isGenAiMilKey(googleRaw);
+  // Regular Google key: present AND not a STARK key
+  const googleKey     = !!googleRaw && !hasStarkKey;
+
+  function resolveStatus(provider: AIProvider, hasKey: boolean): ProviderStatus {
+    if (!hasKey) return 'no_key';
+    return providerStatusCache.get(provider) ?? 'ready';
+  }
+
   return [
-    { id: 'claude-haiku',  name: 'Claude Haiku',  available: !!process.env.ANTHROPIC_API_KEY },
-    { id: 'claude-sonnet', name: 'Claude Sonnet',  available: !!process.env.ANTHROPIC_API_KEY },
-    { id: 'claude-opus',   name: 'Claude Opus',    available: !!process.env.ANTHROPIC_API_KEY },
-    { id: 'gpt-4o',        name: 'GPT-4o',         available: !!process.env.OPENAI_API_KEY },
-    { id: 'gemini-pro',    name: 'Gemini 2.5 Flash', available: !!process.env.GOOGLE_AI_API_KEY },
+    { id: 'claude-haiku',  name: 'Claude Haiku',       available: anthropicKey && resolveStatus('claude-haiku',  anthropicKey) === 'ready', status: resolveStatus('claude-haiku',  anthropicKey) },
+    { id: 'claude-sonnet', name: 'Claude Sonnet 4.6',  available: anthropicKey && resolveStatus('claude-sonnet', anthropicKey) === 'ready', status: resolveStatus('claude-sonnet', anthropicKey) },
+    { id: 'claude-opus',   name: 'Claude Opus 4.6',    available: anthropicKey && resolveStatus('claude-opus',   anthropicKey) === 'ready', status: resolveStatus('claude-opus',   anthropicKey) },
+    { id: 'gpt-4o',        name: 'GPT-4o',             available: openaiKey    && resolveStatus('gpt-4o',        openaiKey)    === 'ready', status: resolveStatus('gpt-4o',        openaiKey) },
+    { id: 'gemini-pro',    name: 'Gemini 2.5 Flash',   available: googleKey    && resolveStatus('gemini-pro',    googleKey)    === 'ready', status: resolveStatus('gemini-pro',    googleKey) },
+    { id: 'genai-mil',     name: 'GenAI.mil (STARK)',  available: hasStarkKey  && resolveStatus('genai-mil',     hasStarkKey)  === 'ready', status: resolveStatus('genai-mil',     hasStarkKey) },
   ];
 }
 

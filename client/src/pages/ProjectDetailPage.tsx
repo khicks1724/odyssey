@@ -22,6 +22,7 @@ import {
   X,
   Settings,
   TrendingUp,
+  DollarSign,
   Folder,
   ChevronRight,
   Plug,
@@ -49,6 +50,7 @@ import OfficeFilePicker from '../components/OfficeFilePicker';
 import GoalEditModal from '../components/GoalEditModal';
 import GoalReportModal from '../components/GoalReportModal';
 import ReportsTab from '../components/ReportsTab';
+import FinancialsTab from '../components/project-tabs/FinancialsTab';
 import ProjectQRCode from '../components/ProjectQRCode';
 import { useProject, useJoinRequests, deleteProjectCascade, removeSelfFromProjectAccess } from '../hooks/useProjects';
 import { useProjectLabels } from '../hooks/useProjectLabels';
@@ -66,6 +68,7 @@ import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
 import { generateProjectCode, sanitizeProjectCode, PROJECT_CODE_LENGTH } from '../lib/project-code';
 import { useAIErrorDialog } from '../lib/ai-error';
+import { useTabVisibility } from '../hooks/useTabVisibility';
 
 const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
@@ -73,6 +76,7 @@ const tabs = [
   { id: 'activity',      label: 'Activity',      icon: Activity },
   { id: 'goals',         label: 'Tasks',         icon: Target },
   { id: 'metrics',       label: 'Metrics',       icon: TrendingUp },
+  { id: 'financials',    label: 'Financials',    icon: DollarSign },
   { id: 'reports',       label: 'Reports',       icon: ClipboardList },
   { id: 'documents',     label: 'Documents',     icon: Link },
   { id: 'integrations',  label: 'Integrations',  icon: Plug },
@@ -285,7 +289,10 @@ export default function ProjectDetailPage() {
     return () => { unregister(); };
   }, [project?.id, project?.name, register, unregister, refetchGoals]);
 
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const [activeTabState, setActiveTab] = useState<TabId>('overview');
+  const { visibleTabs, isVisible } = useTabVisibility(projectId);
+  // If the active tab was hidden, fall back to overview
+  const activeTab: TabId = isVisible(activeTabState) ? activeTabState : 'overview';
   const goalModal = useModal();
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDeadline, setNewGoalDeadline] = useState('');
@@ -1062,21 +1069,24 @@ export default function ProjectDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-px border border-border bg-border mb-8">
-        {tabs.map((tab) => (
-          <button
-            type="button"
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors whitespace-nowrap first:rounded-tl last:rounded-tr ${
-              activeTab === tab.id
-                ? 'text-heading bg-surface2 font-medium'
-                : 'text-muted hover:text-heading hover:bg-surface2'
-            }`}
-          >
-            <tab.icon size={13} />
-            {tab.label}
-          </button>
-        ))}
+        {visibleTabs.map((vt) => {
+          const tabMeta = tabs.find((t) => t.id === vt.id)!;
+          return (
+            <button
+              type="button"
+              key={tabMeta.id}
+              onClick={() => setActiveTab(tabMeta.id)}
+              className={`flex-1 flex items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors whitespace-nowrap first:rounded-tl last:rounded-tr ${
+                activeTab === tabMeta.id
+                  ? 'text-heading bg-surface2 font-medium'
+                  : 'text-muted hover:text-heading hover:bg-surface2'
+              }`}
+            >
+              <tabMeta.icon size={13} />
+              {tabMeta.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Tab Content */}
@@ -1121,6 +1131,8 @@ export default function ProjectDetailPage() {
             ...(user ? [{ user_id: user.id, display_name: user.user_metadata?.user_name ?? user.user_metadata?.full_name ?? user.email ?? 'You' }] : []),
             ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
           ]}
+          projectCategories={projectCategories.map((c) => c.name)}
+          projectLoes={projectLoes.map((l) => l.name)}
           onGoalClick={(g) => { setEditAutoGuidance(false); setEditGoal(g); }}
           onCreateGoalForDate={(dateStr) => { setNewGoalDeadline(dateStr); goalModal.onOpen(); }}
         />
@@ -1172,6 +1184,7 @@ export default function ProjectDetailPage() {
           setActiveTab={setActiveTab}
           goalModalOnOpen={goalModal.onOpen}
           setLogTimeGoal={setLogTimeGoal}
+          createGoal={createGoal}
         /></ErrorBoundary>
       )}
 
@@ -1189,6 +1202,12 @@ export default function ProjectDetailPage() {
           onAssignTask={(goalId, userId) => updateGoal(goalId, { assigned_to: userId })}
           timeLogs={timeLogs}
         />
+      )}
+
+      {activeTab === 'financials' && (
+        <ErrorBoundary label="Financials Tab">
+          <FinancialsTab projectId={project.id} />
+        </ErrorBoundary>
       )}
 
       {activeTab === 'reports' && (

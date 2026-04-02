@@ -7,9 +7,13 @@ import {
   ChevronDown,
   ChevronUp,
   X,
+  FileText,
+  Check,
 } from 'lucide-react';
 import SearchPanel, { type SearchPanelHandle } from '../SearchPanel';
 import type { Goal, OdysseyEvent, GoalDependency } from '../../types';
+import { supabase } from '../../lib/supabase';
+import { useAIAgent } from '../../lib/ai-agent';
 
 type GoalStatus = Goal['status'];
 
@@ -306,6 +310,7 @@ export interface GoalsTabProps {
   setActiveTab: (tab: string) => void;
   goalModalOnOpen: () => void;
   setLogTimeGoal: (goal: Goal | null) => void;
+  createGoal: (data: { title: string; description?: string; category?: string; loe?: string; deadline?: string }) => Promise<unknown>;
 }
 
 function GoalsTab({
@@ -335,10 +340,84 @@ function GoalsTab({
   setActiveTab,
   goalModalOnOpen,
   setLogTimeGoal,
+  createGoal,
 }: GoalsTabProps) {
   const [filterCategory, setFilterCategory] = React.useState('');
   const [filterLoe, setFilterLoe] = React.useState('');
   const [filterAssignee, setFilterAssignee] = React.useState('');
+
+  // ── Meeting notes import ──────────────────────────────────────────────────
+  const { agent } = useAIAgent();
+  const notesInputRef = React.useRef<HTMLInputElement>(null);
+  const [notesLoading, setNotesLoading] = React.useState(false);
+  const [notesError, setNotesError] = React.useState<string | null>(null);
+  interface SuggestedTask { title: string; description: string; category: string | null; loe: string | null; deadline: string | null; }
+  const [suggestedTasks, setSuggestedTasks] = React.useState<SuggestedTask[]>([]);
+  const [selectedTaskIdxs, setSelectedTaskIdxs] = React.useState<Set<number>>(new Set());
+  const [notesModalOpen, setNotesModalOpen] = React.useState(false);
+  const [addingTasks, setAddingTasks] = React.useState(false);
+
+  const handleNotesFile = async (file: File | null | undefined) => {
+    if (!file || !projectId) return;
+    setNotesLoading(true);
+    setNotesError(null);
+    setSuggestedTasks([]);
+
+    // Read file as text or base64 then send to server for extraction
+    let fileContent = '';
+    try {
+      fileContent = await file.text();
+    } catch {
+      fileContent = '';
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+
+      const res = await fetch('/api/ai/meeting-notes-tasks', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          agent,
+          projectId,
+          fileContent: fileContent.slice(0, 50_000),
+          fileName: file.name,
+          existingTaskTitles: goals.map((g) => g.title),
+        }),
+      });
+      const data = await res.json() as { tasks?: SuggestedTask[]; error?: string };
+      if (!res.ok || data.error) throw new Error(data.error ?? 'Failed to extract tasks');
+      const tasks: SuggestedTask[] = (data.tasks ?? []).slice(0, 30);
+      setSuggestedTasks(tasks);
+      setSelectedTaskIdxs(new Set(tasks.map((_, i) => i)));
+      setNotesModalOpen(true);
+    } catch (err: unknown) {
+      setNotesError(err instanceof Error ? err.message : 'Failed to extract tasks');
+    } finally {
+      setNotesLoading(false);
+      if (notesInputRef.current) notesInputRef.current.value = '';
+    }
+  };
+
+  const handleAddSelectedTasks = async () => {
+    setAddingTasks(true);
+    const toAdd = suggestedTasks.filter((_, i) => selectedTaskIdxs.has(i));
+    for (const t of toAdd) {
+      await createGoal({
+        title: t.title,
+        ...(t.description ? { description: t.description } : {}),
+        ...(t.category ? { category: t.category } : {}),
+        ...(t.loe ? { loe: t.loe } : {}),
+        ...(t.deadline ? { deadline: t.deadline } : {}),
+      });
+    }
+    setNotesModalOpen(false);
+    setSuggestedTasks([]);
+    setSelectedTaskIdxs(new Set());
+    setAddingTasks(false);
+  };
 
   const allAssigneeIds = [...new Set(goals.flatMap((g) => g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : [])))];
   const isFiltered = !!(filterCategory || filterLoe || filterAssignee);
@@ -371,7 +450,7 @@ function GoalsTab({
     <div>
       <div className="flex items-center mb-4 gap-2 min-w-0">
         <h3 className="font-sans text-sm font-bold text-heading shrink-0">Tasks ({goals.length})</h3>
-        <div className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto">
+        <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
           <SearchPanel
             ref={searchRef}
             projectId={projectId ?? null}
@@ -417,6 +496,16 @@ function GoalsTab({
           >
             <Plus size={12} /> Add Task
           </button>
+          <button
+            type="button"
+            onClick={() => notesInputRef.current?.click()}
+            disabled={notesLoading}
+            title="Import tasks from meeting notes (txt, docx, pdf)"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md shrink-0 disabled:opacity-50"
+          >
+            {notesLoading ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+            {notesLoading ? 'Reading…' : 'From Notes'}
+          </button>
           <div className="flex items-center shrink-0">
             <button
               type="button"
@@ -439,16 +528,6 @@ function GoalsTab({
               </button>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handleSyncOfficeProgress}
-            disabled={syncingProgress}
-            title="Analyze imported Office documents and auto-update goal progress using AI"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:opacity-50 shrink-0"
-          >
-            {syncingProgress ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-            Sync
-          </button>
         </div>
       </div>
 
@@ -532,6 +611,14 @@ function GoalsTab({
         <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono">{syncError}</div>
       )}
 
+      {/* Meeting notes error banner */}
+      {notesError && (
+        <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono flex items-center justify-between">
+          {notesError}
+          <button type="button" title="Dismiss" onClick={() => setNotesError(null)}><X size={12} /></button>
+        </div>
+      )}
+
       <GoalsKanban
         goals={filteredGoals}
         onUpdateStatus={(id, status) => {
@@ -546,6 +633,76 @@ function GoalsTab({
         timeLogTotals={timeLogTotals}
         onLogTime={(id) => { const g = goals.find((g) => g.id === id); if (g) setLogTimeGoal(g); }}
       />
+
+      {/* Hidden file input for meeting notes */}
+      <input
+        ref={notesInputRef}
+        type="file"
+        title="Upload meeting notes file"
+        accept=".txt,.md,.pdf,.docx,.doc,.csv"
+        className="hidden"
+        onChange={(e) => { handleNotesFile(e.target.files?.[0]); e.target.value = ''; }}
+      />
+
+      {/* Suggested tasks modal */}
+      {notesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-surface border border-border rounded-lg shadow-2xl w-full max-w-xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
+              <div>
+                <h2 className="text-sm font-bold text-heading font-sans">Suggested Tasks from Notes</h2>
+                <p className="text-[10px] text-muted mt-0.5">Select which tasks to add to the project</p>
+              </div>
+              <button type="button" title="Close" onClick={() => setNotesModalOpen(false)} className="text-muted hover:text-heading transition-colors"><X size={14} /></button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-4 space-y-2">
+              {suggestedTasks.length === 0 && (
+                <p className="text-xs text-muted text-center py-6">No tasks found in this document.</p>
+              )}
+              {suggestedTasks.map((t, i) => (
+                <label key={i} className={`flex gap-3 items-start p-3 border rounded cursor-pointer transition-colors ${selectedTaskIdxs.has(i) ? 'border-accent/30 bg-accent/5' : 'border-border hover:border-border/70'}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedTaskIdxs.has(i)}
+                    onChange={(e) => {
+                      setSelectedTaskIdxs((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(i); else next.delete(i);
+                        return next;
+                      });
+                    }}
+                    className="mt-0.5 accent-[var(--color-accent)] shrink-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-mono font-semibold text-heading leading-snug">{t.title}</p>
+                    {t.description && <p className="text-[10px] text-muted mt-0.5 leading-relaxed">{t.description}</p>}
+                    <div className="flex gap-2 mt-1 flex-wrap">
+                      {t.category && <span className="text-[9px] font-mono bg-surface2 border border-border text-muted px-1.5 py-0.5 rounded">{t.category}</span>}
+                      {t.loe && <span className="text-[9px] font-mono bg-surface2 border border-border text-muted px-1.5 py-0.5 rounded">{t.loe}</span>}
+                      {t.deadline && <span className="text-[9px] font-mono bg-surface2 border border-border text-muted px-1.5 py-0.5 rounded">{new Date(t.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}</span>}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div className="px-5 py-3 border-t border-border flex items-center justify-between gap-3">
+              <span className="text-[10px] text-muted font-mono">{selectedTaskIdxs.size} of {suggestedTasks.length} selected</span>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setNotesModalOpen(false)} className="px-4 py-1.5 border border-border text-muted text-xs font-semibold uppercase tracking-wider rounded hover:bg-surface2 transition-colors">Cancel</button>
+                <button
+                  type="button"
+                  onClick={handleAddSelectedTasks}
+                  disabled={selectedTaskIdxs.size === 0 || addingTasks}
+                  className="px-4 py-1.5 border border-accent/30 bg-accent/10 text-accent text-xs font-semibold uppercase tracking-wider rounded hover:bg-accent/20 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {addingTasks ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                  {addingTasks ? 'Adding…' : `Add ${selectedTaskIdxs.size} Task${selectedTaskIdxs.size !== 1 ? 's' : ''}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

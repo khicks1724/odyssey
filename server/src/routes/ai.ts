@@ -7,9 +7,10 @@ import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
 
 // Map AIProvider to the service name stored in user_ai_keys table
-function providerToService(provider: AIProvider): 'anthropic' | 'openai' | 'google' {
+function providerToService(provider: AIProvider): 'anthropic' | 'openai' | 'google' | 'google_ai' {
   if (provider === 'gpt-4o') return 'openai';
-  if (provider === 'gemini-pro') return 'google';
+  if (provider === 'gemini-pro') return 'google_ai'; // Google AI Studio keys (AIza…)
+  if (provider === 'genai-mil') return 'google';     // DoD STARK keys still live in 'google' slot
   return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
 }
 
@@ -175,8 +176,39 @@ Write as a narrative, under 300 words. ${MD_STYLE}`,
 
 export async function aiRoutes(server: FastifyInstance) {
   // ── Available providers endpoint ──
-  server.get('/ai/providers', async () => {
-    return { providers: getAvailableProviders() };
+  // Returns server-level availability + per-user key status if authenticated
+  server.get('/ai/providers', async (request) => {
+    const base = getAvailableProviders();
+    const authHeader = request.headers['authorization'];
+    if (!authHeader?.startsWith('Bearer ')) return { providers: base };
+
+    try {
+      const token = authHeader.slice(7);
+      const { data: { user } } = await supabase.auth.getUser(token);
+      if (!user) return { providers: base };
+
+      const { data: keys } = await supabase
+        .from('user_ai_keys')
+        .select('provider')
+        .eq('user_id', user.id);
+
+      const userServices = new Set((keys ?? []).map((k: { provider: string }) => k.provider));
+
+      // Map each provider to whether the user has their own key
+      // gemini-pro uses 'google_ai' slot; genai-mil uses 'google' slot
+      const enriched = base.map((p) => {
+        const service = providerToService(p.id as AIProvider);
+        const hasUserKey = userServices.has(service);
+        return {
+          ...p,
+          userKeyLinked: hasUserKey,
+          keySource: hasUserKey ? 'user' : (p.available ? 'server' : 'none'),
+        };
+      });
+      return { providers: enriched };
+    } catch {
+      return { providers: base };
+    }
   });
 
   // ── Commit history: aggregate commits from all linked GitHub + GitLab repos ──
@@ -2078,6 +2110,53 @@ Assess every goal listed.`,
     } catch (err: any) {
       server.log.error(err);
       return reply.status(500).send({ error: 'Failed to assess risk' });
+    }
+  });
+
+  // ── Meeting Notes → Suggested Tasks ───────────────────────────────────────
+  interface MeetingNotesBody {
+    agent?: string;
+    projectId: string;
+    fileContent: string;   // extracted text from the uploaded file
+    fileName: string;
+    existingTaskTitles?: string[];
+  }
+
+  server.post<{ Body: MeetingNotesBody }>('/ai/meeting-notes-tasks', async (request, reply) => {
+    const { agent, projectId, fileContent, fileName, existingTaskTitles = [] } = request.body;
+    if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+    if (!fileContent?.trim()) return reply.status(400).send({ error: 'fileContent is required' });
+
+    const provider = agent && agent !== 'auto'
+      ? resolveProvider(request.body, 'claude-sonnet')
+      : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
+
+    const existingList = existingTaskTitles.length
+      ? `\nExisting tasks (do not duplicate):\n${existingTaskTitles.map((t) => `- ${t}`).join('\n')}`
+      : '';
+
+    const systemPrompt = `You are a project manager assistant. Extract actionable tasks from meeting notes or documents.
+Return a JSON array of task objects. Each object must have:
+  - "title": string (concise action item, max 80 chars)
+  - "description": string (brief context, 1-2 sentences, or empty string)
+  - "category": string or null
+  - "loe": string or null (level of effort: e.g. "Low", "Medium", "High", or null)
+  - "deadline": string or null (ISO date if mentioned, otherwise null)
+Only include concrete action items — skip administrative notes, context statements, or agenda items that are not tasks.
+Do not duplicate existing tasks.${existingList}
+Return only the JSON array, no other text.`;
+
+    const userPrompt = `File: ${fileName}\n\n${fileContent.slice(0, 20_000)}`;
+
+    try {
+      const result = await chat(provider, { system: systemPrompt, user: userPrompt, maxTokens: 2000, jsonMode: true }, userApiKey);
+      const parsed = JSON.parse(extractJson(result.text));
+      const tasks = Array.isArray(parsed) ? parsed : (parsed.tasks ?? []);
+      return { tasks, provider: result.provider };
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: err?.message ?? 'Failed to extract tasks from meeting notes' });
     }
   });
 }

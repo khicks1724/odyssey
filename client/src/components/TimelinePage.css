@@ -7,16 +7,126 @@
 .cal-cell       { overflow: hidden; min-height: 0; min-width: 0; }
 .cal-expanded   { min-width: 160px; width: 100%; min-height: 80px; max-height: 240px; }
 .tl-label-col   { width: 180px; }
-.tl-header-row  { height: 40px; }
+
+/* Header spacer in label column — height driven by --tl-h CSS var */
+.tl-header-row  {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--color-border);
+  height: var(--tl-h, 40px);
+  min-height: var(--tl-h, 40px);
+}
+
+/* Sprint-label band inside the header spacer */
+.tl-sprint-label-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+  height: var(--tl-h, 0);
+  min-height: var(--tl-h, 0);
+}
+
 .tl-row         { height: 36px; }
 .tl-axis        { height: 36px; }
 
 /* Dynamic-position helpers (values set via CSS custom properties) */
 .tl-abs         { position: absolute; top: var(--tl-top, 0); left: var(--tl-left, 0); height: var(--tl-h, auto); width: var(--tl-w, auto); }
-.tl-day-line    { position: absolute; top: 0; bottom: 0; left: var(--tl-left, 0); width: 1px; background: var(--tl-bg, transparent); z-index: 1; }
-.tl-wknd-shade  { position: absolute; left: var(--tl-left, 0); top: 40px; width: 40px; height: var(--tl-h, 0); background: rgba(0,0,0,0.04); z-index: 1; }
+
+/* ── Grid lines — three weight tiers ── */
+.tl-day-line   { position: absolute; top: 0; bottom: 0; left: var(--tl-left, 0); width: 1px;  background: rgba(150,150,150,0.07); z-index: 1; pointer-events: none; }
+.tl-week-line  { position: absolute; top: 0; bottom: 0; left: var(--tl-left, 0); width: 2px;  background: rgba(150,150,150,0.25); z-index: 2; pointer-events: none; }
+.tl-month-line { position: absolute; top: 0; bottom: 0; left: var(--tl-left, 0); width: 2px;  background: var(--color-border);    z-index: 3; pointer-events: none; }
+
+/* Weekend shading — fully dynamic (left / top / width / height via CSS vars) */
+.tl-wknd-shade  {
+  position: absolute;
+  left:   var(--tl-left, 0);
+  top:    var(--tl-top,  0);
+  width:  var(--tl-w,   0);
+  height: var(--tl-h,   0);
+  background: rgba(0,0,0,0.035);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Row dividers */
 .tl-row-div     { position: absolute; left: 0; right: 0; top: var(--tl-top, 0); height: 36px; border-bottom: 1px solid var(--color-border); opacity: 0.35; z-index: 1; }
-.tl-month-lbl   { position: absolute; left: var(--tl-left, 4px); top: 0; line-height: 40px; }
+
+/* Month label row */
+.tl-month-row {
+  position: absolute;
+  left: 0; right: 0;
+  top: var(--tl-top, 0);
+  height: 24px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  z-index: 5;
+}
+.tl-month-lbl   { position: absolute; left: var(--tl-left, 4px); top: 0; line-height: 24px; font-size: 10px; font-family: monospace; color: var(--color-muted); opacity: 0.7; -webkit-user-select: none; user-select: none; white-space: nowrap; }
+
+/* Day-number row */
+.tl-day-row {
+  position: absolute;
+  left: 0; right: 0;
+  top: var(--tl-top, 0);
+  height: 20px;
+  background: var(--color-surface2);
+  border-bottom: 1px solid var(--color-border);
+  z-index: 5;
+}
+.tl-day-num       { position: absolute; left: var(--tl-left, 0); transform: translateX(-50%); font-size: 8px; font-family: monospace; color: var(--color-muted); line-height: 20px; -webkit-user-select: none; user-select: none; white-space: nowrap; }
+.tl-day-num--wknd { opacity: 0.4; }
+.tl-day-num--wkdy { opacity: 0.65; }
+
+/* ── Sprint bands at top of canvas ── */
+.tl-sprint-band {
+  position: absolute;
+  top:    var(--tl-top,  0);
+  left:   var(--tl-left, 0);
+  width:  var(--tl-w,    0);
+  height: var(--tl-h,    0);
+  border-radius: 3px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  padding-left: 6px;
+  padding-right: 22px;
+  overflow: hidden;
+  cursor: default;
+}
+.tl-sprint-band--sprint { background: rgba(60,110,180,0.15);  border: 1px solid rgba(80,140,220,0.3);  }
+.tl-sprint-band--phase  { background: rgba(120,100,200,0.15); border: 1px solid rgba(160,130,240,0.3); }
+
+.tl-sprint-lbl { font-size: 8px; font-family: monospace; white-space: nowrap; letter-spacing: 0.1em; text-transform: uppercase; }
+.tl-sprint-band--sprint .tl-sprint-lbl { color: rgba(110,170,240,0.85); }
+.tl-sprint-band--phase  .tl-sprint-lbl { color: rgba(190,160,255,0.85); }
+
+.tl-sprint-del {
+  position: absolute;
+  right: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: rgba(0,0,0,0.35);
+  border: none;
+  color: rgba(255,255,255,0.8);
+  font-size: 12px;
+  line-height: 14px;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s;
+}
+.tl-sprint-band:hover .tl-sprint-del { opacity: 1; }
+
 .tl-month-header { z-index: 5; }
 .tl-today-line  { position: absolute; top: 0; bottom: 0; left: var(--tl-left, 0); width: 2px; background: var(--color-accent); opacity: 0.8; z-index: 20; }
 .tl-today-label { position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
@@ -48,3 +158,8 @@
 
 /* Fixed-position tooltip (uses tlo-tooltip classes from Timeline.css for visual consistency) */
 .tl-tooltip-fixed { position: fixed; z-index: 9999; pointer-events: none; }
+
+/* ── Calendar: sprint/phase top-border indicator ── */
+.cal-sprint-bar               { position: absolute; top: 0; left: 0; right: 0; height: 2px; z-index: 5; pointer-events: none; }
+.cal-sprint-bar--sprint       { background: rgba(80, 140, 220, 0.55); }
+.cal-sprint-bar--phase        { background: rgba(160, 130, 240, 0.55); }

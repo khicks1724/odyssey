@@ -119,7 +119,9 @@ export default function NewProjectPage() {
       const project = await createProject(name, description);
       navigate(`/projects/${project.id}`);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create project');
+      const msg = err instanceof Error ? err.message
+        : (err as any)?.message ?? (err as any)?.details ?? JSON.stringify(err);
+      setError(msg || 'Failed to create project');
       setSaving(false);
     }
   };

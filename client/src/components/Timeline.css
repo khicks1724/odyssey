@@ -67,6 +67,29 @@
 .tlo-section-line { flex: 1; height: 1px;
                     background: color-mix(in srgb, var(--tlo-color, var(--color-accent2)) 20%, transparent); }
 
+/* Tick header row */
+.tlo-tick-header { display: flex; align-items: stretch; height: 24px;
+                   border-bottom: 1px solid var(--color-border);
+                   background: var(--color-surface2); }
+.tlo-tick-chart  { position: relative; overflow: visible; }
+
+/* Tick marks (vertical lines + labels in header row) */
+.tlo-tick        { position: absolute; top: 0; bottom: 0; width: 1px;
+                   background: var(--color-border);
+                   transform: translateX(-50%); }
+.tlo-tick--major { background: color-mix(in srgb, var(--color-muted) 40%, transparent); width: 1px; }
+.tlo-tick-lbl    { position: absolute; bottom: calc(100% + 1px); left: 50%;
+                   transform: translateX(-50%);
+                   font-size: 8px; font-family: var(--font-mono, monospace);
+                   color: var(--color-muted); white-space: nowrap; pointer-events: none;
+                   padding: 0 2px; }
+
+/* Tick grid lines rendered behind bars in each chart cell */
+.tlo-tick-line        { position: absolute; top: 0; bottom: 0; width: 1px;
+                        background: color-mix(in srgb, var(--color-border) 50%, transparent);
+                        pointer-events: none; z-index: 0; }
+.tlo-tick-line--major { background: color-mix(in srgb, var(--color-border) 90%, transparent); }
+
 /* Label hover state */
 .tlo-label-hover { cursor: default; }
 .tlo-label-hover:hover .tlo-cat-text { opacity: 0.85; }

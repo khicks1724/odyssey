@@ -269,6 +269,11 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   }, [input]);
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50); }, []);
 
+  const resizeTextarea = useCallback((t: HTMLTextAreaElement) => {
+    t.style.height = '0px';
+    t.style.height = Math.min(t.scrollHeight, 120) + 'px';
+  }, []);
+
   // ── Copy ────────────────────────────────────────────────────────────────
 
   const copyMessage = useCallback((text: string, idx: number) => {
@@ -865,14 +870,14 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         )}
 
         {/* Input row */}
-        <div className="p-2 flex gap-1.5 items-stretch">
+        <div className="px-2 py-1 flex gap-1.5 items-stretch">
           {/* + context button */}
-          <div className="relative shrink-0" ref={contextRef}>
+          <div className="relative shrink-0 flex self-stretch" ref={contextRef}>
             <button
               type="button"
               title="Add context"
               onClick={() => { setContextOpen((o) => !o); setContextView('main'); }}
-              className="pc-add-btn"
+              className="pc-add-btn h-full"
             >
               <Plus size={14} />
             </button>
@@ -883,21 +888,14 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { setInput(e.target.value); resizeTextarea(e.target); }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
             }}
             onPaste={handlePaste}
             placeholder="Prompt or add files…"
-            rows={3}
-            className="pc-input flex-1 bg-surface2 border border-border text-heading text-xs font-mono placeholder:text-muted/50 px-3 py-2 focus:outline-none focus:border-accent/50 transition-colors rounded"
-            onInput={(e) => {
-              const t = e.currentTarget;
-              // Clamp height without ever setting 'auto' — 'auto' collapses the
-              // textarea momentarily and triggers a layout shift / page scroll.
-              t.style.height = '0px';
-              t.style.height = Math.min(t.scrollHeight, 120) + 'px';
-            }}
+            rows={1}
+            className="pc-input flex-1 bg-surface2 border border-border text-heading text-xs font-mono placeholder:text-muted/50 px-3 py-1 focus:outline-none focus:border-accent/50 rounded"
           />
 
           {/* Send */}

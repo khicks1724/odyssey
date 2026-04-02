@@ -9,7 +9,7 @@ import { Github, Monitor, Bell, Palette, Shield, Check, Loader2, Link, Unlink, C
 
 // ── AI Provider key management ─────────────────────────────────────────────
 
-type AiServiceProvider = 'anthropic' | 'openai' | 'google';
+type AiServiceProvider = 'anthropic' | 'openai' | 'google' | 'google_ai';
 
 interface AiKeyStatus {
   provider: AiServiceProvider;
@@ -32,9 +32,15 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
     keyUrl: 'https://platform.openai.com/api-keys',
   },
   google: {
-    label: 'Google / GenAI.mil (Gemini 2.5 Flash)',
-    hint: 'Gemini 2.5 Flash — supports Google AI Studio keys (AIza…) and GenAI.mil DoD keys (STARK_…)',
-    placeholder: 'AIza… (Google AI Studio) or STARK_… (GenAI.mil)',
+    label: 'GenAI.mil (DoD)',
+    hint: 'DoD GenAI.mil platform — requires a STARK API key (STARK_… or STARK-…)',
+    placeholder: 'STARK_…',
+    keyUrl: 'https://ai.dod.mil',
+  },
+  google_ai: {
+    label: 'Google AI Studio (Gemini)',
+    hint: 'Gemini 2.5 Flash via Google AI Studio',
+    placeholder: 'AIza…',
     keyUrl: 'https://aistudio.google.com/app/apikey',
   },
 };
@@ -184,8 +190,8 @@ function AiProviderCard({
         )}
       </div>
 
-      {/* Google OAuth option — shown only for Google provider when Google account is linked */}
-      {provider === 'google' && isGoogleLinked && (
+      {/* Google OAuth option — only for google_ai (Google AI Studio) provider */}
+      {provider === 'google_ai' && isGoogleLinked && (
         <div className="flex items-center gap-2 py-1.5 border-b border-border/50">
           <button
             type="button"
@@ -387,7 +393,7 @@ export default function SettingsPage() {
     }
   };
 
-  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google'];
+  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google_ai', 'google'];
 
   return (
     <div className="p-8 max-w-3xl mx-auto">

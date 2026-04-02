@@ -1,1 +1,1 @@
-when i hit enter in the right pane project chat the page slides up and i cant scroll. I dont want the page to move up when i hit enter. If the content in the project chat overflows the project chat pane then i should be able to scroll inside of the pane but not scroll the page to blank space like the earlier errors
+- Add in task notes and the ability to attach documents or images to a note for increased context regarding it.

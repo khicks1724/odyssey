@@ -1,12 +1,18 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 
-export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro';
+export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil';
 export type AIAgentValue = AIProvider | 'auto';
 
-interface ProviderInfo {
+export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'error';
+export type KeySource = 'user' | 'server' | 'none';
+
+export interface ProviderInfo {
   id: AIProvider;
   name: string;
   available: boolean;
+  status?: ProviderStatus;
+  keySource?: KeySource;
+  userKeyLinked?: boolean;
 }
 
 interface AIAgentContextType {
@@ -17,6 +23,7 @@ interface AIAgentContextType {
   serverReachable: boolean;
   lastUsed: AIProvider | null;
   notifyModelUsed: (provider: AIProvider) => void;
+  refreshProviders: () => void;
 }
 
 const AIAgentContext = createContext<AIAgentContextType>({
@@ -27,10 +34,11 @@ const AIAgentContext = createContext<AIAgentContextType>({
   serverReachable: true,
   lastUsed: null,
   notifyModelUsed: () => {},
+  refreshProviders: () => {},
 });
 
 const STORAGE_KEY = 'odyssey-ai-agent-v2'; // v2 = auto default; bumped to clear old stored model
-const ALL_VALUES: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
+const ALL_VALUES: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
 
 export function AIAgentProvider({ children }: { children: ReactNode }) {
   const [agent, setAgentState] = useState<AIAgentValue>(() => {
@@ -43,7 +51,8 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   const [serverReachable, setServerReachable] = useState(true);
   const [lastUsed, setLastUsed] = useState<AIProvider | null>(null);
 
-  useEffect(() => {
+  const fetchProviders = useCallback(() => {
+    setLoading(true);
     fetch('/api/ai/providers')
       .then((r) => {
         if (!r.ok) throw new Error(`Providers fetch failed: ${r.status}`);
@@ -53,7 +62,6 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
         const list: ProviderInfo[] = data.providers || [];
         setProviders(list);
         setServerReachable(true);
-        // If the stored agent is a specific model that isn't available, switch to auto
         if (agent !== 'auto') {
           const current = list.find((p) => p.id === agent);
           if (!current?.available) {
@@ -66,7 +74,9 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
         setServerReachable(false);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [agent]);
+
+  useEffect(() => { fetchProviders(); }, []);
 
   const setAgent = useCallback((a: AIAgentValue) => {
     setAgentState(a);
@@ -78,7 +88,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, serverReachable, lastUsed, notifyModelUsed }}>
+    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, serverReachable, lastUsed, notifyModelUsed, refreshProviders: fetchProviders }}>
       {children}
     </AIAgentContext.Provider>
   );
