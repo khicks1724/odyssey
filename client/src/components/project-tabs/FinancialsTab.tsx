@@ -184,7 +184,7 @@ export default function FinancialsTab({ projectId }: Props) {
   const [chartsOpen, setChartsOpen] = useState(true);
   const [filterCat, setFilterCat]   = useState<'all' | 'budget' | 'expense' | 'revenue'>('all');
   const [activeSheet, setActiveSheet] = useState<string | null>(null); // null = All Sheets
-  const [aiInsights, setAiInsights] = useState<string | null>(null);
+  const [aiInsights, setAiInsights] = useState<{ status: string; nextSteps: string[]; futureFeatures: string[]; codeInsights: string[] } | null>(null);
   const [aiLoading, setAiLoading]   = useState(false);
   const [clearing, setClearing]     = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -210,6 +210,15 @@ export default function FinancialsTab({ projectId }: Props) {
     setRows([]);
     setActiveSheet(null);
     setClearing(false);
+  };
+
+  // ── Delete a single sheet's rows ─────────────────────────────────────────
+  const handleDeleteSheet = async (name: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Remove all rows from sheet "${name}"? This cannot be undone.`)) return;
+    await supabase.from('project_financials').delete().eq('project_id', projectId).eq('sheet_name', name);
+    if (activeSheet === name) setActiveSheet(null);
+    fetchRows();
   };
 
   // ── Sheet tabs (derived from data) ───────────────────────────────────────
@@ -346,12 +355,17 @@ export default function FinancialsTab({ projectId }: Props) {
       });
       if (resp.ok) {
         const data = await resp.json();
-        setAiInsights(data.insights ?? data.content ?? data.text ?? 'Analysis complete.');
+        setAiInsights({
+          status: data.status ?? '',
+          nextSteps: Array.isArray(data.nextSteps) ? data.nextSteps : [],
+          futureFeatures: Array.isArray(data.futureFeatures) ? data.futureFeatures : [],
+          codeInsights: Array.isArray(data.codeInsights) ? data.codeInsights : [],
+        });
       } else {
-        setAiInsights('Could not generate insights at this time.');
+        setAiInsights({ status: 'Could not generate insights at this time.', nextSteps: [], futureFeatures: [], codeInsights: [] });
       }
     } catch {
-      setAiInsights('Could not generate insights at this time.');
+      setAiInsights({ status: 'Could not generate insights at this time.', nextSteps: [], futureFeatures: [], codeInsights: [] });
     }
     setAiLoading(false);
   };
@@ -362,8 +376,108 @@ export default function FinancialsTab({ projectId }: Props) {
   const sheetRows   = activeSheet ? rows.filter((r) => r.sheet_name === activeSheet) : rows;
   const visibleRows = filterCat === 'all' ? sheetRows : sheetRows.filter((r) => r.category === filterCat);
 
+  // Per-sheet totals for sheet tab badges
+  const sheetTotals = sheetNames.reduce<Record<string, { budget: number; expense: number; revenue: number; count: number }>>((acc, name) => {
+    const sr = rows.filter((r) => r.sheet_name === name);
+    acc[name] = {
+      budget:  sr.filter((r) => r.category === 'budget').reduce((s, r) => s + r.amount, 0),
+      expense: sr.filter((r) => r.category === 'expense').reduce((s, r) => s + r.amount, 0),
+      revenue: sr.filter((r) => r.category === 'revenue').reduce((s, r) => s + r.amount, 0),
+      count:   sr.length,
+    };
+    return acc;
+  }, {});
+
   return (
     <div className="space-y-6">
+
+      {/* ── Top action bar ── */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <DollarSign size={15} className="text-accent" />
+          <span className="text-sm font-bold text-heading font-sans">Financial Data</span>
+          {rows.length > 0 && <span className="text-[10px] text-muted font-mono">({rows.length} entries)</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          {rows.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClearAll}
+              disabled={clearing}
+              title="Clear and reset all financial data for this project"
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-danger/40 text-danger text-xs font-semibold uppercase tracking-wider rounded hover:bg-danger/10 transition-colors disabled:opacity-50"
+            >
+              {clearing ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+              {clearing ? 'Clearing…' : 'Clear & Reset'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={saving}
+            title="Import CSV or XLSX (multi-sheet supported)"
+            className="inline-flex items-center gap-1.5 px-4 py-2 border border-border text-muted text-xs font-semibold uppercase tracking-wider rounded hover:bg-surface2 hover:text-heading transition-colors disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+            {saving ? 'Importing…' : 'Import Spreadsheet'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            title="Import file"
+            accept=".csv,.xlsx,.xls"
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
+          />
+        </div>
+      </div>
+
+      {/* ── Sheet tabs (only shown when data has multiple sheets) ── */}
+      {hasSheets && (
+        <div className="border border-border rounded overflow-hidden">
+          <div className="flex items-stretch border-b border-border bg-surface2 overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setActiveSheet(null)}
+              className={`shrink-0 flex flex-col items-center gap-0.5 px-4 py-2.5 border-r border-border text-[10px] font-mono transition-colors ${!activeSheet ? 'bg-surface text-accent border-b-2 border-b-accent' : 'text-muted hover:text-heading hover:bg-surface'}`}
+            >
+              <span className="font-semibold">All Sheets</span>
+              <span className="text-[9px] opacity-70">{rows.length} rows</span>
+            </button>
+            {sheetNames.map((name) => {
+              const st = sheetTotals[name];
+              const isActive = activeSheet === name;
+              return (
+                <div key={name} className={`group shrink-0 flex items-stretch border-r border-border ${isActive ? 'bg-surface border-b-2 border-b-accent' : 'hover:bg-surface'}`}>
+                  {/* Tab select area */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveSheet(name)}
+                    className={`flex flex-col items-start gap-0.5 pl-4 pr-2 py-2.5 text-[10px] font-mono transition-colors ${isActive ? 'text-accent' : 'text-muted hover:text-heading'}`}
+                  >
+                    <span className={`font-semibold truncate max-w-[120px] ${isActive ? 'text-accent' : 'text-heading'}`}>{name}</span>
+                    <div className="flex items-center gap-2 text-[9px]">
+                      <span className="text-[#3b8eea]">{fmt(st.budget)}</span>
+                      <span className="text-[#e85555]">{fmt(st.expense)}</span>
+                      {st.revenue > 0 && <span className="text-[#52c98e]">{fmt(st.revenue)}</span>}
+                      <span className="text-muted/60">{st.count} rows</span>
+                    </div>
+                  </button>
+                  {/* Delete sheet button */}
+                  <button
+                    type="button"
+                    title={`Remove "${name}" sheet`}
+                    onClick={(e) => handleDeleteSheet(name, e)}
+                    className="opacity-0 group-hover:opacity-100 pr-2 text-muted hover:text-danger transition-all self-center"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Metric cards ── */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -503,8 +617,52 @@ export default function FinancialsTab({ projectId }: Props) {
             </button>
           </div>
           {aiInsights ? (
-            <div className="px-4 py-3">
-              <p className="text-xs text-muted leading-relaxed whitespace-pre-wrap">{aiInsights}</p>
+            <div className="px-4 py-4 space-y-4">
+              {aiInsights.status && (
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-muted/60 mb-1">Summary</p>
+                  <p className="text-xs text-muted leading-relaxed">{aiInsights.status}</p>
+                </div>
+              )}
+              {aiInsights.nextSteps.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-muted/60 mb-1.5">Recommendations</p>
+                  <ul className="space-y-1">
+                    {aiInsights.nextSteps.map((s, i) => (
+                      <li key={i} className="flex gap-2 text-xs text-muted leading-relaxed">
+                        <span className="text-accent shrink-0 font-mono">→</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {aiInsights.codeInsights.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-muted/60 mb-1.5">Observations</p>
+                  <ul className="space-y-1">
+                    {aiInsights.codeInsights.map((s, i) => (
+                      <li key={i} className="flex gap-2 text-xs text-muted leading-relaxed">
+                        <span className="text-muted/40 shrink-0 font-mono">•</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {aiInsights.futureFeatures.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-muted/60 mb-1.5">Considerations</p>
+                  <ul className="space-y-1">
+                    {aiInsights.futureFeatures.map((s, i) => (
+                      <li key={i} className="flex gap-2 text-xs text-muted leading-relaxed">
+                        <span className="text-muted/40 shrink-0 font-mono">◦</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           ) : (
             !aiLoading && <p className="px-4 py-3 text-[10px] text-muted/50 font-mono">Click Analyze to generate AI-powered financial insights from your data.</p>
@@ -528,36 +686,14 @@ export default function FinancialsTab({ projectId }: Props) {
         >
           <Plus size={12} /> Add Row
         </button>
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          disabled={saving}
-          title="Import CSV or XLSX (multi-sheet supported)"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-semibold uppercase tracking-wider rounded hover:bg-surface2 hover:text-heading transition-colors disabled:opacity-50"
-        >
-          {saving ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-          {saving ? 'Importing…' : 'Import'}
-        </button>
         {rows.length > 0 && (
-          <>
-            <button
-              type="button"
-              onClick={exportCSV}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-semibold uppercase tracking-wider rounded hover:bg-surface2 hover:text-heading transition-colors"
-            >
-              <Download size={12} /> Export CSV
-            </button>
-            <button
-              type="button"
-              onClick={handleClearAll}
-              disabled={clearing}
-              title="Delete all financial data for this project"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-danger/30 text-danger/70 text-xs font-semibold uppercase tracking-wider rounded hover:bg-danger/5 hover:text-danger transition-colors disabled:opacity-50"
-            >
-              {clearing ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-              {clearing ? 'Clearing…' : 'Clear All'}
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={exportCSV}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-semibold uppercase tracking-wider rounded hover:bg-surface2 hover:text-heading transition-colors"
+          >
+            <Download size={12} /> Export CSV
+          </button>
         )}
         {/* Category filter */}
         <div className="ml-auto flex items-center gap-2">
@@ -573,38 +709,7 @@ export default function FinancialsTab({ projectId }: Props) {
             </button>
           ))}
         </div>
-        <input
-          ref={fileRef}
-          type="file"
-          title="Import file"
-          accept=".csv,.xlsx,.xls"
-          className="hidden"
-          onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
-        />
       </div>
-
-      {/* ── Sheet tabs (only shown when data has multiple sheets) ── */}
-      {hasSheets && (
-        <div className="flex items-center gap-1 flex-wrap border-b border-border pb-1">
-          <button
-            type="button"
-            onClick={() => setActiveSheet(null)}
-            className={`text-[10px] font-mono px-2.5 py-1 rounded-t border-b-2 transition-colors ${!activeSheet ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-heading'}`}
-          >
-            All Sheets
-          </button>
-          {sheetNames.map((name) => (
-            <button
-              key={name}
-              type="button"
-              onClick={() => setActiveSheet(name)}
-              className={`text-[10px] font-mono px-2.5 py-1 rounded-t border-b-2 transition-colors ${activeSheet === name ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-heading'}`}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      )}
 
       {/* ── Add row form ── */}
       {addOpen && (

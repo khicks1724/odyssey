@@ -5,9 +5,9 @@ import './FontSwitcher.css';
 const fontDesc: Record<string, string> = {
   default:       'Syne + DM Mono',
   bahnschrift:   'Geometric condensed',
-  ubuntu:        'Ubuntu system font',
+  ubuntu:        'Clean modern sans-serif',
   consolas:      'Consolas monospace',
-  'courier-new': 'Classic typewriter',
+  'courier-new': 'Google sans-serif',
 };
 
 const PANEL_WIDTH = 220;

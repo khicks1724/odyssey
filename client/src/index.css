@@ -65,12 +65,12 @@ body {
   letter-spacing: 0.02em;
 }
 
-/* ── Ubuntu font theme ─────────────────────────────────────────────── */
+/* ── Inter font theme ──────────────────────────────────────────────── */
 [data-font-theme="ubuntu"] h1,
 [data-font-theme="ubuntu"] h2,
 [data-font-theme="ubuntu"] h3,
 [data-font-theme="ubuntu"] .font-sans {
-  font-family: "Ubuntu", "Segoe UI", system-ui, sans-serif;
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
   font-weight: 700;
 }
 
@@ -79,15 +79,15 @@ body {
 [data-font-theme="consolas"] h2,
 [data-font-theme="consolas"] h3,
 [data-font-theme="consolas"] .font-sans {
-  font-family: Consolas, "Fira Code", "Cascadia Code", "Courier New", monospace;
+  font-family: Consolas, "Fira Code", "Cascadia Code", monospace;
   font-weight: 700;
 }
 
-/* ── Courier New font theme ────────────────────────────────────────── */
+/* ── Roboto font theme ─────────────────────────────────────────────── */
 [data-font-theme="courier-new"] h1,
 [data-font-theme="courier-new"] h2,
 [data-font-theme="courier-new"] h3,
 [data-font-theme="courier-new"] .font-sans {
-  font-family: "Courier New", Courier, monospace;
+  font-family: "Roboto", "Segoe UI", system-ui, sans-serif;
   font-weight: 700;
 }

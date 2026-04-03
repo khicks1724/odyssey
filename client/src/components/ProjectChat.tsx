@@ -5,7 +5,7 @@ import {
   Download, TableIcon,
 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
-import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat } from '../lib/chat-panel';
+import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask } from '../lib/chat-panel';
 import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV } from '../lib/report-download';
 import { supabase } from '../lib/supabase';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
@@ -460,6 +460,67 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         return;
       }
 
+      // Detect meeting-notes task generation intent
+      const NOTES_INTENT = /\b(create|generate|extract|make|pull|identify|list)\b.{0,60}\b(tasks?|action items?|to[- ]?dos?|action points?)\b/i;
+      const hasTextFile = wireAtts.some((a) => a.type === 'text-file' || a.type === 'document');
+      const isNotesTaskIntent = (hasTextFile && NOTES_INTENT.test(text)) ||
+        /\b(from|based on|using|analyze)\b.{0,40}\b(meeting notes?|notes?|transcript|minutes)\b.{0,40}\b(tasks?|action)\b/i.test(text) ||
+        /\b(meeting notes?|notes?|transcript|minutes)\b.{0,60}\b(tasks?|action items?)\b/i.test(text);
+
+      if (isNotesTaskIntent && !overrideText) {
+        // Find the text-file content to use as notes
+        const notesAtt = wireAtts.find((a) => a.type === 'text-file' || a.type === 'document');
+        const fileContent = notesAtt?.textContent ?? text;
+        const fileName = notesAtt?.name ?? 'Meeting Notes';
+
+        setMessages((prev) => [...prev, {
+          role: 'assistant',
+          content: `Analyzing ${fileName} to generate tasks…`,
+        }]);
+
+        const { data: { session } } = await supabase.auth.getSession();
+        const notesHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (session?.access_token) notesHeaders['Authorization'] = `Bearer ${session.access_token}`;
+
+        const { data: goalsData } = await supabase
+          .from('goals')
+          .select('title')
+          .eq('project_id', targetProjectId);
+        const existingTitles = (goalsData ?? []).map((g: { title: string }) => g.title);
+
+        const nRes = await fetch('/api/ai/meeting-notes-tasks', {
+          method: 'POST',
+          headers: notesHeaders,
+          body: JSON.stringify({
+            agent,
+            projectId: targetProjectId,
+            fileContent: fileContent.slice(0, 50_000),
+            fileName,
+            existingTaskTitles: existingTitles,
+          }),
+        });
+        const nData = await nRes.json();
+        if (!nRes.ok || nData.error) {
+          setMessages((prev) => [...prev.slice(0, -1), {
+            role: 'assistant',
+            content: nData.error ?? 'Failed to extract tasks from the document.',
+          }]);
+        } else {
+          const tasks: SuggestedTask[] = (nData.tasks ?? []).slice(0, 30);
+          if (nData.provider) notifyModelUsed(nData.provider);
+          setMessages((prev) => [...prev.slice(0, -1), {
+            role: 'assistant',
+            content: `Found **${tasks.length} task${tasks.length !== 1 ? 's' : ''}** from ${fileName}. Review and accept the ones you want to add:`,
+            provider: nData.provider,
+            suggestedTasks: tasks,
+            taskSelections: Object.fromEntries(tasks.map((_, i) => [i, 'accepted' as const])),
+            taskState: 'pending',
+          }]);
+        }
+        setLoading(false);
+        return;
+      }
+
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: authHeaders,
@@ -540,6 +601,48 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   const handleDeny = (msgIdx: number, action: PendingAction) => {
     setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, actionState: 'denied' } : m));
     sendMessage(`User declined: "${action.description}". Please suggest an alternative.`);
+  };
+
+  // ── Suggested-task actions ────────────────────────────────────────────────
+
+  const handleAddSelectedTasks = async (msgIdx: number) => {
+    const msg = messages[msgIdx];
+    if (!msg.suggestedTasks || !resolvedProjectId) return;
+
+    setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, taskState: 'adding' as const } : m));
+
+    const toAdd = msg.suggestedTasks.filter((_, ti) => msg.taskSelections?.[ti] !== 'rejected');
+    for (const t of toAdd) {
+      try {
+        await supabase.from('goals').insert({
+          project_id:  resolvedProjectId,
+          title:       t.title,
+          description: t.description || null,
+          category:    t.category || null,
+          loe:         t.loe || null,
+          deadline:    t.deadline || null,
+          status:      'not_started',
+          progress:    0,
+        });
+      } catch { /* continue on individual task failure */ }
+    }
+
+    onGoalMutated?.();
+    setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, taskState: 'done' as const } : m));
+  };
+
+  const toggleTaskSelection = (msgIdx: number, taskIdx: number) => {
+    setMessages((prev) => prev.map((m, i) => {
+      if (i !== msgIdx) return m;
+      const current = m.taskSelections?.[taskIdx];
+      return {
+        ...m,
+        taskSelections: {
+          ...(m.taskSelections ?? {}),
+          [taskIdx]: current === 'rejected' ? 'accepted' : 'rejected',
+        },
+      };
+    }));
   };
 
   // ── Context menu sections ────────────────────────────────────────────────
@@ -738,7 +841,145 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         {messages.map((msg, i) => (
           <div key={msg.id ?? i}>
             <div className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {msg.role === 'assistant' && msg.reportReady ? (
+              {msg.role === 'assistant' && msg.suggestedTasks ? (
+                <div className="mr-2 max-w-[98%] w-full">
+                  {/* Header */}
+                  <div className="bg-surface2 border border-border rounded-t px-4 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Plus size={13} className="text-accent3" />
+                      <div>
+                        <p className="text-xs font-bold text-heading font-sans">
+                          Task Generation from Notes
+                        </p>
+                        <p className="text-[10px] text-muted mt-0.5">
+                          <MarkdownWithFileLinks block={false} filePaths={[]} onFileClick={() => {}} githubRepo={null} gitlabRepos={[]} onRepoClick={() => {}}>
+                            {msg.content}
+                          </MarkdownWithFileLinks>
+                        </p>
+                      </div>
+                    </div>
+                    {msg.taskState === 'done' && (
+                      <span className="text-[10px] text-accent3 font-mono flex items-center gap-1">
+                        <Check size={10} /> Added
+                      </span>
+                    )}
+                    {msg.provider && <span className="text-[9px] text-muted font-mono opacity-60">{msg.provider}</span>}
+                  </div>
+
+                  {/* Task cards */}
+                  <div className="border-l border-r border-border divide-y divide-border/50 max-h-[60vh] overflow-y-auto">
+                    {msg.suggestedTasks.map((task, ti) => {
+                      const rejected = msg.taskSelections?.[ti] === 'rejected';
+                      const isDone = msg.taskState === 'done';
+                      return (
+                        <div
+                          key={ti}
+                          className={`flex gap-3 px-4 py-3 transition-colors ${rejected ? 'opacity-40 bg-surface' : 'bg-surface hover:bg-surface2/50'}`}
+                        >
+                          {/* Accept/Reject toggle */}
+                          <div className="shrink-0 pt-0.5">
+                            <button
+                              type="button"
+                              disabled={isDone}
+                              onClick={() => toggleTaskSelection(i, ti)}
+                              title={rejected ? 'Include this task' : 'Exclude this task'}
+                              className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+                                rejected
+                                  ? 'border-border bg-surface text-muted'
+                                  : 'border-accent3 bg-accent3/10 text-accent3'
+                              } disabled:cursor-default`}
+                            >
+                              {!rejected && <Check size={10} />}
+                            </button>
+                          </div>
+
+                          {/* Task info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-xs font-semibold text-heading leading-snug">{task.title}</p>
+                              <span className="shrink-0 text-[9px] px-1.5 py-0.5 rounded bg-surface2 border border-border text-muted font-mono">
+                                NOT STARTED
+                              </span>
+                            </div>
+                            {task.description && (
+                              <p className="text-[10px] text-muted mt-0.5 leading-relaxed">{task.description}</p>
+                            )}
+                            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                              {task.priority && (
+                                <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border uppercase tracking-wide ${
+                                  task.priority.toLowerCase() === 'high' ? 'text-orange-400 border-orange-400/30 bg-orange-400/5' :
+                                  task.priority.toLowerCase() === 'medium' ? 'text-yellow-400 border-yellow-400/30 bg-yellow-400/5' :
+                                  'text-muted border-border'
+                                }`}>{task.priority}</span>
+                              )}
+                              {task.category && (
+                                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-accent2/10 border border-accent2/20 text-accent2 uppercase tracking-wide">{task.category}</span>
+                              )}
+                              {task.loe && (
+                                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-surface2 border border-border text-muted">{task.loe}</span>
+                              )}
+                              {task.deadline && (
+                                <span className="text-[9px] font-mono text-muted">{new Date(task.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Footer actions */}
+                  <div className="bg-surface2 border border-border rounded-b px-4 py-3 flex items-center justify-between gap-3">
+                    {msg.taskState === 'pending' && (
+                      <>
+                        <span className="text-[10px] text-muted font-mono">
+                          {Object.values(msg.taskSelections ?? {}).filter((v) => v !== 'rejected').length} of {msg.suggestedTasks.length} selected
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setMessages((prev) => prev.map((m, mi) => mi !== i ? m : {
+                              ...m,
+                              taskSelections: Object.fromEntries((m.suggestedTasks ?? []).map((_, ti) => [ti, 'rejected' as const])),
+                            }))}
+                            className="px-3 py-1.5 border border-border text-muted text-[10px] font-semibold uppercase tracking-wider rounded hover:bg-surface transition-colors"
+                          >
+                            Reject All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setMessages((prev) => prev.map((m, mi) => mi !== i ? m : {
+                              ...m,
+                              taskSelections: Object.fromEntries((m.suggestedTasks ?? []).map((_, ti) => [ti, 'accepted' as const])),
+                            }))}
+                            className="px-3 py-1.5 border border-border text-muted text-[10px] font-semibold uppercase tracking-wider rounded hover:bg-surface2 hover:text-heading transition-colors"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAddSelectedTasks(i)}
+                            disabled={Object.values(msg.taskSelections ?? {}).every((v) => v === 'rejected')}
+                            className="flex items-center gap-1.5 px-4 py-1.5 border border-accent3/30 bg-accent3/10 text-accent3 text-[10px] font-semibold uppercase tracking-wider rounded hover:bg-accent3/20 transition-colors disabled:opacity-50"
+                          >
+                            <Check size={11} /> Accept All ({Object.values(msg.taskSelections ?? {}).filter((v) => v !== 'rejected').length})
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {msg.taskState === 'adding' && (
+                      <div className="flex items-center gap-2 text-[10px] text-muted font-mono">
+                        <Loader2 size={11} className="animate-spin text-accent" /> Adding tasks…
+                      </div>
+                    )}
+                    {msg.taskState === 'done' && (
+                      <div className="flex items-center gap-1.5 text-[10px] text-accent3 font-mono">
+                        <Check size={11} /> Tasks added to project
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : msg.role === 'assistant' && msg.reportReady ? (
                 <div className="bg-surface2 border border-border rounded p-3 text-xs mr-2 max-w-[92%] space-y-2">
                   <div className="flex items-center gap-1.5 text-accent3 font-medium">
                     <FileText size={11} className="shrink-0" />

@@ -118,6 +118,18 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
   while (cells.length % 7 !== 0) cells.push(null);
   const numWeeks = cells.length / 7;
 
+  // For each time period visible this month, compute the first visible cell date
+  const firstCellDate = cells.find((c) => c !== null) ?? '';
+  const lastCellDate  = [...cells].reverse().find((c) => c !== null) ?? '';
+  const activeTimePeriods = timePeriods.filter(
+    (p) => p.start_date <= lastCellDate && p.end_date >= firstCellDate,
+  );
+  const periodFirstDate = new Map<string, string>();
+  for (const p of activeTimePeriods) {
+    const first = cells.find((c) => c !== null && c >= p.start_date && c <= p.end_date);
+    if (first) periodFirstDate.set(p.id, first);
+  }
+
   const goalsByDate: Record<string, Goal[]> = {};
   for (const g of goals) {
     if (!g.deadline) continue;
@@ -178,11 +190,27 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
           </button>
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-4 flex-wrap">
+          {/* Category legend */}
           {[...catColorMap.entries()].map(([cat, color]) => (
             <div key={cat} className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-sm" style={{ background: color }} />
               <span className="text-[9px] font-mono text-[var(--color-muted)]">{cat}</span>
+            </div>
+          ))}
+          {/* Sprint / phase legend */}
+          {activeTimePeriods.length > 0 && catColorMap.size > 0 && (
+            <span className="text-[var(--color-border)] text-[9px] select-none">|</span>
+          )}
+          {activeTimePeriods.map((p) => (
+            <div key={p.id} className="flex items-center gap-1">
+              <span
+                className="w-6 h-1.5 rounded-sm"
+                style={{ background: p.type === 'sprint' ? 'rgba(80,140,220,0.65)' : 'rgba(160,130,240,0.65)' }}
+              />
+              <span className="text-[9px] font-mono" style={{ color: p.type === 'sprint' ? '#6aaaf0' : '#b09af8' }}>
+                {p.name}
+              </span>
             </div>
           ))}
         </div>
@@ -234,7 +262,13 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                 <>
                   {/* Sprint / phase top-border indicator */}
                   {timePeriod && (
-                    <div className={`cal-sprint-bar cal-sprint-bar--${timePeriod.type}`} title={timePeriod.name} />
+                    <div className={`cal-sprint-bar cal-sprint-bar--${timePeriod.type}`} title={timePeriod.name}>
+                      {periodFirstDate.get(timePeriod.id) === dateStr && (
+                        <span className={`cal-sprint-name-tag cal-sprint-name-tag--${timePeriod.type}`}>
+                          {timePeriod.name}
+                        </span>
+                      )}
+                    </div>
                   )}
                   {/* Day number + add button */}
                   <div className="flex items-center justify-between px-1.5 pt-1 pb-0.5 shrink-0">

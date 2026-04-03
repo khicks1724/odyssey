@@ -10,7 +10,7 @@ const agentMeta: Record<AIAgentValue, { name: string; shortName: string; descrip
   'claude-opus':   { name: 'Claude Opus 4.6',   shortName: 'Opus',    description: 'Most capable · deep project insights',            colorClass: 'aid-opus',    provider: 'Anthropic' },
   'gpt-4o':        { name: 'GPT-4o',            shortName: 'GPT-4o',  description: 'OpenAI flagship model',                           colorClass: 'aid-gpt4o',   provider: 'OpenAI' },
   'gemini-pro':    { name: 'Gemini 2.5 Flash',  shortName: 'Gemini',  description: 'Google AI Studio · Gemini 2.5 Flash',             colorClass: 'aid-gemini',  provider: 'Google' },
-  'genai-mil':     { name: 'GenAI.mil',         shortName: 'STARK',   description: 'DoD GenAI.mil · requires STARK API key + DoD network', colorClass: 'aid-genaimil', provider: 'DoD' },
+  'genai-mil':     { name: 'GenAI.mil',         shortName: 'GenAI.mil', description: 'DoD GenAI.mil · requires STARK API key',            colorClass: 'aid-genaimil', provider: 'DoD / GenAI.mil' },
 };
 
 const DISPLAY_ORDER: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
@@ -188,7 +188,11 @@ export default function AIAgentDropdown() {
                             <div className={`text-xs font-medium ${isActive ? 'text-[var(--color-heading)]' : 'text-[var(--color-text)]'}`}>
                               {meta.name}
                             </div>
-                            <div className="text-[10px] text-[var(--color-muted)] truncate">{meta.description}</div>
+                            <div className="text-[10px] text-[var(--color-muted)] truncate">
+                              {pInfo?.activeModel
+                                ? `${meta.provider} · ${pInfo.activeModel}`
+                                : meta.description}
+                            </div>
                           </div>
 
                           <StatusBadge

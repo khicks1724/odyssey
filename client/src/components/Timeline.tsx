@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Goal } from '../../types';
 import './Timeline.css';
+import FilterDropdown from './FilterDropdown';
 
 function cv(vars: Record<string, string | number>): React.CSSProperties {
   return vars as unknown as React.CSSProperties;
@@ -127,59 +128,14 @@ function buildTicks(viewStart: Date, viewEnd: Date, toPct: (ms: number) => strin
   return ticks;
 }
 
-// ── Filter bar ───────────────────────────────────────────────────────────────
-
 type GroupBy = 'category' | 'loe' | 'none';
-
-function FilterBar({
-  categories, loes, filterCat, filterLoe, groupBy,
-  onFilterCat, onFilterLoe, onGroupBy,
-}: {
-  categories: string[]; loes: string[];
-  filterCat: string; filterLoe: string; groupBy: GroupBy;
-  onFilterCat: (v: string) => void; onFilterLoe: (v: string) => void; onGroupBy: (v: GroupBy) => void;
-}) {
-  const selectCls = 'text-[10px] font-mono bg-surface border border-border text-muted px-2 py-1 focus:outline-none focus:border-accent/50 rounded';
-  const btnCls = (active: boolean) =>
-    `text-[10px] font-mono px-2 py-1 rounded border transition-colors ${active
-      ? 'bg-accent/10 border-accent/30 text-accent'
-      : 'bg-surface border-border text-muted hover:text-heading hover:border-border/80'}`;
-
-  return (
-    <div className="flex items-center gap-2 mb-3 flex-wrap">
-      {/* Category filter */}
-      {categories.length > 1 && (
-        <select value={filterCat} onChange={(e) => onFilterCat(e.target.value)} className={selectCls} title="Filter by category">
-          <option value="">All Categories</option>
-          {categories.map((c) => <option key={c} value={c}>{c || 'Uncategorized'}</option>)}
-        </select>
-      )}
-
-      {/* LOE filter */}
-      {loes.length > 1 && (
-        <select value={filterLoe} onChange={(e) => onFilterLoe(e.target.value)} className={selectCls} title="Filter by LOE">
-          <option value="">All LOE</option>
-          {loes.map((l) => <option key={l} value={l}>{l || 'No LOE'}</option>)}
-        </select>
-      )}
-
-      {/* Group by toggle */}
-      <div className="flex items-center gap-1 ml-auto">
-        <span className="text-[9px] text-muted/60 font-mono uppercase tracking-wider mr-1">Group by</span>
-        <button type="button" className={btnCls(groupBy === 'category')} onClick={() => onGroupBy('category')}>Category</button>
-        <button type="button" className={btnCls(groupBy === 'loe')} onClick={() => onGroupBy('loe')}>LOE</button>
-        <button type="button" className={btnCls(groupBy === 'none')} onClick={() => onGroupBy('none')}>None</button>
-      </div>
-    </div>
-  );
-}
 
 // ── Main export ──────────────────────────────────────────────────────────────
 
 export default function Timeline({ goals, members = [] }: TimelineProps) {
   const [hovered, setHovered]   = useState<string | null>(null);
-  const [filterCat, setFilterCat] = useState('');
-  const [filterLoe, setFilterLoe] = useState('');
+  const [filterCats, setFilterCats] = useState<string[]>([]);
+  const [filterLoes, setFilterLoes] = useState<string[]>([]);
   const [groupBy, setGroupBy]   = useState<GroupBy>('category');
 
   if (goals.length === 0) {
@@ -209,16 +165,54 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
 
   // Apply filters
   const filtered = goalsWithDeadline.filter((g) => {
-    if (filterCat && (g.category ?? '') !== filterCat) return false;
-    if (filterLoe && (g.loe ?? '') !== filterLoe) return false;
+    if (filterCats.length > 0 && !filterCats.includes(g.category ?? '')) return false;
+    if (filterLoes.length > 0 && !filterLoes.includes(g.loe ?? '')) return false;
     return true;
   });
+
+  const filterBar = (
+    <div className="flex items-center gap-2 mb-3 flex-wrap">
+      {(allCategories.length > 1 || allLoes.length > 1) && (
+        <FilterDropdown
+          placeholder="Filters"
+          sections={[
+            ...(allCategories.length > 1 ? [{
+              key: 'category',
+              label: 'Categories',
+              options: allCategories.map((c) => ({ value: c, label: c || 'Uncategorized' })),
+              selected: filterCats,
+            }] : []),
+            ...(allLoes.length > 1 ? [{
+              key: 'loe',
+              label: 'LOEs',
+              options: allLoes.map((l) => ({ value: l, label: l || 'No LOE' })),
+              selected: filterLoes,
+            }] : []),
+          ]}
+          onChange={(key, selected) => {
+            if (key === 'category') setFilterCats(selected);
+            else if (key === 'loe') setFilterLoes(selected);
+          }}
+        />
+      )}
+      <div className="flex items-center gap-1 ml-auto">
+        <span className="text-[9px] text-muted/60 font-mono uppercase tracking-wider mr-1">Group by</span>
+        {(['category', 'loe', 'none'] as GroupBy[]).map((g) => (
+          <button key={g} type="button"
+            className={`text-[10px] font-mono px-2 py-1 rounded border transition-colors ${groupBy === g ? 'bg-accent/10 border-accent/30 text-accent' : 'bg-surface border-border text-muted hover:text-heading hover:border-border/80'}`}
+            onClick={() => setGroupBy(g)}
+          >
+            {g.charAt(0).toUpperCase() + g.slice(1)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 
   if (filtered.length === 0) {
     return (
       <div>
-        <FilterBar categories={allCategories} loes={allLoes} filterCat={filterCat} filterLoe={filterLoe} groupBy={groupBy}
-          onFilterCat={setFilterCat} onFilterLoe={setFilterLoe} onGroupBy={setGroupBy} />
+        {filterBar}
         <div className="py-8 text-center">
           <p className="text-xs text-muted tracking-wide">No goals match the current filters</p>
         </div>
@@ -250,6 +244,9 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
     `${Math.min(100, Math.max(0, ((ms - viewStart.getTime()) / viewRange) * 100)).toFixed(3)}%`;
 
   const nowPct  = toPct(now.getTime());
+  const todayStart    = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const nowDayStartPct = toPct(todayStart.getTime());
+  const dayWidthPct   = `${(24 * 60 * 60 * 1000 / viewRange * 100).toFixed(3)}%`;
   const ticks   = buildTicks(viewStart, viewEnd, toPct);
   const fmtDate = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 
@@ -272,16 +269,7 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
 
   return (
     <div>
-      <FilterBar categories={allCategories} loes={allLoes} filterCat={filterCat} filterLoe={filterLoe} groupBy={groupBy}
-        onFilterCat={setFilterCat} onFilterLoe={setFilterLoe} onGroupBy={setGroupBy} />
-
-      {/* Date range header */}
-      <div className="tlo-header flex mb-2">
-        <div className="tlo-date-row text-[10px] text-muted font-mono">
-          <span className="tlo-date-label">{fmtDate(viewStart)}</span>
-          <span className="tlo-date-label">{fmtDate(viewEnd)}</span>
-        </div>
-      </div>
+      {filterBar}
 
       {/* Track */}
       <div className="tlo-track-outer border border-border rounded bg-surface">
@@ -310,7 +298,7 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
             {groupBy !== 'none' && (
               <div className="tlo-section" {...({ style: cv({ '--tlo-color': groupColor.color }) } as any)}>
                 <span className="tlo-section-lbl">{key || (groupBy === 'loe' ? 'No LOE' : 'Uncategorized')}</span>
-                <div className="tlo-section-line" />
+                <div className="tlo-section-chart" />
               </div>
             )}
 
@@ -351,13 +339,8 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
                       />
                     ))}
 
-                    <div className="tlo-today" {...({ style: cv({ '--tlo-now': nowPct }) } as any)}>
-                      {isFirst && (
-                        <span className="tlo-today-lbl text-[9px] text-accent font-mono">
-                          {now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        </span>
-                      )}
-                    </div>
+                    {/* Today column shade */}
+                    <div className="tlo-today-col" {...({ style: cv({ '--tlo-now-start': nowDayStartPct, '--tlo-day-w': dayWidthPct }) } as any)} />
                     <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
                     <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
                     <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />

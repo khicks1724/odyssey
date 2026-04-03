@@ -13,6 +13,15 @@ export interface MessageAttachment {
   repoType?: 'github' | 'gitlab';
 }
 
+export interface SuggestedTask {
+  title: string;
+  description: string;
+  category: string | null;
+  loe: string | null;
+  deadline: string | null;
+  priority?: string | null;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -26,6 +35,12 @@ export interface ChatMessage {
   actionState?: 'pending' | 'approved' | 'denied';
   /** Populated when the AI generated a downloadable report */
   reportReady?: { data: ReportContent; format: ReportFormat };
+  /** Populated when the AI generated task suggestions from meeting notes */
+  suggestedTasks?: SuggestedTask[];
+  /** Tracks which suggested task indices the user has accepted/rejected */
+  taskSelections?: Record<number, 'accepted' | 'rejected'>;
+  /** Overall state of the task suggestion panel */
+  taskState?: 'pending' | 'adding' | 'done';
 }
 
 interface ChatPanelCtx {

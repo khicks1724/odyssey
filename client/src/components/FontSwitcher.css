@@ -1,5 +1,5 @@
 .fs-sample[data-font-id="default"]     { font-family: "DM Mono", monospace; }
 .fs-sample[data-font-id="bahnschrift"] { font-family: Bahnschrift, "Barlow Condensed", "DIN Alternate", Arial, sans-serif; letter-spacing: 0.02em; }
-.fs-sample[data-font-id="ubuntu"]      { font-family: "Ubuntu", "Segoe UI", system-ui, sans-serif; }
-.fs-sample[data-font-id="consolas"]    { font-family: Consolas, "Fira Code", "Cascadia Code", "Courier New", monospace; }
-.fs-sample[data-font-id="courier-new"] { font-family: "Courier New", Courier, monospace; }
+.fs-sample[data-font-id="ubuntu"]      { font-family: "Inter", "Segoe UI", system-ui, sans-serif; }
+.fs-sample[data-font-id="consolas"]    { font-family: Consolas, "Fira Code", "Cascadia Code", monospace; }
+.fs-sample[data-font-id="courier-new"] { font-family: "Roboto", "Segoe UI", system-ui, sans-serif; }

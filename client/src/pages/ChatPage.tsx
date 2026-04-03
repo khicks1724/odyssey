@@ -171,8 +171,9 @@ export default function ChatPage() {
   } = useChatThreads();
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [hasInput, setHasInput] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [creatingDm, setCreatingDm] = useState(false);
   const [dmCandidates, setDmCandidates] = useState<Array<{ id: string; display_name: string | null; avatar_url: string | null; project_id: string | null }>>([]);
   const [contexts, setContexts] = useState<PendingContext[]>([]);
@@ -668,8 +669,13 @@ export default function ChatPage() {
     await postSystem(`Note saved to project timeline: "${noteText.trim()}"`, '/note');
   };
 
-  const handleSend = async () => {
-    const text = input.trim();
+  const clearTextarea = () => {
+    if (textareaRef.current) textareaRef.current.value = '';
+    setHasInput(false);
+  };
+
+  const handleSend = async (overrideInput?: string) => {
+    const text = (overrideInput ?? textareaRef.current?.value ?? '').trim();
     if (!selectedThread || !text || sending) return;
     setSending(true);
     try {
@@ -683,7 +689,7 @@ export default function ChatPage() {
           content: `${profile?.display_name ?? user?.email ?? 'A user'} enabled AI mode. Every message will get an AI response. Type /ai off to stop.`,
           metadata: { command: '/ai on' },
         });
-        setInput('');
+        clearTextarea();
         setContexts([]);
         return;
       }
@@ -692,19 +698,19 @@ export default function ChatPage() {
       if (text === '/ai off') {
         await updateThread(selectedThread.id, { ai_mode: false, ai_mode_by: null, ai_mode_started_at: null });
         await postSystem(`${profile?.display_name ?? user?.email ?? 'A user'} disabled AI mode.`, '/ai off');
-        setInput('');
+        clearTextarea();
         setContexts([]);
         return;
       }
 
       // Other slash commands
-      if (text === '/summarize') { setInput(''); await runSummarize(); setContexts([]); return; }
-      if (text === '/standup')   { setInput(''); await runStandup();   setContexts([]); return; }
-      if (text === '/tasks')     { setInput(''); await runTasks();     setContexts([]); return; }
-      if (text === '/report')    { setInput(''); await runReport();    setContexts([]); return; }
+      if (text === '/summarize') { clearTextarea(); await runSummarize(); setContexts([]); return; }
+      if (text === '/standup')   { clearTextarea(); await runStandup();   setContexts([]); return; }
+      if (text === '/tasks')     { clearTextarea(); await runTasks();     setContexts([]); return; }
+      if (text === '/report')    { clearTextarea(); await runReport();    setContexts([]); return; }
       if (text.startsWith('/note')) {
         const noteText = text.slice(5).trim();
-        setInput('');
+        clearTextarea();
         await runNote(noteText);
         setContexts([]);
         return;
@@ -715,7 +721,7 @@ export default function ChatPage() {
       const prompt = isSlashAI ? text.slice(4).trim() : text;
 
       if (isSlashAI && !prompt) {
-        setInput('');
+        clearTextarea();
         return;
       }
 
@@ -728,7 +734,7 @@ export default function ChatPage() {
         metadata: { contexts: lightweightContexts, ai_request: isSlashAI || selectedThread.ai_mode },
       });
 
-      setInput('');
+      clearTextarea();
       setContexts([]);
       // Enqueue AI — non-blocking so new messages can be sent while AI processes
       if (isSlashAI || selectedThread.ai_mode) enqueueAI(prompt, selectedThread.id);
@@ -1073,7 +1079,13 @@ export default function ChatPage() {
                                   {message.content}
                                 </MarkdownWithFileLinks>
                               ) : (
-                                <div className="text-sm leading-snug whitespace-pre-wrap break-words">{message.content}</div>
+                                <div className="text-sm leading-snug whitespace-pre-wrap break-words">
+                                  {message.content.split(/(https?:\/\/[^\s]+)/g).map((part, i) =>
+                                    /^https?:\/\//.test(part)
+                                      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80 break-all">{part}</a>
+                                      : part
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>
@@ -1132,8 +1144,9 @@ export default function ChatPage() {
 
                   {/* Slash command palette — floats above the input card */}
                   {slashOpen && (() => {
+                    const curVal = textareaRef.current?.value ?? '';
                     const filtered = SLASH_COMMANDS.filter((cmd) =>
-                      input.trim() === '/' || cmd.command.startsWith(input.trim())
+                      curVal.trim() === '/' || cmd.command.startsWith(curVal.trim())
                     );
                     if (filtered.length === 0) return null;
                     const hi = Math.min(slashHighlight, filtered.length - 1);
@@ -1149,9 +1162,12 @@ export default function ChatPage() {
                             key={cmd.command}
                             type="button"
                             onClick={() => {
-                              setInput(cmd.command === '/ai' ? '/ai ' : cmd.command === '/note' ? '/note ' : cmd.command);
+                              const needsArgs = cmd.command === '/ai' || cmd.command === '/note';
+                              const selectedCmd = needsArgs ? cmd.command + ' ' : cmd.command;
+                              if (textareaRef.current) { textareaRef.current.value = selectedCmd; setHasInput(true); }
                               setSlashOpen(false);
                               setSlashHighlight(0);
+                              if (!needsArgs) void handleSend(cmd.command);
                             }}
                             className={`w-full flex items-center gap-4 px-4 py-2.5 text-left transition-colors ${idx === hi ? 'bg-surface2' : 'hover:bg-surface2'}`}
                           >
@@ -1180,10 +1196,11 @@ export default function ChatPage() {
                       </div>
 
                       <textarea
-                        value={input}
+                        ref={textareaRef}
                         onChange={(e) => {
                           const val = e.target.value;
-                          setInput(val);
+                          const nowHasInput = val.trim().length > 0;
+                          if (nowHasInput !== hasInput) setHasInput(nowHasInput);
                           setSlashOpen(val.startsWith('/'));
                           setSlashHighlight(0);
                           if (!val.startsWith('/')) setContextOpen(false);
@@ -1193,8 +1210,9 @@ export default function ChatPage() {
 
                           // Slash palette navigation
                           if (slashOpen) {
+                            const curVal = textareaRef.current?.value ?? '';
                             const filtered = SLASH_COMMANDS.filter((cmd) =>
-                              input.trim() === '/' || cmd.command.startsWith(input.trim())
+                              curVal.trim() === '/' || cmd.command.startsWith(curVal.trim())
                             );
                             if (filtered.length > 0) {
                               if (e.key === 'ArrowDown' || (e.key === 'Tab' && !e.shiftKey)) {
@@ -1210,9 +1228,12 @@ export default function ChatPage() {
                               if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 const cmd = filtered[Math.min(slashHighlight, filtered.length - 1)];
-                                setInput(cmd.command === '/ai' ? '/ai ' : cmd.command === '/note' ? '/note ' : cmd.command);
+                                const needsArgs = cmd.command === '/ai' || cmd.command === '/note';
+                                const selectedCmd = needsArgs ? cmd.command + ' ' : cmd.command;
+                                if (textareaRef.current) { textareaRef.current.value = selectedCmd; setHasInput(true); }
                                 setSlashOpen(false);
                                 setSlashHighlight(0);
+                                if (!needsArgs) void handleSend(cmd.command);
                                 return;
                               }
                             }
@@ -1235,7 +1256,7 @@ export default function ChatPage() {
                       <button
                         type="button"
                         onClick={() => { setSlashOpen(false); void handleSend(); }}
-                        disabled={!input.trim() || sending}
+                        disabled={!hasInput || sending}
                         className="w-8 h-8 rounded-lg border border-accent/30 text-accent hover:bg-accent/5 transition-colors flex items-center justify-center disabled:opacity-40"
                         title="Send"
                       >
@@ -1262,7 +1283,7 @@ export default function ChatPage() {
                         {selectedThread?.ai_mode && (
                           <button
                             type="button"
-                            onClick={() => { setInput('/ai off'); void handleSend(); }}
+                            onClick={() => { if (textareaRef.current) { textareaRef.current.value = '/ai off'; setHasInput(true); } void handleSend(); }}
                             className="text-[10px] text-muted hover:text-heading transition-colors"
                           >
                             /ai off

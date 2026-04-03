@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { supabase } from './supabase';
 
 export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil';
 export type AIAgentValue = AIProvider | 'auto';
@@ -13,6 +14,7 @@ export interface ProviderInfo {
   status?: ProviderStatus;
   keySource?: KeySource;
   userKeyLinked?: boolean;
+  activeModel?: string;
 }
 
 interface AIAgentContextType {
@@ -38,6 +40,8 @@ const AIAgentContext = createContext<AIAgentContextType>({
 });
 
 const STORAGE_KEY = 'odyssey-ai-agent-v2'; // v2 = auto default; bumped to clear old stored model
+const PROVIDERS_TTL_MS = 5 * 60 * 1000; // re-fetch at most once every 5 minutes
+let lastProvidersFetch = 0;
 const ALL_VALUES: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
 
 export function AIAgentProvider({ children }: { children: ReactNode }) {
@@ -51,9 +55,16 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   const [serverReachable, setServerReachable] = useState(true);
   const [lastUsed, setLastUsed] = useState<AIProvider | null>(null);
 
-  const fetchProviders = useCallback(() => {
+  const fetchProviders = useCallback((force = false) => {
+    const now = Date.now();
+    if (!force && now - lastProvidersFetch < PROVIDERS_TTL_MS) return;
+    lastProvidersFetch = now;
     setLoading(true);
-    fetch('/api/ai/providers')
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const headers: Record<string, string> = {};
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+      return fetch('/api/ai/providers', { headers });
+    })
       .then((r) => {
         if (!r.ok) throw new Error(`Providers fetch failed: ${r.status}`);
         return r.json();
@@ -88,7 +99,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, serverReachable, lastUsed, notifyModelUsed, refreshProviders: fetchProviders }}>
+    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, serverReachable, lastUsed, notifyModelUsed, refreshProviders: () => fetchProviders(true) }}>
       {children}
     </AIAgentContext.Provider>
   );

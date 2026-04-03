@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Activity,
   Users,
@@ -13,13 +13,336 @@ import {
   GitBranch,
   ClipboardList,
   Loader2,
+  Plus,
+  HelpCircle,
 } from 'lucide-react';
 import ActivityFeed from '../ActivityFeed';
 import CommitActivityCharts from '../CommitActivityCharts';
 import Timeline from '../Timeline';
 import MarkdownWithFileLinks from '../MarkdownWithFileLinks';
+import FilterDropdown from '../FilterDropdown';
+import { fmtDate } from '../../lib/time-format';
 import type { FileRef } from '../../hooks/useProjectFilePaths';
 import type { Goal, OdysseyEvent } from '../../types';
+
+const RFI_FILTER_KEYS = { category: 'category', loe: 'loe', assignee: 'assignee' } as const;
+
+// ── RFI Types ────────────────────────────────────────────────────────────────
+
+interface RFI {
+  id: string;
+  text: string;
+  category: string;
+  loe: string;
+  assignees: string[]; // user_ids
+  suspenseDate: string; // ISO date string or ''
+  createdAt: string;
+  createdByName: string;
+}
+
+// ── RFI Add Modal ─────────────────────────────────────────────────────────────
+
+interface AddRFIModalProps {
+  members: { user_id: string; display_name: string | null }[];
+  currentUserName: string;
+  currentUserId: string;
+  categoryLabels: { id: string; name: string }[];
+  loeLabels: { id: string; name: string }[];
+  onAdd: (rfi: Omit<RFI, 'id' | 'createdAt' | 'createdByName'>) => void;
+  onClose: () => void;
+}
+
+function AddRFIModal({ members, currentUserName, currentUserId, categoryLabels, loeLabels, onAdd, onClose }: AddRFIModalProps) {
+  const [text, setText] = useState('');
+  const [category, setCategory] = useState('');
+  const [loe, setLoe] = useState('');
+  const [assignees, setAssignees] = useState<string[]>([]);
+  const [suspenseDate, setSuspenseDate] = useState('');
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  const allPeople = [
+    { user_id: currentUserId, display_name: currentUserName },
+    ...members,
+  ];
+
+  const toggleAssignee = (id: string) =>
+    setAssignees((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!text.trim()) return;
+    onAdd({ text: text.trim(), category, loe, assignees, suspenseDate });
+    onClose();
+  };
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onMouseDown={(e) => { if (e.target === overlayRef.current) onClose(); }}
+    >
+      <div className="bg-surface border border-border rounded w-full max-w-md mx-4 shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <div className="flex items-center gap-2">
+            <HelpCircle size={14} className="text-accent" />
+            <span className="font-sans text-sm font-bold text-heading">Add RFI</span>
+          </div>
+          <button type="button" onClick={onClose} title="Close" aria-label="Close" className="text-muted hover:text-heading transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          <div>
+            <label className="block text-[10px] font-mono uppercase text-muted mb-1">Request *</label>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={3}
+              placeholder="Describe the information needed…"
+              className="w-full bg-surface2 border border-border rounded px-3 py-2 text-xs text-heading placeholder-muted resize-none focus:outline-none focus:border-accent/50"
+              autoFocus
+            />
+          </div>
+
+          {/* Category */}
+          <div>
+            <label className="block text-[10px] font-mono uppercase text-muted mb-1">Category</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              aria-label="Category"
+              className="w-full bg-surface2 border border-border rounded px-3 py-1.5 text-xs text-heading focus:outline-none focus:border-accent/50 cursor-pointer"
+            >
+              <option value="">— None —</option>
+              {categoryLabels.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+            </select>
+          </div>
+
+          {/* LOE */}
+          <div>
+            <label className="block text-[10px] font-mono uppercase text-muted mb-1">Line of Effort</label>
+            <select
+              value={loe}
+              onChange={(e) => setLoe(e.target.value)}
+              aria-label="Level of Effort"
+              className="w-full bg-surface2 border border-border rounded px-3 py-1.5 text-xs text-heading focus:outline-none focus:border-accent/50 cursor-pointer"
+            >
+              <option value="">— None —</option>
+              {loeLabels.map((l) => <option key={l.id} value={l.name}>{l.name}</option>)}
+            </select>
+          </div>
+
+          {/* Suspense Date */}
+          <div>
+            <label className="block text-[10px] font-mono uppercase text-muted mb-1">Suspense Date</label>
+            <input
+              type="date"
+              value={suspenseDate}
+              onChange={(e) => setSuspenseDate(e.target.value)}
+              aria-label="Suspense Date"
+              className="w-full bg-surface2 border border-border rounded px-3 py-1.5 text-xs text-heading focus:outline-none focus:border-accent/50"
+            />
+          </div>
+
+          {/* Assignees */}
+          <div>
+            <label className="block text-[10px] font-mono uppercase text-muted mb-1">Assign To</label>
+            <div className="space-y-px border border-border rounded overflow-hidden">
+              {allPeople.map((p) => {
+                const checked = assignees.includes(p.user_id);
+                return (
+                  <label
+                    key={p.user_id}
+                    className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-surface2 transition-colors"
+                  >
+                    <span className={`w-3 h-3 rounded-sm border flex-shrink-0 flex items-center justify-center transition-colors ${
+                      checked ? 'bg-accent border-accent' : 'border-border'
+                    }`}>
+                      {checked && (
+                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                          <path d="M1 4l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </span>
+                    <span className="text-xs text-heading truncate">{p.display_name ?? p.user_id}</span>
+                    <input type="checkbox" className="sr-only" checked={checked} onChange={() => toggleAssignee(p.user_id)} />
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-[10px] font-mono text-muted border border-border rounded hover:text-heading transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!text.trim()}
+              className="px-3 py-1.5 text-[10px] font-mono bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Add RFI
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── RFI Section ───────────────────────────────────────────────────────────────
+
+interface RFISectionProps {
+  members: { user_id: string; display_name: string | null }[];
+  currentUserName: string;
+  currentUserId: string;
+  categoryLabels: { id: string; name: string }[];
+  loeLabels: { id: string; name: string }[];
+}
+
+function RFISection({ members, currentUserName, currentUserId, categoryLabels, loeLabels }: RFISectionProps) {
+  const [rfis, setRfis] = useState<RFI[]>([]);
+  const [showModal, setShowModal] = useState(false);
+  const [filterCats, setFilterCats] = useState<string[]>([]);
+  const [filterLoes, setFilterLoes] = useState<string[]>([]);
+  const [filterAssignees, setFilterAssignees] = useState<string[]>([]);
+
+  const allPeople = [
+    { user_id: currentUserId, display_name: currentUserName },
+    ...members,
+  ];
+
+  const allCategories = [...new Set(rfis.map((r) => r.category).filter(Boolean))];
+  const allLoes = [...new Set(rfis.map((r) => r.loe).filter(Boolean))];
+  const allAssigneeIds = [...new Set(rfis.flatMap((r) => r.assignees))];
+  const allAssigneeOptions = allAssigneeIds.map((id) => ({
+    value: id,
+    label: allPeople.find((p) => p.user_id === id)?.display_name ?? id,
+  }));
+
+  const filtered = rfis.filter((r) => {
+    if (filterCats.length > 0 && !filterCats.includes(r.category)) return false;
+    if (filterLoes.length > 0 && !filterLoes.includes(r.loe)) return false;
+    if (filterAssignees.length > 0 && !filterAssignees.some((a) => r.assignees.includes(a))) return false;
+    return true;
+  });
+
+  const handleAdd = (data: Omit<RFI, 'id' | 'createdAt' | 'createdByName'>) => {
+    setRfis((prev) => [...prev, {
+      ...data,
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      createdByName: currentUserName,
+    }]);
+  };
+
+  const handleRemove = (id: string) => setRfis((prev) => prev.filter((r) => r.id !== id));
+
+  const hasFilters = allCategories.length > 0 || allLoes.length > 0 || allAssigneeOptions.length > 0;
+  const filterSections = [
+    ...(allCategories.length > 0 ? [{ key: RFI_FILTER_KEYS.category, label: 'Categories', options: allCategories.map((c) => ({ value: c, label: c })), selected: filterCats }] : []),
+    ...(allLoes.length > 0 ? [{ key: RFI_FILTER_KEYS.loe, label: 'LOEs', options: allLoes.map((l) => ({ value: l, label: l })), selected: filterLoes }] : []),
+    ...(allAssigneeOptions.length > 0 ? [{ key: RFI_FILTER_KEYS.assignee, label: 'Assignees', options: allAssigneeOptions, selected: filterAssignees }] : []),
+  ];
+
+  return (
+    <div className="border border-border bg-surface p-6 mb-8">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <HelpCircle size={14} className="text-accent" />
+          <h3 className="font-sans text-sm font-bold text-heading">RFIs</h3>
+          <span className="text-[10px] text-muted font-mono bg-surface2 px-1.5 py-0.5 rounded">{rfis.length}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {hasFilters && filterSections.length > 0 && (
+            <FilterDropdown
+              placeholder="Filters"
+              sections={filterSections}
+              onChange={(key, selected) => {
+                if (key === RFI_FILTER_KEYS.category) setFilterCats(selected);
+                else if (key === RFI_FILTER_KEYS.loe) setFilterLoes(selected);
+                else if (key === RFI_FILTER_KEYS.assignee) setFilterAssignees(selected);
+              }}
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-mono bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors cursor-pointer"
+          >
+            <Plus size={10} />
+            Add RFI
+          </button>
+        </div>
+      </div>
+
+      {rfis.length === 0 ? (
+        <p className="text-xs text-muted py-4 text-center">No RFIs yet. Click + Add RFI to submit a request for information.</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-xs text-muted py-4 text-center">No RFIs match the current filters.</p>
+      ) : (
+        <ul className="space-y-2">
+          {filtered.map((rfi) => {
+            const assigneeNames = rfi.assignees
+              .map((id) => allPeople.find((p) => p.user_id === id)?.display_name ?? id)
+              .filter(Boolean);
+            return (
+              <li key={rfi.id} className="flex items-start gap-3 group">
+                <span className="text-accent mt-0.5 shrink-0 text-sm">•</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-heading leading-snug">{rfi.text}</p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
+                    <span className="text-[10px] text-muted font-mono">
+                      {fmtDate(rfi.createdAt, { month: 'short', day: 'numeric', year: 'numeric' })} · {rfi.createdByName}
+                    </span>
+                    {rfi.category && (
+                      <span className="text-[10px] font-mono text-accent2">{rfi.category}</span>
+                    )}
+                    {rfi.loe && (
+                      <span className="text-[10px] font-mono px-1.5 py-0 border border-border rounded text-muted">{rfi.loe}</span>
+                    )}
+                    {rfi.suspenseDate && (
+                      <span className="text-[10px] font-mono text-yellow-500">
+                        Due {fmtDate(rfi.suspenseDate + 'T00:00:00', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </span>
+                    )}
+                    {assigneeNames.length > 0 && (
+                      <span className="text-[10px] text-muted font-mono">→ {assigneeNames.join(', ')}</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(rfi.id)}
+                  className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all mt-0.5 shrink-0"
+                  title="Remove RFI"
+                >
+                  <X size={12} />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {showModal && (
+        <AddRFIModal
+          members={members}
+          currentUserName={currentUserName}
+          currentUserId={currentUserId}
+          categoryLabels={categoryLabels}
+          loeLabels={loeLabels}
+          onAdd={handleAdd}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </div>
+  );
+}
 
 interface MemberRow {
   user_id: string;
@@ -79,6 +402,8 @@ export interface OverviewTabProps {
   setEditAutoGuidance: (v: boolean) => void;
   setActiveTab: (tab: string) => void;
   handlePromoteMember: (userId: string) => void;
+  categoryLabels: { id: string; name: string }[];
+  loeLabels: { id: string; name: string }[];
 }
 
 function StatRow({ label, value }: { label: string; value: string }) {
@@ -117,6 +442,8 @@ function OverviewTab({
   setEditAutoGuidance,
   setActiveTab,
   handlePromoteMember,
+  categoryLabels,
+  loeLabels,
 }: OverviewTabProps) {
   return (
     <>
@@ -272,6 +599,15 @@ function OverviewTab({
           </div>
         </div>
       </div>
+
+      {/* RFIs */}
+      <RFISection
+        members={members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null }))}
+        currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
+        currentUserId={user?.id ?? ''}
+        categoryLabels={categoryLabels}
+        loeLabels={loeLabels}
+      />
 
       {/* AI Insights Results */}
       {(insights || insightsLoading || insightsError) && (

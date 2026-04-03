@@ -219,6 +219,20 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
         }
         throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. You must be on a DoD network or VPN to use this model. (HTTP ${r.status})`);
       }
+      // Parse JSON error to extract unlock_url or clean message
+      try {
+        const errJson = JSON.parse(body) as { error?: { message?: string; unlock_url?: string } };
+        const errMsg = errJson.error?.message ?? '';
+        const unlockUrl = errJson.error?.unlock_url;
+        if (unlockUrl) {
+          throw new Error(`GenAI.mil: API key is locked.\n\nUnlock your key here: ${unlockUrl}`);
+        }
+        if (errMsg) {
+          throw new Error(`GenAI.mil (${r.status}): ${errMsg}`);
+        }
+      } catch (parseErr) {
+        if ((parseErr as Error).message.startsWith('GenAI.mil')) throw parseErr;
+      }
       throw new Error(`GenAI.mil API ${r.status} (model: ${model}): ${body.slice(0, 300)}`);
     }
     const raw = await r.text();
@@ -422,17 +436,22 @@ const providers: Record<AIProvider, (msg: ChatMessage, apiKeyOverride?: string) 
 // Tracks per-provider error state so the UI can show "No Credits" vs "No Key"
 export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'error';
 
-const providerStatusCache = new Map<AIProvider, ProviderStatus>();
+const ERROR_TTL_MS = 10 * 60 * 1000; // errors expire after 10 minutes
+const providerStatusCache = new Map<AIProvider, { status: ProviderStatus; ts: number }>();
 
 export function markProviderError(provider: AIProvider, httpStatus: number, body: string) {
   const b = body.toLowerCase();
+  let status: ProviderStatus;
   if (httpStatus === 402 || b.includes('insufficient') || b.includes('quota') || b.includes('billing') || b.includes('credit') || b.includes('out of credits') || b.includes('exceeded')) {
-    providerStatusCache.set(provider, 'no_credits');
+    status = 'no_credits';
   } else if (httpStatus === 401 || httpStatus === 403 || b.includes('invalid') || b.includes('authentication') || b.includes('unauthorized')) {
-    providerStatusCache.set(provider, 'invalid_key');
+    status = 'invalid_key';
   } else if (httpStatus >= 400) {
-    providerStatusCache.set(provider, 'error');
+    status = 'error';
+  } else {
+    return;
   }
+  providerStatusCache.set(provider, { status, ts: Date.now() });
 }
 
 export function clearProviderError(provider: AIProvider) {
@@ -450,7 +469,14 @@ export function getAvailableProviders(): { id: AIProvider; name: string; availab
 
   function resolveStatus(provider: AIProvider, hasKey: boolean): ProviderStatus {
     if (!hasKey) return 'no_key';
-    return providerStatusCache.get(provider) ?? 'ready';
+    const cached = providerStatusCache.get(provider);
+    if (!cached) return 'ready';
+    // Expire old errors so transient failures don't stick forever
+    if (Date.now() - cached.ts > ERROR_TTL_MS) {
+      providerStatusCache.delete(provider);
+      return 'ready';
+    }
+    return cached.status;
   }
 
   return [

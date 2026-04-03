@@ -11,6 +11,7 @@ import {
   Check,
 } from 'lucide-react';
 import SearchPanel, { type SearchPanelHandle } from '../SearchPanel';
+import FilterDropdown from '../FilterDropdown';
 import type { Goal, OdysseyEvent, GoalDependency } from '../../types';
 import { supabase } from '../../lib/supabase';
 import { useAIAgent } from '../../lib/ai-agent';
@@ -42,7 +43,6 @@ interface GoalsKanbanProps {
   getAssignee: (userId: string | null | undefined) => { user_id?: string; display_name: string | null; avatar_url: string | null } | null;
   goalDependencies?: GoalDependency[];
   timeLogTotals?: Map<string, number>;
-  onLogTime?: (goalId: string) => void;
 }
 
 // Import the icons used in the kanban inline since it's local
@@ -69,7 +69,7 @@ const riskDotColor = (score: number | null | undefined) => {
   return 'bg-green-500';
 };
 
-function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDelete, onAdd, getAssignee, goalDependencies = [], timeLogTotals = new Map(), onLogTime }: GoalsKanbanProps) {
+function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDelete, onAdd, getAssignee, goalDependencies = [], timeLogTotals = new Map() }: GoalsKanbanProps) {
   const [draggingId, setDraggingId] = React.useState<string | null>(null);
   const [dragOverCol, setDragOverCol] = React.useState<GoalStatus | null>(null);
   const [showStale, setShowStale] = React.useState(false);
@@ -145,12 +145,6 @@ function GoalsKanban({ goals, onUpdateStatus, onEdit, onEditWithGuidance, onDele
             </div>
           </div>
           <div className="flex items-center gap-0.5 shrink-0">
-            {onLogTime && (
-              <button type="button" title="Log time" onClick={(e) => { e.stopPropagation(); onLogTime(goal.id); }}
-                className="p-0.5 text-muted hover:text-accent2 transition-colors opacity-0 group-hover:opacity-100">
-                <Clock size={11} />
-              </button>
-            )}
             <button type="button" title="Get AI guidance" onClick={(e) => { e.stopPropagation(); onEditWithGuidance(goal.id); }}
               className="p-0.5 text-muted hover:text-accent transition-colors opacity-0 group-hover:opacity-100">
               <Sparkles size={11} />
@@ -287,6 +281,8 @@ export interface GoalsTabProps {
   searchRef: React.RefObject<SearchPanelHandle>;
   projectCategories?: string[];
   projectLoes?: string[];
+  /** Optional ref that will be set to a function that triggers the "From Notes" file picker */
+  fromNotesTriggerRef?: React.RefObject<(() => void) | null>;
   riskAssessing: boolean;
   riskReport: {
     assessments: { goalId: string; score: number; level: string; factors: string[] }[];
@@ -309,7 +305,6 @@ export interface GoalsTabProps {
   setEditAutoGuidance: (v: boolean) => void;
   setActiveTab: (tab: string) => void;
   goalModalOnOpen: () => void;
-  setLogTimeGoal: (goal: Goal | null) => void;
   createGoal: (data: { title: string; description?: string; category?: string; loe?: string; deadline?: string }) => Promise<unknown>;
 }
 
@@ -320,6 +315,7 @@ function GoalsTab({
   searchRef,
   projectCategories = [],
   projectLoes = [],
+  fromNotesTriggerRef,
   riskAssessing,
   riskReport,
   riskPanelOpen,
@@ -339,16 +335,28 @@ function GoalsTab({
   setEditAutoGuidance,
   setActiveTab,
   goalModalOnOpen,
-  setLogTimeGoal,
   createGoal,
 }: GoalsTabProps) {
-  const [filterCategory, setFilterCategory] = React.useState('');
-  const [filterLoe, setFilterLoe] = React.useState('');
-  const [filterAssignee, setFilterAssignee] = React.useState('');
+  const [filterCategories, setFilterCategories] = React.useState<string[]>([]);
+  const [filterLoes, setFilterLoes] = React.useState<string[]>([]);
+  const [filterAssignees, setFilterAssignees] = React.useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = React.useState('');
 
   // ── Meeting notes import ──────────────────────────────────────────────────
   const { agent } = useAIAgent();
   const notesInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Expose trigger to parent (e.g. Add Task modal "From Notes" button)
+  React.useEffect(() => {
+    if (fromNotesTriggerRef) {
+      (fromNotesTriggerRef as React.MutableRefObject<(() => void) | null>).current = () => notesInputRef.current?.click();
+    }
+    return () => {
+      if (fromNotesTriggerRef) {
+        (fromNotesTriggerRef as React.MutableRefObject<(() => void) | null>).current = null;
+      }
+    };
+  }, [fromNotesTriggerRef]);
   const [notesLoading, setNotesLoading] = React.useState(false);
   const [notesError, setNotesError] = React.useState<string | null>(null);
   interface SuggestedTask { title: string; description: string; category: string | null; loe: string | null; deadline: string | null; }
@@ -420,14 +428,23 @@ function GoalsTab({
   };
 
   const allAssigneeIds = [...new Set(goals.flatMap((g) => g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : [])))];
-  const isFiltered = !!(filterCategory || filterLoe || filterAssignee);
+  const isFiltered = filterCategories.length > 0 || filterLoes.length > 0 || filterAssignees.length > 0;
 
   const filteredGoals = goals.filter((g) => {
-    if (filterCategory && g.category !== filterCategory) return false;
-    if (filterLoe && g.loe !== filterLoe) return false;
-    if (filterAssignee) {
+    if (filterCategories.length > 0 && !filterCategories.includes(g.category ?? '')) return false;
+    if (filterLoes.length > 0 && !filterLoes.includes(g.loe ?? '')) return false;
+    if (filterAssignees.length > 0) {
       const ids = g.assignees?.length ? g.assignees : (g.assigned_to ? [g.assigned_to] : []);
-      if (!ids.includes(filterAssignee)) return false;
+      if (!filterAssignees.some((a) => ids.includes(a))) return false;
+    }
+    if (searchQuery.length >= 2) {
+      const q = searchQuery.toLowerCase();
+      const matches =
+        g.title.toLowerCase().includes(q) ||
+        g.description?.toLowerCase().includes(q) ||
+        g.category?.toLowerCase().includes(q) ||
+        g.loe?.toLowerCase().includes(q);
+      if (!matches) return false;
     }
     return true;
   });
@@ -443,14 +460,11 @@ function GoalsTab({
     not_started: 0, in_progress: 40, in_review: 75, complete: 100,
   };
 
-  const selectCls = (active: boolean) =>
-    `text-[10px] font-mono px-2 py-1.5 rounded border bg-surface2 transition-colors outline-none cursor-pointer h-[30px] ${active ? 'border-accent text-heading' : 'border-border text-muted'}`;
-
   return (
     <div>
-      <div className="flex items-center mb-4 gap-2 min-w-0">
+      <div className="flex items-center mb-4 gap-2 min-w-0 overflow-x-auto">
         <h3 className="font-sans text-sm font-bold text-heading shrink-0">Tasks ({goals.length})</h3>
-        <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
+        <div className="flex items-center gap-2 flex-1 min-w-0 flex-nowrap">
           <SearchPanel
             ref={searchRef}
             projectId={projectId ?? null}
@@ -461,33 +475,40 @@ function GoalsTab({
               if (g) { setEditAutoGuidance(false); setEditGoal(g); }
             }}
             onEventSelect={() => setActiveTab('activity')}
+            onQueryChange={setSearchQuery}
           />
-          {projectCategories.length > 0 && (
-            <select aria-label="Filter by category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className={selectCls(!!filterCategory)}>
-              <option value="">All Categories</option>
-              {projectCategories.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          )}
-          {projectLoes.length > 0 && (
-            <select aria-label="Filter by LOE" value={filterLoe} onChange={(e) => setFilterLoe(e.target.value)} className={`${selectCls(!!filterLoe)} min-w-[11rem]`}>
-              <option value="">All Lines of Effort</option>
-              {projectLoes.map((l) => <option key={l} value={l}>{l}</option>)}
-            </select>
-          )}
-          {allAssigneeIds.length > 0 && (
-            <select aria-label="Filter by assignee" value={filterAssignee} onChange={(e) => setFilterAssignee(e.target.value)} className={selectCls(!!filterAssignee)}>
-              <option value="">All Assignees</option>
-              {allAssigneeIds.map((id) => {
-                const a = getAssignee(id);
-                return <option key={id} value={id}>{a?.display_name ?? id}</option>;
-              })}
-            </select>
-          )}
-          {isFiltered && (
-            <button type="button" onClick={() => { setFilterCategory(''); setFilterLoe(''); setFilterAssignee(''); }}
-              className="text-[10px] font-mono text-muted hover:text-danger transition-colors px-2 py-1.5 border border-border rounded h-[30px]">
-              Clear
-            </button>
+          {(projectCategories.length > 0 || projectLoes.length > 0 || allAssigneeIds.length > 0) && (
+            <FilterDropdown
+              placeholder="Filters"
+              sections={[
+                ...(projectCategories.length > 0 ? [{
+                  key: 'category',
+                  label: 'Categories',
+                  options: projectCategories.map((c) => ({ value: c, label: c })),
+                  selected: filterCategories,
+                }] : []),
+                ...(projectLoes.length > 0 ? [{
+                  key: 'loe',
+                  label: 'LOEs',
+                  options: projectLoes.map((l) => ({ value: l, label: l })),
+                  selected: filterLoes,
+                }] : []),
+                ...(allAssigneeIds.length > 0 ? [{
+                  key: 'assignee',
+                  label: 'Assignees',
+                  options: allAssigneeIds.map((id) => {
+                    const a = getAssignee(id);
+                    return { value: id, label: a?.display_name ?? id };
+                  }),
+                  selected: filterAssignees,
+                }] : []),
+              ]}
+              onChange={(key, selected) => {
+                if (key === 'category') setFilterCategories(selected);
+                else if (key === 'loe') setFilterLoes(selected);
+                else if (key === 'assignee') setFilterAssignees(selected);
+              }}
+            />
           )}
           <button
             type="button"
@@ -496,17 +517,7 @@ function GoalsTab({
           >
             <Plus size={12} /> Add Task
           </button>
-          <button
-            type="button"
-            onClick={() => notesInputRef.current?.click()}
-            disabled={notesLoading}
-            title="Import tasks from meeting notes (txt, docx, pdf)"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md shrink-0 disabled:opacity-50"
-          >
-            {notesLoading ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
-            {notesLoading ? 'Reading…' : 'From Notes'}
-          </button>
-          <div className="flex items-center shrink-0">
+          <div className="flex items-stretch shrink-0">
             <button
               type="button"
               onClick={handleAssessRisk}
@@ -631,7 +642,6 @@ function GoalsTab({
         getAssignee={getAssignee}
         goalDependencies={goalDependencies}
         timeLogTotals={timeLogTotals}
-        onLogTime={(id) => { const g = goals.find((g) => g.id === id); if (g) setLogTimeGoal(g); }}
       />
 
       {/* Hidden file input for meeting notes */}

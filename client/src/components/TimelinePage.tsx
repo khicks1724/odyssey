@@ -4,6 +4,7 @@ import type { Goal } from '../types';
 import './TimelinePage.css';
 import './Timeline.css';
 import CalendarView from './CalendarView';
+import FilterDropdown from './FilterDropdown';
 import { Clock, CalendarDays, Plus, X, Layers } from 'lucide-react';
 
 type GroupBy = 'category';
@@ -30,7 +31,7 @@ function makeGroupColorMap(keys: string[]): Map<string, { bg: string; border: st
 
 const DAY_MS    = 86_400_000;
 const ROW_H     = 36;
-const SECTION_H = 22;
+const SECTION_H = 26; // must match .tl-section-row height in CSS
 const SPRINT_H  = 26;  // height per sprint row
 const MONTH_H   = 24;  // month label row
 const DAY_H     = 20;  // day-number row
@@ -164,8 +165,11 @@ export default function TimelinePage({
   const [scrollLeft, setScrollLeft] = useState(0);
   const [pxPerDay, setPxPerDay] = useState(40);
 
-  const [filterCategory, setFilterCategory] = useState('');
-  const [filterLoe, setFilterLoe] = useState('');
+  const [filterCategories, setFilterCategories] = useState<string[]>([]);
+  const [filterLoes, setFilterLoes] = useState<string[]>([]);
+  const [dominantMonth, setDominantMonth] = useState(() =>
+    new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+  );
 
   const [sprints, setSprints] = useState<Sprint[]>([]);
   const [showSprintForm, setShowSprintForm] = useState(false);
@@ -215,8 +219,8 @@ export default function TimelinePage({
   /* ── Filtered + sorted goals ── */
   const goalsWithDeadline = goals
     .filter((g) => g.deadline)
-    .filter((g) => !filterCategory || g.category === filterCategory)
-    .filter((g) => !filterLoe || g.loe === filterLoe)
+    .filter((g) => filterCategories.length === 0 || filterCategories.includes(g.category ?? ''))
+    .filter((g) => filterLoes.length === 0 || filterLoes.includes(g.loe ?? ''))
     .sort((a, b) => {
       const ak = getGoalGroupKey(a, groupBy, members);
       const bk = getGoalGroupKey(b, groupBy, members);
@@ -225,43 +229,99 @@ export default function TimelinePage({
       return new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime();
     });
 
+  /* ── Filtered goals for calendar (no deadline requirement) ── */
+  const filteredGoalsForCalendar = goals
+    .filter((g) => filterCategories.length === 0 || filterCategories.includes(g.category ?? ''))
+    .filter((g) => filterLoes.length === 0 || filterLoes.includes(g.loe ?? ''));
+
   /* ── All goals with deadlines (unfiltered) for stable range ── */
   const allGoalsWithDeadline = goals
     .filter((g) => g.deadline)
     .sort((a, b) => new Date(a.deadline!).getTime() - new Date(b.deadline!).getTime());
 
-  /* ── Scroll to today on mount ── */
+  /* ── Scroll to today on mount and whenever timeline view becomes active ── */
+  useEffect(() => {
+    if (view !== 'timeline') return;
+    if (allGoalsWithDeadline.length === 0) return;
+    // Use rAF so the scrollable div is fully painted before we set scrollLeft
+    const raf = requestAnimationFrame(() => {
+      const el = containerRef.current;
+      if (!el) return;
+      const now = new Date();
+      const rs = new Date(
+        Math.min(now.getTime(), new Date(allGoalsWithDeadline[0].deadline!).getTime()) - 30 * DAY_MS
+      );
+      el.scrollLeft = ((now.getTime() - rs.getTime()) / DAY_MS) * pxPerDay - el.clientWidth * 0.25;
+    });
+    return () => cancelAnimationFrame(raf);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, allGoalsWithDeadline.length]);
+
+  /* ── Dominant month tracking (reacts to scroll + zoom) ── */
   useEffect(() => {
     const el = containerRef.current;
     if (!el || allGoalsWithDeadline.length === 0) return;
-    const now = new Date();
-    const rangeStart = new Date(
-      Math.min(now.getTime(), new Date(allGoalsWithDeadline[0].deadline!).getTime()) - 30 * DAY_MS
-    );
-    el.scrollLeft = ((now.getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay - el.clientWidth * 0.25;
+    const compute = () => {
+      const visStartMs = rangeStart.getTime() + (el.scrollLeft / pxPerDay) * DAY_MS;
+      const visEndMs   = visStartMs + (el.clientWidth / pxPerDay) * DAY_MS;
+      const counts: Record<string, number> = {};
+      const cur = new Date(visStartMs); cur.setHours(0, 0, 0, 0);
+      const end = new Date(visEndMs);
+      while (cur <= end) {
+        const k = `${cur.getFullYear()}-${cur.getMonth()}`;
+        counts[k] = (counts[k] ?? 0) + 1;
+        cur.setDate(cur.getDate() + 1);
+      }
+      const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      if (best) {
+        const [y, m] = best[0].split('-').map(Number);
+        setDominantMonth(new Date(y, m).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
+      }
+    };
+    compute();
+    el.addEventListener('scroll', compute, { passive: true });
+    return () => el.removeEventListener('scroll', compute);
+  // rangeStart and pxPerDay change when data/zoom changes — reattach listener
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allGoalsWithDeadline.length]);
+  }, [allGoalsWithDeadline.length, pxPerDay]);
 
   /* ── Ctrl+scroll zoom ── */
+  const pxPerDayRef = useRef(pxPerDay);
+  pxPerDayRef.current = pxPerDay;
+  const zoomRAFRef = useRef<number | null>(null);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const handler = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
+      // Only handle when the pointer is inside the timeline root (tl-root ancestor of el)
+      const tlRoot = el.closest('.tl-root') ?? el;
+      if (!tlRoot.contains(e.target as Node)) return;
       e.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const cursorX = e.clientX - rect.left + el.scrollLeft;
-      setPxPerDay((prev) => {
-        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        const next = Math.min(MAX_PPD, Math.max(MIN_PPD, prev * factor));
-        requestAnimationFrame(() => {
-          if (el) el.scrollLeft = (cursorX / prev) * next - (e.clientX - rect.left);
-        });
-        return next;
+      const rect    = el.getBoundingClientRect();
+      const mouseX  = e.clientX - rect.left;          // cursor in viewport space
+      const anchorX = el.scrollLeft + mouseX;          // cursor in canvas space
+
+      const prev   = pxPerDayRef.current;
+      const factor = Math.pow(0.999, e.deltaY);
+      const next   = Math.min(MAX_PPD, Math.max(MIN_PPD, prev * factor));
+      if (next === prev) return;
+
+      pxPerDayRef.current = next;
+      el.scrollLeft = (anchorX / prev) * next - mouseX;
+
+      if (zoomRAFRef.current !== null) cancelAnimationFrame(zoomRAFRef.current);
+      zoomRAFRef.current = requestAnimationFrame(() => {
+        setPxPerDay(next);
+        zoomRAFRef.current = null;
       });
     };
-    el.addEventListener('wheel', handler, { passive: false });
-    return () => el.removeEventListener('wheel', handler);
+    // Must be on document with passive:false so preventDefault() fires before
+    // the browser's native Ctrl+scroll page-zoom handler
+    document.addEventListener('wheel', handler, { passive: false });
+    return () => document.removeEventListener('wheel', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
@@ -280,16 +340,37 @@ export default function TimelinePage({
     if (el) { el.style.cursor = 'grab'; el.style.userSelect = ''; }
   }, []);
 
-  /* ── Select filter styles ── */
-  const selCls = (active: boolean) =>
-    `text-[10px] font-mono px-2 py-1 rounded border bg-surface2 transition-colors outline-none cursor-pointer h-[30px] ${active ? 'border-accent text-heading' : 'border-border text-muted'}`;
+  /* ── Shared filter dropdown (used in both timeline & calendar headers) ── */
+  const sharedFilterDropdown = (projectCategories.length > 0 || projectLoes.length > 0) ? (
+    <FilterDropdown
+      placeholder="Filters"
+      sections={[
+        ...(projectCategories.length > 0 ? [{
+          key: 'category',
+          label: 'Categories',
+          options: projectCategories.map((c) => ({ value: c, label: c })),
+          selected: filterCategories,
+        }] : []),
+        ...(projectLoes.length > 0 ? [{
+          key: 'loe',
+          label: 'LOEs',
+          options: projectLoes.map((l) => ({ value: l, label: l })),
+          selected: filterLoes,
+        }] : []),
+      ]}
+      onChange={(key, selected) => {
+        if (key === 'category') setFilterCategories(selected);
+        else if (key === 'loe') setFilterLoes(selected);
+      }}
+    />
+  ) : null;
 
   /* ─────── Calendar view ─────── */
   if (view === 'calendar') {
     return (
       <div className="tl-cal-wrap flex flex-col">
-        <div className="flex items-center gap-1 px-4 py-2 border border-border bg-surface rounded-t-lg border-b-0 shrink-0">
-          <span className="text-[10px] text-muted uppercase tracking-widest font-mono mr-2">View</span>
+        <div className="flex items-center gap-2 px-4 py-2 border border-border bg-surface rounded-t-lg border-b-0 shrink-0">
+          <span className="text-[10px] text-muted uppercase tracking-widest font-mono mr-1">View</span>
           <button type="button" onClick={() => setView('timeline')}
             className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono text-muted hover:text-heading hover:bg-surface2 transition-colors">
             <Clock size={12} /> Timeline
@@ -298,10 +379,11 @@ export default function TimelinePage({
             className="flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-mono bg-surface2 text-heading transition-colors">
             <CalendarDays size={12} /> Calendar
           </button>
+          {sharedFilterDropdown}
         </div>
         <div className="flex-1 min-h-0">
           <CalendarView
-            goals={goals}
+            goals={filteredGoalsForCalendar}
             members={members}
             projectId={projectId}
             onGoalClick={onGoalClick ?? (() => {})}
@@ -331,8 +413,9 @@ export default function TimelinePage({
 
   /* ─── Sprint rows ─── */
   const sprintRows  = packSprints(sprints);
-  const sprintAreaH = sprintRows.length * SPRINT_H;
-  const headerH     = sprintAreaH + MONTH_H + DAY_H;
+  const sprintAreaH    = sprintRows.length * SPRINT_H;
+  const sprintLabelH   = Math.max(sprintAreaH, SPRINT_H); // always show at least one label row
+  const headerH        = sprintLabelH + DAY_H;
 
   /* ─── Group color map ─── */
   const uniqueGroupKeys  = [...new Set(goalsWithDeadline.map((g) => getGoalGroupKey(g, groupBy, members)))];
@@ -359,7 +442,7 @@ export default function TimelinePage({
     curTop += ROW_H;
   }
   const trackH  = curTop;
-  const canvasH = headerH + trackH + AXIS_H;
+  const canvasH = headerH + trackH;
 
   /* ─── Month + week tick marks ─── */
   const months: { label: string; x: number }[] = [];
@@ -382,8 +465,8 @@ export default function TimelinePage({
   return (
     <div className="tl-root border border-border bg-surface flex flex-col">
 
-      {/* ── Toolbar: view toggle + filters + legend + sprint button ── */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-border flex-wrap shrink-0">
+      {/* ── Toolbar: view toggle + filters + legend ── */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-border shrink-0 overflow-x-auto">
         {/* View toggle */}
         <div className="flex items-center gap-0.5 bg-surface2 rounded p-0.5 shrink-0">
           <button type="button" onClick={() => setView('timeline')}
@@ -396,29 +479,8 @@ export default function TimelinePage({
           </button>
         </div>
 
-        {/* Category filter */}
-        {projectCategories.length > 0 && (
-          <select title="Filter by category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className={selCls(!!filterCategory)}>
-            <option value="">All Categories</option>
-            {projectCategories.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        )}
-
-        {/* LOE filter */}
-        {projectLoes.length > 0 && (
-          <select title="Filter by line of effort" value={filterLoe} onChange={(e) => setFilterLoe(e.target.value)} className={`${selCls(!!filterLoe)} min-w-[11rem]`}>
-            <option value="">All Lines of Effort</option>
-            {projectLoes.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-        )}
-
-        {/* Clear filters */}
-        {(filterCategory || filterLoe) && (
-          <button type="button" onClick={() => { setFilterCategory(''); setFilterLoe(''); }}
-            className="text-[10px] font-mono px-2 py-1 border border-border rounded text-muted hover:text-heading hover:bg-surface2 transition-colors h-[30px]">
-            Clear
-          </button>
-        )}
+        {/* Filters */}
+        {sharedFilterDropdown}
 
         {/* Category color legend */}
         {uniqueGroupKeys.map((key) => {
@@ -433,16 +495,27 @@ export default function TimelinePage({
           );
         })}
 
-        {/* Right side: sprint button + zoom hint */}
+        {/* Right side: reset + zoom hint */}
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={() => setShowSprintForm((v) => !v)}
-            className={`flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 border rounded transition-colors h-[30px] ${
-              showSprintForm ? 'border-accent text-heading bg-surface2' : 'border-border text-muted hover:text-heading hover:bg-surface2'
-            }`}
+            title="Reset zoom and scroll to today"
+            onClick={() => {
+              const el = containerRef.current;
+              const DEFAULT_PPD = 40;
+              setPxPerDay(DEFAULT_PPD);
+              pxPerDayRef.current = DEFAULT_PPD;
+              if (el && allGoalsWithDeadline.length > 0) {
+                const now2 = new Date();
+                const rs = new Date(Math.min(now2.getTime(), new Date(allGoalsWithDeadline[0].deadline!).getTime()) - 30 * DAY_MS);
+                requestAnimationFrame(() => {
+                  el.scrollLeft = ((now2.getTime() - rs.getTime()) / DAY_MS) * DEFAULT_PPD - el.clientWidth * 0.25;
+                });
+              }
+            }}
+            className="text-[9px] font-mono px-2 py-1 border border-border rounded text-muted hover:text-heading hover:bg-surface2 transition-colors h-[24px]"
           >
-            <Layers size={10} /> Sprints <Plus size={9} />
+            Reset View
           </button>
           <span className="text-[9px] text-muted/50 font-mono">Ctrl + scroll to zoom</span>
         </div>
@@ -516,13 +589,25 @@ export default function TimelinePage({
 
           {/* Label column */}
           <div className="tl-label-col shrink-0 border-r border-border bg-surface flex flex-col">
-            {/* Header spacer — height driven by --tl-h CSS var */}
+            {/* Header spacer — sprint label + dominant month cell */}
             <div className="tl-header-row" {...({ style: cv({ '--tl-h': `${headerH}px` }) } as any)}>
-              {sprintAreaH > 0 && (
-                <div className="tl-sprint-label-row" {...({ style: cv({ '--tl-h': `${sprintAreaH}px` }) } as any)}>
-                  <span className="text-[8px] font-mono text-muted/50 uppercase tracking-widest">Phases</span>
-                </div>
-              )}
+              <div className="tl-sprint-label-row" {...({ style: cv({ '--tl-h': `${sprintLabelH}px` }) } as any)}>
+                <span className="text-[8px] font-mono text-muted/60 uppercase tracking-widest">Phases &amp; Sprints</span>
+                <button
+                  type="button"
+                  title="Add phase or sprint"
+                  onClick={() => setShowSprintForm((v) => !v)}
+                  className={`ml-1.5 flex items-center justify-center w-4 h-4 rounded transition-colors ${
+                    showSprintForm ? 'text-accent bg-accent/10' : 'text-muted/50 hover:text-heading hover:bg-surface2'
+                  }`}
+                >
+                  <Plus size={10} />
+                </button>
+              </div>
+              {/* Aligned with day-number row: shows dominant month in view */}
+              <div className="tl-month-label-cell">
+                <span className="text-[9px] font-mono font-semibold text-muted/70 uppercase tracking-wider">{dominantMonth}</span>
+              </div>
             </div>
 
             {groupedRows.map((row, i) => {
@@ -611,16 +696,6 @@ export default function TimelinePage({
                 );
               })}
 
-              {/* ── Weekend shading — dynamic width via CSS var ── */}
-              {Array.from({ length: totalDays }, (_, d) => {
-                const date = new Date(rangeStart.getTime() + d * DAY_MS);
-                if (date.getDay() !== 0 && date.getDay() !== 6) return null;
-                return (
-                  <div key={`w${d}`} className="tl-wknd-shade"
-                    {...({ style: cv({ '--tl-left': `${d * pxPerDay}px`, '--tl-top': `${headerH}px`, '--tl-w': `${pxPerDay}px`, '--tl-h': `${trackH}px` }) } as any)}
-                  />
-                );
-              })}
 
               {/* ── Row dividers + section shading ── */}
               {groupedRows.map((row, i) => (
@@ -629,47 +704,58 @@ export default function TimelinePage({
                   : <div key={`rd${i}`} className="tl-row-div"     {...({ style: cv({ '--tl-top': `${headerH + row.top}px` }) } as any)} />
               ))}
 
-              {/* ── Month labels row ── */}
-              <div className="tl-month-row" {...({ style: cv({ '--tl-top': `${sprintAreaH}px` }) } as any)}>
-                {months.map((m, i) => (
-                  <div key={i} className="tl-month-lbl" {...({ style: cv({ '--tl-left': `${m.x + 4}px` }) } as any)}>
-                    {m.label}
-                  </div>
-                ))}
-              </div>
+              {/* ── Today column shade (behind everything) ── */}
+              {(() => {
+                // Normalize both to local midnight so fractional time-of-day in rangeStart doesn't shift the column
+                const todayMidnight     = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                const rangeStartMidnight = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), rangeStart.getDate()).getTime();
+                const todayDayIdx  = Math.round((todayMidnight - rangeStartMidnight) / DAY_MS);
+                const todayColLeft = todayDayIdx * pxPerDay;
+                return (
+                  <div className="tl-today-col"
+                    {...({ style: cv({ '--tl-left': `${todayColLeft}px`, '--tl-w': `${pxPerDay}px` }) } as any)} />
+                );
+              })()}
 
-              {/* ── Day-number row ── */}
-              <div className="tl-day-row" {...({ style: cv({ '--tl-top': `${sprintAreaH + MONTH_H}px` }) } as any)}>
+              {/* ── Day-number row (directly after sprint area) ── */}
+              <div className="tl-day-row" {...({ style: cv({ '--tl-top': `${sprintLabelH}px` }) } as any)}>
                 {Array.from({ length: totalDays }, (_, d) => {
                   const date      = new Date(rangeStart.getTime() + d * DAY_MS);
                   const dayNum    = date.getDate();
                   const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                  const isToday   = date.toDateString() === now.toDateString();
                   if (pxPerDay < 10 && dayNum !== 1) return null;
-                  if (pxPerDay < 16 && dayNum % 7 !== 1 && dayNum !== 1) return null;
+                  if (pxPerDay < 16 && dayNum % 7 !== 1 && dayNum !== 1 && !isToday) return null;
                   return (
                     <div
                       key={d}
-                      className={`tl-day-num ${isWeekend ? 'tl-day-num--wknd' : 'tl-day-num--wkdy'}`}
+                      className={`tl-day-num ${isToday ? 'tl-day-num--today' : isWeekend ? 'tl-day-num--wknd' : 'tl-day-num--wkdy'}`}
                       {...({ style: cv({ '--tl-left': `${d * pxPerDay + pxPerDay / 2}px` }) } as any)}
                     >
-                      {dayNum}
+                      {isToday ? 'Today' : dayNum}
                     </div>
                   );
                 })}
-              </div>
-
-              {/* ── Today line ── */}
-              <div className="tl-today-line" {...({ style: cv({ '--tl-left': `${todayOff}px` }) } as any)}>
-                <div className="tl-today-label text-[9px] font-mono font-bold tracking-wide">
-                  {now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </div>
+                {/* Weekend cell shading — only inside the day row */}
+                {Array.from({ length: totalDays }, (_, d) => {
+                  const date = new Date(rangeStart.getTime() + d * DAY_MS);
+                  if (date.getDay() !== 0 && date.getDay() !== 6) return null;
+                  return (
+                    <div key={`ws${d}`} className="tl-wknd-cell"
+                      {...({ style: cv({ '--tl-left': `${d * pxPerDay}px`, '--tl-w': `${pxPerDay}px` }) } as any)} />
+                  );
+                })}
               </div>
 
               {/* ── Goal bars ── */}
               {groupedRows.filter((r): r is GoalRow => r.type === 'goal').map((row) => {
                 const { goal }    = row;
-                const deadlineOff = ((new Date(goal.deadline!).getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay;
-                const createdOff  = Math.max(0, ((new Date(goal.created_at).getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay);
+                const deadlineMs  = new Date(goal.deadline!).getTime();
+                const createdMs   = new Date(goal.created_at).getTime();
+                // Always start bar at or before the deadline (guards against created_at > deadline)
+                const startMs     = Math.min(createdMs, deadlineMs);
+                const deadlineOff = ((deadlineMs - rangeStart.getTime()) / DAY_MS) * pxPerDay;
+                const createdOff  = Math.max(0, ((startMs - rangeStart.getTime()) / DAY_MS) * pxPerDay);
                 const barW        = Math.max(deadlineOff - createdOff, 24);
                 const fillW       = (goal.progress / 100) * barW;
                 const barTop      = headerH + row.top + (ROW_H - 18) / 2;
@@ -688,14 +774,6 @@ export default function TimelinePage({
                 );
               })}
 
-              {/* ── Bottom axis ── */}
-              <div className="tl-axis-bot border-t border-border/50" {...({ style: cv({ '--tl-top': `${headerH + trackH}px` }) } as any)}>
-                {weekTicks.map((tick, i) => (
-                  <div key={i} className="tl-tick text-[9px] font-mono text-muted/60" {...({ style: cv({ '--tl-left': `${tick.x}px` }) } as any)}>
-                    {tick.label}
-                  </div>
-                ))}
-              </div>
 
             </div>
           </div>

@@ -43,7 +43,6 @@ import SettingsTab from '../components/project-tabs/SettingsTab';
 import ErrorBoundary from '../components/ErrorBoundary';
 import GoalMetrics from '../components/GoalMetrics';
 import SearchPanel, { type SearchPanelHandle } from '../components/SearchPanel';
-import LogTimeModal from '../components/LogTimeModal';
 import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
 import FileViewerLazy from '../components/FileViewer';
 import OfficeFilePicker from '../components/OfficeFilePicker';
@@ -416,7 +415,7 @@ export default function ProjectDetailPage() {
 
   // Search
   const searchRef = useRef<SearchPanelHandle>(null);
-  const [logTimeGoal, setLogTimeGoal] = useState<import('../types').Goal | null>(null);
+
   const [riskAssessing, setRiskAssessing] = useState(false);
   type RiskEntry = { goalId: string; score: number; level: string; factors: string[] };
   type RiskReport = { assessments: RiskEntry[]; generatedAt: string };
@@ -436,7 +435,7 @@ export default function ProjectDetailPage() {
   const AUDIT_PAGE_SIZE = 25;
 
   // Project-wide time logs
-  const { logs: timeLogs, refetch: refetchTimeLogs } = useProjectTimeLogs(projectId);
+  const { logs: timeLogs } = useProjectTimeLogs(projectId);
   const timeLogTotals = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of timeLogs) m.set(l.goal_id, (m.get(l.goal_id) ?? 0) + l.logged_hours);
@@ -1119,6 +1118,8 @@ export default function ProjectDetailPage() {
           setEditAutoGuidance={setEditAutoGuidance}
           setActiveTab={setActiveTab}
           handlePromoteMember={handlePromoteMember}
+          categoryLabels={projectCategories.map((c) => ({ id: c.id, name: c.name }))}
+          loeLabels={projectLoes.map((l) => ({ id: l.id, name: l.name }))}
         /></ErrorBoundary>
       )}
 
@@ -1183,7 +1184,6 @@ export default function ProjectDetailPage() {
           setEditAutoGuidance={setEditAutoGuidance}
           setActiveTab={setActiveTab}
           goalModalOnOpen={goalModal.onOpen}
-          setLogTimeGoal={setLogTimeGoal}
           createGoal={createGoal}
         /></ErrorBoundary>
       )}
@@ -1437,10 +1437,11 @@ export default function ProjectDetailPage() {
             })}
           </div>
         </div>
-        <div className="flex gap-3 pt-2">
+        <div className="flex gap-3 pt-2 flex-wrap">
           <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
             Create Task
           </button>
+
           <button type="button" onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md">
             Cancel
           </button>
@@ -1486,16 +1487,6 @@ export default function ProjectDetailPage() {
       />
     )}
 
-    {/* Log Time Modal */}
-    {logTimeGoal && (
-      <LogTimeModal
-        goalId={logTimeGoal.id}
-        projectId={projectId!}
-        goalTitle={logTimeGoal.title}
-        onClose={() => setLogTimeGoal(null)}
-        onLogged={() => { setLogTimeGoal(null); refetchTimeLogs(); }}
-      />
-    )}
 
 
     {/* ── File Preview Modal (code files from GitHub/GitLab) ─────────────── */}

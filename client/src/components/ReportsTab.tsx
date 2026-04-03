@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Bot, FileText, Download, BarChart3, Presentation, X, TableIcon } from 'lucide-react';
+import { Send, Loader2, Bot, FileText, Download, BarChart3, Presentation, X, TableIcon, Upload, Sparkles, Trash2 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
 import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
@@ -165,6 +165,12 @@ export default function ReportsTab({
   const [generatingMessage, setGeneratingMessage] = useState<string | null>(null);
   const [streamStatus,     setStreamStatus]     = useState('');
   const [error,            setError]            = useState<string | null>(null);
+
+  // Template upload state
+  const [templateName,        setTemplateName]        = useState<string | null>(null);
+  const [templateDescription, setTemplateDescription] = useState<string | null>(null);
+  const [templateLoading,     setTemplateLoading]     = useState(false);
+  const templateInputRef = useRef<HTMLInputElement>(null);
   const { filePaths } = useProjectFilePaths(githubRepo, gitlabRepos);
   const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string } | null>(null);
 
@@ -210,8 +216,63 @@ export default function ReportsTab({
 
   const buildCombinedPrompt = (userText: string, activeFormat: ReportFormat, from: string, to: string) => {
     const defaultPrompt = buildDefaultPrompt(activeFormat, from, to);
-    if (!userText.trim()) return defaultPrompt;
-    return `${defaultPrompt}\n\nAdditional user instructions:\n${userText.trim()}`;
+    const templateSection = templateDescription
+      ? `\n\nTEMPLATE STYLE REQUIREMENTS (follow these precisely — match the structure, tone, sections, and visual style described below):\n${templateDescription}`
+      : '';
+    const userSection = userText.trim() ? `\n\nAdditional user instructions:\n${userText.trim()}` : '';
+    return `${defaultPrompt}${templateSection}${userSection}`;
+  };
+
+  // ── Template upload handler ───────────────────────────────────────────────
+  const handleTemplateUpload = async (file: File) => {
+    setTemplateLoading(true);
+    setTemplateName(file.name);
+    setTemplateDescription(null);
+    try {
+      // Read the file content to send to AI for style extraction
+      let content = '';
+      try {
+        content = await file.text();
+      } catch {
+        content = `[Binary file: ${file.name}]`;
+      }
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          agent,
+          projectId,
+          messages: [{
+            role: 'user',
+            content: `Analyze this report template file and provide an extremely detailed style guide that an AI can follow to reproduce a report in the exact same style. Describe:\n` +
+              `1. Overall document structure (sections, ordering, hierarchy)\n` +
+              `2. Tone and writing style (formal/informal, technical level, voice)\n` +
+              `3. Formatting conventions (headers, bullet points, numbering, tables)\n` +
+              `4. Visual layout preferences (charts, figures, callout boxes)\n` +
+              `5. Any specific section names or labels used\n` +
+              `6. Length and depth expectations per section\n\n` +
+              `Template file: ${file.name}\n\n${content.slice(0, 30_000)}`,
+          }],
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setTemplateDescription(data.message ?? 'Template analyzed successfully.');
+      } else {
+        setTemplateDescription(`Template "${file.name}" loaded. AI will use this as a style reference.`);
+      }
+    } catch {
+      setTemplateDescription(`Template "${file.name}" loaded. AI will use this as a style reference.`);
+    }
+    setTemplateLoading(false);
+    if (templateInputRef.current) templateInputRef.current.value = '';
   };
 
   const phasesByFormat: Record<ReportFormat, string[]> = {
@@ -537,6 +598,46 @@ export default function ReportsTab({
           )}
         </div>
 
+        {/* Divider */}
+        <span className="w-px bg-border self-stretch shrink-0" />
+
+        {/* Template upload — stacked column filling height */}
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => templateInputRef.current?.click()}
+            disabled={templateLoading}
+            title="Upload a DOCX, PPTX, or PDF template — the AI will extract its style and apply it to generated reports"
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 text-xs border rounded transition-colors ${
+              templateName
+                ? 'border-accent3/40 bg-accent3/10 text-accent3'
+                : 'border-border text-muted hover:text-heading hover:bg-surface2'
+            } disabled:opacity-50`}
+          >
+            {templateLoading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
+            {templateLoading ? 'Analyzing…' : templateName ? 'Template ✓' : 'Template'}
+          </button>
+          {templateName && (
+            <button
+              type="button"
+              onClick={() => { setTemplateName(null); setTemplateDescription(null); }}
+              title="Remove template"
+              className="flex-1 flex items-center justify-center gap-1 text-[10px] border border-border text-muted rounded hover:text-danger hover:border-danger/40 transition-colors"
+            >
+              <Trash2 size={10} /> Clear
+            </button>
+          )}
+          {!templateName && <div className="flex-1" />}
+        </div>
+        <input
+          ref={templateInputRef}
+          type="file"
+          title="Upload report template"
+          accept=".docx,.pptx,.pdf,.doc,.txt,.md"
+          className="hidden"
+          onChange={(e) => { if (e.target.files?.[0]) handleTemplateUpload(e.target.files[0]); }}
+        />
+
         {/* Model note — right-aligned, vertically centred */}
         <span className="ml-auto self-center text-[10px] text-muted font-mono shrink-0 hidden lg:block">
           {activeProviderName
@@ -545,6 +646,26 @@ export default function ReportsTab({
           }
         </span>
       </div>
+
+      {/* Template active banner */}
+      {templateName && templateDescription && !templateLoading && (
+        <div className="border border-accent3/30 bg-accent3/5 rounded px-4 py-2.5 flex items-start gap-2.5 mb-1">
+          <Sparkles size={12} className="text-accent3 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-semibold text-accent3 font-mono">Template active: {templateName}</p>
+            <p className="text-[10px] text-muted mt-0.5 leading-relaxed line-clamp-2">{templateDescription.slice(0, 200)}…</p>
+          </div>
+          <button type="button" title="Remove template" onClick={() => { setTemplateName(null); setTemplateDescription(null); }} className="text-muted hover:text-danger transition-colors shrink-0">
+            <X size={11} />
+          </button>
+        </div>
+      )}
+      {templateLoading && (
+        <div className="border border-border bg-surface2 rounded px-4 py-2.5 flex items-center gap-2.5 mb-1">
+          <Loader2 size={12} className="text-accent animate-spin shrink-0" />
+          <p className="text-[10px] text-muted font-mono">Analyzing template style and structure…</p>
+        </div>
+      )}
 
       {/* Chat area */}
       <div className="flex-1 flex flex-col border border-border bg-surface overflow-hidden min-h-0">
@@ -578,9 +699,18 @@ export default function ReportsTab({
             <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.reportReady ? (
                 <div className="bg-surface2 border border-border rounded p-3 text-xs max-w-[85%] mr-4 space-y-2">
-                  <div className="flex items-center gap-1.5 text-[var(--color-accent3)] font-medium">
-                    <FileText size={11} />
-                    {msg.content}
+                  <div className="flex items-start gap-1.5 text-[var(--color-accent3)] font-medium">
+                    <FileText size={11} className="shrink-0 mt-0.5" />
+                    <MarkdownWithFileLinks
+                      block={false}
+                      filePaths={filePaths}
+                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
+                      githubRepo={githubRepo}
+                      gitlabRepos={gitlabRepos}
+                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
+                    >
+                      {msg.content}
+                    </MarkdownWithFileLinks>
                   </div>
                   <div className="flex items-center gap-2">
                     <button

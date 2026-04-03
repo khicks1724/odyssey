@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { chat, streamChat, getAvailableProviders, isGenAiMilKey, type AIProvider } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, isGenAiMilKey, markProviderError, clearProviderError, type AIProvider } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import { decryptUserKey } from './user-ai-keys.js';
 import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
 
-const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro'];
+const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
 
 // Map AIProvider to the service name stored in user_ai_keys table
 function providerToService(provider: AIProvider): 'anthropic' | 'openai' | 'google' | 'google_ai' {
@@ -174,38 +174,118 @@ Be factual and data-driven. ${MD_STYLE}`,
 Write as a narrative, under 300 words. ${MD_STYLE}`,
 };
 
+// Server-side per-user cache for the providers response — avoids repeated DB
+// decryption and any external lookups on every page load / component mount.
+const providersCache = new Map<string, { result: unknown; ts: number }>();
+const PROVIDERS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
 export async function aiRoutes(server: FastifyInstance) {
   // ── Available providers endpoint ──
-  // Returns server-level availability + per-user key status if authenticated
+  // Returns server-level availability enriched with per-user key detection.
   server.get('/ai/providers', async (request) => {
     const base = getAvailableProviders();
     const authHeader = request.headers['authorization'];
     if (!authHeader?.startsWith('Bearer ')) return { providers: base };
+
+    // Return cached result if fresh enough
+    const cached = providersCache.get(authHeader);
+    if (cached && Date.now() - cached.ts < PROVIDERS_CACHE_TTL_MS) {
+      return cached.result;
+    }
 
     try {
       const token = authHeader.slice(7);
       const { data: { user } } = await supabase.auth.getUser(token);
       if (!user) return { providers: base };
 
+      // Fetch full key rows so we can decrypt and inspect
       const { data: keys } = await supabase
         .from('user_ai_keys')
-        .select('provider')
+        .select('provider, encrypted_key, iv, auth_tag')
         .eq('user_id', user.id);
 
       const userServices = new Set((keys ?? []).map((k: { provider: string }) => k.provider));
 
-      // Map each provider to whether the user has their own key
-      // gemini-pro uses 'google_ai' slot; genai-mil uses 'google' slot
+      // ── Decrypt user's 'google' slot to distinguish STARK vs Google AI Studio ──
+      let userStarkKey: string | undefined;
+      let userGoogleAiKeyPresent = userServices.has('google_ai');
+      const googleRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'google') as
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string } | undefined;
+      if (googleRow) {
+        try {
+          const decrypted = decryptUserKey(googleRow.encrypted_key, googleRow.iv, googleRow.auth_tag);
+          if (isGenAiMilKey(decrypted)) userStarkKey = decrypted;
+        } catch { /* decryption failure — treat as absent */ }
+      }
+
+      // ── GenAI.mil: trust STARK key presence — actual auth failure surfaces on first use ──
+      const genaiMilModel = userStarkKey ? (process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash') : undefined;
+      // Clear any stale error so the key shows READY immediately; real errors re-cache on use
+      if (userStarkKey) clearProviderError('genai-mil');
+
+      // ── Probe Google AI Studio key if present and not STARK ──
+      // If server env key has no credits, propagate that status.
+      // (User key in google_ai slot is probed only if present)
+      let geminiProStatus = base.find((p) => p.id === 'gemini-pro')?.status ?? 'no_key';
+      let geminiProAvailable = base.find((p) => p.id === 'gemini-pro')?.available ?? false;
+      if (userGoogleAiKeyPresent) {
+        // User has their own Google AI Studio key — prefer that, show as linked
+        geminiProAvailable = true;
+        geminiProStatus = 'ready';
+      }
+      // If user's only 'google' key is STARK, gemini-pro is NOT available via that key
+      if (!userGoogleAiKeyPresent && userStarkKey) {
+        geminiProAvailable = false;
+        geminiProStatus = 'no_key';
+      }
+
       const enriched = base.map((p) => {
+        // ── GenAI.mil: STARK key present → READY (errors surface on first actual use) ──
+        if (p.id === 'genai-mil') {
+          const hasCachedError = p.status !== 'ready' && p.status !== 'no_key';
+          const available = !!userStarkKey && !hasCachedError;
+          const status: typeof p.status = userStarkKey
+            ? (hasCachedError ? p.status : 'ready')
+            : 'no_key';
+          return {
+            ...p,
+            available,
+            status,
+            userKeyLinked: !!userStarkKey,
+            keySource: userStarkKey ? 'user' : 'none',
+            ...(genaiMilModel ? { activeModel: genaiMilModel } : {}),
+          };
+        }
+
+        // ── Gemini (Google AI Studio) ──
+        if (p.id === 'gemini-pro') {
+          return {
+            ...p,
+            available: geminiProAvailable,
+            status: geminiProStatus,
+            userKeyLinked: userGoogleAiKeyPresent,
+            keySource: userGoogleAiKeyPresent ? 'user' : (geminiProAvailable ? 'server' : 'none'),
+          };
+        }
+
+        // ── All other providers (Anthropic, OpenAI) ──
+        // If user has their own key, always show READY — server cache errors don't apply to user keys
         const service = providerToService(p.id as AIProvider);
         const hasUserKey = userServices.has(service);
+        const available = hasUserKey || p.available;
+        const status: typeof p.status = hasUserKey ? 'ready' : p.status;
         return {
           ...p,
+          available,
+          status,
           userKeyLinked: hasUserKey,
           keySource: hasUserKey ? 'user' : (p.available ? 'server' : 'none'),
         };
       });
-      return { providers: enriched };
+
+      const result = { providers: enriched };
+      providersCache.set(authHeader, { result, ts: Date.now() });
+      return result;
     } catch {
       return { providers: base };
     }

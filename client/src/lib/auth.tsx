@@ -64,7 +64,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signInWithMicrosoft = async () => {
     await supabase.auth.signInWithOAuth({
       provider: 'azure',
-      options: { redirectTo: getRedirectTo() },
+      options: {
+        redirectTo: getRedirectTo(),
+        scopes: 'openid profile email offline_access',
+        queryParams: {
+          // No domain_hint — lets users choose work/school (AAD) or personal (MSA) accounts
+          prompt: 'select_account',
+        },
+      },
     });
   };
 
