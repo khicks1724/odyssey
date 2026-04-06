@@ -210,7 +210,7 @@ export async function webhookRoutes(server: FastifyInstance) {
 
     const body = request.body as Record<string, unknown>;
 
-    // Find the project by matching github_repo
+    // Find the project by matching any linked GitHub repo
     const repoFullName = (body.repository as { full_name?: string } | undefined)?.full_name;
     if (!repoFullName) {
       return { received: true, skipped: 'No repository info in payload' };
@@ -219,7 +219,7 @@ export async function webhookRoutes(server: FastifyInstance) {
     const { data: projects, error: projectError } = await supabase
       .from('projects')
       .select('id')
-      .eq('github_repo', repoFullName)
+      .or(`github_repo.eq.${repoFullName},github_repos.cs.{${repoFullName}}`)
       .limit(10);
 
     if (projectError) {

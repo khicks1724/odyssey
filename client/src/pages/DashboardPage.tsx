@@ -11,7 +11,7 @@ import {
   Circle,
   GitCommitHorizontal,
 } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight, useRecentCommits, useDashboardHoverDetails } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
 import { getSortMode, sortProjects } from '../lib/project-sort';
@@ -19,6 +19,8 @@ import ContributionGraph from '../components/ContributionGraph';
 import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
 import FilePreviewModal from '../components/FilePreviewModal';
 import RepoTreeModal from '../components/RepoTreeModal';
+import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
+import { getGitHubRepos } from '../lib/github';
 import { supabase } from '../lib/supabase';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 
@@ -75,20 +77,19 @@ function StatHoverCard({
 }
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
   const { stats, loading: statsLoading } = useDashboardStats();
   const { projects: rawProjects } = useProjects();
   const projects = sortProjects(rawProjects, getSortMode());
   const [projectMemberCounts, setProjectMemberCounts] = useState<Record<string, number>>({});
   const { deadlines, loading: deadlinesLoading } = useUpcomingDeadlines();
-  const { data: activityData } = useActivityByDate();
+  const { data: activityData, loading: activityLoading } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
   const { commits: recentCommits, loading: commitsLoading } = useRecentCommits();
   const { tasks: hoverTasks, events: hoverEvents, breakdown, loading: hoverLoading } = useDashboardHoverDetails();
 
   // Repo context for the insight's project
   const [insightGitlabRepos, setInsightGitlabRepos] = useState<string[]>([]);
-  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; projectId?: string | null } | null>(null);
   const [previewFileRef, setPreviewFileRef] = useState<FileRef | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -96,7 +97,8 @@ export default function DashboardPage() {
 
   const insightProject = insight ? projects.find((p) => p.id === insight.project_id) ?? null : null;
   const { filePaths: insightFilePaths, fetchFileContent } = useProjectFilePaths(
-    insightProject?.github_repo,
+    insight?.project_id ?? null,
+    getGitHubRepos(insightProject),
     insightGitlabRepos,
   );
 
@@ -110,8 +112,8 @@ export default function DashboardPage() {
       .maybeSingle()
       .then(({ data }) => {
         if (data?.config) {
-          const cfg = data.config as { repos?: string[]; repo?: string };
-          setInsightGitlabRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
+          const cfg = data.config as GitLabIntegrationConfig;
+          setInsightGitlabRepos(getGitLabRepoPaths(cfg));
         } else {
           setInsightGitlabRepos([]);
         }
@@ -141,7 +143,7 @@ export default function DashboardPage() {
   }, [projects]);
 
   const handleRepoClick = (repo: string, type: 'github' | 'gitlab') =>
-    setRepoTreeTarget({ repo, type });
+    setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? insight?.project_id ?? null : null });
 
   const handleFileClick = async (ref: FileRef) => {
     setPreviewFileRef(ref);
@@ -156,18 +158,6 @@ export default function DashboardPage() {
     } finally {
       setPreviewLoading(false);
     }
-  };
-
-  const handleProjectOpen = (projectId: string) => {
-    navigate(`/projects/${projectId}`);
-  };
-
-  const handleTaskOpen = (projectId: string, goalId: string) => {
-    navigate(`/projects/${projectId}`, { state: { openTab: 'goals', editGoalId: goalId } });
-  };
-
-  const handleEventOpen = (projectId: string) => {
-    navigate(`/projects/${projectId}`, { state: { openTab: 'activity' } });
   };
 
   // Empty file map — dashboard has no local file preview
@@ -206,17 +196,24 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2">
               {projects.slice(0, 6).map((project) => (
-                <button
+                <Link
                   key={project.id}
-                  type="button"
-                  onClick={() => handleProjectOpen(project.id)}
-                  className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors"
+                  to={`/projects/${project.id}`}
+                  className="block w-full border border-border/70 bg-surface2/60 rounded-md px-3 py-2.5 hover:bg-surface2 transition-colors"
                 >
-                  <p className="text-xs text-heading font-sans font-semibold truncate hover:text-accent">{project.name}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="min-w-0 text-xs text-heading font-sans font-semibold leading-snug truncate hover:text-accent">{project.name}</p>
+                    <span className="shrink-0 text-[9px] font-mono text-muted">
+                      {projectMemberCounts[project.id] ?? 1}
+                    </span>
+                  </div>
                   {project.description && (
-                    <p className="text-[10px] text-muted mt-1 line-clamp-2">{project.description}</p>
+                    <p className="text-[10px] text-muted mt-1.5 line-clamp-2 leading-relaxed">{project.description}</p>
                   )}
-                </button>
+                  <p className="text-[9px] text-muted/75 font-mono mt-2">
+                    {new Date(project.created_at).toLocaleDateString()}
+                  </p>
+                </Link>
               ))}
             </div>
           )}
@@ -234,10 +231,10 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2">
               {hoverTasks.slice(0, 5).map((task) => (
-                <button
+                <Link
                   key={task.id}
-                  type="button"
-                  onClick={() => handleTaskOpen(task.projectId, task.id)}
+                  to={`/projects/${task.projectId}`}
+                  state={{ openTab: 'goals', editGoalId: task.id }}
                   className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors"
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -251,7 +248,7 @@ export default function DashboardPage() {
                     {task.category && <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{task.category}</span>}
                     {task.loe && <span className="text-[9px] px-1.5 py-0.5 border border-accent2/30 rounded text-accent2 font-mono uppercase">{task.loe}</span>}
                   </div>
-                </button>
+                </Link>
               ))}
             </div>
           )}
@@ -269,14 +266,14 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2">
               {hoverEvents.slice(0, 5).map((event) => (
-                <button key={event.id} type="button" onClick={() => handleEventOpen(event.projectId)} className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors">
+                <Link key={event.id} to={`/projects/${event.projectId}`} state={{ openTab: 'activity' }} className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-xs text-heading font-sans font-semibold leading-snug">{event.title}</p>
                     <span className="text-[9px] font-mono text-muted shrink-0">{new Date(event.occurredAt).toLocaleDateString()}</span>
                   </div>
                   <p className="text-[10px] text-muted mt-1 truncate">{event.projectName} · {event.source}/{event.eventType}</p>
                   {event.summary && <p className="text-[10px] text-muted/80 mt-1 line-clamp-2">{event.summary}</p>}
-                </button>
+                </Link>
               ))}
             </div>
           )}
@@ -351,8 +348,24 @@ export default function DashboardPage() {
             <Clock size={14} className="text-accent" />
             <h2 className="font-sans text-base font-bold text-heading">Recent Activity</h2>
           </div>
-          <div className="pr-6">
-            <ContributionGraph data={activityData} />
+          <div className="pr-6 min-h-[164px]">
+            {activityLoading ? (
+              <div className="animate-pulse">
+                <div className="h-3 w-40 rounded bg-border/50 mb-4" />
+                <div className="flex items-start gap-2">
+                  <div className="w-8 space-y-2 pt-5">
+                    <div className="h-2 rounded bg-border/40" />
+                    <div className="h-2 rounded bg-border/40" />
+                    <div className="h-2 rounded bg-border/40" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="h-28 rounded-md bg-border/45" />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <ContributionGraph data={activityData} />
+            )}
           </div>
 
           {/* Recent commits feed */}
@@ -422,7 +435,7 @@ export default function DashboardPage() {
                   block
                   filePaths={insightFilePaths}
                   onFileClick={handleFileClick}
-                  githubRepo={insightProject?.github_repo}
+                  githubRepo={getGitHubRepos(insightProject)}
                   gitlabRepos={insightGitlabRepos}
                   onRepoClick={handleRepoClick}
                 >
@@ -442,7 +455,7 @@ export default function DashboardPage() {
                           <MarkdownWithFileLinks
                             filePaths={insightFilePaths}
                             onFileClick={handleFileClick}
-                            githubRepo={insightProject?.github_repo}
+                            githubRepo={getGitHubRepos(insightProject)}
                             gitlabRepos={insightGitlabRepos}
                             onRepoClick={handleRepoClick}
                           >
@@ -474,6 +487,7 @@ export default function DashboardPage() {
         <RepoTreeModal
           repo={repoTreeTarget.repo}
           type={repoTreeTarget.type}
+          projectId={repoTreeTarget.projectId}
           onClose={() => setRepoTreeTarget(null)}
         />
       )}

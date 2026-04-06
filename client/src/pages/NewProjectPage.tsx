@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { Loader2, Plus, LogIn, QrCode, Link2 } from 'lucide-react';
 import { useProjects } from '../hooks/useProjects';
 import { supabase } from '../lib/supabase';
+import { PROJECT_CODE_LENGTH, sanitizeProjectCode } from '../lib/project-code';
 
 type Tab = 'create' | 'join';
 
-// ─── Join by invite code ──────────────────────────────────────────────────────
+// ─── Join by project ID code ─────────────────────────────────────────────────
 function JoinSection() {
   const navigate = useNavigate();
   const [code, setCode]       = useState('');
@@ -15,7 +16,7 @@ function JoinSection() {
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = code.trim().toUpperCase();
+    const trimmed = sanitizeProjectCode(code);
     if (!trimmed) return;
     setJoining(true);
     setResult(null);
@@ -46,11 +47,11 @@ function JoinSection() {
 
   return (
     <div className="space-y-8">
-      {/* Invite code */}
+      {/* Project ID code */}
       <div>
         <div className="flex items-center gap-2 mb-2">
           <Link2 size={14} className="text-accent2" />
-          <h3 className="font-sans text-sm font-bold text-heading">Enter Invite Code</h3>
+          <h3 className="font-sans text-sm font-bold text-heading">Enter Project ID</h3>
         </div>
         <p className="text-[11px] text-muted mb-4">
           Ask the project owner for their project ID code.
@@ -58,15 +59,15 @@ function JoinSection() {
         <form onSubmit={handleJoin} className="flex gap-2 max-w-sm">
           <input
             value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            placeholder="XXXXXXXX"
-            maxLength={8}
+            onChange={(e) => setCode(sanitizeProjectCode(e.target.value))}
+            placeholder="PROJECT ID CODE"
+            maxLength={PROJECT_CODE_LENGTH}
             autoFocus
-            className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono tracking-widest placeholder:text-muted/40 placeholder:tracking-normal focus:outline-none focus:border-accent2/50 transition-colors"
+            className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono tracking-[0.18em] placeholder:text-muted/40 placeholder:tracking-normal focus:outline-none focus:border-accent2/50 transition-colors uppercase"
           />
           <button
             type="submit"
-            disabled={joining || code.trim().length < 20}
+            disabled={joining || code.trim().length < PROJECT_CODE_LENGTH}
             className="px-5 py-3 bg-accent2/10 border border-accent2/30 text-accent2 text-xs font-semibold tracking-wider uppercase hover:bg-accent2/20 transition-colors disabled:opacity-50 flex items-center gap-2"
           >
             {joining ? <Loader2 size={12} className="animate-spin" /> : <LogIn size={12} />}
@@ -89,12 +90,12 @@ function JoinSection() {
         </div>
         <p className="text-[11px] text-muted">
           Project owners can generate a time-limited QR code in their project settings. Scanning it
-          will authenticate you via GitHub and join (or request to join) the project automatically.
+          will authenticate you and send a join request to the project owners automatically.
         </p>
         <div className="mt-3 flex items-center gap-2 text-[10px] text-muted/60 font-mono">
           <span>· Scan with camera</span>
-          <span>· Authenticate with GitHub</span>
-          <span>· Instant access</span>
+          <span>· Authenticate</span>
+          <span>· Owner approval</span>
         </div>
       </div>
     </div>
@@ -139,7 +140,7 @@ export default function NewProjectPage() {
         <p className="text-sm text-muted mt-1">
           {tab === 'create'
             ? 'Give your project a name and start tracking everything in one place.'
-            : 'Use an invite code or QR code to join a project shared with you.'}
+            : 'Use a project ID code or QR code to join a project shared with you.'}
         </p>
       </div>
 

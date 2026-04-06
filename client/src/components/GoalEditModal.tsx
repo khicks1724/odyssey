@@ -36,7 +36,7 @@ interface GoalEditModalProps {
   autoGuidance?: boolean;
   allGoals?: Goal[];
   filePaths?: Map<string, FileRef>;
-  githubRepo?: string | null;
+  githubRepo?: string | string[] | null;
   gitlabRepos?: string[];
   projectCategories?: string[];
   projectLoes?: string[];

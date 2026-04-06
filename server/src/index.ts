@@ -12,6 +12,8 @@ import { microsoftRoutes } from './routes/microsoft.js';
 import { uploadRoutes } from './routes/uploads.js';
 import { gitlabRoutes } from './routes/gitlab.js';
 import { userAiKeysRoutes } from './routes/user-ai-keys.js';
+import { authRoutes } from './routes/auth.js';
+import { supabaseProxyRoutes } from './routes/supabase-proxy.js';
 import { getAvailableProviders } from './ai-providers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,8 +44,10 @@ await server.register(microsoftRoutes, { prefix: '/api' });
 await server.register(uploadRoutes, { prefix: '/api' });
 await server.register(gitlabRoutes, { prefix: '/api' });
 await server.register(userAiKeysRoutes, { prefix: '/api' });
+await server.register(authRoutes, { prefix: '/api' });
+await server.register(supabaseProxyRoutes);
 
-const port = Number(process.env.PORT) || 3001;
+const port = Number(process.env.PORT) || 3000;
 const host = process.env.HOST ?? '0.0.0.0';
 
 try {
@@ -55,12 +59,11 @@ try {
   const inactive = providers.filter((p) => !p.available).map((p) => p.name);
   if (active.length > 0) console.log(`AI providers active: ${active.join(', ')}`);
   if (inactive.length > 0) console.log(`AI providers inactive (no API key): ${inactive.join(', ')}`);
-  if (active.length === 0) console.warn('WARNING: No AI providers configured — set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_AI_API_KEY');
+  if (active.length === 0) console.warn('WARNING: No AI providers configured yet — users need to add provider keys in Settings → AI Providers');
   if (!process.env.GITHUB_WEBHOOK_SECRET) console.warn('WARNING: GITHUB_WEBHOOK_SECRET not set — webhook signature verification disabled');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
-  if (process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN) console.log('GitLab integration active');
-  else console.warn('WARNING: GITLAB_TOKEN not set — GitLab integration disabled');
+  console.log('GitLab integration uses per-project repository URLs and personal access tokens');
   console.log(`Supabase service key loaded: ${process.env.SUPABASE_SERVICE_KEY ? 'YES' : 'NO'}`);
 } catch (err) {
   server.log.error(err);

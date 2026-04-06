@@ -1,8 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { X, ExternalLink, Loader2, AlertTriangle, Copy, Check } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import type { SyntaxHighlighterProps } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import LazySyntaxCodeBlock from './LazySyntaxCodeBlock';
 
 const API_BASE = '/api';
 
@@ -64,6 +62,7 @@ interface FileViewerProps {
   /** For GitHub: "owner/repo"; for GitLab: the encoded repo path */
   repo: string;
   path: string;
+  projectId?: string | null;
   /** GitHub: optional token passed as x-github-token header */
   githubToken?: string;
   /** Link to open on GitHub/GitLab directly */
@@ -71,7 +70,7 @@ interface FileViewerProps {
   onClose: () => void;
 }
 
-export default function FileViewer({ source, repo, path, githubToken, externalUrl, onClose }: FileViewerProps) {
+export default function FileViewer({ source, repo, path, projectId, githubToken, externalUrl, onClose }: FileViewerProps) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +92,7 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
       url = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/file?path=${encodeURIComponent(path)}`;
       if (githubToken) headers['x-github-token'] = githubToken;
     } else {
-      url = `${API_BASE}/gitlab/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
+      url = `${API_BASE}/gitlab/file?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
     }
 
     fetch(url, { headers })
@@ -104,7 +103,7 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
-  }, [source, repo, path, githubToken]);
+  }, [source, repo, path, projectId, githubToken]);
 
   const handleCopy = () => {
     if (!content) return;
@@ -117,7 +116,7 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
   const lineCount = content?.split('\n').length ?? 0;
 
   // Custom style overrides — use app surface color so it matches the theme
-  const highlighterStyle: SyntaxHighlighterProps['customStyle'] = {
+  const highlighterStyle: CSSProperties = {
     margin: 0,
     padding: '1rem 0',
     background: 'transparent',
@@ -199,16 +198,15 @@ export default function FileViewer({ source, repo, path, githubToken, externalUr
             </div>
           )}
           {!loading && !error && content !== null && (
-            <SyntaxHighlighter
+            <LazySyntaxCodeBlock
               language={lang}
-              style={oneDark}
               customStyle={highlighterStyle}
               showLineNumbers
               lineNumberStyle={{ color: '#636d83', minWidth: '3.5em', paddingRight: '1.5em', userSelect: 'none', fontSize: '11px' }}
               wrapLongLines={false}
             >
               {content}
-            </SyntaxHighlighter>
+            </LazySyntaxCodeBlock>
           )}
         </div>
       </div>

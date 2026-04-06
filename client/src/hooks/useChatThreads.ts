@@ -18,16 +18,32 @@ export interface ChatThreadPreview {
   created_at: string;
 }
 
+export interface ChatThreadState {
+  thread_id: string;
+  last_read_at: string | null;
+  hidden_at: string | null;
+  unread_count: number;
+}
+
 export function useChatThreads() {
   const { user } = useAuth();
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [threadIds, setThreadIds] = useState<string[]>([]);
   const [participantsByThread, setParticipantsByThread] = useState<Record<string, ChatParticipant[]>>({});
   const [lastMessageByThread, setLastMessageByThread] = useState<Record<string, ChatThreadPreview | null>>({});
+  const [threadStateByThread, setThreadStateByThread] = useState<Record<string, ChatThreadState>>({});
   const [loading, setLoading] = useState(true);
 
   const fetchThreads = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setThreads([]);
+      setThreadIds([]);
+      setParticipantsByThread({});
+      setLastMessageByThread({});
+      setThreadStateByThread({});
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     const syncResult = await supabase.rpc('sync_my_project_chat_memberships');
     if (syncResult.error) {
@@ -53,7 +69,7 @@ export function useChatThreads() {
     }
     const threadIds = ids;
 
-    const [{ data: threadsData }, { data: memberRows }, { data: previewRows }] = await Promise.all([
+    const [{ data: threadsData }, { data: memberRows }, { data: previewRows }, { data: stateRows }] = await Promise.all([
       supabase.from('chat_threads').select('*').in('id', threadIds).order('updated_at', { ascending: false }),
       supabase.from('chat_thread_members').select('thread_id, user_id').in('thread_id', threadIds),
       supabase
@@ -61,9 +77,25 @@ export function useChatThreads() {
         .select('id, thread_id, sender_id, role, content, created_at')
         .in('thread_id', threadIds)
         .order('created_at', { ascending: false }),
+      supabase
+        .from('chat_thread_user_state')
+        .select('thread_id, last_read_at, hidden_at')
+        .eq('user_id', user.id)
+        .in('thread_id', threadIds),
     ]);
 
-    setThreads((threadsData ?? []) as ChatThread[]);
+    const rawThreads = (threadsData ?? []) as ChatThread[];
+    const stateMap = new Map(
+      (stateRows ?? []).map((row) => [
+        row.thread_id,
+        {
+          thread_id: row.thread_id,
+          last_read_at: row.last_read_at,
+          hidden_at: row.hidden_at,
+          unread_count: 0,
+        } satisfies ChatThreadState,
+      ]),
+    );
 
     const memberIds = [...new Set((memberRows ?? []).map((row) => row.user_id))];
     const { data: profiles } = memberIds.length
@@ -90,6 +122,30 @@ export function useChatThreads() {
       return acc;
     }, {});
     setLastMessageByThread(nextPreviews);
+    const unreadCounts = (previewRows ?? []).reduce<Record<string, number>>((acc, row) => {
+      if (row.sender_id === user.id) return acc;
+      const lastReadAt = stateMap.get(row.thread_id)?.last_read_at;
+      if (!lastReadAt || row.created_at > lastReadAt) {
+        acc[row.thread_id] = (acc[row.thread_id] ?? 0) + 1;
+      }
+      return acc;
+    }, {});
+
+    const nextThreadState = rawThreads.reduce<Record<string, ChatThreadState>>((acc, thread) => {
+      const existing = stateMap.get(thread.id);
+      acc[thread.id] = {
+        thread_id: thread.id,
+        last_read_at: existing?.last_read_at ?? null,
+        hidden_at: existing?.hidden_at ?? null,
+        unread_count: unreadCounts[thread.id] ?? 0,
+      };
+      return acc;
+    }, {});
+
+    setThreadStateByThread(nextThreadState);
+    setThreads(
+      rawThreads.filter((thread) => !(thread.kind === 'direct' && nextThreadState[thread.id]?.hidden_at)),
+    );
     setLoading(false);
   }, [user]);
 
@@ -100,10 +156,35 @@ export function useChatThreads() {
 
   useEffect(() => {
     if (!user) return;
+    const handleRefresh = () => { void fetchThreads(); };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchThreads();
+      }
+    };
+    window.addEventListener('focus', handleRefresh);
+    window.addEventListener('odyssey:projects-changed', handleRefresh);
+    document.addEventListener('visibilitychange', handleVisibility);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void fetchThreads();
+      }
+    }, 10000);
+    return () => {
+      window.removeEventListener('focus', handleRefresh);
+      window.removeEventListener('odyssey:projects-changed', handleRefresh);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.clearInterval(interval);
+    };
+  }, [user, fetchThreads]);
+
+  useEffect(() => {
+    if (!user) return;
     const channel = supabase
       .channel(`chat-threads:${user.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_threads' }, () => fetchThreads())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_thread_members', filter: `user_id=eq.${user.id}` }, () => fetchThreads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_thread_user_state', filter: `user_id=eq.${user.id}` }, () => fetchThreads())
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
@@ -118,12 +199,32 @@ export function useChatThreads() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
         const row = payload.new as ChatThreadPreview;
         if (!threadIds.includes(row.thread_id)) return;
+        setThreads((prev) => {
+          const match = prev.find((thread) => thread.id === row.thread_id);
+          if (!match) return prev;
+          const next = [{ ...match, updated_at: row.created_at }, ...prev.filter((thread) => thread.id !== row.thread_id)];
+          return next;
+        });
         setLastMessageByThread((prev) => {
           const existing = prev[row.thread_id];
           if (!existing || row.created_at > existing.created_at) {
             return { ...prev, [row.thread_id]: row };
           }
           return prev;
+        });
+        setThreadStateByThread((prev) => {
+          const existing = prev[row.thread_id];
+          if (!existing) return prev;
+          const hiddenReset = existing.hidden_at ? { hidden_at: null } : {};
+          const unreadIncrement = row.sender_id && row.sender_id !== user.id ? 1 : 0;
+          return {
+            ...prev,
+            [row.thread_id]: {
+              ...existing,
+              ...hiddenReset,
+              unread_count: (existing.unread_count ?? 0) + unreadIncrement,
+            },
+          };
         });
       })
       .subscribe();
@@ -148,13 +249,47 @@ export function useChatThreads() {
     setThreads((prev) => prev.map((thread) => (thread.id === threadId ? { ...thread, ...updates } : thread)));
   };
 
+  const markThreadRead = async (threadId: string) => {
+    if (!user) return;
+    const { data, error } = await supabase.rpc('mark_chat_thread_read', { p_thread_id: threadId });
+    if (error) throw error;
+    if ((data as { error?: string } | null)?.error) throw new Error((data as { error: string }).error);
+    const now = new Date().toISOString();
+    setThreadStateByThread((prev) => ({
+      ...prev,
+      [threadId]: {
+        thread_id: threadId,
+        last_read_at: now,
+        hidden_at: null,
+        unread_count: 0,
+      },
+    }));
+  };
+
+  const hideDirectThread = async (threadId: string) => {
+    const { data, error } = await supabase.rpc('hide_direct_chat_thread', { p_thread_id: threadId });
+    if (error) throw error;
+    if ((data as { error?: string } | null)?.error) throw new Error((data as { error: string }).error);
+    setThreads((prev) => prev.filter((thread) => thread.id !== threadId));
+    setThreadStateByThread((prev) => ({
+      ...prev,
+      [threadId]: {
+        ...(prev[threadId] ?? { thread_id: threadId, last_read_at: null, unread_count: 0 }),
+        hidden_at: new Date().toISOString(),
+      },
+    }));
+  };
+
   return {
     threads,
     participantsByThread,
     lastMessageByThread,
+    threadStateByThread,
     loading,
     createDirectThread,
     updateThread,
+    markThreadRead,
+    hideDirectThread,
     refetch: fetchThreads,
   };
 }
@@ -189,8 +324,23 @@ export function useChatMessages(threadId: string | null) {
     if (!threadId) return;
     const channel = supabase
       .channel(`chat-messages:${threadId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages', filter: `thread_id=eq.${threadId}` }, () => {
-        fetchMessages();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages', filter: `thread_id=eq.${threadId}` }, (payload) => {
+        if (payload.eventType === 'INSERT') {
+          const next = payload.new as ChatMessageRow;
+          setMessages((prev) => (prev.some((msg) => msg.id === next.id) ? prev : [...prev, next]));
+          return;
+        }
+        if (payload.eventType === 'UPDATE') {
+          const next = payload.new as ChatMessageRow;
+          setMessages((prev) => prev.map((msg) => (msg.id === next.id ? next : msg)));
+          return;
+        }
+        if (payload.eventType === 'DELETE') {
+          const oldRow = payload.old as ChatMessageRow;
+          setMessages((prev) => prev.filter((msg) => msg.id !== oldRow.id));
+          return;
+        }
+        void fetchMessages();
       })
       .subscribe();
 
@@ -211,7 +361,7 @@ export function useChatMessages(threadId: string | null) {
       .select()
       .single();
     if (error) throw error;
-    setMessages((prev) => [...prev, data as ChatMessageRow]);
+    setMessages((prev) => (prev.some((msg) => msg.id === data.id) ? prev : [...prev, data as ChatMessageRow]));
     return data as ChatMessageRow;
   };
 

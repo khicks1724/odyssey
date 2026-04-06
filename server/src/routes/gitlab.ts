@@ -1,29 +1,161 @@
 import type { FastifyInstance } from 'fastify';
 import { supabase } from '../lib/supabase.js';
 
-const ENV_GITLAB_TOKEN = process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN ?? '';
-const ENV_GITLAB_HOST  = process.env.GITLAB_HOST ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+interface GitLabIntegrationConfig {
+  repoUrl?: string;
+  repoPath?: string;
+  repo?: string;
+  repos?: string[];
+  token?: string;
+  host?: string;
+}
 
-// Keep legacy exports for code that still references the module-level constants
-const GITLAB_TOKEN = ENV_GITLAB_TOKEN;
-const GITLAB_HOST  = ENV_GITLAB_HOST;
+interface GitLabAccess {
+  repoPath: string;
+  repoUrl: string;
+  token: string;
+  host: string;
+}
 
-async function glGet(repo: string, path: string, token?: string, host?: string): Promise<unknown> {
-  const effectiveToken = token || ENV_GITLAB_TOKEN;
-  const effectiveHost  = host  || ENV_GITLAB_HOST;
-  const encoded = encodeURIComponent(repo);
+function normalizeGitLabHost(host: string): string {
+  return host.trim().replace(/\/+$/, '');
+}
+
+function buildGitLabRepoUrl(host: string, repoPath: string): string {
+  return `${normalizeGitLabHost(host)}/${repoPath.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function getGitLabRepoPath(config: GitLabIntegrationConfig | null | undefined): string {
+  const repoPath = config?.repoPath?.trim()
+    || config?.repo?.trim()
+    || config?.repos?.find((value) => value.trim().length > 0)?.trim()
+    || '';
+  return repoPath.replace(/^\/+|\/+$/g, '');
+}
+
+function getGitLabRepoPaths(config: GitLabIntegrationConfig | null | undefined): string[] {
+  const repoPath = config?.repoPath?.trim();
+  const repos = (config?.repos ?? []).map((value) => value.trim()).filter(Boolean);
+  const repo = config?.repo?.trim();
+  return [...new Set([repoPath, ...repos, repo].filter((value): value is string => !!value))];
+}
+
+function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): string {
+  if (config?.host?.trim()) return normalizeGitLabHost(config.host);
+  if (config?.repoUrl?.trim()) {
+    try {
+      return normalizeGitLabHost(new URL(config.repoUrl).origin);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function parseGitLabRepoUrl(input: string): { host: string; repoPath: string; repoUrl: string } {
+  let url: URL;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    throw new Error('Repository URL must be a valid full HTTPS URL.');
+  }
+
+  if (url.protocol !== 'https:') {
+    throw new Error('Repository URL must start with https://');
+  }
+
+  const repoPath = url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
+  if (!repoPath || !repoPath.includes('/')) {
+    throw new Error('Repository URL must include the full GitLab project path.');
+  }
+
+  const host = normalizeGitLabHost(url.origin);
+  return {
+    host,
+    repoPath,
+    repoUrl: buildGitLabRepoUrl(host, repoPath),
+  };
+}
+
+async function getGitLabIntegration(projectId: string) {
+  const { data, error } = await supabase
+    .from('integrations')
+    .select('id, config')
+    .eq('project_id', projectId)
+    .eq('type', 'gitlab')
+    .maybeSingle();
+
+  if (error) throw error;
+  return data as { id: string; config: GitLabIntegrationConfig | null } | null;
+}
+
+async function saveGitLabIntegration(projectId: string, config: GitLabIntegrationConfig) {
+  const existing = await getGitLabIntegration(projectId);
+  if (existing?.id) {
+    const { error } = await supabase
+      .from('integrations')
+      .update({ config })
+      .eq('id', existing.id);
+    return error;
+  }
+
+  const { error } = await supabase
+    .from('integrations')
+    .insert({ project_id: projectId, type: 'gitlab', config });
+  return error;
+}
+
+async function resolveGitLabAccess(input: {
+  projectId?: string;
+  repo?: string;
+  tokenHeader?: string;
+  hostHeader?: string;
+}): Promise<GitLabAccess | null> {
+  const requestedRepo = input.repo?.trim().replace(/^\/+|\/+$/g, '') ?? '';
+
+  if (input.projectId?.trim()) {
+    const integration = await getGitLabIntegration(input.projectId.trim());
+    const config = (integration?.config ?? null) as GitLabIntegrationConfig | null;
+    const repoPath = requestedRepo || getGitLabRepoPath(config);
+    const token = config?.token?.trim() ?? '';
+    const host = getGitLabHost(config);
+    if (!repoPath || !token || !host) return null;
+    return {
+      repoPath,
+      token,
+      host,
+      repoUrl: config?.repoUrl?.trim() || buildGitLabRepoUrl(host, repoPath),
+    };
+  }
+
+  const token = input.tokenHeader?.trim() ?? '';
+  const host = input.hostHeader?.trim() ? normalizeGitLabHost(input.hostHeader) : '';
+  if (!requestedRepo || !token || !host) return null;
+
+  return {
+    repoPath: requestedRepo,
+    token,
+    host,
+    repoUrl: buildGitLabRepoUrl(host, requestedRepo),
+  };
+}
+
+async function glGet(repoPath: string, path: string, token: string, host: string): Promise<unknown> {
+  if (!token) throw new Error('GitLab token not configured for this project');
+  if (!host) throw new Error('GitLab host not configured for this project');
+
+  const encoded = encodeURIComponent(repoPath);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const res = await fetch(`${effectiveHost}/api/v4/projects/${encoded}${path}`, {
-      headers: { 'PRIVATE-TOKEN': effectiveToken },
+    const res = await fetch(`${host}/api/v4/projects/${encoded}${path}`, {
+      headers: { 'PRIVATE-TOKEN': token },
       signal: controller.signal,
     });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`GitLab ${res.status}: ${body.slice(0, 300)}`);
     }
-    // README comes back as plain text; everything else is JSON
     const ct = res.headers.get('content-type') ?? '';
     return ct.includes('application/json') ? res.json() : res.text();
   } finally {
@@ -31,21 +163,30 @@ async function glGet(repo: string, path: string, token?: string, host?: string):
   }
 }
 
+async function requireProjectAccess(projectId: string, userId: string): Promise<boolean> {
+  const [{ data: project }, { data: membership }] = await Promise.all([
+    supabase.from('projects').select('owner_id').eq('id', projectId).maybeSingle(),
+    supabase.from('project_members').select('user_id').eq('project_id', projectId).eq('user_id', userId).maybeSingle(),
+  ]);
+  return project?.owner_id === userId || !!membership;
+}
+
 export async function gitlabRoutes(server: FastifyInstance) {
-  // ── Recent commits + README (used by AI endpoints) ─────────────────────────
-  server.get<{ Querystring: { repo: string } }>('/gitlab/recent', async (request, reply) => {
-    const { repo } = request.query;
-    if (!repo) return reply.status(400).send({ error: 'repo required' });
-    const token = (request.headers['x-gitlab-token'] as string | undefined) || ENV_GITLAB_TOKEN;
-    const host  = (request.headers['x-gitlab-host']  as string | undefined) || ENV_GITLAB_HOST;
-    if (!token) return reply.status(503).send({ error: 'GitLab token not configured on server' });
+  server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/recent', async (request, reply) => {
+    const access = await resolveGitLabAccess({
+      projectId: request.query.projectId,
+      repo: request.query.repo,
+      tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
+      hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+    });
+    if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
     const [commitsResult, readmeResult] = await Promise.allSettled([
-      glGet(repo, '/repository/commits?per_page=30&order_by=created&sort=desc', token, host),
-      glGet(repo, '/repository/files/README.md/raw?ref=HEAD', token, host),
+      glGet(access.repoPath, '/repository/commits?per_page=30&order_by=created&sort=desc', access.token, access.host),
+      glGet(access.repoPath, '/repository/files/README.md/raw?ref=HEAD', access.token, access.host),
     ]);
 
-    type GLCommit = { created_at: string; title: string; author_name: string; web_url: string; short_id: string };
+    type GLCommit = { created_at: string; title: string; author_name: string };
     const commits = commitsResult.status === 'fulfilled'
       ? (commitsResult.value as GLCommit[]).map((c) =>
           `[${c.created_at.slice(0, 10)}] ${c.title} — ${c.author_name}`
@@ -53,20 +194,20 @@ export async function gitlabRoutes(server: FastifyInstance) {
       : [];
 
     const readme = readmeResult.status === 'fulfilled' ? String(readmeResult.value).slice(0, 3000) : '';
-
-    return { commits, readme, host: GITLAB_HOST };
+    return { commits, readme, host: access.host, repo: access.repoPath, repoUrl: access.repoUrl };
   });
 
-  // ── Repo metadata ──────────────────────────────────────────────────────────
-  server.get<{ Querystring: { repo: string } }>('/gitlab/info', async (request, reply) => {
-    const { repo } = request.query;
-    if (!repo) return reply.status(400).send({ error: 'repo required' });
-    const token = (request.headers['x-gitlab-token'] as string | undefined) || ENV_GITLAB_TOKEN;
-    const host  = (request.headers['x-gitlab-host']  as string | undefined) || ENV_GITLAB_HOST;
-    if (!token) return reply.status(503).send({ error: 'GitLab token not configured on server' });
+  server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/info', async (request, reply) => {
+    const access = await resolveGitLabAccess({
+      projectId: request.query.projectId,
+      repo: request.query.repo,
+      tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
+      hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+    });
+    if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
     try {
-      const data = await glGet(repo, '', token, host) as {
+      const data = await glGet(access.repoPath, '', access.token, access.host) as {
         name_with_namespace: string;
         description: string | null;
         web_url: string;
@@ -93,17 +234,18 @@ export async function gitlabRoutes(server: FastifyInstance) {
     }
   });
 
-  // ── Repo file tree ─────────────────────────────────────────────────────────
-  server.get<{ Querystring: { repo: string } }>('/gitlab/tree', async (request, reply) => {
-    const { repo } = request.query;
-    if (!repo) return reply.status(400).send({ error: 'repo required' });
-    const token = (request.headers['x-gitlab-token'] as string | undefined) || ENV_GITLAB_TOKEN;
-    const host  = (request.headers['x-gitlab-host']  as string | undefined) || ENV_GITLAB_HOST;
-    if (!token) return reply.status(503).send({ error: 'GitLab token not configured on server' });
+  server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/tree', async (request, reply) => {
+    const access = await resolveGitLabAccess({
+      projectId: request.query.projectId,
+      repo: request.query.repo,
+      tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
+      hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+    });
+    if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
     try {
       type GLTreeEntry = { id: string; name: string; type: string; path: string; mode: string };
-      const encoded = encodeURIComponent(repo);
+      const encoded = encodeURIComponent(access.repoPath);
       const files: GLTreeEntry[] = [];
       let page = 1;
 
@@ -112,8 +254,8 @@ export async function gitlabRoutes(server: FastifyInstance) {
         const timeout = setTimeout(() => controller.abort(), 10_000);
         try {
           const res = await fetch(
-            `${host}/api/v4/projects/${encoded}/repository/tree?recursive=true&per_page=100&page=${page}`,
-            { headers: { 'PRIVATE-TOKEN': token }, signal: controller.signal },
+            `${access.host}/api/v4/projects/${encoded}/repository/tree?recursive=true&per_page=100&page=${page}`,
+            { headers: { 'PRIVATE-TOKEN': access.token }, signal: controller.signal },
           );
           if (!res.ok) {
             const body = await res.text();
@@ -143,73 +285,79 @@ export async function gitlabRoutes(server: FastifyInstance) {
     }
   });
 
-  // ── Link a GitLab repo to a project ───────────────────────────────────────
-  server.post<{ Body: { projectId: string; repo: string; token?: string; host?: string } }>('/gitlab/link', async (request, reply) => {
+  server.post<{ Body: { projectId: string; repoUrl: string; token?: string } }>('/gitlab/link', async (request, reply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
     const { data: { user }, error: authErr } = await supabase.auth.getUser(authHeader.slice(7));
     if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
 
-    const { projectId, repo, token: bodyToken, host: bodyHost } = request.body;
-    if (!projectId || !repo) return reply.status(400).send({ error: 'projectId and repo are required' });
+    const { projectId, repoUrl, token: providedToken } = request.body;
+    if (!projectId || !repoUrl?.trim()) return reply.status(400).send({ error: 'projectId and repoUrl are required' });
 
-    // Use user-provided token/host, fall back to server env
-    const effectiveToken = bodyToken?.trim() || ENV_GITLAB_TOKEN;
-    const effectiveHost  = bodyHost?.trim()  || ENV_GITLAB_HOST;
+    const hasAccess = await requireProjectAccess(projectId, user.id);
+    if (!hasAccess) return reply.status(403).send({ error: 'Not a member of this project' });
 
-    // Verify membership
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase.from('project_members').select('user_id').eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) return reply.status(403).send({ error: 'Not a member of this project' });
-
-    // Validate repo is reachable before saving
-    if (effectiveToken) {
-      try {
-        await glGet(repo, '', effectiveToken, effectiveHost);
-      } catch {
-        return reply.status(422).send({ error: `Cannot reach GitLab repo "${repo}" — check the path, token, and host.` });
-      }
+    let parsedRepo: { host: string; repoPath: string; repoUrl: string };
+    try {
+      parsedRepo = parseGitLabRepoUrl(repoUrl);
+    } catch (err) {
+      return reply.status(422).send({ error: err instanceof Error ? err.message : 'Invalid repository URL' });
     }
 
-    // Read existing repos (support old single-repo format), preserve existing token/host if not provided
-    const { data: existing } = await supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle();
-    const existingCfg = existing?.config as { repos?: string[]; repo?: string; token?: string; host?: string } | null;
-    const existingRepos: string[] = existingCfg?.repos ?? (existingCfg?.repo ? [existingCfg.repo] : []);
-    if (!existingRepos.includes(repo)) existingRepos.push(repo);
-
-    const configToSave: Record<string, unknown> = {
-      repos: existingRepos,
-      host: effectiveHost,
-    };
-    // Only store token if user explicitly provided one (don't store empty string)
-    const tokenToStore = bodyToken?.trim() || existingCfg?.token || '';
-    if (tokenToStore) configToSave['token'] = tokenToStore;
-
-    const { error: dbErr } = await supabase.from('integrations').upsert(
-      { project_id: projectId, type: 'gitlab', config: configToSave },
-      { onConflict: 'project_id,type' },
-    );
-    if (dbErr) return reply.status(500).send({ error: dbErr.message });
-    return { linked: true, repos: existingRepos, host: effectiveHost };
-  });
-
-  // ── Fetch raw file content ─────────────────────────────────────────────────
-  server.get<{ Querystring: { repo: string; path: string } }>('/gitlab/file', async (request, reply) => {
-    const { repo, path } = request.query;
-    if (!repo || !path) return reply.status(400).send({ error: 'repo and path required' });
-    const token = (request.headers['x-gitlab-token'] as string | undefined) || ENV_GITLAB_TOKEN;
-    const host  = (request.headers['x-gitlab-host']  as string | undefined) || ENV_GITLAB_HOST;
-    if (!token) return reply.status(503).send({ error: 'GitLab token not configured on server' });
+    const existing = await getGitLabIntegration(projectId);
+    const existingConfig = (existing?.config ?? null) as GitLabIntegrationConfig | null;
+    const effectiveToken = providedToken?.trim() || existingConfig?.token?.trim() || '';
+    if (!effectiveToken) {
+      return reply.status(422).send({ error: 'Personal access token is required the first time you connect a GitLab repo.' });
+    }
 
     try {
-      const encoded = encodeURIComponent(repo);
+      await glGet(parsedRepo.repoPath, '', effectiveToken, parsedRepo.host);
+    } catch {
+      return reply.status(422).send({ error: `Cannot reach GitLab repo "${parsedRepo.repoPath}" — check the URL and personal access token.` });
+    }
+
+    const existingRepos = getGitLabRepoPaths(existingConfig);
+    const mergedRepos = [...new Set([...existingRepos, parsedRepo.repoPath])];
+    const configToSave: GitLabIntegrationConfig = {
+      repoUrl: parsedRepo.repoUrl,
+      repoPath: mergedRepos[0] ?? parsedRepo.repoPath,
+      repos: mergedRepos,
+      host: parsedRepo.host,
+      token: effectiveToken,
+    };
+
+    const dbErr = await saveGitLabIntegration(projectId, configToSave);
+    if (dbErr) return reply.status(500).send({ error: dbErr.message });
+
+    return {
+      linked: true,
+      repoPath: parsedRepo.repoPath,
+      repoUrl: parsedRepo.repoUrl,
+      repos: mergedRepos,
+      host: parsedRepo.host,
+    };
+  });
+
+  server.get<{ Querystring: { projectId?: string; repo?: string; path: string } }>('/gitlab/file', async (request, reply) => {
+    const access = await resolveGitLabAccess({
+      projectId: request.query.projectId,
+      repo: request.query.repo,
+      tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
+      hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+    });
+    const { path } = request.query;
+    if (!access || !path) return reply.status(400).send({ error: 'projectId and path required for GitLab file access' });
+
+    try {
+      const encoded = encodeURIComponent(access.repoPath);
       const fileEncoded = encodeURIComponent(path);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10_000);
       try {
         const res = await fetch(
-          `${host}/api/v4/projects/${encoded}/repository/files/${fileEncoded}/raw?ref=HEAD`,
-          { headers: { 'PRIVATE-TOKEN': token }, signal: controller.signal },
+          `${access.host}/api/v4/projects/${encoded}/repository/files/${fileEncoded}/raw?ref=HEAD`,
+          { headers: { 'PRIVATE-TOKEN': access.token }, signal: controller.signal },
         );
         if (!res.ok) return reply.status(res.status).send({ error: 'File not found' });
         const contentLength = Number(res.headers.get('content-length') ?? 0);
@@ -226,7 +374,6 @@ export async function gitlabRoutes(server: FastifyInstance) {
     }
   });
 
-  // ── Unlink a GitLab repo (or all) from a project ──────────────────────────
   server.delete<{ Querystring: { projectId: string; repo?: string } }>('/gitlab/link', async (request, reply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
@@ -236,26 +383,36 @@ export async function gitlabRoutes(server: FastifyInstance) {
     const { projectId, repo } = request.query;
     if (!projectId) return reply.status(400).send({ error: 'projectId required' });
 
-    if (repo) {
-      // Remove just this repo from the array
-      const { data: existing } = await supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle();
-      const cfg = existing?.config as { repos?: string[]; repo?: string; token?: string; host?: string } | null;
-      const repos: string[] = cfg?.repos ?? (cfg?.repo ? [cfg.repo] : []);
-      const updated = repos.filter((r) => r !== repo);
-      if (updated.length === 0) {
-        await supabase.from('integrations').delete().eq('project_id', projectId).eq('type', 'gitlab');
-      } else {
-        const preservedConfig: Record<string, unknown> = { repos: updated, host: cfg?.host || ENV_GITLAB_HOST };
-        if (cfg?.token) preservedConfig['token'] = cfg.token;
-        await supabase.from('integrations').upsert(
-          { project_id: projectId, type: 'gitlab', config: preservedConfig },
-          { onConflict: 'project_id,type' },
-        );
-      }
-      return { unlinked: true, repos: updated };
-    } else {
+    const hasAccess = await requireProjectAccess(projectId, user.id);
+    if (!hasAccess) return reply.status(403).send({ error: 'Not a member of this project' });
+
+    const existing = await getGitLabIntegration(projectId);
+    const existingConfig = (existing?.config ?? null) as GitLabIntegrationConfig | null;
+    if (!existing?.id || !existingConfig) {
+      return { unlinked: true, repos: [] };
+    }
+
+    const currentRepos = getGitLabRepoPaths(existingConfig);
+    if (!repo?.trim()) {
       await supabase.from('integrations').delete().eq('project_id', projectId).eq('type', 'gitlab');
       return { unlinked: true, repos: [] };
     }
+
+    const nextRepos = currentRepos.filter((value) => value !== repo.trim());
+    if (nextRepos.length === 0) {
+      await supabase.from('integrations').delete().eq('project_id', projectId).eq('type', 'gitlab');
+      return { unlinked: true, repos: [] };
+    }
+
+    const nextConfig: GitLabIntegrationConfig = {
+      ...existingConfig,
+      repoPath: nextRepos[0],
+      repos: nextRepos,
+      repoUrl: buildGitLabRepoUrl(getGitLabHost(existingConfig), nextRepos[0]),
+    };
+
+    const { error } = await supabase.from('integrations').update({ config: nextConfig }).eq('id', existing.id);
+    if (error) return reply.status(500).send({ error: error.message });
+    return { unlinked: true, repos: nextRepos };
   });
 }

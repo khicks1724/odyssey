@@ -22,10 +22,18 @@ import Timeline from '../Timeline';
 import MarkdownWithFileLinks from '../MarkdownWithFileLinks';
 import FilterDropdown from '../FilterDropdown';
 import { fmtDate } from '../../lib/time-format';
+import { getGitHubRepos } from '../../lib/github';
 import type { FileRef } from '../../hooks/useProjectFilePaths';
 import type { Goal, OdysseyEvent } from '../../types';
 
 const RFI_FILTER_KEYS = { category: 'category', loe: 'loe', assignee: 'assignee' } as const;
+
+function createClientUuid(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+
+  return `rfi-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 // ── RFI Types ────────────────────────────────────────────────────────────────
 
@@ -234,7 +242,7 @@ function RFISection({ members, currentUserName, currentUserId, categoryLabels, l
   const handleAdd = (data: Omit<RFI, 'id' | 'createdAt' | 'createdByName'>) => {
     setRfis((prev) => [...prev, {
       ...data,
-      id: crypto.randomUUID(),
+      id: createClientUuid(),
       createdAt: new Date().toISOString(),
       createdByName: currentUserName,
     }]);
@@ -367,6 +375,7 @@ export interface OverviewTabProps {
     id: string;
     name: string;
     github_repo?: string | null;
+    github_repos?: string[] | null;
     description?: string | null;
   };
   goals: Goal[];
@@ -445,6 +454,9 @@ function OverviewTab({
   categoryLabels,
   loeLabels,
 }: OverviewTabProps) {
+  const githubRepos = getGitHubRepos(project);
+  const primaryGitHubRepo = githubRepos[0] ?? null;
+
   return (
     <>
       {/* Stats + Integrations + AI */}
@@ -499,17 +511,17 @@ function OverviewTab({
           <h3 className="font-sans text-sm font-bold text-heading mb-4">Integrations</h3>
           <div className="space-y-2">
             <div className="flex items-center gap-3 p-3 border border-border rounded">
-              <Github size={16} className={project.github_repo ? 'text-accent' : 'text-muted'} />
+              <Github size={16} className={githubRepos.length > 0 ? 'text-accent' : 'text-muted'} />
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-heading font-medium">GitHub</div>
-                {project.github_repo ? (
+                {primaryGitHubRepo ? (
                   <a
-                    href={`https://github.com/${project.github_repo}`}
+                    href={`https://github.com/${primaryGitHubRepo}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-[10px] text-accent hover:underline truncate block"
                   >
-                    {project.github_repo}
+                    {githubRepos.length === 1 ? primaryGitHubRepo : `${githubRepos.length} repos linked`}
                   </a>
                 ) : (
                   <div className="text-[10px] text-muted">Not connected</div>
@@ -520,7 +532,7 @@ function OverviewTab({
                 onClick={() => setActiveTab('settings')}
                 className="text-[10px] text-accent hover:underline"
               >
-                {project.github_repo ? 'Manage' : 'Connect'}
+                {githubRepos.length > 0 ? 'Manage' : 'Connect'}
               </button>
             </div>
             <div className="flex items-center gap-3 p-3 border border-border rounded">
@@ -660,7 +672,7 @@ function OverviewTab({
                   <h4 className="font-sans text-base font-bold text-heading">Project Status</h4>
                 </div>
                 <div className="text-xs text-muted leading-relaxed pl-5">
-                  <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>
+                  <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={githubRepos} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>
                     {insights.status}
                   </MarkdownWithFileLinks>
                 </div>
@@ -677,7 +689,7 @@ function OverviewTab({
                     {insights.nextSteps.map((step: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
                         <span className="text-accent font-mono text-[10px] mt-0.5 shrink-0">{i + 1}.</span>
-                        <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{step}</MarkdownWithFileLinks>
+                        <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={githubRepos} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{step}</MarkdownWithFileLinks>
                       </li>
                     ))}
                   </ul>
@@ -695,7 +707,7 @@ function OverviewTab({
                     {insights.futureFeatures.map((feat: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
                         <span className="text-yellow-500 shrink-0">◆</span>
-                        <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{feat}</MarkdownWithFileLinks>
+                        <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={githubRepos} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{feat}</MarkdownWithFileLinks>
                       </li>
                     ))}
                   </ul>
@@ -713,7 +725,7 @@ function OverviewTab({
                     {insights.codeInsights.map((obs: string, i: number) => (
                       <li key={i} className="flex items-start gap-2 text-xs text-muted leading-relaxed">
                         <span className="text-accent3 font-mono text-[10px] mt-0.5 shrink-0">{'</>'}</span>
-                        <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={project?.github_repo} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{obs}</MarkdownWithFileLinks>
+                        <MarkdownWithFileLinks filePaths={filePaths} onFileClick={handleFileClick} githubRepo={githubRepos} gitlabRepos={gitlabRepos} onRepoClick={handleRepoClick} tasks={goals} onTaskClick={(id) => { const g = goals.find((g) => g.id === id); if (g) { setEditAutoGuidance(false); setEditGoal(g); } }}>{obs}</MarkdownWithFileLinks>
                       </li>
                     ))}
                   </ul>

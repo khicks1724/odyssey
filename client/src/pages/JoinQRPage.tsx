@@ -15,6 +15,7 @@ type State =
   | { status: 'loading' }
   | { status: 'joined';   projectId: string; projectName: string }
   | { status: 'requested'; projectId: string; projectName: string }
+  | { status: 'pending'; projectId: string; projectName: string }
   | { status: 'already';   projectId: string; projectName: string }
   | { status: 'error';    message: string }
   | { status: 'auth' };   // not signed in
@@ -51,6 +52,8 @@ export default function JoinQRPage() {
           setState({ status: 'already', projectId: res.project_id!, projectName: res.project_name! });
         } else if (res.result === 'request_sent') {
           setState({ status: 'requested', projectId: res.project_id!, projectName: res.project_name! });
+        } else if (res.result === 'request_already_pending') {
+          setState({ status: 'pending', projectId: res.project_id!, projectName: res.project_name! });
         } else {
           setState({ status: 'error', message: 'Unexpected response. Please try again.' });
         }
@@ -73,7 +76,7 @@ export default function JoinQRPage() {
         {state.status === 'loading' && (
           <div className="space-y-4">
             <Loader2 size={36} className="animate-spin text-accent mx-auto" />
-            <p className="text-sm text-muted">Verifying invite…</p>
+            <p className="text-sm text-muted">Verifying project access…</p>
           </div>
         )}
 
@@ -110,8 +113,23 @@ export default function JoinQRPage() {
             <CheckCircle size={36} className="text-accent mx-auto" />
             <h2 className="font-sans text-lg font-bold text-heading">Request sent</h2>
             <p className="text-sm text-muted">
-              <span className="text-heading font-semibold">{state.projectName}</span> is private.
-              The owners have been notified of your request.
+              The owners of <span className="text-heading font-semibold">{state.projectName}</span> have been notified of your request.
+            </p>
+            <Link
+              to="/projects"
+              className="inline-flex items-center gap-2 px-5 py-2 border border-border text-muted text-xs font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md"
+            >
+              Back to Projects
+            </Link>
+          </div>
+        )}
+
+        {state.status === 'pending' && (
+          <div className="space-y-4">
+            <CheckCircle size={36} className="text-accent mx-auto" />
+            <h2 className="font-sans text-lg font-bold text-heading">Request pending</h2>
+            <p className="text-sm text-muted">
+              You already have a pending request for <span className="text-heading font-semibold">{state.projectName}</span>.
             </p>
             <Link
               to="/projects"

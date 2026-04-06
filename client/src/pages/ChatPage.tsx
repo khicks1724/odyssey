@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './ChatPage.css';
 import {
   Bot,
-  Check,
   ChevronRight,
   File,
   FileText,
@@ -16,6 +15,7 @@ import {
   Plus,
   Search,
   Send,
+  Trash2,
   X,
 } from 'lucide-react';
 import { useProjects } from '../hooks/useProjects';
@@ -24,9 +24,11 @@ import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths'
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useProfile } from '../hooks/useProfile';
+import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
+import { getGitHubRepos } from '../lib/github';
 import { supabase } from '../lib/supabase';
 import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import LazySyntaxCodeBlock from '../components/LazySyntaxCodeBlock';
 
 // ── Syntax highlight helpers ─────────────────────────────────────────────────
 const EXT_LANG: Record<string, string> = {
@@ -165,9 +167,12 @@ export default function ChatPage() {
     threads,
     participantsByThread,
     lastMessageByThread,
+    threadStateByThread,
     loading: threadsLoading,
     createDirectThread,
     updateThread,
+    markThreadRead,
+    hideDirectThread,
   } = useChatThreads();
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -200,6 +205,12 @@ export default function ChatPage() {
     }
   }, [threads, selectedThreadId]);
 
+  useEffect(() => {
+    if (selectedThreadId && !threads.some((thread) => thread.id === selectedThreadId)) {
+      setSelectedThreadId(threads[0]?.id ?? null);
+    }
+  }, [threads, selectedThreadId]);
+
   const needsInstantScroll = useRef(false);
   // When thread switches, flag that the next scroll should be instant
   useEffect(() => {
@@ -211,6 +222,13 @@ export default function ChatPage() {
     needsInstantScroll.current = false;
     bottomRef.current?.scrollIntoView({ behavior });
   }, [messages]);
+
+  useEffect(() => {
+    if (!selectedThreadId || document.visibilityState !== 'visible') return;
+    void markThreadRead(selectedThreadId).catch((error) => {
+      console.error('Failed to mark thread read:', error);
+    });
+  }, [selectedThreadId, messages.length, markThreadRead]);
 
   // Clear the AI queue when the user switches threads
   useEffect(() => {
@@ -251,8 +269,9 @@ export default function ChatPage() {
     })();
   }, [user]);
 
+  const relatedProjectId = selectedThread?.project_id ?? selectedThread?.related_project_id ?? null;
+
   useEffect(() => {
-    const relatedProjectId = selectedThread?.project_id ?? selectedThread?.related_project_id ?? null;
     if (!relatedProjectId) {
       setGitlabRepos([]);
       setProjectDocs([]);
@@ -269,8 +288,8 @@ export default function ChatPage() {
         .order('occurred_at', { ascending: false })
         .limit(8),
     ]).then(([gitlabRes, docsRes]) => {
-      const cfg = gitlabRes.data?.config as { repos?: string[]; repo?: string } | null;
-      setGitlabRepos(cfg?.repos ?? (cfg?.repo ? [cfg.repo] : []));
+      const cfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
+      setGitlabRepos(getGitLabRepoPaths(cfg));
       const docs = (docsRes.data ?? []).map((doc) => {
         const meta = (doc.metadata ?? {}) as { extracted_text?: string; filename?: string };
         return {
@@ -285,18 +304,20 @@ export default function ChatPage() {
 
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
 
-  // Derive relatedProject early so we can pass github_repo to the file paths hook
+  // Derive relatedProject early so we can pass GitHub repos to the file paths hook
   const relatedProjectEarly = selectedThread
     ? projectMap.get(selectedThread.project_id ?? selectedThread.related_project_id ?? '')
     : null;
+  const relatedGithubRepos = getGitHubRepos(relatedProjectEarly);
 
   const { filePaths: chatFilePaths, fetchFileContent } = useProjectFilePaths(
-    relatedProjectEarly?.github_repo ?? null,
+    relatedProjectId,
+    getGitHubRepos(relatedProjectEarly),
     gitlabRepos,
   );
 
   const [filePreview, setFilePreview] = useState<{ ref: FileRef; content: string | null; loading: boolean } | null>(null);
-  const [repoPreview, setRepoPreview] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+  const [repoPreview, setRepoPreview] = useState<{ repo: string; type: 'github' | 'gitlab'; projectId?: string | null } | null>(null);
 
   const handleChatFileClick = async (ref: FileRef) => {
     setFilePreview({ ref, content: null, loading: true });
@@ -309,7 +330,7 @@ export default function ChatPage() {
   };
 
   const handleRepoClick = (repo: string, type: 'github' | 'gitlab') => {
-    setRepoPreview({ repo, type });
+    setRepoPreview({ repo, type, projectId: type === 'gitlab' ? relatedProjectId : null });
   };
 
   const getOtherParticipant = (threadId: string): ChatParticipant | null =>
@@ -759,17 +780,17 @@ export default function ChatPage() {
             <span className="text-[10px] text-muted font-mono ml-auto">Repositories</span>
           </div>
           <div className="max-h-64 overflow-y-auto py-1">
-            {!relatedProject?.github_repo && gitlabRepos.length === 0 && (
+            {relatedGithubRepos.length === 0 && gitlabRepos.length === 0 && (
               <div className="px-3 py-4 text-center text-[10px] text-muted">No repos linked to this project.</div>
             )}
-            {relatedProject?.github_repo && (
-              <button type="button"
-                onClick={() => { addRepoContext(relatedProject.github_repo!, 'github'); setContextOpen(false); setContextView('main'); }}
+            {relatedGithubRepos.map((repo) => (
+              <button key={repo} type="button"
+                onClick={() => { addRepoContext(repo, 'github'); setContextOpen(false); setContextView('main'); }}
                 className={ctxItemCls}>
                 <Github size={11} className="shrink-0" />
-                <span className="truncate flex-1 font-mono">{relatedProject.github_repo}</span>
+                <span className="truncate flex-1 font-mono">{repo}</span>
               </button>
-            )}
+            ))}
             {gitlabRepos.map((repo) => (
               <button key={repo} type="button"
                 onClick={() => { addRepoContext(repo, 'gitlab'); setContextOpen(false); setContextView('main'); }}
@@ -830,7 +851,7 @@ export default function ChatPage() {
               <span>Repo context</span>
             </div>
             <span className="flex items-center gap-1 text-muted text-[10px]">
-              {(relatedProject?.github_repo ? 1 : 0) + gitlabRepos.length}
+              {relatedGithubRepos.length + gitlabRepos.length}
               <ChevronRight size={10} />
             </span>
           </button>
@@ -930,6 +951,7 @@ export default function ChatPage() {
                     ) : groupedThreads.project.map((thread) => {
                       const title = getThreadTitle(thread.id);
                       const preview = lastMessageByThread[thread.id];
+                      const unreadCount = threadStateByThread[thread.id]?.unread_count ?? 0;
                       const project = projectMap.get(thread.project_id ?? '');
                       return (
                         <button
@@ -944,7 +966,14 @@ export default function ChatPage() {
                           <div className="min-w-0 flex-1 text-left">
                             <div className="flex items-start justify-between gap-3">
                               <p className="text-sm font-semibold text-heading truncate">{title}</p>
-                              {preview?.created_at && <span className="text-[10px] text-muted font-mono shrink-0">{formatTimestamp(preview.created_at)}</span>}
+                              <div className="flex items-center gap-2 shrink-0">
+                                {unreadCount > 0 && (
+                                  <span className="min-w-5 h-5 px-1.5 rounded-full bg-accent text-[10px] font-mono font-semibold text-white flex items-center justify-center">
+                                    {unreadCount > 9 ? '9+' : unreadCount}
+                                  </span>
+                                )}
+                                {preview?.created_at && <span className="text-[10px] text-muted font-mono">{formatTimestamp(preview.created_at)}</span>}
+                              </div>
                             </div>
                             <p className="text-[11px] text-muted mt-0.5 truncate">{getLastSender(thread.id) ?? (project?.description || 'Project group conversation')}</p>
                           </div>
@@ -965,13 +994,21 @@ export default function ChatPage() {
                     ) : groupedThreads.direct.map((thread) => {
                       const title = getThreadTitle(thread.id);
                       const preview = lastMessageByThread[thread.id];
+                      const unreadCount = threadStateByThread[thread.id]?.unread_count ?? 0;
                       const other = getOtherParticipant(thread.id);
                       const threadProject = projectMap.get(thread.related_project_id ?? '');
                       return (
-                        <button
+                        <div
                           key={thread.id}
-                          type="button"
+                          role="button"
+                          tabIndex={0}
                           onClick={() => setSelectedThreadId(thread.id)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              setSelectedThreadId(thread.id);
+                            }
+                          }}
                           className={`w-full flex items-start gap-3 px-3 py-3 rounded-2xl border transition-colors ${
                             selectedThreadId === thread.id ? 'border-accent2/40 bg-accent2/8' : 'border-transparent hover:border-border hover:bg-surface'
                           }`}
@@ -980,11 +1017,36 @@ export default function ChatPage() {
                           <div className="min-w-0 flex-1 text-left">
                             <div className="flex items-start justify-between gap-3">
                               <p className="text-sm font-semibold text-heading truncate">{title}</p>
-                              {preview?.created_at && <span className="text-[10px] text-muted font-mono shrink-0">{formatTimestamp(preview.created_at)}</span>}
+                              <div className="flex items-center gap-2 shrink-0">
+                                {unreadCount > 0 && (
+                                  <span className="min-w-5 h-5 px-1.5 rounded-full bg-accent2 text-[10px] font-mono font-semibold text-white flex items-center justify-center">
+                                    {unreadCount > 9 ? '9+' : unreadCount}
+                                  </span>
+                                )}
+                                {preview?.created_at && <span className="text-[10px] text-muted font-mono">{formatTimestamp(preview.created_at)}</span>}
+                              </div>
                             </div>
                             <p className="text-[11px] text-muted mt-0.5 truncate">{getLastSender(thread.id) ?? (threadProject ? `Linked to ${threadProject.name}` : 'Direct conversation')}</p>
                           </div>
-                        </button>
+                          <button
+                            type="button"
+                            title={`Delete conversation with ${title}`}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void hideDirectThread(thread.id).then(() => {
+                                if (selectedThreadId === thread.id) {
+                                  setSelectedThreadId(null);
+                                }
+                              }).catch((error) => {
+                                console.error('Failed to delete direct thread:', error);
+                              });
+                            }}
+                            className="shrink-0 p-1 text-muted hover:text-danger transition-colors"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -1018,9 +1080,27 @@ export default function ChatPage() {
                       </p>
                     </div>
                   </div>
-                  <div className="shrink-0 text-[10px] text-muted font-mono">
-                    {lastMessageByThread[selectedThread.id]?.created_at ? `Updated ${formatTimestamp(lastMessageByThread[selectedThread.id]!.created_at)}` : 'Ready'}
-                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {selectedThread.kind === 'direct' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void hideDirectThread(selectedThread.id).then(() => {
+                            setSelectedThreadId(null);
+                          }).catch((error) => {
+                            console.error('Failed to delete direct thread:', error);
+                          });
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-danger/30 text-danger text-[10px] font-semibold tracking-wider uppercase hover:bg-danger/5 transition-colors"
+                      >
+                        <Trash2 size={11} />
+                        Delete Chat
+                      </button>
+                    )}
+                    <div className="text-[10px] text-muted font-mono">
+                      {lastMessageByThread[selectedThread.id]?.created_at ? `Updated ${formatTimestamp(lastMessageByThread[selectedThread.id]!.created_at)}` : 'Ready'}
+                    </div>
+                          </div>
                 </div>
               </div>
 
@@ -1075,7 +1155,7 @@ export default function ChatPage() {
                               }`}
                             >
                               {message.role === 'assistant' ? (
-                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedProject?.github_repo ?? null} gitlabRepos={gitlabRepos} className="text-sm leading-snug break-words cp-prose">
+                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos} className="text-sm leading-snug break-words cp-prose">
                                   {message.content}
                                 </MarkdownWithFileLinks>
                               ) : (
@@ -1106,7 +1186,7 @@ export default function ChatPage() {
                           <div className="rounded-2xl border border-accent2/25 bg-surface2 px-3.5 py-2.5 shadow-sm text-heading">
                             {streamingMsg.content ? (
                               <div className="text-sm leading-snug break-words cp-prose">
-                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedProject?.github_repo ?? null} gitlabRepos={gitlabRepos}>
+                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos}>
                                   {streamingMsg.content}
                                 </MarkdownWithFileLinks>
                                 <span className="inline-block w-0.5 h-[1em] bg-accent2 opacity-75 animate-pulse align-middle ml-0.5" />
@@ -1384,7 +1464,7 @@ export default function ChatPage() {
               {filePreview.loading ? (
                 <p className="text-sm text-muted px-5 py-4">Loading…</p>
               ) : (
-                <SyntaxHighlighter
+                <LazySyntaxCodeBlock
                   language={getLang(filePreview.ref.path)}
                   useInlineStyles={true}
                   style={odysseyCodeTheme}
@@ -1394,7 +1474,7 @@ export default function ChatPage() {
                   wrapLongLines={false}
                 >
                   {filePreview.content ?? ''}
-                </SyntaxHighlighter>
+                </LazySyntaxCodeBlock>
               )}
             </div>
           </div>

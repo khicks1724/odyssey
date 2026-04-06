@@ -9,7 +9,7 @@ import {
   Plus,
   ChevronsUpDown,
 } from 'lucide-react';
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../lib/auth';
 import { useProjects } from '../../hooks/useProjects';
 import { useEffect, useRef, useState } from 'react';
@@ -29,6 +29,7 @@ export default function Sidebar() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const switcherRef = useRef<HTMLDivElement | null>(null);
   const routeCollapsed = location.pathname.startsWith('/chat');
   const sidebarCollapsed = routeCollapsed || collapsed;
@@ -56,9 +57,19 @@ export default function Sidebar() {
     setSwitcherOpen(false);
   }, [location.pathname]);
 
+  const handleSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await signOut();
+    } finally {
+      window.location.replace('/login');
+    }
+  };
+
   return (
     <aside
-      className={`flex flex-col border-r border-border bg-surface h-full shrink-0 transition-all duration-200 ${
+      className={`relative z-20 pointer-events-auto flex flex-col border-r border-border bg-surface h-full shrink-0 transition-all duration-200 ${
         sidebarCollapsed ? 'w-16' : 'w-60'
       }`}
     >
@@ -87,13 +98,13 @@ export default function Sidebar() {
       {/* New Project */}
       {projects.length === 0 && (
         <div className="px-3 pt-4 pb-2">
-          <NavLink
+          <Link
             to="/projects/new"
-            className="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-sans font-semibold tracking-wider uppercase border border-accent/30 text-accent hover:bg-accent/5 transition-colors"
+            className="flex w-full items-center gap-2 px-3 py-2 rounded-md text-xs font-sans font-semibold tracking-wider uppercase border border-accent/30 text-accent hover:bg-accent/5 transition-colors"
           >
             <Plus size={14} />
             {!sidebarCollapsed && 'New Project'}
-          </NavLink>
+          </Link>
         </div>
       )}
 
@@ -131,14 +142,14 @@ export default function Sidebar() {
       )}
 
       {/* Nav Links */}
-      <nav className="flex-1 px-3 py-2 space-y-1">
+      <nav className="relative z-20 flex-1 px-3 py-2 space-y-1">
         {navItems.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+              `flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm text-left transition-colors ${
                 isActive
                   ? 'bg-surface2 text-heading font-medium'
                   : 'text-muted hover:text-text hover:bg-surface2'
@@ -188,7 +199,8 @@ export default function Sidebar() {
               </div>
               <button
                 type="button"
-                onClick={signOut}
+                onClick={() => { void handleSignOut(); }}
+                disabled={signingOut}
                 className="p-1 rounded hover:bg-surface2 text-muted hover:text-danger transition-colors shrink-0"
                 title="Sign out"
               >

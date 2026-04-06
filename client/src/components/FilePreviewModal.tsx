@@ -1,7 +1,6 @@
 import { X, Loader2, Github, GitBranch } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { FileRef } from '../hooks/useProjectFilePaths';
+import LazySyntaxCodeBlock from './LazySyntaxCodeBlock';
 import './FilePreviewModal.css';
 
 interface FilePreviewModalProps {
@@ -85,9 +84,8 @@ export default function FilePreviewModal({ fileRef, content, loading, error, onC
             </div>
           )}
           {content && !loading && (
-            <SyntaxHighlighter
+            <LazySyntaxCodeBlock
               language={lang}
-              style={oneDark}
               showLineNumbers
               lineNumberStyle={{
                 color: '#636d83',
@@ -106,7 +104,7 @@ export default function FilePreviewModal({ fileRef, content, loading, error, onC
               wrapLongLines={false}
             >
               {content}
-            </SyntaxHighlighter>
+            </LazySyntaxCodeBlock>
           )}
         </div>
       </div>

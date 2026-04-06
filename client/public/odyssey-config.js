@@ -1,0 +1,1 @@
+window.__ODYSSEY_RUNTIME_CONFIG__ = window.__ODYSSEY_RUNTIME_CONFIG__ || {};

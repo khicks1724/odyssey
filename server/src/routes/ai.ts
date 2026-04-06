@@ -1,17 +1,184 @@
 import type { FastifyInstance } from 'fastify';
-import { chat, streamChat, getAvailableProviders, isGenAiMilKey, markProviderError, clearProviderError, type AIProvider } from '../ai-providers.js';
+import OpenAI from 'openai';
+import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, isGenAiMilKey, type AIProvider, type AIProviderSelection, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
+import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models.js';
 import { decryptUserKey } from './user-ai-keys.js';
 import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
+import { getGitHubRepos } from '../lib/github.js';
 
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
+const OPENAI_FALLBACK_MODEL = 'gpt-4o';
+type OpenAiCredentialMode = 'openai' | 'azure_openai';
+type OpenAiUserConfig = {
+  mode?: OpenAiCredentialMode;
+  endpoint?: string;
+  preferredModel?: string;
+  enabledModels?: string[];
+};
 
-// Map AIProvider to the service name stored in user_ai_keys table
-function providerToService(provider: AIProvider): 'anthropic' | 'openai' | 'google' | 'google_ai' {
-  if (provider === 'gpt-4o') return 'openai';
+interface GitLabIntegrationConfig {
+  repoUrl?: string;
+  repoPath?: string;
+  repo?: string;
+  repos?: string[];
+  token?: string;
+  host?: string;
+}
+
+function isOpenAiProviderSelection(provider: string): provider is OpenAiProviderSelection {
+  return provider.startsWith('openai:');
+}
+
+// Map provider selection to the service name stored in user_ai_keys table
+function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai' | 'google' | 'google_ai' {
+  if (provider === 'gpt-4o' || isOpenAiProviderSelection(provider)) return 'openai';
   if (provider === 'gemini-pro') return 'google_ai'; // Google AI Studio keys (AIza…)
   if (provider === 'genai-mil') return 'google';     // DoD STARK keys still live in 'google' slot
   return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
+}
+
+function normalizeAgentValue(agent: string): AIProviderSelection | null {
+  if (ALL_PROVIDERS.includes(agent as AIProvider)) return agent as AIProvider;
+  if (isOpenAiProviderSelection(agent) && agent.slice('openai:'.length).trim().length > 0) return agent;
+  return null;
+}
+
+function filterOpenAiModelIds(modelIds: string[]): string[] {
+  const excluded = /(audio|embedding|moderation|whisper|tts|transcri|image|dall|realtime|search-preview|computer-use)/i;
+  const included = /^(gpt|o1|o3|o4|codex)/i;
+
+  return [...new Set(
+    modelIds
+      .filter((id) => included.test(id) && !excluded.test(id))
+      .sort((a, b) => a.localeCompare(b)),
+  )];
+}
+
+function getModelCapabilityScore(modelId: string): number {
+  const normalized = modelId.trim().toLowerCase();
+  let score = 0;
+
+  if (normalized.includes('claude-opus')) score = 1000;
+  else if (normalized.startsWith('gpt-5')) score = 900;
+  else if (normalized.startsWith('o4')) score = 850;
+  else if (normalized.includes('claude-sonnet')) score = 800;
+  else if (normalized.startsWith('o3')) score = 780;
+  else if (normalized.startsWith('codex')) score = 760;
+  else if (normalized.startsWith('o1')) score = 740;
+  else if (normalized.startsWith('gpt-4.1')) score = 700;
+  else if (normalized.startsWith('gpt-4o')) score = 650;
+  else if (normalized.includes('gemini')) score = 600;
+  else if (normalized.includes('claude-haiku')) score = 500;
+  else if (normalized.includes('genai-mil')) score = 450;
+  else if (normalized.startsWith('gpt-4')) score = 400;
+  else if (normalized.startsWith('gpt-3.5')) score = 300;
+
+  if (/(^|[-_.])nano($|[-_.])/.test(normalized)) score -= 40;
+  if (/(^|[-_.])mini($|[-_.])/.test(normalized)) score -= 25;
+  if (/(^|[-_.])flash($|[-_.])/.test(normalized)) score -= 20;
+
+  const datedVersion = normalized.match(/(20\d{2})[-_]?(\d{2})[-_]?(\d{2})/);
+  if (datedVersion) {
+    score += Number(`${datedVersion[1]}${datedVersion[2]}${datedVersion[3]}`) / 100000000;
+  }
+
+  return score;
+}
+
+function pickMostCapableModelId(modelIds: string[]): string {
+  const uniqueIds = [...new Set(modelIds.map((id) => id.trim()).filter(Boolean))];
+  if (uniqueIds.length === 0) return '';
+
+  return [...uniqueIds].sort((a, b) => {
+    const diff = getModelCapabilityScore(b) - getModelCapabilityScore(a);
+    return diff !== 0 ? diff : a.localeCompare(b);
+  })[0];
+}
+
+function normalizeOpenAiPreferredModel(model: string | null | undefined): string {
+  return model?.trim() ?? '';
+}
+
+function mergeOpenAiModels(modelIds: string[], preferredModel?: string | null): string[] {
+  const normalizedPreferred = normalizeOpenAiPreferredModel(preferredModel);
+  return [...new Set([
+    ...(normalizedPreferred ? [normalizedPreferred] : []),
+    ...modelIds.map((id) => id.trim()).filter(Boolean),
+  ])];
+}
+
+function normalizeConfiguredModelIds(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(
+    values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )];
+}
+
+function getEnabledModelsFromConfig(config: unknown): string[] {
+  if (!config || typeof config !== 'object') return [];
+  return normalizeConfiguredModelIds((config as { enabledModels?: unknown }).enabledModels);
+}
+
+const DEFAULT_ANTHROPIC_MODELS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus'];
+
+function getConfiguredVisibleModels(
+  configured: string[] | null | undefined,
+  defaults: string[],
+  preferredModel?: string | null,
+): string[] {
+  const selected = normalizeConfiguredModelIds(configured);
+  if (selected.length > 0) return selected;
+
+  const normalizedPreferred = normalizeOpenAiPreferredModel(preferredModel);
+  if (normalizedPreferred) return [normalizedPreferred];
+
+  const strongest = pickMostCapableModelId(defaults);
+  return strongest ? [strongest] : defaults.slice(0, 1);
+}
+
+function getPrimaryModelSelection(modelIds: string[], preferredModel?: string | null): string {
+  const normalizedPreferred = normalizeOpenAiPreferredModel(preferredModel);
+  if (normalizedPreferred) return normalizedPreferred;
+
+  const normalizedIds = normalizeConfiguredModelIds(modelIds);
+  if (normalizedIds.length > 0) return normalizedIds[0];
+
+  return pickMostCapableModelId(modelIds);
+}
+
+function normalizeGitLabHost(host: string): string {
+  return host.trim().replace(/\/+$/, '');
+}
+
+function getGitLabRepoPaths(config: GitLabIntegrationConfig | null | undefined): string[] {
+  const repoPath = config?.repoPath?.trim();
+  if (repoPath) return [repoPath];
+
+  const repos = (config?.repos ?? []).map((value) => value.trim()).filter(Boolean);
+  if (repos.length > 0) return [...new Set(repos)];
+
+  const repo = config?.repo?.trim();
+  return repo ? [repo] : [];
+}
+
+function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): string {
+  if (config?.host?.trim()) return normalizeGitLabHost(config.host);
+  if (config?.repoUrl?.trim()) {
+    try {
+      return normalizeGitLabHost(new URL(config.repoUrl).origin);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function getGitLabToken(config: GitLabIntegrationConfig | null | undefined): string {
+  return config?.token?.trim() ?? '';
 }
 
 // Prefer order when auto-selecting from stored user keys
@@ -20,7 +187,7 @@ const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet',
 /**
  * Resolve the best available provider for a given auth token.
  * When the user has a personal key stored in the DB, prefer that service.
- * Falls back to env-var availability, then to `fallback`.
+ * Falls back to `fallback` only as a final default selection hint.
  */
 async function resolveAutoProvider(authHeader: string | undefined, fallback: AIProvider): Promise<AIProvider> {
   if (authHeader?.startsWith('Bearer ')) {
@@ -29,25 +196,43 @@ async function resolveAutoProvider(authHeader: string | undefined, fallback: AIP
     if (user) {
       const { data: keys } = await supabase
         .from('user_ai_keys')
-        .select('provider')
+        .select('provider, config')
         .eq('user_id', user.id);
       if (keys && keys.length > 0) {
         const storedServices = new Set(keys.map((k: { provider: string }) => k.provider));
+        const configsByService = new Map(
+          keys.map((k: { provider: string; config?: unknown }) => [k.provider, k.config]),
+        );
         // Pick the first provider (in preference order) whose service has a stored key
         for (const p of AUTO_PROVIDER_PREFERENCE) {
-          if (storedServices.has(providerToService(p))) return p;
+          const service = providerToService(p);
+          if (!storedServices.has(service)) continue;
+
+          const configuredVisibleModels = getEnabledModelsFromConfig(configsByService.get(service));
+          if (service === 'anthropic' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes(p)) continue;
+          if (service === 'google_ai' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemini-pro')) continue;
+          if (service === 'google' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('genai-mil')) continue;
+
+          return p;
         }
       }
     }
   }
-  // Fall back to env-var availability
-  const envAvailable = getAvailableProviders().find((p) => p.available);
-  return envAvailable?.id ?? fallback;
+  return fallback;
+}
+
+function normalizeEndpoint(endpoint: string): string {
+  return endpoint.trim().replace(/\/+$/, '');
+}
+
+function isGenAiMilCredential(credential: ProviderCredentialOverride | undefined): boolean {
+  if (!credential) return false;
+  return isGenAiMilKey(typeof credential === 'string' ? credential : credential.apiKey);
 }
 
 // Look up the user's stored API key for the given provider (decrypted).
 // Returns undefined if not found or auth fails.
-async function getUserApiKey(authHeader: string | undefined, provider: AIProvider): Promise<string | undefined> {
+async function getUserApiKey(authHeader: string | undefined, provider: AIProviderSelection): Promise<ProviderCredentialOverride | undefined> {
   if (!authHeader?.startsWith('Bearer ')) return undefined;
   const token = authHeader.slice(7);
   const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
@@ -56,7 +241,7 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
   const service = providerToService(provider);
   const { data, error } = await supabase
     .from('user_ai_keys')
-    .select('encrypted_key, iv, auth_tag')
+    .select('encrypted_key, iv, auth_tag, config')
     .eq('user_id', user.id)
     .eq('provider', service)
     .maybeSingle();
@@ -64,10 +249,109 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
   if (error || !data) return undefined;
 
   try {
-    return decryptUserKey(data.encrypted_key, data.iv, data.auth_tag);
+    const apiKey = decryptUserKey(data.encrypted_key, data.iv, data.auth_tag);
+    if (service !== 'openai') return apiKey;
+
+    const config = (data.config ?? {}) as { mode?: string; endpoint?: string };
+    if (config.mode === 'azure_openai') {
+      const endpoint = typeof config.endpoint === 'string' ? normalizeEndpoint(config.endpoint) : '';
+      if (endpoint) {
+        return {
+          apiKey,
+          baseURL: endpoint,
+          authMode: 'api-key',
+        };
+      }
+    }
+
+    return apiKey;
   } catch {
     return undefined;
   }
+}
+
+async function getOpenAiUserConfig(authHeader: string | undefined): Promise<OpenAiUserConfig | undefined> {
+  if (!authHeader?.startsWith('Bearer ')) return undefined;
+  const token = authHeader.slice(7);
+  const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+  if (authErr || !user) return undefined;
+
+  const { data, error } = await supabase
+    .from('user_ai_keys')
+    .select('config')
+    .eq('user_id', user.id)
+    .eq('provider', 'openai')
+    .maybeSingle();
+
+  if (error || !data || !data.config || typeof data.config !== 'object') return undefined;
+  const raw = data.config as { mode?: unknown; endpoint?: unknown; preferredModel?: unknown; enabledModels?: unknown };
+  return {
+    mode: raw.mode === 'azure_openai' ? 'azure_openai' : 'openai',
+    ...(typeof raw.endpoint === 'string' && raw.endpoint.trim() ? { endpoint: raw.endpoint.trim() } : {}),
+    ...(typeof raw.preferredModel === 'string' && raw.preferredModel.trim() ? { preferredModel: raw.preferredModel.trim() } : {}),
+    ...(Array.isArray(raw.enabledModels)
+      ? {
+          enabledModels: raw.enabledModels
+            .filter((value): value is string => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter(Boolean),
+        }
+      : {}),
+  };
+}
+
+async function listOpenAiModels(credential: ProviderCredentialOverride | undefined): Promise<string[]> {
+  if (!credential) return [];
+
+  const apiKey = typeof credential === 'string' ? credential : credential.apiKey;
+  const baseURL = typeof credential === 'string' ? undefined : credential.baseURL;
+  const authMode = typeof credential === 'string' ? 'bearer' : credential.authMode;
+  if (!apiKey) return [];
+
+  const client = new OpenAI({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+    ...(authMode === 'api-key' ? { defaultHeaders: { 'api-key': apiKey } } : {}),
+  });
+
+  const response = await client.models.list();
+  const ids = response.data.map((model) => model.id);
+  const filtered = filterOpenAiModelIds(ids);
+  if (filtered.length > 0) return filtered;
+  return ids.includes(OPENAI_FALLBACK_MODEL) ? [OPENAI_FALLBACK_MODEL] : [];
+}
+
+async function getOpenAiModelsForRequest(authHeader: string | undefined): Promise<string[]> {
+  const userConfig = await getOpenAiUserConfig(authHeader);
+  const configuredAzureDeployments = mergeOpenAiModels(
+    normalizeConfiguredModelIds(userConfig?.enabledModels ?? []),
+    userConfig?.preferredModel,
+  );
+
+  if (userConfig?.mode === 'azure_openai') {
+    return configuredAzureDeployments;
+  }
+
+  const userCredential = await getUserApiKey(authHeader, 'gpt-4o');
+  const credential = userCredential;
+
+  if (!credential) {
+    const merged = mergeOpenAiModels([], userConfig?.preferredModel);
+    return normalizeOpenAiModelIds(merged);
+  }
+
+  try {
+    const models = await listOpenAiModels(credential);
+    const merged = mergeOpenAiModels(models, userConfig?.preferredModel);
+    if (merged.length > 0) {
+      return normalizeOpenAiModelIds(merged);
+    }
+  } catch {
+    // Fall through to the standard fallback model below.
+  }
+
+  const merged = mergeOpenAiModels([OPENAI_FALLBACK_MODEL], userConfig?.preferredModel);
+  return normalizeOpenAiModelIds(merged);
 }
 
 // Strip markdown code fences that models sometimes wrap JSON responses in.
@@ -105,18 +389,20 @@ function extractJson(text: string): string {
 // Resolve the provider from the request body.
 // When agent === 'auto' or is unset, the caller's `fallback` is used —
 // each endpoint passes the tier appropriate for its task complexity.
-function resolveProvider(body: { agent?: string }, fallback: AIProvider = 'claude-haiku'): AIProvider {
+function resolveProvider(body: { agent?: string }, fallback: AIProviderSelection = 'claude-haiku'): AIProviderSelection {
   const agent = body.agent;
-  if (agent && agent !== 'auto' && ALL_PROVIDERS.includes(agent as AIProvider)) {
-    return agent as AIProvider;
+  if (agent && agent !== 'auto') {
+    const normalized = normalizeAgentValue(agent);
+    if (normalized) return normalized;
   }
   return fallback;
 }
 
 // Chat-specific auto-routing: choose model based on message complexity
-function resolveProviderForChat(body: { agent?: string }, lastMessage: string): AIProvider {
-  if (body.agent && body.agent !== 'auto' && ALL_PROVIDERS.includes(body.agent as AIProvider)) {
-    return body.agent as AIProvider;
+function resolveProviderForChat(body: { agent?: string }, lastMessage: string): AIProviderSelection {
+  if (body.agent && body.agent !== 'auto') {
+    const normalized = normalizeAgentValue(body.agent);
+    if (normalized) return normalized;
   }
   const words = lastMessage.trim().split(/\s+/).length;
   const deepKeywords = /analyz|comprehensive|deep dive|explain in detail|walk me through|compare|evaluate|assess|design|architect/i;
@@ -181,15 +467,16 @@ const PROVIDERS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 export async function aiRoutes(server: FastifyInstance) {
   // ── Available providers endpoint ──
-  // Returns server-level availability enriched with per-user key detection.
-  server.get('/ai/providers', async (request) => {
+  // Returns user-key availability enriched with per-user key detection.
+  server.get<{ Querystring: { refresh?: string } }>('/ai/providers', async (request) => {
     const base = getAvailableProviders();
     const authHeader = request.headers['authorization'];
     if (!authHeader?.startsWith('Bearer ')) return { providers: base };
+    const forceRefresh = request.query?.refresh === '1' || request.query?.refresh === 'true';
 
     // Return cached result if fresh enough
     const cached = providersCache.get(authHeader);
-    if (cached && Date.now() - cached.ts < PROVIDERS_CACHE_TTL_MS) {
+    if (!forceRefresh && cached && Date.now() - cached.ts < PROVIDERS_CACHE_TTL_MS) {
       return cached.result;
     }
 
@@ -201,16 +488,46 @@ export async function aiRoutes(server: FastifyInstance) {
       // Fetch full key rows so we can decrypt and inspect
       const { data: keys } = await supabase
         .from('user_ai_keys')
-        .select('provider, encrypted_key, iv, auth_tag')
+        .select('provider, encrypted_key, iv, auth_tag, config')
         .eq('user_id', user.id);
 
       const userServices = new Set((keys ?? []).map((k: { provider: string }) => k.provider));
+      const anthropicRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'anthropic') as
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { enabledModels?: unknown } } | undefined;
+      let anthropicCredential: string | undefined;
+      if (anthropicRow) {
+        try {
+          anthropicCredential = decryptUserKey(anthropicRow.encrypted_key, anthropicRow.iv, anthropicRow.auth_tag);
+        } catch { /* ignore */ }
+      }
 
       // ── Decrypt user's 'google' slot to distinguish STARK vs Google AI Studio ──
       let userStarkKey: string | undefined;
+      let userGoogleAiCredential: string | undefined;
       let userGoogleAiKeyPresent = userServices.has('google_ai');
+      const openAiRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'openai') as
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: OpenAiUserConfig } | undefined;
+      const openAiPreferredModel = normalizeOpenAiPreferredModel(openAiRow?.config?.preferredModel);
+      let openAiCredential: ProviderCredentialOverride | undefined;
+      if (openAiRow) {
+        try {
+          const apiKey = decryptUserKey(openAiRow.encrypted_key, openAiRow.iv, openAiRow.auth_tag);
+          openAiCredential = openAiRow.config?.mode === 'azure_openai' && openAiRow.config?.endpoint
+            ? { apiKey, baseURL: normalizeEndpoint(openAiRow.config.endpoint), authMode: 'api-key' }
+            : apiKey;
+        } catch { /* ignore */ }
+      }
+      const googleAiRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'google_ai') as
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { enabledModels?: unknown } } | undefined;
+      if (googleAiRow) {
+        try {
+          userGoogleAiCredential = decryptUserKey(googleAiRow.encrypted_key, googleAiRow.iv, googleAiRow.auth_tag);
+        } catch {
+          userGoogleAiKeyPresent = false;
+        }
+      }
       const googleRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'google') as
-        { provider: string; encrypted_key: string; iv: string; auth_tag: string } | undefined;
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { enabledModels?: unknown } } | undefined;
       if (googleRow) {
         try {
           const decrypted = decryptUserKey(googleRow.encrypted_key, googleRow.iv, googleRow.auth_tag);
@@ -218,68 +535,81 @@ export async function aiRoutes(server: FastifyInstance) {
         } catch { /* decryption failure — treat as absent */ }
       }
 
-      // ── GenAI.mil: trust STARK key presence — actual auth failure surfaces on first use ──
       const genaiMilModel = userStarkKey ? (process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash') : undefined;
-      // Clear any stale error so the key shows READY immediately; real errors re-cache on use
-      if (userStarkKey) clearProviderError('genai-mil');
+      const openAiMode = openAiRow?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai';
+      const openAiModels = await getOpenAiModelsForRequest(authHeader);
+      const openAiPreferredModelCanonical = openAiMode === 'azure_openai'
+        ? openAiPreferredModel
+        : canonicalizeOpenAiModelId(openAiPreferredModel, openAiModels);
+      const openAiConfiguredModels = getEnabledModelsFromConfig(openAiRow?.config);
+      const openAiConfiguredModelsCanonical = openAiMode === 'azure_openai'
+        ? openAiConfiguredModels
+        : normalizeOpenAiModelIds(openAiConfiguredModels.map((modelId) => canonicalizeOpenAiModelId(modelId, openAiModels)));
+      const anthropicEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(anthropicRow?.config), DEFAULT_ANTHROPIC_MODELS);
+      const openAiEnabledModels = getConfiguredVisibleModels(openAiConfiguredModelsCanonical, openAiModels, openAiPreferredModelCanonical);
+      const googleAiEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(googleAiRow?.config), ['gemini-pro']);
+      const genAiEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(googleRow?.config), ['genai-mil']);
+      const openAiPrimaryModel = getPrimaryModelSelection(openAiEnabledModels, openAiPreferredModelCanonical)
+        || getPrimaryModelSelection(openAiModels, openAiPreferredModelCanonical);
 
-      // ── Probe Google AI Studio key if present and not STARK ──
-      // If server env key has no credits, propagate that status.
-      // (User key in google_ai slot is probed only if present)
-      let geminiProStatus = base.find((p) => p.id === 'gemini-pro')?.status ?? 'no_key';
-      let geminiProAvailable = base.find((p) => p.id === 'gemini-pro')?.available ?? false;
-      if (userGoogleAiKeyPresent) {
-        // User has their own Google AI Studio key — prefer that, show as linked
-        geminiProAvailable = true;
-        geminiProStatus = 'ready';
-      }
-      // If user's only 'google' key is STARK, gemini-pro is NOT available via that key
-      if (!userGoogleAiKeyPresent && userStarkKey) {
-        geminiProAvailable = false;
-        geminiProStatus = 'no_key';
-      }
+      const geminiProStatus = userGoogleAiCredential
+        ? (getCachedProviderStatus('gemini-pro', userGoogleAiCredential) ?? 'ready')
+        : 'no_key';
+      const geminiProAvailable = !!userGoogleAiCredential && geminiProStatus === 'ready';
+      const genAiMilStatus = userStarkKey
+        ? (getCachedProviderStatus('genai-mil', userStarkKey) ?? 'ready')
+        : 'no_key';
+      const genAiMilAvailable = !!userStarkKey && genAiMilStatus === 'ready';
+      const openAiStatus = openAiCredential
+        ? (getCachedProviderStatus('gpt-4o', openAiCredential) ?? 'ready')
+        : 'no_key';
 
       const enriched = base.map((p) => {
-        // ── GenAI.mil: STARK key present → READY (errors surface on first actual use) ──
         if (p.id === 'genai-mil') {
-          const hasCachedError = p.status !== 'ready' && p.status !== 'no_key';
-          const available = !!userStarkKey && !hasCachedError;
-          const status: typeof p.status = userStarkKey
-            ? (hasCachedError ? p.status : 'ready')
-            : 'no_key';
           return {
             ...p,
-            available,
-            status,
+            available: genAiMilAvailable,
+            status: genAiMilStatus,
             userKeyLinked: !!userStarkKey,
             keySource: userStarkKey ? 'user' : 'none',
+            visibleModels: genAiEnabledModels,
             ...(genaiMilModel ? { activeModel: genaiMilModel } : {}),
           };
         }
 
-        // ── Gemini (Google AI Studio) ──
         if (p.id === 'gemini-pro') {
           return {
             ...p,
             available: geminiProAvailable,
             status: geminiProStatus,
             userKeyLinked: userGoogleAiKeyPresent,
-            keySource: userGoogleAiKeyPresent ? 'user' : (geminiProAvailable ? 'server' : 'none'),
+            keySource: userGoogleAiKeyPresent ? 'user' : 'none',
+            visibleModels: googleAiEnabledModels,
           };
         }
 
-        // ── All other providers (Anthropic, OpenAI) ──
-        // If user has their own key, always show READY — server cache errors don't apply to user keys
         const service = providerToService(p.id as AIProvider);
         const hasUserKey = userServices.has(service);
-        const available = hasUserKey || p.available;
-        const status: typeof p.status = hasUserKey ? 'ready' : p.status;
+        const status: typeof p.status = service === 'anthropic'
+          ? (anthropicCredential ? (getCachedProviderStatus(p.id, anthropicCredential) ?? 'ready') : 'no_key')
+          : p.id === 'gpt-4o'
+            ? openAiStatus
+            : 'no_key';
+        const available = hasUserKey && status === 'ready';
         return {
           ...p,
           available,
           status,
           userKeyLinked: hasUserKey,
-          keySource: hasUserKey ? 'user' : (p.available ? 'server' : 'none'),
+          keySource: hasUserKey ? 'user' : 'none',
+          ...(service === 'anthropic' ? { visibleModels: anthropicEnabledModels.includes(p.id) ? [p.id] : [] } : {}),
+          ...(p.id === 'gpt-4o'
+            ? {
+                models: mergeOpenAiModels(openAiModels, openAiPrimaryModel),
+                visibleModels: openAiEnabledModels.map((model) => `openai:${model}`),
+                ...(openAiPrimaryModel ? { activeModel: openAiPrimaryModel } : {}),
+              }
+            : {}),
         };
       });
 
@@ -296,14 +626,15 @@ export async function aiRoutes(server: FastifyInstance) {
     const { projectId } = request.params;
 
     const [projectRes, gitlabRes] = await Promise.all([
-      supabase.from('projects').select('github_repo').eq('id', projectId).single(),
+      supabase.from('projects').select('github_repo, github_repos').eq('id', projectId).single(),
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
     ]);
 
-    const githubRepo: string | null = projectRes.data?.github_repo ?? null;
-    const gitlabCfg = gitlabRes.data?.config as { repos?: string[]; repo?: string; host?: string } | null;
-    const gitlabRepos: string[] = gitlabCfg?.repos ?? (gitlabCfg?.repo ? [gitlabCfg.repo] : []);
-    const gitlabHost: string = gitlabCfg?.host ?? process.env.GITLAB_HOST ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+    const githubRepos = getGitHubRepos(projectRes.data);
+    const gitlabCfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
+    const gitlabRepos = getGitLabRepoPaths(gitlabCfg);
+    const gitlabHost = getGitLabHost(gitlabCfg);
+    const gitlabToken = getGitLabToken(gitlabCfg);
 
     const countByDate = new Map<string, number>();
     // repoKey -> date -> count, for per-repo tooltip breakdown
@@ -325,7 +656,7 @@ export async function aiRoutes(server: FastifyInstance) {
     const sinceIso = oneYearAgo.toISOString();
 
     // GitHub commits — paginate until we've covered a full year
-    if (githubRepo) {
+    for (const githubRepo of githubRepos) {
       const [owner, repo] = githubRepo.split('/');
       const token = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
@@ -360,8 +691,7 @@ export async function aiRoutes(server: FastifyInstance) {
     }
 
     // GitLab commits — paginate with since filter, up to 13 pages per repo
-    const gitlabToken = process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN;
-    for (const repo of gitlabRepos) {
+    if (gitlabToken && gitlabHost) for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const repoKey = `gitlab:${repo}`;
       const repoLabel = repo.includes('/') ? repo.split('/').slice(-2).join('/') : repo;
@@ -838,7 +1168,7 @@ Analyze which goals these documents show progress on, who did the work, and when
       { data: members },
       { data: gitlabInteg },
     ] = await Promise.all([
-      supabase.from('projects').select('name, description, github_repo, created_at').eq('id', projectId).single(),
+      supabase.from('projects').select('name, description, github_repo, github_repos, created_at').eq('id', projectId).single(),
       supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(50),
       supabase.from('project_members').select('user_id, role, profiles:user_id(display_name)').eq('project_id', projectId),
@@ -891,19 +1221,19 @@ Analyze which goals these documents show progress on, who did the work, and when
 
     // GitHub data — commits, README, code files, and recent commit diffs
     let githubContext = '';
-    if (project?.github_repo) {
-      const [owner, repo] = project.github_repo.split('/');
+    for (const githubRepo of getGitHubRepos(project)) {
+      const [owner, repo] = githubRepo.split('/');
       const ghToken = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
       if (ghToken) ghHeaders.Authorization = `Bearer ${ghToken}`;
-      const BASE = `http://localhost:${process.env.PORT ?? 3001}`;
+      const BASE = `http://localhost:${process.env.PORT ?? 3000}`;
 
       // 1. Commits + README
       try {
         const r = await fetch(`${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`);
         if (r.ok) {
           const rd = await r.json() as { commits?: string[]; readme?: string };
-          if (rd.commits?.length) githubContext += `GitHub commits:\n${rd.commits.slice(0, 20).join('\n')}`;
+          if (rd.commits?.length) githubContext += `${githubContext ? '\n\n' : ''}GitHub repo: ${githubRepo}\nCommits:\n${rd.commits.slice(0, 20).join('\n')}`;
           if (rd.readme) githubContext += `\n\nREADME:\n${rd.readme.slice(0, 3000)}`;
         }
       } catch { /* best-effort */ }
@@ -1006,22 +1336,17 @@ Analyze which goals these documents show progress on, who did the work, and when
     // GitLab data (multi-repo support) — commits + README + code files
     let gitlabContext = '';
     if (gitlabInteg?.config) {
-      const cfg = gitlabInteg.config as { repos?: string[]; repo?: string; host?: string; token?: string };
-      const repos: string[] = cfg.repos ?? (cfg.repo ? [cfg.repo] : []);
-      // User-stored token takes priority over server env var
-      const glToken = cfg.token || process.env.GITLAB_TOKEN || process.env.GITLAB_NPS_TOKEN || '';
-      const glHost  = cfg.host  || process.env.GITLAB_HOST  || process.env.GITLAB_NPS_HOST  || 'https://gitlab.nps.edu';
-      // Headers to forward token+host to internal routes
-      const glHeaders: Record<string, string> = {};
-      if (glToken) glHeaders['x-gitlab-token'] = glToken;
-      if (glHost)  glHeaders['x-gitlab-host']  = glHost;
+      const cfg = gitlabInteg.config as GitLabIntegrationConfig;
+      const repos = getGitLabRepoPaths(cfg);
+      const glToken = getGitLabToken(cfg);
+      const glHost = getGitLabHost(cfg);
 
-      if (repos.length > 0) {
+      if (repos.length > 0 && glToken && glHost) {
         const BINARY_EXTS_GL = new Set(['.png','.jpg','.jpeg','.gif','.ico','.pdf','.zip','.tar','.gz','.bin','.onnx','.pt','.weights','.h264','.mp4','.so','.dylib','.exe','.wasm','.pkl','.npy','.npz','.db','.sqlite','.lock']);
         const CODE_EXTS = new Set(['.py','.js','.ts','.jsx','.tsx','.json','.yaml','.yml','.md','.sh','.txt','.html','.css','.toml','.ini','.cfg','.rs','.go','.java','.c','.cpp','.h','.gitignore','.env.example','.svelte','.vue','.rb','.php','.kt','.swift','.cs','.r','.scala','.jl']);
         const ENTRY_NAMES = new Set(['main.py','app.py','index.ts','index.js','server.ts','server.js','main.ts','main.js','__init__.py','manage.py','run.py','wsgi.py','asgi.py']);
         const CONFIG_NAMES = new Set(['package.json','requirements.txt','pyproject.toml','setup.py','setup.cfg','Makefile','Dockerfile','docker-compose.yml','docker-compose.yaml','tsconfig.json','vite.config.ts','vite.config.js','.env.example','CMakeLists.txt','cargo.toml','go.mod']);
-        const BASE = `http://localhost:${process.env.PORT ?? 3001}`;
+        const BASE = `http://localhost:${process.env.PORT ?? 3000}`;
         const TOTAL_BUDGET = 100_000; // ~25k tokens across all repos
         let totalCharsUsed = 0;
 
@@ -1031,7 +1356,7 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1. Commits + README
           try {
-            const r = await fetch(`${BASE}/api/gitlab/recent?repo=${encodeURIComponent(repo)}`, { headers: glHeaders });
+            const r = await fetch(`${BASE}/api/gitlab/recent?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`);
             if (r.ok) {
               const rd = await r.json() as { commits?: string[]; readme?: string };
               if (rd.commits?.length) repoCtx += `GitLab${repoLabel} commits:\n${rd.commits.slice(0, 10).join('\n')}\n`;
@@ -1041,12 +1366,10 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1b. Recent commit diffs
           try {
-            const gitlabToken = glToken;
-            const gitlabHost  = glHost;
             const encoded = encodeURIComponent(repo);
             const commitsRes = await fetch(
-              `${gitlabHost}/api/v4/projects/${encoded}/repository/commits?per_page=6&order_by=created_at&sort=desc`,
-              { headers: { 'PRIVATE-TOKEN': gitlabToken ?? '' } }
+              `${glHost}/api/v4/projects/${encoded}/repository/commits?per_page=6&order_by=created_at&sort=desc`,
+              { headers: { 'PRIVATE-TOKEN': glToken } }
             );
             if (commitsRes.ok) {
               const commits: { id: string; title: string }[] = await commitsRes.json();
@@ -1054,8 +1377,8 @@ Analyze which goals these documents show progress on, who did the work, and when
               for (const c of commits.slice(0, 6)) {
                 try {
                   const diffRes = await fetch(
-                    `${gitlabHost}/api/v4/projects/${encoded}/repository/commits/${c.id}/diff`,
-                    { headers: { 'PRIVATE-TOKEN': gitlabToken ?? '' } }
+                    `${glHost}/api/v4/projects/${encoded}/repository/commits/${c.id}/diff`,
+                    { headers: { 'PRIVATE-TOKEN': glToken } }
                   );
                   if (!diffRes.ok) continue;
                   const diffs: { new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean }[] = await diffRes.json();
@@ -1072,7 +1395,7 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 2. Full source code — recursive tree + prioritized file fetch
           try {
-            const treeRes = await fetch(`${BASE}/api/gitlab/tree?repo=${encodeURIComponent(repo)}`, { headers: glHeaders });
+            const treeRes = await fetch(`${BASE}/api/gitlab/tree?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`);
             if (treeRes.ok) {
               const treeData = await treeRes.json() as { files: { path: string; size?: number }[] };
               const allFiles = treeData.files ?? [];
@@ -1108,7 +1431,7 @@ Analyze which goals these documents show progress on, who did the work, and when
               for (const f of eligible) {
                 if (repoBytesUsed >= REPO_BUDGET || totalCharsUsed >= TOTAL_BUDGET) { skippedBudget.push(f.path); continue; }
                 try {
-                  const fr = await fetch(`${BASE}/api/gitlab/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`, { headers: glHeaders });
+                  const fr = await fetch(`${BASE}/api/gitlab/file?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`);
                   if (!fr.ok) continue;
                   const fd = await fr.json() as { content?: string };
                   if (!fd.content) continue;
@@ -1249,7 +1572,7 @@ ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitla
 
 IMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.
 
-PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project?.github_repo}` : ''}
+PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}
 
 TASKS (${ctx.goals.length} total):
 ${ctx.tasksText}
@@ -1292,7 +1615,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     // GenAI.mil has a 1M-token (~4M char) context window — pass the full context
     // uncapped so repo/doc contents aren't truncated before reaching the model.
-    const usingGenAiMil = provider === 'gemini-pro' && userApiKey ? isGenAiMilKey(userApiKey) : false;
+    const usingGenAiMil = provider === 'gemini-pro' && isGenAiMilCredential(userApiKey);
     const finalSystem = usingGenAiMil ? systemPrompt : capPromptSections(systemPrompt, githubSection, gitlabSection).sys;
 
     try {
@@ -1372,7 +1695,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
       const systemPrompt = reportMode
         ? `You are Odyssey's report advisor. Help the user plan a project report. Be concise and specific. Always refer to tasks by their title, never by ID.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}\nTASKS:\n${ctx.tasksText}\nACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${ctx.project?.github_repo ? `\nGitHub: github.com/${ctx.project.github_repo}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose ONE action on goals at the end using: <action>{"type":"create_goal"|"update_goal"|"delete_goal","description":"...","args":{...}}</action>`;
+        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose ONE action on goals at the end using: <action>{"type":"create_goal"|"update_goal"|"delete_goal","description":"...","args":{...}}</action>`;
 
       const history = messages.slice(-20);
       const lastMsg = history[history.length - 1]?.content ?? '';
@@ -1394,7 +1717,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
         ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
         : transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
 
-      const usingGenAiMilStream = provider === 'gemini-pro' && userApiKey ? isGenAiMilKey(userApiKey) : false;
+      const usingGenAiMilStream = provider === 'gemini-pro' && isGenAiMilCredential(userApiKey);
       const finalSystemStream = usingGenAiMilStream ? systemPrompt : capPromptSections(systemPrompt, githubSection, gitlabSection).sys;
 
       let fullText = '';
@@ -1498,7 +1821,7 @@ ${trimmedEvents}${trimmedGithub ? `\n\nGITHUB:\n${trimmedGithub}` : ''}${trimmed
 
     // ── Pass 1: generate metadata + section outlines — haiku is sufficient here ─
     // Pass 1 requires structured JSON with many fields — use the main provider for reliability
-    const pass1Provider: AIProvider = provider;
+    const pass1Provider: AIProviderSelection = provider;
 
     let pass1: Record<string, unknown>;
     try {
@@ -1650,7 +1973,7 @@ QUALITY REQUIREMENTS:
     const toDate = now.toISOString().slice(0, 10);
 
     const [{ data: project }, { data: goals }, { data: events }, gitlabRes] = await Promise.all([
-      supabase.from('projects').select('name, description, github_repo').eq('id', projectId).single(),
+      supabase.from('projects').select('name, description, github_repo, github_repos').eq('id', projectId).single(),
       supabase.from('goals').select('id, title, status, progress, deadline, category').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, occurred_at')
         .eq('project_id', projectId).gte('occurred_at', sinceISO)
@@ -1658,14 +1981,15 @@ QUALITY REQUIREMENTS:
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
     ]);
 
-    const githubRepo: string | null = project?.github_repo ?? null;
-    const gitlabCfg = gitlabRes.data?.config as { repos?: string[]; repo?: string; host?: string } | null;
-    const gitlabRepos: string[] = gitlabCfg?.repos ?? (gitlabCfg?.repo ? [gitlabCfg.repo] : []);
-    const gitlabHost: string = gitlabCfg?.host ?? process.env.GITLAB_HOST ?? process.env.GITLAB_NPS_HOST ?? 'https://gitlab.nps.edu';
+    const githubRepos = getGitHubRepos(project);
+    const gitlabCfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
+    const gitlabRepos = getGitLabRepoPaths(gitlabCfg);
+    const gitlabHost = getGitLabHost(gitlabCfg);
+    const gitlabToken = getGitLabToken(gitlabCfg);
 
     const commitsByRepo: { source: 'github' | 'gitlab'; repo: string; commits: string[]; count: number }[] = [];
 
-    if (githubRepo) {
+    for (const githubRepo of githubRepos) {
       const [owner, repo] = githubRepo.split('/');
       const token = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
@@ -1687,8 +2011,7 @@ QUALITY REQUIREMENTS:
       if (msgs.length > 0) commitsByRepo.push({ source: 'github', repo: githubRepo, commits: msgs.slice(0, 50), count: msgs.length });
     }
 
-    const gitlabToken = process.env.GITLAB_TOKEN ?? process.env.GITLAB_NPS_TOKEN;
-    for (const repo of gitlabRepos) {
+    if (gitlabToken && gitlabHost) for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const msgs: string[] = [];
       try {

@@ -1,3 +1,11 @@
+:root {
+  --commit-0: color-mix(in srgb, var(--color-border) 60%, transparent);
+  --commit-1: color-mix(in srgb, var(--color-accent) 25%, var(--color-surface));
+  --commit-2: color-mix(in srgb, var(--color-accent) 50%, var(--color-surface));
+  --commit-3: color-mix(in srgb, var(--color-accent) 75%, var(--color-surface));
+  --commit-4: var(--color-accent);
+}
+
 .cg-month-label {
   font-size: 9px;
   font-family: var(--font-mono, monospace);

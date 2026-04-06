@@ -220,9 +220,16 @@ export function useProjects() {
           }
         }
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'project_members', filter: `user_id=eq.${user.id}` },
+        () => {
+          fetchProjects();
+        }
+      )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user]);
+  }, [user, fetchProjects]);
 
   const createProject = async (name: string, description: string) => {
     if (!user) throw new Error('Not authenticated');
@@ -245,7 +252,7 @@ export function useProjects() {
     return data;
   };
 
-  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private' | 'invite_code'>>) => {
+  const updateProject = async (id: string, updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'github_repos' | 'start_date' | 'is_private' | 'invite_code'>>) => {
     const { data, error } = await supabase
       .from('projects')
       .update(updates)
@@ -298,7 +305,7 @@ export function useProject(id: string | undefined) {
     fetchProject();
   }, [fetchProject]);
 
-  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'start_date' | 'is_private' | 'invite_code' | 'image_url'>>) => {
+  const updateProject = async (updates: Partial<Pick<Project, 'name' | 'description' | 'github_repo' | 'github_repos' | 'start_date' | 'is_private' | 'invite_code' | 'image_url'>>) => {
     if (!id) throw new Error('No project');
     const { data, error } = await supabase
       .from('projects')
@@ -315,7 +322,7 @@ export function useProject(id: string | undefined) {
   return { project, loading, updateProject, refetch: fetchProject };
 }
 
-// ─── Join requests hook (for project owners) ─────────────────────────────────
+// ─── Join requests hook ───────────────────────────────────────────────────────
 export function useJoinRequests(projectId: string | undefined) {
   const [requests, setRequests] = useState<JoinRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -334,6 +341,19 @@ export function useJoinRequests(projectId: string | undefined) {
   }, [projectId]);
 
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    const channel = supabase
+      .channel(`join-requests:${projectId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'join_requests', filter: `project_id=eq.${projectId}` }, () => {
+        void fetchRequests();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [projectId, fetchRequests]);
 
   const respond = async (requestId: string, action: 'approve' | 'deny') => {
     const { data } = await supabase.rpc('respond_join_request', {

@@ -1,8 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useDeferredValue, useMemo } from 'react';
 import { X, Loader2, Github, GitBranch, Folder, ChevronRight, FileText, Search } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import type { FileRef } from '../hooks/useProjectFilePaths';
+import LazySyntaxCodeBlock from './LazySyntaxCodeBlock';
 import './RepoTreeModal.css';
 
 const API_BASE = '/api';
@@ -141,11 +139,12 @@ const LANG_LABEL: Record<string, string> = {
 interface RepoTreeModalProps {
   repo: string;
   type: 'github' | 'gitlab';
+  projectId?: string | null;
   initialPath?: string;
   onClose: () => void;
 }
 
-export default function RepoTreeModal({ repo, type, initialPath, onClose }: RepoTreeModalProps) {
+export default function RepoTreeModal({ repo, type, projectId, initialPath, onClose }: RepoTreeModalProps) {
   const [files, setFiles]   = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]   = useState<string | null>(null);
@@ -156,6 +155,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError,   setPreviewError]   = useState<string | null>(null);
+  const deferredSearch = useDeferredValue(search);
 
   useEffect(() => {
     setLoading(true);
@@ -166,7 +166,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
       const [owner, repoName] = repo.split('/');
       endpoint = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/tree`;
     } else {
-      endpoint = `${API_BASE}/gitlab/tree?repo=${encodeURIComponent(repo)}`;
+      endpoint = `${API_BASE}/gitlab/tree?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}`;
     }
 
     fetch(endpoint)
@@ -180,7 +180,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [repo, type]);
+  }, [projectId, repo, type]);
 
   useEffect(() => {
     if (initialPath) {
@@ -190,7 +190,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
       setPreviewContent(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialPath, repo, type]);
+  }, [initialPath, projectId, repo, type]);
 
   const handleOpenFile = async (path: string) => {
     if (path === activePath) return; // already open
@@ -205,7 +205,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
         const [owner, repoName] = repo.split('/');
         endpoint = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/file?path=${encodeURIComponent(path)}`;
       } else {
-        endpoint = `${API_BASE}/gitlab/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
+        endpoint = `${API_BASE}/gitlab/file?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
       }
 
       const r = await fetch(endpoint);
@@ -219,11 +219,13 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
     }
   };
 
-  const filteredFiles = search
-    ? files.filter((f) => f.path.toLowerCase().includes(search.toLowerCase()))
-    : files;
+  const filteredFiles = useMemo(() => {
+    const normalizedSearch = deferredSearch.trim().toLowerCase();
+    if (!normalizedSearch) return files;
+    return files.filter((f) => f.path.toLowerCase().includes(normalizedSearch));
+  }, [files, deferredSearch]);
 
-  const tree = buildTree(filteredFiles);
+  const tree = useMemo(() => buildTree(filteredFiles), [filteredFiles]);
   const repoLabel = repo.split('/').slice(-2).join('/');
 
   // Preview panel details
@@ -307,7 +309,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
             )}
             {!loading && !error && files.length > 0 && (
               <>
-                {search ? (
+                {deferredSearch ? (
                   <div className="divide-y divide-[var(--color-border)]/50">
                     {filteredFiles.length === 0 && (
                       <div className="px-4 py-6 text-center text-xs text-[var(--color-muted)]">
@@ -412,9 +414,8 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
                 </div>
               )}
               {previewContent && !previewLoading && (
-                <SyntaxHighlighter
+                <LazySyntaxCodeBlock
                   language={activeLang}
-                  style={oneDark}
                   showLineNumbers
                   lineNumberStyle={{
                     color: '#636d83',
@@ -433,7 +434,7 @@ export default function RepoTreeModal({ repo, type, initialPath, onClose }: Repo
                   wrapLongLines={false}
                 >
                   {previewContent}
-                </SyntaxHighlighter>
+                </LazySyntaxCodeBlock>
               )}
             </div>
           </div>

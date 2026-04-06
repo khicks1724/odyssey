@@ -36,9 +36,6 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
 const SOURCE_COLORS: Record<string, string> = {
   github:   'text-[var(--color-heading)]',
   gitlab:   'text-[var(--color-accent)]',
-  teams:    'text-[var(--color-accent2)]',
-  onedrive: 'text-[var(--color-accent2)]',
-  onenote:  'text-[var(--color-accent3)]',
   manual:   'text-[var(--color-muted)]',
   ai:       'text-[var(--color-accent)]',
 };

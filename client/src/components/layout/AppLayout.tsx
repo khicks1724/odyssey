@@ -91,7 +91,9 @@ export default function AppLayout() {
         {/* Content row: main + optional chat panel */}
         <div className="flex-1 flex overflow-hidden min-h-0">
           <main className={`flex-1 overflow-y-auto min-w-0 ${location.pathname.startsWith('/chat') ? 'bg-surface' : ''}`}>
-            <Outlet />
+            <div key={location.pathname}>
+              <Outlet />
+            </div>
           </main>
 
           {/* Draggable divider — hidden when no panel is open */}

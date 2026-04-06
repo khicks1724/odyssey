@@ -1,55 +1,86 @@
 import { useState, useRef, useEffect } from 'react';
 import { Zap, Bot, RefreshCw } from 'lucide-react';
-import { useAIAgent, type AIAgentValue, type ProviderStatus, type KeySource } from '../lib/ai-agent';
+import { isOpenAIAgentValue, useAIAgent, type AIAgentValue, type FixedAIProvider, type ProviderInfo, type ProviderStatus } from '../lib/ai-agent';
+import { canonicalizeOpenAiModelId } from '../lib/openai-models';
 import './AIAgentDropdown.css';
 
-const agentMeta: Record<AIAgentValue, { name: string; shortName: string; description: string; colorClass: string; provider: string }> = {
+const fixedAgentMeta: Record<'auto' | FixedAIProvider, { name: string; shortName: string; description: string; colorClass: string; provider: string }> = {
   'auto':          { name: 'Auto',              shortName: 'Auto',    description: 'Picks the best available model for each task',    colorClass: 'aid-auto',    provider: '' },
   'claude-haiku':  { name: 'Claude Haiku',      shortName: 'Haiku',   description: 'Fastest · ideal for quick questions & summaries', colorClass: 'aid-haiku',   provider: 'Anthropic' },
   'claude-sonnet': { name: 'Claude Sonnet 4.6', shortName: 'Sonnet',  description: 'Balanced · great for analysis & chat',            colorClass: 'aid-sonnet',  provider: 'Anthropic' },
   'claude-opus':   { name: 'Claude Opus 4.6',   shortName: 'Opus',    description: 'Most capable · deep project insights',            colorClass: 'aid-opus',    provider: 'Anthropic' },
-  'gpt-4o':        { name: 'GPT-4o',            shortName: 'GPT-4o',  description: 'OpenAI flagship model',                           colorClass: 'aid-gpt4o',   provider: 'OpenAI' },
-  'gemini-pro':    { name: 'Gemini 2.5 Flash',  shortName: 'Gemini',  description: 'Google AI Studio · Gemini 2.5 Flash',             colorClass: 'aid-gemini',  provider: 'Google' },
-  'genai-mil':     { name: 'GenAI.mil',         shortName: 'GenAI.mil', description: 'DoD GenAI.mil · requires STARK API key',            colorClass: 'aid-genaimil', provider: 'DoD / GenAI.mil' },
+  'gpt-4o':        { name: 'GPT-4o',            shortName: 'GPT-4o',  description: 'OpenAI fallback model',                           colorClass: 'aid-gpt4o',   provider: 'OpenAI' },
+  'gemini-pro':    { name: 'Gemini 2.5 Flash',  shortName: 'Gemini',  description: 'Google AI Studio · Gemini 2.5 Flash',            colorClass: 'aid-gemini',  provider: 'Google' },
+  'genai-mil':     { name: 'GenAI.mil',         shortName: 'GenAI.mil', description: 'DoD GenAI.mil · requires STARK API key',         colorClass: 'aid-genaimil', provider: 'DoD / GenAI.mil' },
 };
 
-const DISPLAY_ORDER: AIAgentValue[] = ['auto', 'claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
+function getAgentMeta(agent: AIAgentValue) {
+  if (agent === 'auto') return fixedAgentMeta.auto;
+  if (isOpenAIAgentValue(agent)) {
+    const model = agent.slice('openai:'.length);
+    return {
+      name: model,
+      shortName: model,
+      description: `OpenAI · ${model}`,
+      colorClass: 'aid-gpt4o',
+      provider: 'OpenAI',
+    };
+  }
+  return fixedAgentMeta[agent];
+}
 
-// Group models by provider for section headers
-const PROVIDER_GROUPS: { label: string; ids: AIAgentValue[] }[] = [
-  { label: 'Auto',      ids: ['auto'] },
-  { label: 'Anthropic', ids: ['claude-haiku', 'claude-sonnet', 'claude-opus'] },
-  { label: 'OpenAI',    ids: ['gpt-4o'] },
-  { label: 'Google',    ids: ['gemini-pro'] },
-  { label: 'DoD / GenAI.mil', ids: ['genai-mil'] },
-];
+function getCanonicalOpenAiAgentValue(agent: AIAgentValue, providers: ProviderInfo[]): AIAgentValue {
+  if (!isOpenAIAgentValue(agent)) return agent;
 
-function StatusBadge({ available, active, serverReachable, status, keySource }: {
+  const openAiProvider = providers.find((provider) => provider.id === 'gpt-4o');
+  const availableModelIds = (openAiProvider?.visibleModels ?? [])
+    .filter((value): value is string => typeof value === 'string' && value.startsWith('openai:'))
+    .map((value) => value.slice('openai:'.length));
+  const canonicalModelId = canonicalizeOpenAiModelId(agent.slice('openai:'.length), availableModelIds);
+
+  return canonicalModelId ? `openai:${canonicalModelId}` : agent;
+}
+
+function StatusBadge({ available, active, serverReachable, status }: {
   available: boolean;
   active: boolean;
   serverReachable: boolean;
   status?: ProviderStatus;
-  keySource?: KeySource;
 }) {
   if (active) return (
     <span className="aid-badge aid-badge--active">
       <span className="aid-badge-dot aid-badge-dot--pulse" />
-      Active
+      ACTIVE
     </span>
   );
   if (!serverReachable) return <span className="aid-badge aid-badge--offline">Offline</span>;
-  if (status === 'no_credits') return <span className="aid-badge aid-badge--nocredits">No Credits</span>;
-  if (status === 'invalid_key') return <span className="aid-badge aid-badge--nokey">Bad Key</span>;
-  if (status === 'error') return <span className="aid-badge aid-badge--offline">Error</span>;
-  if (available) {
-    const src = keySource === 'user' ? 'Your Key' : keySource === 'server' ? 'Server Key' : null;
-    return (
-      <span className="aid-badge aid-badge--ready">
-        {src ?? 'Ready'}
-      </span>
-    );
-  }
-  return <span className="aid-badge aid-badge--nokey">Not Linked</span>;
+  if (status === 'no_credits') return <span className="aid-badge aid-badge--nocredits">NO CREDIT</span>;
+  if (available) return <span className="aid-badge aid-badge--ready">ACTIVE</span>;
+  return <span className="aid-badge aid-badge--nokey">NO KEY</span>;
+}
+
+function getProviderForAgent(id: AIAgentValue, providers: ProviderInfo[]) {
+  return providers.find((p) => p.id === (isOpenAIAgentValue(id) ? 'gpt-4o' : id));
+}
+
+function buildProviderGroups(providers: ProviderInfo[]): { label: string; ids: AIAgentValue[] }[] {
+  const anthropic: AIAgentValue[] = providers
+    .filter((provider) => ['claude-haiku', 'claude-sonnet', 'claude-opus'].includes(provider.id))
+    .flatMap((provider) => (provider.visibleModels ?? []).filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0));
+  const openai: AIAgentValue[] = (providers.find((provider) => provider.id === 'gpt-4o')?.visibleModels ?? [])
+    .filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
+  const google: AIAgentValue[] = (providers.find((provider) => provider.id === 'gemini-pro')?.visibleModels ?? [])
+    .filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
+  const genai: AIAgentValue[] = (providers.find((provider) => provider.id === 'genai-mil')?.visibleModels ?? [])
+    .filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
+
+  return [
+    { label: 'Auto', ids: ['auto'] },
+    { label: 'Anthropic', ids: anthropic },
+    { label: 'OpenAI', ids: openai },
+    { label: 'Google', ids: google },
+    { label: 'DoD / GenAI.mil', ids: genai },
+  ].filter((group) => group.label === 'Auto' || group.ids.length > 0);
 }
 
 export default function AIAgentDropdown() {
@@ -65,23 +96,23 @@ export default function AIAgentDropdown() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  const buttonMeta = agentMeta[agent];
-  const lastUsedMeta = lastUsed ? agentMeta[lastUsed] : null;
-  const buttonColorClass = agent === 'auto' ? (lastUsedMeta?.colorClass ?? 'aid-auto') : buttonMeta.colorClass;
-
-  const getProvider = (id: AIAgentValue) => providers.find((p) => p.id === id);
+  const displayAgent = getCanonicalOpenAiAgentValue(agent, providers);
+  const displayLastUsed = lastUsed ? getCanonicalOpenAiAgentValue(lastUsed, providers) : null;
+  const buttonMeta = getAgentMeta(displayAgent);
+  const lastUsedMeta = displayLastUsed ? getAgentMeta(displayLastUsed) : null;
+  const buttonColorClass = displayAgent === 'auto' ? (lastUsedMeta?.colorClass ?? 'aid-auto') : buttonMeta.colorClass;
 
   const isAvailable = (id: AIAgentValue) => {
     if (id === 'auto') return true;
     if (!serverReachable) return false;
-    const p = getProvider(id);
+    const p = getProviderForAgent(id, providers);
     if (!p?.available) return false;
-    // Gray out if credits gone or key invalid
-    if (p.status === 'no_credits' || p.status === 'invalid_key') return false;
+    if (p.status === 'no_credits' || p.status === 'invalid_key' || p.status === 'error') return false;
     return true;
   };
 
   const readyCount = providers.filter((p) => p.available).length;
+  const providerGroups = buildProviderGroups(providers);
 
   return (
     <div ref={ref} className="relative">
@@ -103,7 +134,7 @@ export default function AIAgentDropdown() {
         </span>
 
         <span className="font-medium text-xs">
-          {agent === 'auto'
+          {displayAgent === 'auto'
             ? lastUsedMeta ? `Auto · ${lastUsedMeta.shortName}` : 'Auto'
             : buttonMeta.shortName}
         </span>
@@ -124,7 +155,7 @@ export default function AIAgentDropdown() {
               <span className="text-[10px] tracking-[0.15em] uppercase text-[var(--color-muted)] font-semibold">AI Model</span>
               {!loading && serverReachable && (
                 <span className="text-[9px] font-mono text-[var(--color-muted)]/60">
-                  {readyCount}/{providers.length} linked
+                  {readyCount}/{providers.length} active
                 </span>
               )}
             </div>
@@ -150,8 +181,8 @@ export default function AIAgentDropdown() {
             <div className="px-3 py-6 text-center text-xs text-[var(--color-muted)]">Checking model status…</div>
           ) : (
             <div className="py-1">
-              {PROVIDER_GROUPS.map(({ label, ids }) => {
-                const groupIds = ids.filter((id) => DISPLAY_ORDER.includes(id));
+              {providerGroups.map(({ label, ids }) => {
+                const groupIds = ids;
                 return (
                   <div key={label}>
                     {label !== 'Auto' && (
@@ -160,10 +191,10 @@ export default function AIAgentDropdown() {
                       </div>
                     )}
                     {groupIds.map((id) => {
-                      const meta = agentMeta[id];
+                      const meta = getAgentMeta(id);
                       const available = isAvailable(id);
-                      const isActive = id === agent;
-                      const pInfo = id !== 'auto' ? getProvider(id) : undefined;
+                      const isActive = id === displayAgent;
+                      const pInfo = id !== 'auto' ? getProviderForAgent(id, providers) : undefined;
                       const dimmed = !available && id !== 'auto';
 
                       return (
@@ -200,7 +231,6 @@ export default function AIAgentDropdown() {
                             active={isActive}
                             serverReachable={serverReachable}
                             status={pInfo?.status}
-                            keySource={pInfo?.keySource}
                           />
                         </button>
                       );
@@ -213,7 +243,7 @@ export default function AIAgentDropdown() {
 
           <div className="px-3 py-2 border-t border-[var(--color-border)] flex items-center justify-between">
             <p className="text-[10px] text-[var(--color-muted)]">
-              Add API keys in <strong>Settings → AI Models</strong>
+              Manage visible models in <strong>Settings → AI Providers</strong>
             </p>
             {!loading && !serverReachable && (
               <span className="text-[9px] font-mono text-[var(--color-danger,#ef4444)] uppercase tracking-wider">Offline</span>

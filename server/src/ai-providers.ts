@@ -1,10 +1,13 @@
+import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil';
+export type OpenAiProviderSelection = `openai:${string}`;
+export type AIProviderSelection = AIProvider | OpenAiProviderSelection;
 
 // 'auto' is a client-side concept — server resolves it per endpoint before calling chat()
-export type AIProviderOrAuto = AIProvider | 'auto';
+export type AIProviderOrAuto = AIProviderSelection | 'auto';
 
 export interface ImageAttachment {
   base64: string;
@@ -25,14 +28,36 @@ interface ChatMessage {
 
 interface ChatResult {
   text: string;
-  provider: AIProvider;
+  provider: AIProviderSelection;
+}
+
+export interface OpenAiCredentialOverride {
+  apiKey: string;
+  baseURL?: string;
+  authMode?: 'bearer' | 'api-key';
+}
+
+export type ProviderCredentialOverride = string | OpenAiCredentialOverride;
+
+function extractCredentialValue(credential?: ProviderCredentialOverride): string {
+  if (!credential) return '';
+  return typeof credential === 'string' ? credential : credential.apiKey;
+}
+
+function getProviderStatusCacheKey(provider: AIProvider, credential?: ProviderCredentialOverride): string {
+  const value = extractCredentialValue(credential);
+  if (!value) return `${provider}:none`;
+  const digest = createHash('sha256').update(value).digest('hex').slice(0, 16);
+  return `${provider}:${digest}`;
 }
 
 // ── Claude (Anthropic) ──────────────────────────────────────────
 
-async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIProvider, apiKeyOverride?: string): Promise<ChatResult> {
-  const apiKey = apiKeyOverride ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIProvider, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  const apiKey = typeof apiKeyOverride === 'string'
+    ? apiKeyOverride
+    : apiKeyOverride?.apiKey ?? '';
+  if (!apiKey) throw new Error('No Anthropic API key configured. Add your key in Settings → AI Providers.');
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -70,10 +95,10 @@ async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIP
 
   if (!response.ok) {
     const errBody = await response.text();
-    markProviderError(provider, response.status, errBody);
+    markProviderError(provider, response.status, errBody, apiKeyOverride);
     throw new Error(`Anthropic API ${response.status}: ${errBody}`);
   }
-  clearProviderError(provider);
+  clearProviderError(provider, apiKeyOverride);
 
   const result = await response.json();
   // Extract text from all text blocks (web search may produce multiple content blocks)
@@ -84,25 +109,52 @@ async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIP
   return { text, provider };
 }
 
-function callClaude(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
+function callClaude(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
   return callAnthropicModel(msg, 'claude-sonnet-4-6', 'claude-sonnet', apiKeyOverride);
 }
 
-function callClaudeHaiku(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
+function callClaudeHaiku(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
   return callAnthropicModel(msg, 'claude-haiku-4-5-20251001', 'claude-haiku', apiKeyOverride);
 }
 
-function callClaudeOpus(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
+function callClaudeOpus(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
   return callAnthropicModel(msg, 'claude-opus-4-6', 'claude-opus', apiKeyOverride);
 }
 
 // ── GPT-4o (OpenAI) ─────────────────────────────────────────────
 
-async function callGPT(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
-  const apiKey = apiKeyOverride ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+function resolveOpenAiCredential(apiKeyOverride?: ProviderCredentialOverride): OpenAiCredentialOverride {
+  if (typeof apiKeyOverride === 'string') {
+    return { apiKey: apiKeyOverride, authMode: 'bearer' };
+  }
+  if (apiKeyOverride?.apiKey) {
+    return {
+      apiKey: apiKeyOverride.apiKey,
+      baseURL: apiKeyOverride.baseURL,
+      authMode: apiKeyOverride.authMode ?? 'bearer',
+    };
+  }
+  return { apiKey: '', authMode: 'bearer' };
+}
 
-  const openai = new OpenAI({ apiKey });
+async function callGPT(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  return callOpenAiModel('gpt-4o', msg, apiKeyOverride);
+}
+
+function isOpenAiProviderSelection(provider: AIProviderSelection): provider is OpenAiProviderSelection {
+  return provider.startsWith('openai:');
+}
+
+async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  const credential = resolveOpenAiCredential(apiKeyOverride);
+  const apiKey = credential.apiKey;
+  if (!apiKey) throw new Error('No OpenAI API key configured. Add your key in Settings → AI Providers.');
+
+  const openai = new OpenAI({
+    apiKey,
+    ...(credential.baseURL ? { baseURL: credential.baseURL } : {}),
+    ...(credential.authMode === 'api-key' ? { defaultHeaders: { 'api-key': apiKey } } : {}),
+  });
   const userContent = msg.images?.length
     ? [
         ...msg.images.map((img) => ({
@@ -113,10 +165,11 @@ async function callGPT(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatR
       ]
     : msg.user;
 
-  // gpt-4o-search-preview enables built-in web search; it doesn't support max_tokens or json_object mode
-  const searchModel = msg.webSearch ? 'gpt-4o-search-preview' : 'gpt-4o';
+  const isAzureOpenAi = !!credential.baseURL;
+  // Standard OpenAI can swap to the search-preview model. Azure must keep using the configured deployment name.
+  const effectiveModel = msg.webSearch && !isAzureOpenAi ? 'gpt-4o-search-preview' : model;
   const completionParams: Parameters<typeof openai.chat.completions.create>[0] = {
-    model: searchModel,
+    model: effectiveModel,
     messages: [
       { role: 'system', content: msg.system },
       { role: 'user', content: userContent as any },
@@ -127,12 +180,15 @@ async function callGPT(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatR
 
   try {
     const completion = await openai.chat.completions.create({ ...completionParams, stream: false });
-    clearProviderError('gpt-4o');
-    return { text: completion.choices[0]?.message?.content || '', provider: 'gpt-4o' };
+    clearProviderError('gpt-4o', credential);
+    return { text: completion.choices[0]?.message?.content || '', provider: model === 'gpt-4o' ? 'gpt-4o' : `openai:${model}` };
   } catch (err: any) {
     const status = err?.status ?? err?.response?.status ?? 0;
     const body = err?.message ?? String(err);
-    markProviderError('gpt-4o', status, body);
+    markProviderError('gpt-4o', status, body, credential);
+    if (isAzureOpenAi && status === 404 && /deployment/i.test(body)) {
+      throw new Error(`Azure OpenAI deployment "${model}" was not found. Update the deployment name in Settings → AI Providers.`);
+    }
     throw err;
   }
 }
@@ -215,7 +271,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
       // outside DoD networks (403/503). Surface a clean message instead of raw HTML.
       if (body.startsWith('<!doctype') || body.startsWith('<!DOCTYPE') || body.startsWith('<html')) {
         if (r.status === 401 || r.status === 403) {
-          throw new Error(`GenAI.mil authentication failed (HTTP ${r.status}). Check that your STARK API key is correct in Settings → AI Models.`);
+          throw new Error(`GenAI.mil authentication failed (HTTP ${r.status}). Check that your STARK API key is correct in Settings → AI Providers.`);
         }
         throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. You must be on a DoD network or VPN to use this model. (HTTP ${r.status})`);
       }
@@ -348,13 +404,15 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
 }
 
 /** Public wrapper for GenAI.mil called via the 'genai-mil' provider route */
-async function callGenAiMilProvider(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
-  const key = apiKeyOverride ?? process.env.GOOGLE_AI_API_KEY ?? '';
-  if (!key || !isGenAiMilKey(key)) throw new Error('No STARK API key configured. Add your GenAI.mil key in Settings → AI Models.');
+async function callGenAiMilProvider(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  const key = typeof apiKeyOverride === 'string'
+    ? apiKeyOverride
+    : apiKeyOverride?.apiKey ?? '';
+  if (!key || !isGenAiMilKey(key)) throw new Error('No STARK API key configured. Add your GenAI.mil key in Settings → AI Providers.');
   try {
     return await callGeminiGenAiMil(msg, key);
   } catch (err: any) {
-    markProviderError('genai-mil', err?.status ?? 0, err?.message ?? String(err));
+    markProviderError('genai-mil', err?.status ?? 0, err?.message ?? String(err), apiKeyOverride);
     throw err;
   }
 }
@@ -377,22 +435,24 @@ async function callGeminiWithBearer(msg: ChatMessage, accessToken: string): Prom
 
   if (!res.ok) {
     const text = await res.text();
-    markProviderError('gemini-pro', res.status, text);
+    markProviderError('gemini-pro', res.status, text, accessToken);
     if (res.status === 401) {
-      throw new Error('Google AI token expired — reconnect Google account in Settings → AI Models.');
+      throw new Error('Google AI token expired — reconnect Google account in Settings → AI Providers.');
     }
     throw new Error(`Google AI API ${res.status}: ${text}`);
   }
 
-  clearProviderError('gemini-pro');
+  clearProviderError('gemini-pro', accessToken);
   const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   return { text, provider: 'gemini-pro' };
 }
 
-async function callGemini(msg: ChatMessage, apiKeyOverride?: string): Promise<ChatResult> {
-  const credential = apiKeyOverride ?? process.env.GOOGLE_AI_API_KEY;
-  if (!credential) throw new Error('GOOGLE_AI_API_KEY not set');
+async function callGemini(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  const credential = typeof apiKeyOverride === 'string'
+    ? apiKeyOverride
+    : apiKeyOverride?.apiKey ?? '';
+  if (!credential) throw new Error('No Google AI credential configured. Add your key in Settings → AI Providers.');
 
   // GenAI.mil (DoD) — STARK_ prefix, OpenAI-compatible endpoint
   if (isGenAiMilKey(credential)) {
@@ -418,12 +478,13 @@ async function callGemini(msg: ChatMessage, apiKeyOverride?: string): Promise<Ch
     generationConfig: { maxOutputTokens: msg.maxTokens ?? 2048 },
   });
 
+  clearProviderError('gemini-pro', credential);
   return { text: result.response.text(), provider: 'gemini-pro' };
 }
 
 // ── Router ──────────────────────────────────────────────────────
 
-const providers: Record<AIProvider, (msg: ChatMessage, apiKeyOverride?: string) => Promise<ChatResult>> = {
+const providers: Record<AIProvider, (msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride) => Promise<ChatResult>> = {
   'claude-haiku': callClaudeHaiku,
   'claude-sonnet': callClaude,
   'claude-opus': callClaudeOpus,
@@ -437,9 +498,9 @@ const providers: Record<AIProvider, (msg: ChatMessage, apiKeyOverride?: string) 
 export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'error';
 
 const ERROR_TTL_MS = 10 * 60 * 1000; // errors expire after 10 minutes
-const providerStatusCache = new Map<AIProvider, { status: ProviderStatus; ts: number }>();
+const providerStatusCache = new Map<string, { status: ProviderStatus; ts: number }>();
 
-export function markProviderError(provider: AIProvider, httpStatus: number, body: string) {
+export function markProviderError(provider: AIProvider, httpStatus: number, body: string, credential?: ProviderCredentialOverride) {
   const b = body.toLowerCase();
   let status: ProviderStatus;
   if (httpStatus === 402 || b.includes('insufficient') || b.includes('quota') || b.includes('billing') || b.includes('credit') || b.includes('out of credits') || b.includes('exceeded')) {
@@ -451,45 +512,39 @@ export function markProviderError(provider: AIProvider, httpStatus: number, body
   } else {
     return;
   }
-  providerStatusCache.set(provider, { status, ts: Date.now() });
+  providerStatusCache.set(getProviderStatusCacheKey(provider, credential), { status, ts: Date.now() });
 }
 
-export function clearProviderError(provider: AIProvider) {
-  providerStatusCache.delete(provider);
+export function clearProviderError(provider: AIProvider, credential?: ProviderCredentialOverride) {
+  providerStatusCache.delete(getProviderStatusCacheKey(provider, credential));
 }
 
 export function getAvailableProviders(): { id: AIProvider; name: string; available: boolean; status: ProviderStatus }[] {
-  const anthropicKey  = !!process.env.ANTHROPIC_API_KEY;
-  const openaiKey     = !!process.env.OPENAI_API_KEY;
-  const googleRaw     = process.env.GOOGLE_AI_API_KEY ?? '';
-  // GenAI.mil uses a STARK_ key stored in GOOGLE_AI_API_KEY
-  const hasStarkKey   = isGenAiMilKey(googleRaw);
-  // Regular Google key: present AND not a STARK key
-  const googleKey     = !!googleRaw && !hasStarkKey;
-
-  function resolveStatus(provider: AIProvider, hasKey: boolean): ProviderStatus {
-    if (!hasKey) return 'no_key';
-    const cached = providerStatusCache.get(provider);
-    if (!cached) return 'ready';
-    // Expire old errors so transient failures don't stick forever
-    if (Date.now() - cached.ts > ERROR_TTL_MS) {
-      providerStatusCache.delete(provider);
-      return 'ready';
-    }
-    return cached.status;
-  }
-
   return [
-    { id: 'claude-haiku',  name: 'Claude Haiku',       available: anthropicKey && resolveStatus('claude-haiku',  anthropicKey) === 'ready', status: resolveStatus('claude-haiku',  anthropicKey) },
-    { id: 'claude-sonnet', name: 'Claude Sonnet 4.6',  available: anthropicKey && resolveStatus('claude-sonnet', anthropicKey) === 'ready', status: resolveStatus('claude-sonnet', anthropicKey) },
-    { id: 'claude-opus',   name: 'Claude Opus 4.6',    available: anthropicKey && resolveStatus('claude-opus',   anthropicKey) === 'ready', status: resolveStatus('claude-opus',   anthropicKey) },
-    { id: 'gpt-4o',        name: 'GPT-4o',             available: openaiKey    && resolveStatus('gpt-4o',        openaiKey)    === 'ready', status: resolveStatus('gpt-4o',        openaiKey) },
-    { id: 'gemini-pro',    name: 'Gemini 2.5 Flash',   available: googleKey    && resolveStatus('gemini-pro',    googleKey)    === 'ready', status: resolveStatus('gemini-pro',    googleKey) },
-    { id: 'genai-mil',     name: 'GenAI.mil (STARK)',  available: hasStarkKey  && resolveStatus('genai-mil',     hasStarkKey)  === 'ready', status: resolveStatus('genai-mil',     hasStarkKey) },
+    { id: 'claude-haiku',  name: 'Claude Haiku',       available: false, status: 'no_key' },
+    { id: 'claude-sonnet', name: 'Claude Sonnet 4.6',  available: false, status: 'no_key' },
+    { id: 'claude-opus',   name: 'Claude Opus 4.6',    available: false, status: 'no_key' },
+    { id: 'gpt-4o',        name: 'GPT-4o',             available: false, status: 'no_key' },
+    { id: 'gemini-pro',    name: 'Gemini 2.5 Flash',   available: false, status: 'no_key' },
+    { id: 'genai-mil',     name: 'GenAI.mil (STARK)',  available: false, status: 'no_key' },
   ];
 }
 
-export async function chat(provider: AIProvider, msg: ChatMessage, apiKey?: string): Promise<ChatResult> {
+export function getCachedProviderStatus(provider: AIProvider, credential?: ProviderCredentialOverride): ProviderStatus | null {
+  const cacheKey = getProviderStatusCacheKey(provider, credential);
+  const cached = providerStatusCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.ts > ERROR_TTL_MS) {
+    providerStatusCache.delete(cacheKey);
+    return null;
+  }
+  return cached.status;
+}
+
+export async function chat(provider: AIProviderSelection, msg: ChatMessage, apiKey?: ProviderCredentialOverride): Promise<ChatResult> {
+  if (isOpenAiProviderSelection(provider)) {
+    return callOpenAiModel(provider.slice('openai:'.length), msg, apiKey);
+  }
   const fn = providers[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);
   return fn(msg, apiKey);
@@ -509,12 +564,12 @@ const ANTHROPIC_MODELS: Partial<Record<AIProvider, string>> = {
  * Pass `apiKeyOverride` to use a user-supplied key instead of the env var.
  */
 export async function streamChat(
-  provider: AIProvider,
+  provider: AIProviderSelection,
   msg: ChatMessage,
   onToken: (text: string) => void,
-  apiKeyOverride?: string,
+  apiKeyOverride?: ProviderCredentialOverride,
 ): Promise<ChatResult> {
-  const anthropicModel = ANTHROPIC_MODELS[provider];
+  const anthropicModel = isOpenAiProviderSelection(provider) ? undefined : ANTHROPIC_MODELS[provider];
 
   // Non-Anthropic providers: call normally, then emit the whole result as one chunk
   if (!anthropicModel) {
@@ -523,8 +578,10 @@ export async function streamChat(
     return result;
   }
 
-  const apiKey = apiKeyOverride ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+  const apiKey = typeof apiKeyOverride === 'string'
+    ? apiKeyOverride
+    : apiKeyOverride?.apiKey ?? '';
+  if (!apiKey) throw new Error('No Anthropic API key configured. Add your key in Settings → AI Providers.');
 
   const streamHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -563,8 +620,11 @@ export async function streamChat(
 
   if (!response.ok) {
     const body = await response.text();
+    markProviderError(provider as AIProvider, response.status, body, apiKeyOverride);
     throw new Error(`Anthropic API ${response.status}: ${body}`);
   }
+
+  clearProviderError(provider as AIProvider, apiKeyOverride);
 
   const reader = (response.body as ReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder();

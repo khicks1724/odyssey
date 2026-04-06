@@ -284,9 +284,13 @@ export async function uploadRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'templateType must be docx, pptx, or pdf' });
     }
 
-    // Owner-only
     const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    if (proj?.owner_id !== user.id) return reply.status(403).send({ error: 'Only project owners can manage templates' });
+    const { data: membership } = await supabase
+      .from('project_members').select('user_id')
+      .eq('project_id', projectId).eq('user_id', user.id).single();
+    if (proj?.owner_id !== user.id && !membership) {
+      return reply.status(403).send({ error: 'Only project members can manage templates' });
+    }
 
     // Delete existing template of this type (one per type per project)
     const { data: existing } = await supabase
@@ -366,7 +370,12 @@ export async function uploadRoutes(server: FastifyInstance) {
     if (!projectId || !eventId) return reply.status(400).send({ error: 'projectId and eventId are required' });
 
     const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    if (proj?.owner_id !== user.id) return reply.status(403).send({ error: 'Only project owners can manage templates' });
+    const { data: membership } = await supabase
+      .from('project_members').select('user_id')
+      .eq('project_id', projectId).eq('user_id', user.id).single();
+    if (proj?.owner_id !== user.id && !membership) {
+      return reply.status(403).send({ error: 'Only project members can manage templates' });
+    }
 
     const { data: evt } = await supabase
       .from('events').select('metadata').eq('id', eventId).eq('project_id', projectId).single();

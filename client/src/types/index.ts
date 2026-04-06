@@ -4,6 +4,7 @@ export interface Project {
   description: string | null;
   owner_id: string;
   github_repo: string | null;
+  github_repos: string[] | null;
   created_at: string;
   start_date: string | null;
   invite_code: string | null;

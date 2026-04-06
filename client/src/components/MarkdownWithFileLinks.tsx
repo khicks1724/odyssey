@@ -9,7 +9,7 @@ interface MarkdownWithFileLinksProps {
   children: string;
   filePaths: Map<string, FileRef>;
   onFileClick: (ref: FileRef) => void;
-  githubRepo?: string | null;
+  githubRepo?: string | string[] | null;
   gitlabRepos?: string[];
   onRepoClick?: (repo: string, type: 'github' | 'gitlab') => void;
   tasks?: TaskRef[];
@@ -122,6 +122,11 @@ export default function MarkdownWithFileLinks({
     return Array.from(unique.values());
   }, [filePaths]);
 
+  const githubRepos = useMemo(() => {
+    if (Array.isArray(githubRepo)) return githubRepo.filter(Boolean);
+    return githubRepo ? [githubRepo] : [];
+  }, [githubRepo]);
+
   const taskMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const t of tasks) m.set(t.title.toLowerCase(), t.id);
@@ -162,17 +167,19 @@ export default function MarkdownWithFileLinks({
     }
 
     if (onRepoClick) {
-      if (githubRepo && (text === githubRepo || text === githubRepo.split('/').pop())) {
-        return (
-          <button
-            type="button"
-            onClick={() => onRepoClick(githubRepo, 'github')}
-            title={`Browse ${githubRepo}`}
-            className="font-mono text-[0.85em] bg-[var(--color-code-repo-bg)] text-[var(--color-code-repo)] px-1 py-0.5 rounded border border-[var(--color-code-repo-border)] hover:bg-[var(--color-code-repo-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
-          >
-            {text}
-          </button>
-        );
+      for (const ghRepo of githubRepos) {
+        if (text === ghRepo || text === ghRepo.split('/').pop()) {
+          return (
+            <button
+              type="button"
+              onClick={() => onRepoClick(ghRepo, 'github')}
+              title={`Browse ${ghRepo}`}
+              className="font-mono text-[0.85em] bg-[var(--color-code-repo-bg)] text-[var(--color-code-repo)] px-1 py-0.5 rounded border border-[var(--color-code-repo-border)] hover:bg-[var(--color-code-repo-border)] cursor-pointer transition-colors underline-offset-2 hover:underline"
+            >
+              {text}
+            </button>
+          );
+        }
       }
       for (const glRepo of gitlabRepos) {
         if (text === glRepo || text === glRepo.split('/').pop()) {
@@ -218,8 +225,10 @@ export default function MarkdownWithFileLinks({
     if (onRepoClick) {
       const text = extractText(c).trim();
       if (text) {
-        if (githubRepo && (text === githubRepo || text === githubRepo.split('/').pop())) {
-          return <button type="button" onClick={() => onRepoClick(githubRepo, 'github')} title={`Browse ${githubRepo}`} className={repoButtonCls}>{c}</button>;
+        for (const ghRepo of githubRepos) {
+          if (text === ghRepo || text === ghRepo.split('/').pop()) {
+            return <button type="button" onClick={() => onRepoClick(ghRepo, 'github')} title={`Browse ${ghRepo}`} className={repoButtonCls}>{c}</button>;
+          }
         }
         for (const glRepo of gitlabRepos) {
           if (text === glRepo || text === glRepo.split('/').pop()) {

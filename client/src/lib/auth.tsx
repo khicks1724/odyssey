@@ -1,15 +1,17 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { User, Session, UserIdentity } from '@supabase/supabase-js';
+import type { Provider, User, Session, UserIdentity } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { normalizeUsername, usernameToInternalEmail } from './username-auth';
 
-export type OAuthProvider = 'github' | 'google' | 'azure';
+export type OAuthProvider = Extract<Provider, 'github' | 'google' | 'azure'>;
 
 interface AuthContextValue {
   user: User | null;
   session: Session | null;
   loading: boolean;
+  signInWithUsernamePassword: (username: string, password: string) => Promise<void>;
+  registerWithUsernamePassword: (input: { username: string; password: string; displayName?: string }) => Promise<{ username: string }>;
   signInWithGitHub: () => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
   signInWithMicrosoft: () => Promise<void>;
   linkIdentity: (provider: OAuthProvider) => Promise<void>;
   unlinkIdentity: (identity: UserIdentity) => Promise<void>;
@@ -19,6 +21,43 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const PASSWORD_AUTH_TIMEOUT_MS = 15000;
+const SIGN_OUT_TIMEOUT_MS = 5000;
+const SUPABASE_AUTH_KEY_PATTERN = /^sb-.*-auth-token$/;
+
+function clearSupabaseAuthStorage() {
+  if (typeof window === 'undefined') return;
+
+  for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.localStorage.key(index);
+    if (key && SUPABASE_AUTH_KEY_PATTERN.test(key)) {
+      window.localStorage.removeItem(key);
+    }
+  }
+
+  for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+    const key = window.sessionStorage.key(index);
+    if (key && SUPABASE_AUTH_KEY_PATTERN.test(key)) {
+      window.sessionStorage.removeItem(key);
+    }
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -54,11 +93,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const signInWithGoogle = async () => {
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: getRedirectTo() },
+  const signInWithUsernamePassword = async (username: string, password: string) => {
+    const email = usernameToInternalEmail(username);
+    const { error } = await withTimeout(
+      supabase.auth.signInWithPassword({
+        email,
+        password,
+      }),
+      PASSWORD_AUTH_TIMEOUT_MS,
+      'Sign-in timed out. Please try again.',
+    );
+    if (error) throw new Error('Invalid username or password');
+  };
+
+  const registerWithUsernamePassword = async ({
+    username,
+    password,
+    displayName,
+  }: {
+    username: string;
+    password: string;
+    displayName?: string;
+  }) => {
+    const response = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: normalizeUsername(username),
+        password,
+        displayName,
+      }),
     });
+
+    const payload = (await response.json().catch(() => null)) as { error?: string; success?: boolean } | null;
+
+    if (!response.ok || !payload || !('success' in payload) || !payload.success) {
+      throw new Error(payload?.error ?? 'Unable to create account');
+    }
+
+    return { username: normalizeUsername(username) };
   };
 
   const signInWithMicrosoft = async () => {
@@ -113,11 +186,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    try {
+      const { error } = await withTimeout(
+        supabase.auth.signOut(),
+        SIGN_OUT_TIMEOUT_MS,
+        'Sign-out timed out. Clearing local session.',
+      );
+      if (error) throw error;
+    } finally {
+      clearSupabaseAuthStorage();
+      setSession(null);
+      setUser(null);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signInWithGitHub, signInWithGoogle, signInWithMicrosoft, linkIdentity, unlinkIdentity, refreshUser, connectGoogleAI, signOut }}>
+    <AuthContext.Provider value={{
+      user,
+      session,
+      loading,
+      signInWithUsernamePassword,
+      registerWithUsernamePassword,
+      signInWithGitHub,
+      signInWithMicrosoft,
+      linkIdentity,
+      unlinkIdentity,
+      refreshUser,
+      connectGoogleAI,
+      signOut,
+    }}>
       {children}
     </AuthContext.Provider>
   );

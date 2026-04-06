@@ -2,11 +2,13 @@
 -- (Only the NEW ones — won't conflict with existing ones)
 
 -- Allow project owners to delete projects
+drop policy if exists "Project owners can delete" on public.projects;
 create policy "Project owners can delete"
   on public.projects for delete
   using (auth.uid() = owner_id);
 
 -- Allow project owners to add members
+drop policy if exists "Project owners can manage members" on public.project_members;
 create policy "Project owners can manage members"
   on public.project_members for insert
   with check (
@@ -14,6 +16,7 @@ create policy "Project owners can manage members"
   );
 
 -- Allow goal management (insert specifically) for project owners
+drop policy if exists "Project owners can insert goals" on public.goals;
 create policy "Project owners can insert goals"
   on public.goals for insert
   with check (
@@ -21,6 +24,7 @@ create policy "Project owners can insert goals"
   );
 
 -- Allow goal deletion for project owners
+drop policy if exists "Project owners can delete goals" on public.goals;
 create policy "Project owners can delete goals"
   on public.goals for delete
   using (

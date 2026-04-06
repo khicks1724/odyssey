@@ -1,0 +1,29 @@
+services:
+  odyssey:
+    container_name: odyssey-app
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      kong:
+        condition: service_healthy
+    env_file:
+      - ./.env
+      - ../odyssey.env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      CLIENT_DIST_PATH: /app/client-dist
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      PUBLIC_SUPABASE_URL: /supabase
+      PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then((r) => { if (!r.ok) process.exit(1); })"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

@@ -7,18 +7,49 @@ export default function AuthCallbackPage() {
   const location = useLocation();
 
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const next = params.get('next') || '/';
-    const connectGoogleAI = params.get('connect_google_ai') === '1';
+    let cancelled = false;
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session) {
-        navigate('/login', { replace: true });
+    const finishAuth = async () => {
+      const params = new URLSearchParams(location.search);
+      const next = params.get('next') || '/';
+      const connectGoogleAI = params.get('connect_google_ai') === '1';
+      const hasCode = params.has('code');
+      const code = params.get('code');
+      const authError = params.get('error_description') || params.get('error');
+
+      if (authError) {
+        navigate('/login', {
+          replace: true,
+          state: { authError },
+        });
         return;
       }
 
-      // If this was a Google AI OAuth flow, save the provider token as the
-      // user's Google AI credential so the server can use it for Gemini.
+      let session = (await supabase.auth.getSession()).data.session;
+
+      // In OAuth code flow, make the code exchange explicit on the callback route.
+      if (!session && hasCode && code) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          navigate('/login', {
+            replace: true,
+            state: { authError: error.message },
+          });
+          return;
+        }
+        session = data.session;
+      }
+
+      if (cancelled) return;
+
+      if (!session) {
+        navigate('/login', {
+          replace: true,
+          state: { authError: 'Authentication did not complete. Please try again.' },
+        });
+        return;
+      }
+
       if (connectGoogleAI && session.provider_token) {
         try {
           const cred = JSON.stringify({
@@ -39,8 +70,14 @@ export default function AuthCallbackPage() {
         }
       }
 
-      navigate(next, { replace: true });
-    });
+      if (!cancelled) navigate(next, { replace: true });
+    };
+
+    void finishAuth();
+
+    return () => {
+      cancelled = true;
+    };
   }, [navigate, location.search]);
 
   return (

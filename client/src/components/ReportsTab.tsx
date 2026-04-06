@@ -20,7 +20,7 @@ interface ReportsTabProps {
   projectId: string;
   projectName: string;
   projectStartDate: string | null;
-  githubRepo?: string | null;
+  githubRepo?: string | string[] | null;
   gitlabRepos?: string[];
   messages: Message[];
   onMessagesChange: (msgs: Message[]) => void;
@@ -171,8 +171,8 @@ export default function ReportsTab({
   const [templateDescription, setTemplateDescription] = useState<string | null>(null);
   const [templateLoading,     setTemplateLoading]     = useState(false);
   const templateInputRef = useRef<HTMLInputElement>(null);
-  const { filePaths } = useProjectFilePaths(githubRepo, gitlabRepos);
-  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string } | null>(null);
+  const { filePaths } = useProjectFilePaths(projectId, githubRepo, gitlabRepos);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string; projectId?: string | null } | null>(null);
 
   const bottomRef  = useRef<HTMLDivElement>(null);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
@@ -704,10 +704,10 @@ export default function ReportsTab({
                     <MarkdownWithFileLinks
                       block={false}
                       filePaths={filePaths}
-                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
+                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path, projectId: ref.projectId ?? projectId })}
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
-                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
+                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? projectId : null })}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>
@@ -751,10 +751,10 @@ export default function ReportsTab({
                     <MarkdownWithFileLinks
                       block
                       filePaths={filePaths}
-                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
+                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path, projectId: ref.projectId ?? projectId })}
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
-                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
+                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? projectId : null })}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>
@@ -821,6 +821,7 @@ export default function ReportsTab({
         <RepoTreeModal
           repo={repoTreeTarget.repo}
           type={repoTreeTarget.type}
+          projectId={repoTreeTarget.type === 'gitlab' ? projectId : null}
           initialPath={repoTreeTarget.initialPath}
           onClose={() => setRepoTreeTarget(null)}
         />

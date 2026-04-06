@@ -1,12 +1,10 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Suspense, startTransition, useDeferredValue, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
-import FilePreviewModal from '../components/FilePreviewModal';
-import RepoTreeModal from '../components/RepoTreeModal';
+import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
 import './ProjectDetailPage.css';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Activity,
-  Users,
   Target,
   Github,
   Sparkles,
@@ -15,7 +13,6 @@ import {
   Trash2,
   ArrowLeft,
   Clock,
-  Search,
   Link,
   Loader2,
   CheckCircle,
@@ -32,29 +29,15 @@ import {
   ClipboardList,
   Download,
   Table,
-  Copy,
   LogOut,
-  Check,
 } from 'lucide-react';
-import OverviewTab from '../components/project-tabs/OverviewTab';
-import ActivityTab from '../components/project-tabs/ActivityTab';
-import GoalsTab from '../components/project-tabs/GoalsTab';
-import SettingsTab from '../components/project-tabs/SettingsTab';
 import ErrorBoundary from '../components/ErrorBoundary';
-import GoalMetrics from '../components/GoalMetrics';
-import SearchPanel, { type SearchPanelHandle } from '../components/SearchPanel';
-import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
-import FileViewerLazy from '../components/FileViewer';
-import OfficeFilePicker from '../components/OfficeFilePicker';
-import GoalEditModal from '../components/GoalEditModal';
-import GoalReportModal from '../components/GoalReportModal';
-import ReportsTab from '../components/ReportsTab';
-import FinancialsTab from '../components/project-tabs/FinancialsTab';
-import ProjectQRCode from '../components/ProjectQRCode';
+import type { SearchPanelHandle } from '../components/SearchPanel';
+import type { ReportContent } from '../lib/report-download';
 import { useProject, useJoinRequests, deleteProjectCascade, removeSelfFromProjectAccess } from '../hooks/useProjects';
 import { useProjectLabels } from '../hooks/useProjectLabels';
-import { useProjectPrompts, PROMPT_LABELS, type PromptFeature } from '../hooks/useProjectPrompts';
-import { useMicrosoftIntegration, deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
+import { useProjectPrompts, type PromptFeature } from '../hooks/useProjectPrompts';
+import { deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
 import { useProjectTimeLogs } from '../hooks/useProjectTimeLogs';
@@ -62,12 +45,37 @@ import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useChatPanel } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
-import TimelinePage from '../components/TimelinePage';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
 import { generateProjectCode, sanitizeProjectCode, PROJECT_CODE_LENGTH } from '../lib/project-code';
+import { getProjectFingerprint } from '../lib/project-fingerprint';
+import { getGitHubRepos, getPrimaryGitHubRepo } from '../lib/github';
 import { useAIErrorDialog } from '../lib/ai-error';
 import { useTabVisibility } from '../hooks/useTabVisibility';
+import { lazyWithRetry } from '../lib/lazy-with-retry';
+
+const OverviewTab = lazyWithRetry(() => import('../components/project-tabs/OverviewTab'), 'project-tab-overview');
+const ActivityTab = lazyWithRetry(() => import('../components/project-tabs/ActivityTab'), 'project-tab-activity');
+const GoalsTab = lazyWithRetry(() => import('../components/project-tabs/GoalsTab'), 'project-tab-goals');
+const SettingsTab = lazyWithRetry(() => import('../components/project-tabs/SettingsTab'), 'project-tab-settings');
+const GoalMetrics = lazyWithRetry(() => import('../components/GoalMetrics'), 'project-goal-metrics');
+const ReportsTab = lazyWithRetry(() => import('../components/ReportsTab'), 'project-reports');
+const FinancialsTab = lazyWithRetry(() => import('../components/project-tabs/FinancialsTab'), 'project-tab-financials');
+const TimelinePage = lazyWithRetry(() => import('../components/TimelinePage'), 'project-timeline');
+const FileViewerLazy = lazyWithRetry(() => import('../components/FileViewer'), 'project-file-viewer');
+const GoalEditModal = lazyWithRetry(() => import('../components/GoalEditModal'), 'project-goal-edit');
+const GoalReportModal = lazyWithRetry(() => import('../components/GoalReportModal'), 'project-goal-report');
+const FilePreviewModal = lazyWithRetry(() => import('../components/FilePreviewModal'), 'project-file-preview');
+const RepoTreeModal = lazyWithRetry(() => import('../components/RepoTreeModal'), 'project-repo-tree');
+
+let reportDownloadsPromise: Promise<typeof import('../lib/report-download')> | null = null;
+
+function loadReportDownloads() {
+  if (!reportDownloadsPromise) {
+    reportDownloadsPromise = import('../lib/report-download');
+  }
+  return reportDownloadsPromise;
+}
 
 const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
@@ -83,6 +91,19 @@ const tabs = [
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
+
+function isTabId(value: string): value is TabId {
+  return tabs.some((tab) => tab.id === value);
+}
+
+function SuspenseFallback({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="flex items-center justify-center py-12 text-xs text-muted">
+      <Loader2 size={14} className="animate-spin mr-2" />
+      {label}
+    </div>
+  );
+}
 
 interface MemberRow {
   user_id: string;
@@ -197,12 +218,11 @@ export default function ProjectDetailPage() {
   const { agent, providers } = useAIAgent();
   const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
   const { register, unregister, setIuOpen } = useChatPanel();
-  const { project, loading: projectLoading, updateProject, refetch: refetchProject } = useProject(projectId);
+  const { project, loading: projectLoading, updateProject } = useProject(projectId);
   const { goals, createGoal, updateGoal, deleteGoal, refetch: refetchGoals } = useGoals(projectId);
   const { events, loading: eventsLoading, refetch: refetchEvents } = useEvents(projectId);
   const { categories: projectCategories, loes: projectLoes, labels: projectLabels, addLabel, deleteLabel } = useProjectLabels(projectId);
   const { getPrompt, savePrompt, resetPrompt, resetAllPrompts } = useProjectPrompts(projectId);
-  const { status: msStatus } = useMicrosoftIntegration();
   const [deletingProject, setDeletingProject] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [leavingProject, setLeavingProject] = useState(false);
@@ -277,8 +297,8 @@ export default function ProjectDetailPage() {
     }
   };
 
-  // Join requests (for owners to approve/deny)
-  const { requests: joinRequests, respond: respondJoinRequest, refetch: refetchJoinRequests } = useJoinRequests(isOwner ? projectId : undefined);
+  // Join requests
+  const { requests: joinRequests, respond: respondJoinRequest, refetch: refetchJoinRequests } = useJoinRequests(projectId);
 
   // Register this project with the global chat panel; unregister on unmount or project change
   useEffect(() => {
@@ -290,14 +310,24 @@ export default function ProjectDetailPage() {
 
   const [activeTabState, setActiveTab] = useState<TabId>('overview');
   const { visibleTabs, isVisible } = useTabVisibility(projectId);
+  const githubRepos = getGitHubRepos(project);
+  const primaryGitHubRepo = getPrimaryGitHubRepo(project);
   // If the active tab was hidden, fall back to overview
   const activeTab: TabId = isVisible(activeTabState) ? activeTabState : 'overview';
+  const handleTabChange = useCallback((tab: string) => {
+    if (!isTabId(tab)) return;
+    startTransition(() => {
+      setActiveTab(tab);
+    });
+  }, []);
   const goalModal = useModal();
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDeadline, setNewGoalDeadline] = useState('');
   const [newGoalCategory, setNewGoalCategory] = useState('');
   const [newGoalLoe, setNewGoalLoe] = useState('');
   const [newGoalAssignees, setNewGoalAssignees] = useState<string[]>([]);
+  const [goalCreateError, setGoalCreateError] = useState<string | null>(null);
+  const [creatingGoal, setCreatingGoal] = useState(false);
 
   // Inline project name editing
   const [editingName, setEditingName] = useState(false);
@@ -349,9 +379,6 @@ export default function ProjectDetailPage() {
     });
   }, [goals]);
 
-  // Documents / Office file picker
-  const [officePickerOpen, setOfficePickerOpen] = useState(false);
-
   // Office progress sync
   const [syncingProgress, setSyncingProgress] = useState(false);
   const [syncResult, setSyncResult] = useState<{ summary: string; applied: number; provider?: string } | null>(null);
@@ -369,12 +396,13 @@ export default function ProjectDetailPage() {
   const [gitlabRepos, setGitlabRepos] = useState<string[]>([]);
 
   // File path index for clickable code file links
-  const { filePaths, fetchFileContent } = useProjectFilePaths(project?.github_repo, gitlabRepos);
+  const { filePaths, fetchFileContent } = useProjectFilePaths(projectId, githubRepos, gitlabRepos);
   const [previewFileRef, setPreviewFileRef] = useState<FileRef | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab' } | null>(null);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; projectId?: string | null } | null>(null);
+  const [, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
 
   const handleFileClick = useCallback(async (ref: FileRef) => {
     setPreviewFileRef(ref);
@@ -392,13 +420,8 @@ export default function ProjectDetailPage() {
   }, [fetchFileContent]);
 
   const handleRepoClick = useCallback((repo: string, type: 'github' | 'gitlab') => {
-    setRepoTreeTarget({ repo, type });
-  }, []);
-
-  // Teams folder integration (project-level)
-  const [teamsFolder, setTeamsFolder] = useState<{ id: string; name: string } | null>(null);
-  const [teamsFolderPickerOpen, setTeamsFolderPickerOpen] = useState(false);
-  const [teamsFolderSaving, setTeamsFolderSaving] = useState(false);
+    setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? projectId : null });
+  }, [projectId]);
 
   // Members state
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -452,7 +475,7 @@ export default function ProjectDetailPage() {
     const navState = location.state as { openTab?: TabId; editGoalId?: string } | null;
     if (!navState) return;
 
-    if (navState.openTab) setActiveTab(navState.openTab);
+    if (navState.openTab) handleTabChange(navState.openTab);
     if (navState.editGoalId) {
       if (goals.length === 0) return;
       const goal = goals.find((g) => g.id === navState.editGoalId);
@@ -462,7 +485,7 @@ export default function ProjectDetailPage() {
     }
 
     navigate(location.pathname, { replace: true, state: null });
-  }, [location.state, location.pathname, navigate, goals]);
+  }, [location.state, location.pathname, navigate, goals, handleTabChange]);
 
   // Load persisted insights + Teams folder on mount
   useEffect(() => {
@@ -502,8 +525,8 @@ export default function ProjectDetailPage() {
       .maybeSingle()
       .then(({ data }) => {
         if (data?.config) {
-          const cfg = data.config as { repos?: string[]; repo?: string };
-          setGitlabRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
+          const cfg = data.config as GitLabIntegrationConfig;
+          setGitlabRepos(getGitLabRepoPaths(cfg));
         }
       });
 
@@ -544,16 +567,67 @@ export default function ProjectDetailPage() {
   // Fetch members
   const fetchMembers = useCallback(async () => {
     if (!projectId) return;
-    const { data } = await supabase
+    const { data: memberRows, error: membersError } = await supabase
       .from('project_members')
-      .select('user_id, role, joined_at, profiles:user_id(display_name, avatar_url)')
+      .select('user_id, role, joined_at')
       .eq('project_id', projectId);
-    if (data) setMembers(data as unknown as MemberRow[]);
+    if (membersError) {
+      console.error('Failed to load project members:', membersError);
+      return;
+    }
+
+    const uniqueMembers = [...new Map(
+      (memberRows ?? []).map((row) => [row.user_id, row]),
+    ).values()] as Pick<MemberRow, 'user_id' | 'role' | 'joined_at'>[];
+
+    const { data: profiles, error: profilesError } = uniqueMembers.length
+      ? await supabase
+        .from('profiles')
+        .select('id, display_name, avatar_url')
+        .in('id', uniqueMembers.map((row) => row.user_id))
+      : { data: [], error: null };
+
+    if (profilesError) {
+      console.error('Failed to load member profiles:', profilesError);
+    }
+
+    const profileMap = new Map(
+      (profiles ?? []).map((profile) => [profile.id, profile]),
+    );
+
+    setMembers(uniqueMembers.map((member) => ({
+      ...member,
+      profile: profileMap.has(member.user_id)
+        ? {
+          display_name: profileMap.get(member.user_id)?.display_name ?? null,
+          avatar_url: profileMap.get(member.user_id)?.avatar_url ?? null,
+        }
+        : undefined,
+    })));
   }, [projectId]);
 
   useEffect(() => {
     fetchMembers();
   }, [fetchMembers]);
+
+  useEffect(() => {
+    if (!projectId) return;
+
+    const channel = supabase
+      .channel(`project-members:${projectId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'project_members', filter: `project_id=eq.${projectId}` },
+        () => {
+          fetchMembers();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [projectId, fetchMembers]);
 
   // AI risk assessment
   const handleAssessRisk = async () => {
@@ -630,7 +704,8 @@ export default function ProjectDetailPage() {
     slug = slug.replace(/\.git$/, '');
     setRepoSaving(true);
     try {
-      await updateProject({ github_repo: slug });
+      const nextRepos = [...new Set([...githubRepos, slug])];
+      await updateProject({ github_repo: nextRepos[0] ?? null, github_repos: nextRepos });
       setRepoInput('');
     } catch (err) {
       console.error('Failed to save repo:', err);
@@ -640,11 +715,11 @@ export default function ProjectDetailPage() {
 
   // AI repo scan
   const handleRepoScan = async () => {
-    if (!project?.github_repo) return;
+    if (!primaryGitHubRepo) return;
     setScanLoading(true);
     setScanResults(null);
     try {
-      const [owner, repo] = project.github_repo.split('/');
+      const [owner, repo] = primaryGitHubRepo.split('/');
       // Fetch recent repo data
       const recentRes = await fetch(`${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`);
       const recentData = await recentRes.json();
@@ -950,40 +1025,54 @@ export default function ProjectDetailPage() {
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newGoalTitle.trim() || !newGoalDeadline || !newGoalCategory || !newGoalLoe) return;
-    const newGoal = await createGoal({
-      title: newGoalTitle,
-      deadline: newGoalDeadline,
-      category: newGoalCategory,
-      loe: newGoalLoe,
-      assignees: newGoalAssignees,
-    });
-    setNewGoalTitle('');
-    setNewGoalDeadline('');
-    setNewGoalCategory('');
-    setNewGoalLoe('');
-    setNewGoalAssignees([]);
-    goalModal.onClose();
-    // Auto-generate AI guidance in background after creation
-    if (newGoal?.id) {
-      fetch(`${API_BASE}/ai/task-guidance`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
-      }).then((r) => r.ok ? r.json() : null).then((data) => {
-        if (data?.guidance) updateGoal(newGoal.id, { ai_guidance: data.guidance }).catch(() => {});
-      }).catch(() => {});
+    setGoalCreateError(null);
+    setCreatingGoal(true);
+    try {
+      const newGoal = await createGoal({
+        title: newGoalTitle,
+        deadline: newGoalDeadline,
+        category: newGoalCategory,
+        loe: newGoalLoe,
+        assignees: newGoalAssignees,
+      });
+      setNewGoalTitle('');
+      setNewGoalDeadline('');
+      setNewGoalCategory('');
+      setNewGoalLoe('');
+      setNewGoalAssignees([]);
+      goalModal.onClose();
+      // Auto-generate AI guidance in background after creation
+      if (newGoal?.id) {
+        fetch(`${API_BASE}/ai/task-guidance`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
+        }).then((r) => r.ok ? r.json() : null).then((data) => {
+          if (data?.guidance) updateGoal(newGoal.id, { ai_guidance: data.guidance }).catch(() => {});
+        }).catch(() => {});
+      }
+    } catch (err: any) {
+      setGoalCreateError(err?.message ?? 'Unable to create task.');
+    } finally {
+      setCreatingGoal(false);
     }
   };
 
   // Build assignee lookup from members + current user
-  const allMembers = [
-    { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You', avatar_url: user?.user_metadata?.avatar_url ?? null },
-    ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? m.user_id, avatar_url: m.profile?.avatar_url ?? null })),
-  ];
+  const allMembers = Array.from(new Map(
+    [
+      { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You', avatar_url: user?.user_metadata?.avatar_url ?? null },
+      ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? m.user_id, avatar_url: m.profile?.avatar_url ?? null })),
+    ]
+      .filter((member) => member.user_id)
+      .map((member) => [member.user_id, member] as const),
+  ).values());
   function getAssignee(userId: string | null) {
     if (!userId) return null;
     return allMembers.find((m) => m.user_id === userId) ?? null;
   }
+
+  const projectFingerprint = getProjectFingerprint(project.id);
 
   return (
     <>
@@ -1064,6 +1153,10 @@ export default function ProjectDetailPage() {
         {project.description && (
           <p className="text-sm text-muted">{project.description}</p>
         )}
+        <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Project Hash</span>
+          <span className="text-xs font-mono text-heading">{projectFingerprint}</span>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -1074,7 +1167,7 @@ export default function ProjectDetailPage() {
             <button
               type="button"
               key={tabMeta.id}
-              onClick={() => setActiveTab(tabMeta.id)}
+              onClick={() => handleTabChange(tabMeta.id)}
               className={`flex-1 flex items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors whitespace-nowrap first:rounded-tl last:rounded-tr ${
                 activeTab === tabMeta.id
                   ? 'text-heading bg-surface2 font-medium'
@@ -1090,137 +1183,157 @@ export default function ProjectDetailPage() {
 
       {/* Tab Content */}
       {activeTab === 'overview' && (
-        <ErrorBoundary label="Overview Tab"><OverviewTab
-          project={project}
-          goals={goals}
-          completedGoals={completedGoals}
-          activeGoals={activeGoals}
-          overallProgress={overallProgress}
-          members={members}
-          events={events}
-          eventsLoading={eventsLoading}
-          user={user}
-          hasCommitData={hasCommitData}
-          setHasCommitData={setHasCommitData}
-          gitlabRepos={gitlabRepos}
-          filePaths={filePaths}
-          insights={insights}
-          insightsLoading={insightsLoading}
-          insightsError={insightsError}
-          standup={standup}
-          standupLoading={standupLoading}
-          standupError={standupError}
-          handleGenerateInsights={handleGenerateInsights}
-          handleGenerateStandup={handleGenerateStandup}
-          handleFileClick={handleFileClick}
-          handleRepoClick={handleRepoClick}
-          setEditGoal={setEditGoal}
-          setEditAutoGuidance={setEditAutoGuidance}
-          setActiveTab={setActiveTab}
-          handlePromoteMember={handlePromoteMember}
-          categoryLabels={projectCategories.map((c) => ({ id: c.id, name: c.name }))}
-          loeLabels={projectLoes.map((l) => ({ id: l.id, name: l.name }))}
-        /></ErrorBoundary>
+        <ErrorBoundary label="Overview Tab">
+          <Suspense fallback={<SuspenseFallback label="Loading overview…" />}>
+            <OverviewTab
+              project={project}
+              goals={goals}
+              completedGoals={completedGoals}
+              activeGoals={activeGoals}
+              overallProgress={overallProgress}
+              members={members}
+              events={events}
+              eventsLoading={eventsLoading}
+              user={user}
+              hasCommitData={hasCommitData}
+              setHasCommitData={setHasCommitData}
+              gitlabRepos={gitlabRepos}
+              filePaths={filePaths}
+              insights={insights}
+              insightsLoading={insightsLoading}
+              insightsError={insightsError}
+              standup={standup}
+              standupLoading={standupLoading}
+              standupError={standupError}
+              handleGenerateInsights={handleGenerateInsights}
+              handleGenerateStandup={handleGenerateStandup}
+              handleFileClick={handleFileClick}
+              handleRepoClick={handleRepoClick}
+              setEditGoal={setEditGoal}
+              setEditAutoGuidance={setEditAutoGuidance}
+              setActiveTab={handleTabChange}
+              handlePromoteMember={handlePromoteMember}
+              categoryLabels={projectCategories.map((c) => ({ id: c.id, name: c.name }))}
+              loeLabels={projectLoes.map((l) => ({ id: l.id, name: l.name }))}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {activeTab === 'timeline' && (
-        <TimelinePage
-          goals={goals}
-          projectName={project.name}
-          projectId={project.id}
-          members={[
-            ...(user ? [{ user_id: user.id, display_name: user.user_metadata?.user_name ?? user.user_metadata?.full_name ?? user.email ?? 'You' }] : []),
-            ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
-          ]}
-          projectCategories={projectCategories.map((c) => c.name)}
-          projectLoes={projectLoes.map((l) => l.name)}
-          onGoalClick={(g) => { setEditAutoGuidance(false); setEditGoal(g); }}
-          onCreateGoalForDate={(dateStr) => { setNewGoalDeadline(dateStr); goalModal.onOpen(); }}
-        />
+        <Suspense fallback={<SuspenseFallback label="Loading timeline…" />}>
+          <TimelinePage
+            goals={goals}
+            projectName={project.name}
+            projectId={project.id}
+            members={[
+              ...(user ? [{ user_id: user.id, display_name: user.user_metadata?.user_name ?? user.user_metadata?.full_name ?? user.email ?? 'You' }] : []),
+              ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
+            ]}
+            projectCategories={projectCategories.map((c) => c.name)}
+            projectLoes={projectLoes.map((l) => l.name)}
+            onGoalClick={(g) => { setEditAutoGuidance(false); setEditGoal(g); }}
+            onCreateGoalForDate={(dateStr) => { setNewGoalDeadline(dateStr); goalModal.onOpen(); }}
+          />
+        </Suspense>
       )}
 
       {activeTab === 'activity' && (
-        <ErrorBoundary label="Activity Tab"><ActivityTab
-          project={project}
-          goals={goals}
-          events={events}
-          eventsLoading={eventsLoading}
-          hasCommitData={hasCommitData}
-          setHasCommitData={setHasCommitData}
-          members={members}
-          user={user}
-          taskGuidance={taskGuidance}
-          guidanceVisible={guidanceVisible}
-          setGuidanceVisible={setGuidanceVisible}
-          handleTaskGuidance={handleTaskGuidance}
-          getAssignee={getAssignee}
-        /></ErrorBoundary>
+        <ErrorBoundary label="Activity Tab">
+          <Suspense fallback={<SuspenseFallback label="Loading activity…" />}>
+            <ActivityTab
+              project={project}
+              goals={goals}
+              events={events}
+              eventsLoading={eventsLoading}
+              hasCommitData={hasCommitData}
+              setHasCommitData={setHasCommitData}
+              members={members}
+              user={user}
+              taskGuidance={taskGuidance}
+              guidanceVisible={guidanceVisible}
+              setGuidanceVisible={setGuidanceVisible}
+              handleTaskGuidance={handleTaskGuidance}
+              getAssignee={getAssignee}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {activeTab === 'goals' && (
-        <ErrorBoundary label="Goals Tab"><GoalsTab
-          goals={goals}
-          events={events}
-          projectId={projectId ?? null}
-          searchRef={searchRef}
-          projectCategories={projectCategories.map((c) => c.name)}
-          projectLoes={projectLoes.map((l) => l.name)}
-          riskAssessing={riskAssessing}
-          riskReport={riskReport}
-          riskPanelOpen={riskPanelOpen}
-          setRiskPanelOpen={setRiskPanelOpen}
-          syncingProgress={syncingProgress}
-          syncResult={syncResult}
-          setSyncResult={setSyncResult}
-          syncError={syncError}
-          goalDependencies={goalDependencies}
-          timeLogTotals={timeLogTotals}
-          getAssignee={getAssignee}
-          handleAssessRisk={handleAssessRisk}
-          handleSyncOfficeProgress={handleSyncOfficeProgress}
-          updateGoal={updateGoal}
-          deleteGoal={deleteGoal}
-          setEditGoal={setEditGoal}
-          setEditAutoGuidance={setEditAutoGuidance}
-          setActiveTab={setActiveTab}
-          goalModalOnOpen={goalModal.onOpen}
-          createGoal={createGoal}
-        /></ErrorBoundary>
+        <ErrorBoundary label="Goals Tab">
+          <Suspense fallback={<SuspenseFallback label="Loading tasks…" />}>
+            <GoalsTab
+              goals={goals}
+              events={events}
+              projectId={projectId ?? null}
+              searchRef={searchRef}
+              projectCategories={projectCategories.map((c) => c.name)}
+              projectLoes={projectLoes.map((l) => l.name)}
+              riskAssessing={riskAssessing}
+              riskReport={riskReport}
+              riskPanelOpen={riskPanelOpen}
+              setRiskPanelOpen={setRiskPanelOpen}
+              syncingProgress={syncingProgress}
+              syncResult={syncResult}
+              setSyncResult={setSyncResult}
+              syncError={syncError}
+              goalDependencies={goalDependencies}
+              timeLogTotals={timeLogTotals}
+              getAssignee={getAssignee}
+              handleAssessRisk={handleAssessRisk}
+              handleSyncOfficeProgress={handleSyncOfficeProgress}
+              updateGoal={updateGoal}
+              deleteGoal={deleteGoal}
+              setEditGoal={setEditGoal}
+              setEditAutoGuidance={setEditAutoGuidance}
+              setActiveTab={handleTabChange}
+              goalModalOnOpen={goalModal.onOpen}
+              createGoal={createGoal}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {activeTab === 'metrics' && (
-        <GoalMetrics
-          goals={goals}
-          members={members.map((m) => ({
-            user_id: m.user_id,
-            display_name: m.profile?.display_name ?? null,
-            avatar_url: m.profile?.avatar_url ?? null,
-          }))}
-          currentUserId={user?.id ?? ''}
-          currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
-          currentUserAvatar={user?.user_metadata?.avatar_url}
-          onAssignTask={(goalId, userId) => updateGoal(goalId, { assigned_to: userId })}
-          timeLogs={timeLogs}
-        />
+        <Suspense fallback={<SuspenseFallback label="Loading metrics…" />}>
+          <GoalMetrics
+            goals={goals}
+            members={members.map((m) => ({
+              user_id: m.user_id,
+              display_name: m.profile?.display_name ?? null,
+              avatar_url: m.profile?.avatar_url ?? null,
+            }))}
+            currentUserId={user?.id ?? ''}
+            currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
+            currentUserAvatar={user?.user_metadata?.avatar_url}
+            onAssignTask={(goalId, userId) => updateGoal(goalId, { assigned_to: userId })}
+            timeLogs={timeLogs}
+          />
+        </Suspense>
       )}
 
       {activeTab === 'financials' && (
         <ErrorBoundary label="Financials Tab">
-          <FinancialsTab projectId={project.id} />
+          <Suspense fallback={<SuspenseFallback label="Loading financials…" />}>
+            <FinancialsTab projectId={project.id} />
+          </Suspense>
         </ErrorBoundary>
       )}
 
       {activeTab === 'reports' && (
-        <ReportsTab
-          projectId={project.id}
-          projectName={project.name}
-          projectStartDate={project.start_date ?? null}
-          githubRepo={project.github_repo}
-          gitlabRepos={gitlabRepos}
-          messages={reportMessages}
-          onMessagesChange={setReportMessages}
-          onReportSaved={() => setSavedReportsVersion((v) => v + 1)}
-        />
+        <Suspense fallback={<SuspenseFallback label="Loading reports…" />}>
+          <ReportsTab
+            projectId={project.id}
+            projectName={project.name}
+            projectStartDate={project.start_date ?? null}
+            githubRepo={githubRepos}
+            gitlabRepos={gitlabRepos}
+            messages={reportMessages}
+            onMessagesChange={setReportMessages}
+            onReportSaved={() => setSavedReportsVersion((v) => v + 1)}
+          />
+        </Suspense>
       )}
 
       {activeTab === 'documents' && (
@@ -1236,7 +1349,6 @@ export default function ProjectDetailPage() {
           setBulkDeleting={setBulkDeleting}
           deletingEventId={deletingEventId}
           setDeletingEventId={setDeletingEventId}
-          onOpenOfficePicker={() => setOfficePickerOpen(true)}
           onRefresh={refetchEvents}
           savedReportsVersion={savedReportsVersion}
         />
@@ -1245,109 +1357,97 @@ export default function ProjectDetailPage() {
       {activeTab === 'integrations' && (
         <IntegrationsPreviewTab
           projectId={projectId!}
-          project={project ? { name: project.name, github_repo: project.github_repo } : null}
-          githubRepo={project?.github_repo ?? null}
+          project={project ? { name: project.name, github_repo: primaryGitHubRepo, github_repos: githubRepos } : null}
+          githubRepo={githubRepos}
           gitlabRepos={gitlabRepos}
           goals={goals.map((g) => ({ id: g.id, title: g.title, status: g.status, progress: g.progress ?? 0 }))}
-          o365Docs={events.filter((e) => ['onenote', 'onedrive', 'teams', 'local'].includes(e.source))}
-          onNavigateSettings={() => setActiveTab('settings')}
+          o365Docs={events.filter((e) => e.source === 'local')}
+          onNavigateSettings={() => handleTabChange('settings')}
         />
       )}
 
       {activeTab === 'settings' && (
-        <ErrorBoundary label="Settings Tab"><SettingsTab
-          project={project}
-          projectId={projectId!}
-          isOwner={isOwner}
-          members={members}
-          user={user}
-          joinRequests={joinRequests}
-          respondJoinRequest={respondJoinRequest}
-          refetchJoinRequests={refetchJoinRequests}
-          inviteRole={inviteRole}
-          setInviteRole={setInviteRole}
-          inviteTab={inviteTab}
-          setInviteTab={setInviteTab}
-          memberSearch={memberSearch}
-          setMemberSearch={setMemberSearch}
-          memberResults={memberResults}
-          memberSearching={memberSearching}
-          inviting={inviting}
-          copySuccess={copySuccess}
-          teamsFolder={teamsFolder}
-          setTeamsFolder={setTeamsFolder}
-          teamsFolderPickerOpen={teamsFolderPickerOpen}
-          setTeamsFolderPickerOpen={setTeamsFolderPickerOpen}
-          teamsFolderSaving={teamsFolderSaving}
-          setTeamsFolderSaving={setTeamsFolderSaving}
-          repoInput={repoInput}
-          setRepoInput={setRepoInput}
-          repoSaving={repoSaving}
-          scanResults={scanResults}
-          events={events}
-          auditFrom={auditFrom}
-          setAuditFrom={setAuditFrom}
-          auditTo={auditTo}
-          setAuditTo={setAuditTo}
-          auditPreset={auditPreset}
-          setAuditPreset={setAuditPreset}
-          auditType={auditType}
-          setAuditType={setAuditType}
-          auditPage={auditPage}
-          setAuditPage={setAuditPage}
-          AUDIT_PAGE_SIZE={AUDIT_PAGE_SIZE}
-          imageUploading={imageUploading}
-          newLabelName={newLabelName}
-          setNewLabelName={setNewLabelName}
-          newLabelColor={newLabelColor}
-          setNewLabelColor={setNewLabelColor}
-          newLabelType={newLabelType}
-          setNewLabelType={setNewLabelType}
-          projectLabels={projectLabels}
-          editPromptFeature={editPromptFeature}
-          setEditPromptFeature={setEditPromptFeature}
-          editPromptText={editPromptText}
-          setEditPromptText={setEditPromptText}
-          resetPromptsTyped={resetPromptsTyped}
-          setResetPromptsTyped={setResetPromptsTyped}
-          resetPromptsModalOpen={resetPromptsModalOpen}
-          setResetPromptsModalOpen={setResetPromptsModalOpen}
-          deletingProject={deletingProject}
-          leavingProject={leavingProject}
-          goals={goals}
-          updateProject={updateProject}
-          updateGoal={updateGoal}
-          createGoal={createGoal}
-          handleCopyInviteCode={handleCopyInviteCode}
-          handleSaveRepo={handleSaveRepo}
-          handleRepoScan={handleRepoScan}
-          scanLoading={scanLoading}
-          handleMemberSearch={handleMemberSearch}
-          handleInviteMember={handleInviteMember}
-          handleRemoveMember={handleRemoveMember}
-          handleImageUpload={handleImageUpload}
-          handleExportAuditCSV={handleExportAuditCSV}
-          addLabel={addLabel}
-          deleteLabel={deleteLabel}
-          getPrompt={getPrompt}
-          savePrompt={savePrompt}
-          resetPrompt={resetPrompt}
-          resetAllPrompts={resetAllPrompts}
-          setDeleteModalOpen={setDeleteModalOpen}
-          setGitlabRepos={setGitlabRepos}
-        /></ErrorBoundary>
+        <ErrorBoundary label="Settings Tab">
+          <Suspense fallback={<SuspenseFallback label="Loading settings…" />}>
+            <SettingsTab
+              project={project}
+              projectId={projectId!}
+              isOwner={isOwner}
+              members={members}
+              user={user}
+              joinRequests={joinRequests}
+              respondJoinRequest={respondJoinRequest}
+              refetchJoinRequests={refetchJoinRequests}
+              inviteRole={inviteRole}
+              setInviteRole={setInviteRole}
+              inviteTab={inviteTab}
+              setInviteTab={setInviteTab}
+              memberSearch={memberSearch}
+              setMemberSearch={setMemberSearch}
+              memberResults={memberResults}
+              memberSearching={memberSearching}
+              inviting={inviting}
+              copySuccess={copySuccess}
+              repoInput={repoInput}
+              setRepoInput={setRepoInput}
+              repoSaving={repoSaving}
+              scanResults={scanResults}
+              events={events}
+              auditFrom={auditFrom}
+              setAuditFrom={setAuditFrom}
+              auditTo={auditTo}
+              setAuditTo={setAuditTo}
+              auditPreset={auditPreset}
+              setAuditPreset={setAuditPreset}
+              auditType={auditType}
+              setAuditType={setAuditType}
+              auditPage={auditPage}
+              setAuditPage={setAuditPage}
+              AUDIT_PAGE_SIZE={AUDIT_PAGE_SIZE}
+              imageUploading={imageUploading}
+              newLabelName={newLabelName}
+              setNewLabelName={setNewLabelName}
+              newLabelColor={newLabelColor}
+              setNewLabelColor={setNewLabelColor}
+              newLabelType={newLabelType}
+              setNewLabelType={setNewLabelType}
+              projectLabels={projectLabels}
+              editPromptFeature={editPromptFeature}
+              setEditPromptFeature={setEditPromptFeature}
+              editPromptText={editPromptText}
+              setEditPromptText={setEditPromptText}
+              resetPromptsTyped={resetPromptsTyped}
+              setResetPromptsTyped={setResetPromptsTyped}
+              resetPromptsModalOpen={resetPromptsModalOpen}
+              setResetPromptsModalOpen={setResetPromptsModalOpen}
+              deletingProject={deletingProject}
+              leavingProject={leavingProject}
+              goals={goals}
+              updateProject={updateProject}
+              updateGoal={updateGoal}
+              createGoal={createGoal}
+              handleCopyInviteCode={handleCopyInviteCode}
+              handleSaveRepo={handleSaveRepo}
+              handleRepoScan={handleRepoScan}
+              scanLoading={scanLoading}
+              handleMemberSearch={handleMemberSearch}
+              handleInviteMember={handleInviteMember}
+              handleRemoveMember={handleRemoveMember}
+              handleImageUpload={handleImageUpload}
+              handleExportAuditCSV={handleExportAuditCSV}
+              addLabel={addLabel}
+              deleteLabel={deleteLabel}
+              getPrompt={getPrompt}
+              savePrompt={savePrompt}
+              resetPrompt={resetPrompt}
+              resetAllPrompts={resetAllPrompts}
+              setDeleteModalOpen={setDeleteModalOpen}
+              setGitlabRepos={setGitlabRepos}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </div>
-
-    {/* Office File Picker modal */}
-    {officePickerOpen && project && (
-      <OfficeFilePicker
-        projectId={project.id}
-        projectName={project.name}
-        onClose={() => setOfficePickerOpen(false)}
-        onImported={() => { /* events list refreshes automatically via useEvents */ }}
-      />
-    )}
 
     {deleteModalOpen && project && (
       <DeleteProjectModal
@@ -1364,6 +1464,11 @@ export default function ProjectDetailPage() {
     {/* Add Task Modal — rendered globally so it works from any tab (timeline, calendar, tasks) */}
     <Modal open={goalModal.open} onClose={goalModal.onClose} title="Add Task">
       <form onSubmit={handleCreateGoal} className="space-y-4">
+        {goalCreateError && (
+          <div className="rounded-md border border-[#D94F4F]/40 bg-[#D94F4F]/10 px-3 py-2 text-xs font-mono text-[#ffb3b3]">
+            {goalCreateError}
+          </div>
+        )}
         <div>
           <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Title</label>
           <input
@@ -1438,11 +1543,15 @@ export default function ProjectDetailPage() {
           </div>
         </div>
         <div className="flex gap-3 pt-2 flex-wrap">
-          <button type="submit" className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md">
-            Create Task
+          <button
+            type="submit"
+            disabled={creatingGoal}
+            className="px-6 py-2.5 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {creatingGoal ? 'Creating…' : 'Create Task'}
           </button>
 
-          <button type="button" onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md">
+          <button type="button" disabled={creatingGoal} onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:cursor-not-allowed disabled:opacity-60">
             Cancel
           </button>
         </div>
@@ -1451,62 +1560,71 @@ export default function ProjectDetailPage() {
 
     {/* Goal Edit Modal */}
     {editGoal && (
-      <GoalEditModal
-        goal={editGoal}
-        members={allMembers.map((m) => ({ user_id: m.user_id, display_name: m.display_name }))}
-        projectId={project.id}
-        agent={agent}
-        autoGuidance={editAutoGuidance}
-        allGoals={goals.filter((g) => g.id !== editGoal.id)}
-        filePaths={filePaths}
-        githubRepo={project.github_repo}
-        gitlabRepos={gitlabRepos}
-        projectCategories={projectCategories.map((c) => c.name)}
-        projectLoes={projectLoes.map((l) => l.name)}
-        onFileClick={handleFileClick}
-        onRepoClick={handleRepoClick}
-        onTaskClick={(id) => {
-          const g = goals.find((g) => g.id === id);
-          if (g) {
-            setEditAutoGuidance(false);
-            setEditGoal(g);
-          }
-        }}
-        onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
-        onSilentSave={async (id, updates) => { await updateGoal(id, updates); }}
-        onClose={handleGoalEditClose}
-      />
+      <Suspense fallback={<SuspenseFallback label="Loading task editor…" />}>
+        <GoalEditModal
+          goal={editGoal}
+          members={allMembers.map((m) => ({ user_id: m.user_id, display_name: m.display_name }))}
+          projectId={project.id}
+          agent={agent}
+          autoGuidance={editAutoGuidance}
+          allGoals={goals.filter((g) => g.id !== editGoal.id)}
+          filePaths={filePaths}
+          githubRepo={githubRepos}
+          gitlabRepos={gitlabRepos}
+          projectCategories={projectCategories.map((c) => c.name)}
+          projectLoes={projectLoes.map((l) => l.name)}
+          onFileClick={handleFileClick}
+          onRepoClick={handleRepoClick}
+          onTaskClick={(id) => {
+            const g = goals.find((g) => g.id === id);
+            if (g) {
+              setEditAutoGuidance(false);
+              setEditGoal(g);
+            }
+          }}
+          onSave={async (id, updates) => { await updateGoal(id, updates); setEditGoal(null); }}
+          onSilentSave={async (id, updates) => { await updateGoal(id, updates); }}
+          onClose={handleGoalEditClose}
+        />
+      </Suspense>
     )}
 
     {/* Goal Report Modal */}
     {reportGoal && (
-      <GoalReportModal
-        goal={reportGoal}
-        projectId={project.id}
-        onClose={() => setReportGoal(null)}
-      />
+      <Suspense fallback={<SuspenseFallback label="Loading report…" />}>
+        <GoalReportModal
+          goal={reportGoal}
+          projectId={project.id}
+          onClose={() => setReportGoal(null)}
+        />
+      </Suspense>
     )}
 
 
 
     {/* ── File Preview Modal (code files from GitHub/GitLab) ─────────────── */}
     {previewFileRef && (
-      <FilePreviewModal
-        fileRef={previewFileRef}
-        content={previewContent}
-        loading={previewLoading}
-        error={previewError}
-        onClose={() => { setPreviewFileRef(null); setPreviewContent(null); setPreviewError(null); }}
-      />
+      <Suspense fallback={<SuspenseFallback label="Loading file preview…" />}>
+        <FilePreviewModal
+          fileRef={previewFileRef}
+          content={previewContent}
+          loading={previewLoading}
+          error={previewError}
+          onClose={() => { setPreviewFileRef(null); setPreviewContent(null); setPreviewError(null); }}
+        />
+      </Suspense>
     )}
 
     {/* ── Repo Tree Modal (browse repo files from AI insight links) ────────── */}
     {repoTreeTarget && (
-      <RepoTreeModal
-        repo={repoTreeTarget.repo}
-        type={repoTreeTarget.type}
-        onClose={() => setRepoTreeTarget(null)}
-      />
+      <Suspense fallback={<SuspenseFallback label="Loading repository browser…" />}>
+        <RepoTreeModal
+          repo={repoTreeTarget.repo}
+          type={repoTreeTarget.type}
+          projectId={repoTreeTarget.projectId}
+          onClose={() => setRepoTreeTarget(null)}
+        />
+      </Suspense>
     )}
     {aiErrorDialog}
 
@@ -1538,7 +1656,6 @@ interface DocumentsTabProps {
   setBulkDeleting: (v: boolean) => void;
   deletingEventId: string | null;
   setDeletingEventId: (v: string | null) => void;
-  onOpenOfficePicker: () => void;
   onRefresh: () => void;
   savedReportsVersion?: number;
 }
@@ -1549,12 +1666,10 @@ function DocumentsTab({
   docSelected, setDocSelected,
   bulkDeleting, setBulkDeleting,
   deletingEventId, setDeletingEventId,
-  onOpenOfficePicker, onRefresh,
+  onRefresh,
   savedReportsVersion = 0,
 }: DocumentsTabProps) {
-  const docs = events.filter((e) =>
-    e.source === 'onenote' || e.source === 'onedrive' || e.source === 'local' || e.source === 'teams'
-  );
+  const docs = events.filter((e) => e.source === 'local');
   const allSelected = docSelected.size === docs.length && docs.length > 0;
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -1759,13 +1874,6 @@ function DocumentsTab({
                   }}
                 />
               </label>
-              <button
-                type="button"
-                onClick={onOpenOfficePicker}
-                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-              >
-                <Plus size={12} /> Import from Office 365
-              </button>
             </>
           )}
         </div>
@@ -1908,6 +2016,7 @@ function DocumentsTab({
                     title="Download report"
                     onClick={async () => {
                       const rc = r.content as ReportContent;
+                      const { downloadDocx, downloadPptx, downloadPdf } = await loadReportDownloads();
                       if (r.format === 'pptx') await downloadPptx(rc);
                       else if (r.format === 'pdf') await downloadPdf(rc);
                       else await downloadDocx(rc);
@@ -1919,7 +2028,10 @@ function DocumentsTab({
                   <button
                     type="button"
                     title="Export goals as CSV"
-                    onClick={() => exportGoalsCSV(r.content as ReportContent)}
+                    onClick={async () => {
+                      const { exportGoalsCSV } = await loadReportDownloads();
+                      exportGoalsCSV(r.content as ReportContent);
+                    }}
                     className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
                   >
                     <Table size={11} /> CSV
@@ -2104,8 +2216,8 @@ interface FileEntry { path: string; size?: number }
 
 interface IntegrationsPreviewTabProps {
   projectId: string;
-  project: { name: string; github_repo?: string | null } | null;
-  githubRepo: string | null;
+  project: { name: string; github_repo?: string | null; github_repos?: string[] | null } | null;
+  githubRepo: string | string[] | null;
   gitlabRepos: string[];
   goals: { id: string; title: string; status: string; progress: number }[];
   o365Docs: import('../types').OdysseyEvent[];
@@ -2190,7 +2302,7 @@ function TreeNodeRow({ node, depth = 0, onOpenFile }: { node: TreeNode; depth?: 
 }
 
 function FolderTree({ files, onOpenFile }: { files: FileEntry[]; onOpenFile?: (path: string) => void }) {
-  const tree = buildTree(files);
+  const tree = useMemo(() => buildTree(files), [files]);
   if (tree.length === 0) return <div className="px-6 py-6 text-xs text-muted text-center">No files found.</div>;
   return (
     <div className="py-1">
@@ -2232,11 +2344,14 @@ function RepoPanel({
 }) {
   const [view, setView] = useState<'commits' | 'files' | 'readme'>('files');
   const [fileSearch, setFileSearch] = useState('');
+  const deferredFileSearch = useDeferredValue(fileSearch);
   const [openFile, setOpenFile] = useState<string | null>(null);
 
-  const filteredFiles = fileSearch
-    ? files.filter((f) => f.path.toLowerCase().includes(fileSearch.toLowerCase()))
-    : files;
+  const filteredFiles = useMemo(() => {
+    const normalizedSearch = deferredFileSearch.trim().toLowerCase();
+    if (!normalizedSearch) return files;
+    return files.filter((f) => f.path.toLowerCase().includes(normalizedSearch));
+  }, [files, deferredFileSearch]);
 
   const externalFileUrl = (path: string) => {
     if (source === 'github') return `https://github.com/${repoId}/blob/HEAD/${path}`;
@@ -2246,13 +2361,15 @@ function RepoPanel({
   return (
     <>
       {openFile && (
-        <FileViewerLazy
-          source={source}
-          repo={repoId}
-          path={openFile}
-          externalUrl={externalFileUrl(openFile)}
-          onClose={() => setOpenFile(null)}
-        />
+        <Suspense fallback={<SuspenseFallback label="Loading file viewer…" />}>
+          <FileViewerLazy
+            source={source}
+            repo={repoId}
+            path={openFile}
+            externalUrl={externalFileUrl(openFile)}
+            onClose={() => setOpenFile(null)}
+          />
+        </Suspense>
       )}
 
       <div className="border border-border bg-surface">
@@ -2331,7 +2448,7 @@ function RepoPanel({
                   />
                 </div>
                 <div className="max-h-[480px] overflow-y-auto">
-                  {fileSearch ? (
+                  {deferredFileSearch ? (
                     <div className="divide-y divide-border/50">
                       {filteredFiles.length === 0 && (
                         <div className="px-6 py-6 text-xs text-muted text-center">No files match.</div>
@@ -2383,6 +2500,9 @@ function RepoPanel({
 
 function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gitlabRepos, goals, o365Docs, onNavigateSettings }: IntegrationsPreviewTabProps) {
   const { agent } = useAIAgent();
+  const githubRepoList = Array.isArray(githubRepo) ? githubRepo : (githubRepo ? [githubRepo] : []);
+  const [selectedGhRepo, setSelectedGhRepo] = useState<string>(githubRepoList[0] ?? '');
+  const activeGithubRepo = selectedGhRepo || githubRepoList[0] || null;
   const [selectedGlRepo, setSelectedGlRepo] = useState<string>(gitlabRepos[0] ?? '');
   const gitlabRepo = selectedGlRepo || gitlabRepos[0] || null;
   const [ghCommits, setGhCommits] = useState<CommitEntry[]>([]);
@@ -2403,9 +2523,9 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
     });
 
   useEffect(() => {
-    if (!githubRepo) return;
+    if (!activeGithubRepo) return;
     setGhLoading(true);
-    const [owner, repo] = githubRepo.split('/');
+    const [owner, repo] = activeGithubRepo.split('/');
     Promise.all([
       fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`).then((r) => r.ok ? r.json() : null),
       fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree`).then((r) => r.ok ? r.json() : null),
@@ -2416,14 +2536,14 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
       }
       if (tree?.files) setGhFiles(tree.files);
     }).catch(() => {}).finally(() => setGhLoading(false));
-  }, [githubRepo]);
+  }, [activeGithubRepo]);
 
   useEffect(() => {
     if (!gitlabRepo) return;
     setGlLoading(true);
     Promise.all([
-      fetch(`/api/gitlab/recent?repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
-      fetch(`/api/gitlab/tree?repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
+      fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
+      fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
     ]).then(([recent, tree]) => {
       if (recent) {
         setGlCommits(parseCommits(recent.commits ?? []));
@@ -2431,14 +2551,14 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
       }
       if (tree?.files) setGlFiles(tree.files);
     }).catch(() => {}).finally(() => setGlLoading(false));
-  }, [gitlabRepo]);
+  }, [gitlabRepo, _projectId]);
 
   const handleGitLabScan = async () => {
     if (!gitlabRepo || !project) return;
     setGlScanLoading(true);
     setGlScanResults(null);
     try {
-      const recentRes = await fetch(`/api/gitlab/recent?repo=${encodeURIComponent(gitlabRepo)}`);
+      const recentRes = await fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`);
       const recentData = recentRes.ok ? await recentRes.json() : {};
       const scanRes = await fetch('/api/ai/repo-scan', {
         method: 'POST',
@@ -2461,16 +2581,28 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
     <div className="space-y-6">
       <RepoPanel
         title="GitHub"
-        icon={<Github size={14} className={githubRepo ? 'text-heading' : 'text-muted'} />}
+        icon={<Github size={14} className={activeGithubRepo ? 'text-heading' : 'text-muted'} />}
         source="github"
-        repoId={githubRepo ?? ''}
-        repoLabel={githubRepo ?? undefined}
-        repoUrl={githubRepo ? `https://github.com/${githubRepo}` : undefined}
+        repoId={activeGithubRepo ?? ''}
+        repoLabel={activeGithubRepo ?? undefined}
+        repoUrl={activeGithubRepo ? `https://github.com/${activeGithubRepo}` : undefined}
+        titleExtra={githubRepoList.length > 1 ? (
+          <select
+            value={selectedGhRepo}
+            onChange={(e) => { setSelectedGhRepo(e.target.value); setGhCommits([]); setGhReadme(null); setGhFiles([]); }}
+            title="Select GitHub repo"
+            className="text-[10px] font-mono bg-surface2 border border-border text-heading px-2 py-0.5 rounded focus:outline-none cursor-pointer"
+          >
+            {githubRepoList.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        ) : undefined}
         commits={ghCommits}
         readme={ghReadme}
         files={ghFiles}
         loading={ghLoading}
-        connected={!!githubRepo}
+        connected={!!activeGithubRepo}
         onNavigateSettings={onNavigateSettings}
       />
 
@@ -2586,4 +2718,3 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
     </div>
   );
 }
-

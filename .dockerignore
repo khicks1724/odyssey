@@ -1,0 +1,7 @@
+client/node_modules
+client/dist
+server/node_modules
+server/dist
+deploy/supabase/volumes/db/data
+deploy/supabase/volumes/storage
+export

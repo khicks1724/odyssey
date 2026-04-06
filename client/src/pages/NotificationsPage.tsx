@@ -1,10 +1,20 @@
 import { Bell, CheckCheck, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useNotifications } from '../hooks/useNotifications';
 
 export default function NotificationsPage() {
   const navigate = useNavigate();
-  const { notifications, loading, unreadCount, markRead, markAllRead } = useNotifications();
+  const { notifications, loading, unreadCount, markRead, markAllRead, respondJoinRequest } = useNotifications();
+  const [actingId, setActingId] = useState<string | null>(null);
+
+  const getJoinRequestId = (metadata: Record<string, unknown> | null) => {
+    return typeof metadata?.request_id === 'string' ? metadata.request_id : null;
+  };
+
+  const getJoinRequestStatus = (metadata: Record<string, unknown> | null) => {
+    return typeof metadata?.status === 'string' ? metadata.status : null;
+  };
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
@@ -44,53 +54,102 @@ export default function NotificationsPage() {
           </div>
         ) : (
           <div className="space-y-px">
-            {notifications.map((notification) => (
-              <div
-                key={notification.id}
-                className={`bg-surface p-5 transition-colors ${notification.read_at ? '' : 'ring-1 ring-accent/20 ring-inset bg-surface2/30'}`}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-[10px] tracking-[0.18em] uppercase text-muted font-mono">{notification.kind.replaceAll('_', ' ')}</span>
-                      {!notification.read_at && <span className="text-[9px] px-1.5 py-0.5 border border-accent/30 text-accent rounded font-mono">New</span>}
+            {notifications.map((notification) => {
+              const requestId = getJoinRequestId(notification.metadata);
+              const requestStatus = getJoinRequestStatus(notification.metadata);
+              const notificationLink = notification.link;
+              const showJoinActions = notification.kind === 'join_request' && requestId && requestStatus === 'pending';
+              const isActing = actingId === notification.id;
+
+              return (
+                <div
+                  key={notification.id}
+                  className={`bg-surface p-5 transition-colors ${notification.read_at ? '' : 'ring-1 ring-accent/20 ring-inset bg-surface2/30'}`}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-[10px] tracking-[0.18em] uppercase text-muted font-mono">{notification.kind.replaceAll('_', ' ')}</span>
+                        {!notification.read_at && <span className="text-[9px] px-1.5 py-0.5 border border-accent/30 text-accent rounded font-mono">New</span>}
+                      </div>
+                      <p className="text-sm text-heading font-sans font-semibold">{notification.title}</p>
+                      {notification.body && <p className="text-xs text-muted mt-1.5 leading-relaxed">{notification.body}</p>}
+                      <p className="text-[10px] text-muted font-mono mt-3">
+                        {new Date(notification.created_at).toLocaleString()}
+                      </p>
                     </div>
-                    <p className="text-sm text-heading font-sans font-semibold">{notification.title}</p>
-                    {notification.body && <p className="text-xs text-muted mt-1.5 leading-relaxed">{notification.body}</p>}
-                    <p className="text-[10px] text-muted font-mono mt-3">
-                      {new Date(notification.created_at).toLocaleString()}
-                    </p>
-                  </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    {!notification.read_at && (
-                      <button
-                        type="button"
-                        onClick={() => markRead(notification.id)}
-                        className="px-3 py-1.5 border border-border text-muted text-[10px] font-semibold tracking-wider uppercase hover:bg-surface2 transition-colors rounded"
-                      >
-                        Read
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {showJoinActions ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={isActing}
+                            onClick={async () => {
+                              try {
+                                setActingId(notification.id);
+                                await respondJoinRequest(notification.id, requestId, 'deny');
+                              } catch (error) {
+                                alert(error instanceof Error ? error.message : 'Unable to update join request');
+                              } finally {
+                                setActingId(null);
+                              }
+                            }}
+                            className="px-3 py-1.5 border border-border text-muted text-[10px] font-semibold tracking-wider uppercase hover:bg-surface2 transition-colors rounded disabled:opacity-50"
+                          >
+                            {isActing ? 'Working…' : 'Decline'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isActing}
+                            onClick={async () => {
+                              try {
+                                setActingId(notification.id);
+                                await respondJoinRequest(notification.id, requestId, 'approve');
+                              } catch (error) {
+                                alert(error instanceof Error ? error.message : 'Unable to update join request');
+                              } finally {
+                                setActingId(null);
+                              }
+                            }}
+                            className="px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-50"
+                          >
+                            {isActing ? 'Working…' : 'Accept'}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {!notification.read_at && (
+                            <button
+                              type="button"
+                              onClick={() => markRead(notification.id)}
+                              className="px-3 py-1.5 border border-border text-muted text-[10px] font-semibold tracking-wider uppercase hover:bg-surface2 transition-colors rounded"
+                            >
+                              Read
+                            </button>
+                          )}
 
-                    {notification.link && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!notification.read_at) await markRead(notification.id);
-                          if (notification.link.startsWith('/')) navigate(notification.link);
-                          else window.location.href = notification.link;
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded"
-                      >
-                        Open
-                        <ExternalLink size={11} />
-                      </button>
-                    )}
+                          {notificationLink && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!notification.read_at) await markRead(notification.id);
+                                if (notificationLink.startsWith('/')) navigate(notificationLink);
+                                else window.location.href = notificationLink;
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded"
+                            >
+                              Open
+                              <ExternalLink size={11} />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

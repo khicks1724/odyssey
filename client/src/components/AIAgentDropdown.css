@@ -46,8 +46,8 @@
   flex-shrink: 0;
 }
 .aid-badge--active    { background: rgba(34,197,94,0.12);  color: #22c55e;  border: 1px solid rgba(34,197,94,0.25); }
-.aid-badge--ready     { background: rgba(59,130,246,0.10);  color: #60a5fa;  border: 1px solid rgba(59,130,246,0.20); }
-.aid-badge--nokey     { background: rgba(148,163,184,0.08); color: var(--color-muted); border: 1px solid rgba(148,163,184,0.15); }
+.aid-badge--ready     { background: rgba(34,197,94,0.12);   color: #22c55e;  border: 1px solid rgba(34,197,94,0.25); }
+.aid-badge--nokey     { background: rgba(239,68,68,0.10);   color: #f87171;  border: 1px solid rgba(239,68,68,0.20); }
 .aid-badge--offline   { background: rgba(239,68,68,0.10);   color: #f87171;  border: 1px solid rgba(239,68,68,0.20); }
 .aid-badge--nocredits { background: rgba(234,179,8,0.10);   color: #facc15;  border: 1px solid rgba(234,179,8,0.20); }
 

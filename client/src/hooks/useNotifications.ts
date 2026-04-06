@@ -54,5 +54,31 @@ export function useNotifications() {
     setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at ?? now })));
   };
 
-  return { notifications, loading, unreadCount, markRead, markAllRead, refetch: fetchNotifications };
+  const respondJoinRequest = async (notificationId: string, requestId: string, action: 'approve' | 'deny') => {
+    const { data } = await supabase.rpc('respond_join_request', {
+      p_request_id: requestId,
+      p_action: action,
+    });
+
+    if ((data as { error?: string } | null)?.error) {
+      throw new Error((data as { error: string }).error);
+    }
+
+    const now = new Date().toISOString();
+    const existingMetadata = notifications.find((notification) => notification.id === notificationId)?.metadata ?? {};
+    await supabase
+      .from('notifications')
+      .update({
+        read_at: now,
+        metadata: {
+          ...existingMetadata,
+          status: action === 'approve' ? 'approved' : 'denied',
+        },
+      })
+      .eq('id', notificationId);
+
+    await fetchNotifications();
+  };
+
+  return { notifications, loading, unreadCount, markRead, markAllRead, respondJoinRequest, refetch: fetchNotifications };
 }

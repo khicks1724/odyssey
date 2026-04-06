@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import Modal from '../components/Modal';
-import type { AIAgentValue, AIProvider } from './ai-agent';
+import { isOpenAIAgentValue, type AIAgentValue, type FixedAIProvider } from './ai-agent';
 
 interface ProviderInfo {
-  id: AIProvider;
+  id: FixedAIProvider;
   name: string;
   available: boolean;
 }
@@ -15,14 +15,25 @@ interface AIErrorState {
   detail?: string;
 }
 
-const MODEL_LABELS: Record<AIAgentValue, string> = {
-  auto: 'Auto',
-  'claude-haiku': 'Claude Haiku',
-  'claude-sonnet': 'Claude Sonnet 4.6',
-  'claude-opus': 'Claude Opus 4.6',
-  'gpt-4o': 'OpenAI GPT-4o',
-  'gemini-pro': 'Google Gemini 2.5 Flash',
-};
+function getModelLabel(agent: AIAgentValue): string {
+  if (agent === 'auto') return 'Auto';
+  if (isOpenAIAgentValue(agent)) return `OpenAI ${agent.slice('openai:'.length)}`;
+
+  switch (agent) {
+    case 'claude-haiku':
+      return 'Claude Haiku';
+    case 'claude-sonnet':
+      return 'Claude Sonnet 4.6';
+    case 'claude-opus':
+      return 'Claude Opus 4.6';
+    case 'gpt-4o':
+      return 'OpenAI GPT-4o';
+    case 'gemini-pro':
+      return 'Google Gemini 2.5 Flash';
+    case 'genai-mil':
+      return 'GenAI.mil';
+  }
+}
 
 function normalizeErrorMessage(error: unknown) {
   if (typeof error === 'string') return error;
@@ -32,14 +43,14 @@ function normalizeErrorMessage(error: unknown) {
 
 function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error: unknown, status?: number): AIErrorState {
   const detail = normalizeErrorMessage(error);
-  const selectedModel = MODEL_LABELS[agent];
-  const providerInfo = agent === 'auto' ? null : providers.find((provider) => provider.id === agent);
+  const selectedModel = getModelLabel(agent);
+  const providerInfo = agent === 'auto' ? null : providers.find((provider) => provider.id === (isOpenAIAgentValue(agent) ? 'gpt-4o' : agent));
   const lower = detail.toLowerCase();
 
   if (agent !== 'auto' && providerInfo && !providerInfo.available) {
     return {
       title: `${selectedModel} Unavailable`,
-      message: `${selectedModel} is not configured on the server. Add the required API key in the server environment, then retry.`,
+      message: `${selectedModel} is not available on your account right now. Add or fix your personal API key in Settings → AI Providers, then retry.`,
       detail,
     };
   }
@@ -49,7 +60,7 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
       title: 'AI Credits Required',
       message: agent === 'auto'
         ? 'The selected provider in Auto mode does not have usable credits. Try another model or add billing credits for this provider.'
-        : `${selectedModel} has no usable credits on the configured API key. To use your own key, go to Settings → AI Models and enter a personal API key. Otherwise enable billing at console.cloud.google.com or platform.openai.com.`,
+        : `${selectedModel} has no usable credits on your configured API key. Add credits or switch to another checked model in Settings → AI Providers.`,
       detail,
     };
   }
@@ -59,7 +70,7 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
       title: 'AI Key Missing',
       message: agent === 'auto'
         ? 'An AI provider required for this request is missing an API key or is not authorized.'
-        : `${selectedModel} is missing a valid API key or is not authorized on the server.`,
+        : `${selectedModel} is missing a valid personal API key or is not authorized.`,
       detail,
     };
   }
@@ -78,6 +89,16 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
     return {
       title: 'AI Service Unreachable',
       message: 'Odyssey could not reach the AI service. Check that the API server is running and the provider is reachable, then retry.',
+      detail,
+    };
+  }
+
+  if (status === 404 && lower.includes('deployment')) {
+    return {
+      title: 'Azure Deployment Not Found',
+      message: agent === 'auto'
+        ? 'The selected Azure OpenAI deployment does not exist for this account. Update the deployment name in Settings → AI Providers.'
+        : `${selectedModel} points to an Azure OpenAI deployment that does not exist. Update the deployment name in Settings → AI Providers.`,
       detail,
     };
   }

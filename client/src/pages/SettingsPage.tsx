@@ -1,21 +1,110 @@
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useAuth, type OAuthProvider } from '../lib/auth';
 import { useProfile } from '../hooks/useProfile';
-import { useMicrosoftIntegration } from '../hooks/useMicrosoftIntegration';
 import { useTimeFormat, type HourCycle } from '../lib/time-format';
-import TimezoneGlobe from '../components/TimezoneGlobe';
+import { useAIAgent } from '../lib/ai-agent';
+import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models';
 import { supabase } from '../lib/supabase';
-import { Github, Monitor, Bell, Palette, Shield, Check, Loader2, Link, Unlink, Clock, KeyRound, Eye, EyeOff, Trash2, LogIn, ExternalLink, RefreshCw } from 'lucide-react';
+import { lazyWithRetry } from '../lib/lazy-with-retry';
+import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Link, Unlink, Clock, KeyRound, Eye, EyeOff, Trash2, LogIn, ExternalLink, RefreshCw } from 'lucide-react';
+
+const TimezoneGlobe = lazyWithRetry(() => import('../components/TimezoneGlobe'), 'settings-timezone-globe');
 
 // ── AI Provider key management ─────────────────────────────────────────────
 
 type AiServiceProvider = 'anthropic' | 'openai' | 'google' | 'google_ai';
+type OpenAiCredentialMode = 'openai' | 'azure_openai';
+
+interface AiKeyConfig {
+  mode?: OpenAiCredentialMode;
+  endpoint?: string;
+  preferredModel?: string;
+  enabledModels?: string[];
+}
 
 interface AiKeyStatus {
   provider: AiServiceProvider;
   hasKey: boolean;
   lastUpdated: string | null;
   credentialType: 'api_key' | 'oauth';
+  config?: AiKeyConfig;
+}
+
+interface ProviderModelOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+const ANTHROPIC_MODEL_OPTIONS: ProviderModelOption[] = [
+  { id: 'claude-haiku', label: 'Claude Haiku', description: 'Fastest option for quick questions and summaries' },
+  { id: 'claude-sonnet', label: 'Claude Sonnet 4.6', description: 'Balanced option for analysis and general chat' },
+  { id: 'claude-opus', label: 'Claude Opus 4.6', description: 'Deepest option for heavy reasoning and project work' },
+];
+
+const GOOGLE_AI_MODEL_OPTIONS: ProviderModelOption[] = [
+  { id: 'gemini-pro', label: 'Gemini 2.5 Flash', description: 'Google AI Studio chat model' },
+];
+
+const GENAI_MIL_MODEL_OPTIONS: ProviderModelOption[] = [
+  { id: 'genai-mil', label: 'GenAI.mil', description: 'STARK-backed DoD model access' },
+];
+
+function uniqueModelIds(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function getModelCapabilityScore(modelId: string): number {
+  const normalized = modelId.trim().toLowerCase();
+  let score = 0;
+
+  if (normalized.includes('claude-opus')) score = 1000;
+  else if (normalized.startsWith('gpt-5')) score = 900;
+  else if (normalized.startsWith('o4')) score = 850;
+  else if (normalized.includes('claude-sonnet')) score = 800;
+  else if (normalized.startsWith('o3')) score = 780;
+  else if (normalized.startsWith('codex')) score = 760;
+  else if (normalized.startsWith('o1')) score = 740;
+  else if (normalized.startsWith('gpt-4.1')) score = 700;
+  else if (normalized.startsWith('gpt-4o')) score = 650;
+  else if (normalized.includes('gemini')) score = 600;
+  else if (normalized.includes('claude-haiku')) score = 500;
+  else if (normalized.includes('genai-mil')) score = 450;
+  else if (normalized.startsWith('gpt-4')) score = 400;
+  else if (normalized.startsWith('gpt-3.5')) score = 300;
+
+  if (/(^|[-_.])nano($|[-_.])/.test(normalized)) score -= 40;
+  if (/(^|[-_.])mini($|[-_.])/.test(normalized)) score -= 25;
+  if (/(^|[-_.])flash($|[-_.])/.test(normalized)) score -= 20;
+
+  const datedVersion = normalized.match(/(20\d{2})[-_]?(\d{2})[-_]?(\d{2})/);
+  if (datedVersion) {
+    score += Number(`${datedVersion[1]}${datedVersion[2]}${datedVersion[3]}`) / 100000000;
+  }
+
+  return score;
+}
+
+function pickMostCapableModelId(modelIds: string[]): string {
+  const uniqueIds = uniqueModelIds(modelIds);
+  if (uniqueIds.length === 0) return '';
+
+  return [...uniqueIds].sort((a, b) => {
+    const diff = getModelCapabilityScore(b) - getModelCapabilityScore(a);
+    return diff !== 0 ? diff : a.localeCompare(b);
+  })[0];
+}
+
+function getDefaultSelectedModelIds(options: ProviderModelOption[], preferredModel?: string): string[] {
+  const explicitPreferred = preferredModel?.trim() ?? '';
+  if (explicitPreferred) return [explicitPreferred];
+
+  const strongest = pickMostCapableModelId(options.map((option) => option.id));
+  return strongest ? [strongest] : [];
+}
+
+function canonicalizeSelectedModelIds(modelIds: string[], availableModelIds: string[]): string[] {
+  return normalizeOpenAiModelIds(modelIds.map((modelId) => canonicalizeOpenAiModelId(modelId, availableModelIds)));
 }
 
 const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string; placeholder: string; keyUrl: string }> = {
@@ -26,8 +115,8 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
     keyUrl: 'https://console.anthropic.com/settings/keys',
   },
   openai: {
-    label: 'OpenAI (GPT-4o)',
-    hint: 'Used for GPT-4o model',
+    label: 'OpenAI',
+    hint: 'Used to load and select the chat models available on your OpenAI account',
     placeholder: 'sk-…',
     keyUrl: 'https://platform.openai.com/api-keys',
   },
@@ -54,6 +143,7 @@ async function getAuthHeader(): Promise<string | null> {
 function AiProviderCard({
   provider,
   status,
+  modelOptions,
   onSaved,
   onRemoved,
   onConnectGoogle,
@@ -61,6 +151,7 @@ function AiProviderCard({
 }: {
   provider: AiServiceProvider;
   status: AiKeyStatus | undefined;
+  modelOptions: ProviderModelOption[];
   onSaved: (provider: AiServiceProvider) => void;
   onRemoved: (provider: AiServiceProvider) => void;
   onConnectGoogle?: () => void;
@@ -68,16 +159,108 @@ function AiProviderCard({
 }) {
   const meta = AI_PROVIDER_META[provider];
   const [inputKey, setInputKey] = useState('');
+  const [openAiMode, setOpenAiMode] = useState<OpenAiCredentialMode>(
+    provider === 'openai' && status?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai',
+  );
+  const [azureEndpoint, setAzureEndpoint] = useState(
+    provider === 'openai' ? status?.config?.endpoint ?? '' : '',
+  );
+  const [selectedModels, setSelectedModels] = useState<string[]>(
+    uniqueModelIds(
+      status?.config?.enabledModels?.length
+        ? status.config.enabledModels
+        : getDefaultSelectedModelIds(
+            modelOptions,
+            provider === 'openai' ? status?.config?.preferredModel : undefined,
+          ),
+    ),
+  );
+  const [azureDeploymentInput, setAzureDeploymentInput] = useState('');
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [revealing, setRevealing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
 
   const hasKey = status?.hasKey ?? false;
   const isOAuth = status?.credentialType === 'oauth';
+  const isAzureOpenAi = provider === 'openai' && openAiMode === 'azure_openai';
+  const keyValue = revealedKey !== null && !inputKey ? revealedKey : inputKey;
+  const keyPlaceholder = hasKey && !isOAuth
+    ? '••••••••••••••••'
+    : provider === 'openai' && isAzureOpenAi
+      ? 'Azure OpenAI API key'
+      : meta.placeholder;
+  const canSave = provider === 'openai'
+    ? (!!inputKey.trim() || hasKey) && (!isAzureOpenAi || !!azureEndpoint.trim()) && selectedModels.length > 0
+    : (!!inputKey.trim() || hasKey) && selectedModels.length > 0;
+  const availableModelIds = modelOptions.map((option) => option.id);
+  const azureDeploymentOptions = isAzureOpenAi
+    ? uniqueModelIds([...selectedModels, ...availableModelIds]).map((id) => ({
+        id,
+        label: id,
+        description: 'Azure OpenAI deployment name',
+      }))
+    : modelOptions;
+
+  useEffect(() => {
+    if (provider !== 'openai') return;
+    setOpenAiMode(status?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai');
+    setAzureEndpoint(status?.config?.endpoint ?? '');
+  }, [provider, status?.config?.endpoint, status?.config?.mode]);
+
+  useEffect(() => {
+    const defaults = getDefaultSelectedModelIds(
+      modelOptions,
+      provider === 'openai' ? status?.config?.preferredModel : undefined,
+    );
+    const nextSelectedModels = uniqueModelIds(status?.config?.enabledModels?.length ? status.config.enabledModels : defaults);
+    if (provider === 'openai' && openAiMode !== 'azure_openai') {
+      setSelectedModels(canonicalizeSelectedModelIds(nextSelectedModels, modelOptions.map((option) => option.id)));
+      return;
+    }
+    setSelectedModels(nextSelectedModels);
+  }, [modelOptions, openAiMode, provider, status?.config?.enabledModels, status?.config?.preferredModel]);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(event.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [modelPickerOpen]);
+
+  const toggleSelectedModel = (modelId: string) => {
+    setSelectedModels((current) => {
+      if (current.includes(modelId)) {
+        return current.length === 1 ? current : current.filter((id) => id !== modelId);
+      }
+      const next = [...current, modelId];
+      if (provider === 'openai' && openAiMode !== 'azure_openai') {
+        return canonicalizeSelectedModelIds(next, modelOptions.map((option) => option.id));
+      }
+      return next;
+    });
+  };
+
+  const handleAddAzureDeployment = () => {
+    const deployment = azureDeploymentInput.trim();
+    if (!deployment) return;
+    setSelectedModels((current) => uniqueModelIds([...current, deployment]));
+    setAzureDeploymentInput('');
+    setModelPickerOpen(true);
+  };
 
   const handleToggleReveal = async () => {
     if (inputKey) {
@@ -101,8 +284,12 @@ function AiProviderCard({
         headers: { Authorization: authHeader },
       });
       if (!res.ok) throw new Error('Could not retrieve key');
-      const data = await res.json() as { key: string };
+      const data = await res.json() as { key: string; config?: AiKeyConfig };
       setRevealedKey(data.key);
+      if (provider === 'openai') {
+        setOpenAiMode(data.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai');
+        setAzureEndpoint(data.config?.endpoint ?? '');
+      }
       setShowKey(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to reveal key');
@@ -112,24 +299,53 @@ function AiProviderCard({
 
   const handleSave = async () => {
     const trimmed = inputKey.trim();
-    if (!trimmed) {
+    if (!trimmed && !hasKey) {
       setError('API key cannot be empty');
       return;
     }
+    const trimmedEndpoint = azureEndpoint.trim();
+    if (provider === 'openai' && isAzureOpenAi && !trimmedEndpoint) {
+      setError('Azure OpenAI endpoint cannot be empty');
+      return;
+    }
     setError(null);
+    setTestResult(null);
     setSaving(true);
     try {
       const authHeader = await getAuthHeader();
       if (!authHeader) throw new Error('Not authenticated');
+      const config = {
+        ...(provider === 'openai'
+          ? {
+              mode: openAiMode,
+              ...(isAzureOpenAi ? { endpoint: trimmedEndpoint } : {}),
+              ...(selectedModels[0] ? { preferredModel: selectedModels[0] } : {}),
+            }
+          : {}),
+        enabledModels: uniqueModelIds(selectedModels),
+      };
 
-      const res = await fetch('/api/user/ai-keys', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: authHeader,
-        },
-        body: JSON.stringify({ provider, apiKey: trimmed }),
-      });
+      const res = trimmed
+        ? await fetch('/api/user/ai-keys', {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: authHeader,
+            },
+            body: JSON.stringify({
+              provider,
+              apiKey: trimmed,
+              config,
+            }),
+          })
+        : await fetch(`/api/user/ai-keys/${provider}/config`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: authHeader,
+            },
+            body: JSON.stringify({ config }),
+          });
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -137,6 +353,7 @@ function AiProviderCard({
       }
 
       setInputKey('');
+      setRevealedKey(null);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
       onSaved(provider);
@@ -148,6 +365,7 @@ function AiProviderCard({
 
   const handleRemove = async () => {
     setError(null);
+    setTestResult(null);
     setRemoving(true);
     try {
       const authHeader = await getAuthHeader();
@@ -164,12 +382,51 @@ function AiProviderCard({
       }
 
       setInputKey('');
+      setRevealedKey(null);
+      if (provider === 'openai') {
+        setAzureEndpoint('');
+      }
       onRemoved(provider);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove');
     }
     setRemoving(false);
   };
+
+  const handleTest = async () => {
+    setError(null);
+    setTestResult(null);
+    setTesting(true);
+    try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) throw new Error('Not authenticated');
+
+      const res = await fetch(`/api/user/ai-keys/${provider}/test`, {
+        method: 'POST',
+        headers: { Authorization: authHeader },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      const data = body as { message?: string; model?: string };
+      setTestResult({
+        ok: true,
+        message: data.model ? `${data.message ?? 'Credential is valid.'} Model: ${data.model}` : (data.message ?? 'Credential is valid.'),
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Credential test failed';
+      setError(message);
+      setTestResult({ ok: false, message });
+    }
+    setTesting(false);
+  };
+
+  const selectedModelSummary = selectedModels.length === 1
+    ? (modelOptions.find((option) => option.id === selectedModels[0])?.label ?? selectedModels[0] ?? 'Choose a model')
+    : selectedModels.length > 1
+      ? `${selectedModels.length} models selected`
+      : 'Choose a model';
 
   return (
     <div className="border border-border p-4 space-y-3">
@@ -184,8 +441,8 @@ function AiProviderCard({
             <Check size={9} /> {isOAuth ? 'Google account' : 'API key set'}
           </span>
         ) : (
-          <span className="text-[10px] text-muted font-mono border border-border px-2 py-0.5 rounded shrink-0">
-            Server key
+          <span className="text-[10px] text-danger font-mono border border-danger/30 px-2 py-0.5 rounded shrink-0">
+            No key
           </span>
         )}
       </div>
@@ -207,26 +464,183 @@ function AiProviderCard({
         </div>
       )}
 
+      {provider === 'openai' && (
+        <div className="space-y-2 border-b border-border/50 pb-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-muted">Credential type</span>
+            <span className="text-[10px] text-muted/70">OpenAI key or Azure OpenAI endpoint + key</span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setOpenAiMode('openai')}
+              className={`px-3 py-1.5 border text-[10px] font-sans font-semibold tracking-wider uppercase rounded transition-colors ${
+                openAiMode === 'openai'
+                  ? 'border-accent/40 bg-accent/10 text-accent'
+                  : 'border-border text-muted hover:text-heading hover:border-accent/20'
+              }`}
+            >
+              OpenAI Key
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpenAiMode('azure_openai')}
+              className={`px-3 py-1.5 border text-[10px] font-sans font-semibold tracking-wider uppercase rounded transition-colors ${
+                openAiMode === 'azure_openai'
+                  ? 'border-accent/40 bg-accent/10 text-accent'
+                  : 'border-border text-muted hover:text-heading hover:border-accent/20'
+              }`}
+            >
+              Azure OpenAI
+            </button>
+          </div>
+          {isAzureOpenAi && (
+            <div className="space-y-1">
+              <label className="block text-[10px] text-muted">Azure endpoint</label>
+              <input
+                type="text"
+                value={azureEndpoint}
+                onChange={(e) => setAzureEndpoint(e.target.value)}
+                placeholder="https://your-resource.openai.azure.com/openai/v1"
+                className="w-full px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
+              />
+              <p className="text-[10px] text-muted">
+                Use the Azure OpenAI base URL ending in <span className="font-mono">/openai/v1</span>, matching your Codex config format.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {provider === 'openai' && isAzureOpenAi && (
+        <div className="space-y-2 border-b border-border/50 pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted">Azure deployment names</span>
+            <span className="text-[10px] text-muted/70">Use the exact deployment IDs from Azure, not the base model family</span>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={azureDeploymentInput}
+              onChange={(e) => setAzureDeploymentInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleAddAzureDeployment();
+                }
+              }}
+              placeholder="gpt-5.4-2"
+              className="flex-1 px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
+            />
+            <button
+              type="button"
+              onClick={handleAddAzureDeployment}
+              disabled={!azureDeploymentInput.trim()}
+              className="px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-50"
+            >
+              Add
+            </button>
+          </div>
+          <p className="text-[10px] text-muted">
+            Odyssey will send the selected deployment name exactly as entered when it calls Azure OpenAI.
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-2 border-b border-border/50 pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-muted">Show these models in the top AI dropdown</span>
+          <span className="text-[10px] text-muted font-mono">{selectedModels.length} selected</span>
+        </div>
+        <div ref={modelPickerRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setModelPickerOpen((current) => !current)}
+            className="w-full flex items-center justify-between gap-3 px-3 py-2 bg-surface border border-border text-left rounded hover:border-accent/30 hover:bg-surface2 transition-colors"
+          >
+            <span className="min-w-0">
+              <span className="block text-[10px] text-muted uppercase tracking-[0.16em] font-semibold">Choose a model</span>
+              <span className="block text-[11px] text-heading font-mono truncate">{selectedModelSummary}</span>
+            </span>
+            <ChevronDown
+              size={14}
+              className={`shrink-0 text-muted transition-transform ${modelPickerOpen ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          {modelPickerOpen && (
+            <div className="absolute left-0 right-0 top-full mt-2 z-20 border border-border bg-surface rounded shadow-xl overflow-hidden">
+              <div className="px-3 py-2 border-b border-border/60 bg-surface2">
+                <span className="block text-[10px] text-heading font-semibold">
+                  {provider === 'openai'
+                    ? isAzureOpenAi ? 'Choose Azure deployments' : 'Choose OpenAI models'
+                    : 'Choose models'}
+                </span>
+                <span className="block text-[10px] text-muted">
+                  Check each box to add it to the top AI dropdown.
+                </span>
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                {azureDeploymentOptions.length > 0 ? (
+                  <div className="divide-y divide-border/60">
+                    {azureDeploymentOptions.map((option) => {
+                      const checked = selectedModels.includes(option.id);
+                      return (
+                        <label key={option.id} className="flex items-start gap-3 px-3 py-2 cursor-pointer hover:bg-surface2">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelectedModel(option.id)}
+                            className="mt-0.5 accent-[var(--color-accent)]"
+                          />
+                          <span className="min-w-0">
+                            <span className="block text-[11px] text-heading font-mono">{option.label}</span>
+                            <span className="block text-[10px] text-muted">{option.description}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="px-3 py-3 text-[10px] text-muted">
+                    {provider === 'openai' && isAzureOpenAi
+                      ? 'Add at least one Azure deployment name above.'
+                      : 'Save and test your credential first to load model choices for this provider.'}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <p className="text-[10px] text-muted">
+          The first selected model is used as this provider&apos;s default, and new keys start with the most capable model selected by itself.
+        </p>
+      </div>
+
       {/* API key input row */}
       <div className="space-y-2">
         <div className="flex items-center gap-1 mb-1">
-          <span className="text-[10px] text-muted">API key</span>
-          <a
-            href={meta.keyUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-0.5 text-[10px] text-accent/70 hover:text-accent transition-colors ml-1"
-          >
-            Get key <ExternalLink size={9} />
-          </a>
+          <span className="text-[10px] text-muted">
+            {provider === 'openai' && isAzureOpenAi ? 'Azure OpenAI key' : 'API key'}
+          </span>
+          {(!isAzureOpenAi || provider !== 'openai') && (
+            <a
+              href={meta.keyUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-0.5 text-[10px] text-accent/70 hover:text-accent transition-colors ml-1"
+            >
+              Get key <ExternalLink size={9} />
+            </a>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <input
               type={showKey ? 'text' : 'password'}
-              value={revealedKey !== null && !inputKey ? revealedKey : inputKey}
+              value={keyValue}
               onChange={(e) => { setRevealedKey(null); setInputKey(e.target.value); }}
-              placeholder={hasKey && !isOAuth ? '••••••••••••••••' : meta.placeholder}
+              placeholder={keyPlaceholder}
               readOnly={revealedKey !== null && !inputKey}
               className="w-full px-3 py-1.5 pr-8 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
               onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
@@ -246,11 +660,22 @@ function AiProviderCard({
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving || !inputKey.trim()}
+            disabled={saving || !canSave}
             className="px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-40 flex items-center gap-1"
           >
             {saving ? <Loader2 size={10} className="animate-spin" /> : savedFlash ? <Check size={10} /> : null}
             {savedFlash ? 'Saved' : 'Save'}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleTest}
+            disabled={testing || !hasKey}
+            className="px-3 py-1.5 border border-border text-heading text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-surface2 transition-colors rounded disabled:opacity-40 flex items-center gap-1"
+            title={hasKey ? 'Test stored credential' : 'Save a key first'}
+          >
+            {testing ? <Loader2 size={10} className="animate-spin" /> : null}
+            {testing ? 'Testing' : 'Test'}
           </button>
 
           {hasKey && (
@@ -271,6 +696,10 @@ function AiProviderCard({
       {/* Error */}
       {error && (
         <p className="text-[10px] text-danger font-mono">{error}</p>
+      )}
+
+      {testResult && testResult.ok && (
+        <p className="text-[10px] text-accent3 font-mono">{testResult.message}</p>
       )}
 
       {/* Last updated */}
@@ -296,7 +725,7 @@ const SIGN_IN_PROVIDERS: { id: OAuthProvider; label: string; note: string }[] = 
 export default function SettingsPage() {
   const { user, linkIdentity, unlinkIdentity, connectGoogleAI } = useAuth();
   const { profile, updateProfile } = useProfile();
-  const { status: msStatus, loading: msLoading, connecting: msConnecting, connectError: msError, connect: msConnect, disconnect: msDisconnect } = useMicrosoftIntegration();
+  const { providers: aiProviders, refreshProviders } = useAIAgent();
   const { settings: tfSettings, setTimezone, setHourCycle } = useTimeFormat();
   const [displayName, setDisplayName] = useState('');
   const [nameLoaded, setNameLoaded] = useState(false);
@@ -391,6 +820,29 @@ export default function SettingsPage() {
     } catch {
       // silently fail
     }
+  };
+
+  const getModelOptionsForProvider = (provider: AiServiceProvider, currentStatus?: AiKeyStatus): ProviderModelOption[] => {
+    if (provider === 'anthropic') return ANTHROPIC_MODEL_OPTIONS;
+    if (provider === 'google_ai') return GOOGLE_AI_MODEL_OPTIONS;
+    if (provider === 'google') return GENAI_MIL_MODEL_OPTIONS;
+
+    const openAiProvider = aiProviders.find((entry) => entry.id === 'gpt-4o');
+    const rawIds = uniqueModelIds([
+      ...(openAiProvider?.models ?? []),
+      ...(currentStatus?.config?.enabledModels ?? []),
+      ...(currentStatus?.config?.preferredModel ? [currentStatus.config.preferredModel] : []),
+    ]);
+    const ids = currentStatus?.config?.mode === 'azure_openai'
+      ? rawIds
+      : normalizeOpenAiModelIds(rawIds);
+    return ids.map((id) => ({
+      id,
+      label: id,
+      description: currentStatus?.config?.mode === 'azure_openai'
+        ? `Azure deployment ${id}`
+        : `OpenAI model ${id}`,
+    }));
   };
 
   const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google_ai', 'google'];
@@ -502,52 +954,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Microsoft 365 Integration */}
-        <div className="bg-surface p-6">
-          <div className="flex items-center gap-2 mb-5">
-            <Github size={14} className="text-accent" />
-            <h2 className="font-sans text-sm font-bold text-heading">Microsoft 365</h2>
-          </div>
-          <p className="text-[11px] text-muted mb-4">Connect your Microsoft 365 account to import OneNote pages and OneDrive files into projects.</p>
-          <div className="flex justify-between items-center">
-            <div>
-              <span className="text-xs text-muted block">OneDrive &amp; OneNote</span>
-              {msStatus?.connected && (
-                <span className="text-[10px] text-muted font-mono">{msStatus.email}</span>
-              )}
-            </div>
-            {msLoading ? (
-              <Loader2 size={12} className="animate-spin text-muted" />
-            ) : msStatus?.connected ? (
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] text-accent3 font-mono">Connected</span>
-                <button
-                  type="button"
-                  onClick={msDisconnect}
-                  className="flex items-center gap-1 text-[10px] text-danger hover:underline"
-                >
-                  <Unlink size={10} /> Disconnect
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-col items-end gap-1">
-                <button
-                  type="button"
-                  onClick={msConnect}
-                  disabled={msConnecting}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-50"
-                >
-                  {msConnecting ? <Loader2 size={10} className="animate-spin" /> : <Link size={10} />}
-                  {msConnecting ? 'Redirecting…' : 'Connect'}
-                </button>
-                {msError && (
-                  <span className="text-[10px] text-danger font-mono max-w-[240px] text-right">{msError}</span>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
         {/* AI Providers */}
         <div className="bg-surface p-6">
           <div className="flex items-center gap-2 mb-2">
@@ -555,7 +961,7 @@ export default function SettingsPage() {
             <h2 className="font-sans text-sm font-bold text-heading">AI Providers</h2>
           </div>
           <p className="text-[11px] text-muted mb-5">
-            Optionally supply your own API keys. When set, your key is used instead of the server's shared key for all AI requests you make. Keys are stored encrypted.
+            AI access now uses only personal keys linked to your account. Check which models should appear in the top AI dropdown for each provider here. Keys are stored encrypted.
           </p>
           {aiKeysLoading ? (
             <div className="flex items-center gap-2 text-xs text-muted">
@@ -563,17 +969,21 @@ export default function SettingsPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {AI_SERVICE_PROVIDERS.map((p) => (
+              {AI_SERVICE_PROVIDERS.map((p) => {
+                const providerStatus = aiKeyStatuses.find((s) => s.provider === p);
+                return (
                 <AiProviderCard
                   key={p}
                   provider={p}
-                  status={aiKeyStatuses.find((s) => s.provider === p)}
-                  onSaved={() => refreshAiKeyStatus()}
-                  onRemoved={() => refreshAiKeyStatus()}
+                  status={providerStatus}
+                  modelOptions={getModelOptionsForProvider(p, providerStatus)}
+                  onSaved={() => { void refreshAiKeyStatus(); refreshProviders(); }}
+                  onRemoved={() => { void refreshAiKeyStatus(); refreshProviders(); }}
                   onConnectGoogle={connectGoogleAI}
                   isGoogleLinked={linkedProviders.has('google')}
                 />
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -597,7 +1007,9 @@ export default function SettingsPage() {
                 <span className="text-xs text-muted">Timezone</span>
               </div>
               <div className="max-w-[560px] mx-auto">
-                <TimezoneGlobe value={tfSettings.timezone} onChange={setTimezone} />
+                <Suspense fallback={<div className="h-[360px] border border-border bg-surface2 animate-pulse" />}>
+                  <TimezoneGlobe value={tfSettings.timezone} onChange={setTimezone} />
+                </Suspense>
               </div>
             </div>
 

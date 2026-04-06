@@ -69,7 +69,7 @@ export function useMicrosoftIntegration() {
       const { url } = await res.json() as { url: string };
       window.location.href = url;
     } catch {
-      setConnectError('Cannot reach the server — make sure it is running on port 3001.');
+      setConnectError('Cannot reach the server — make sure it is running on port 3000.');
       setConnecting(false);
     }
   }, []);

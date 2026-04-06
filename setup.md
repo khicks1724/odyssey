@@ -110,7 +110,7 @@ Best for:
 Typical URLs:
 
 - frontend: `http://localhost:5173`
-- API: `http://localhost:3001`
+- API: `http://localhost:3000`
 
 Typical process model:
 
@@ -127,8 +127,8 @@ Best for:
 
 Typical URL:
 
-- `http://YOUR_SERVER_IP:3001`
-- or `http://your-hostname:3001`
+- `http://YOUR_SERVER_IP:3000`
+- or `http://your-hostname:3000`
 
 Typical process model:
 
@@ -510,13 +510,13 @@ Add URLs that match how users will actually access the application.
 
 ### For Production-Style Shared Hosting
 
-- Site URL: `http://YOUR_SERVER_IP:3001`
-- Redirect URL: `http://YOUR_SERVER_IP:3001`
+- Site URL: `http://YOUR_SERVER_IP:3000`
+- Redirect URL: `http://YOUR_SERVER_IP:3000`
 
 or use your hostname:
 
-- Site URL: `http://your-hostname:3001`
-- Redirect URL: `http://your-hostname:3001`
+- Site URL: `http://your-hostname:3000`
+- Redirect URL: `http://your-hostname:3000`
 
 ### For Temporary LAN Access Using Vite
 
@@ -546,7 +546,7 @@ VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
 
 # Optional absolute API base.
-# Usually leave blank in local development because Vite proxies /api to localhost:3001.
+# Usually leave blank in local development because Vite proxies /api to localhost:3000.
 VITE_API_URL=
 ```
 
@@ -567,7 +567,7 @@ Recommended baseline:
 ```env
 NODE_ENV=development
 HOST=0.0.0.0
-PORT=3001
+PORT=3000
 
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
@@ -590,7 +590,7 @@ GITLAB_NPS_HOST=https://gitlab.nps.edu
 # Microsoft 365
 MICROSOFT_CLIENT_ID=
 MICROSOFT_CLIENT_SECRET=
-MICROSOFT_REDIRECT_URI=http://localhost:3001/api/microsoft/auth/callback
+MICROSOFT_REDIRECT_URI=http://localhost:3000/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=
 
 # Production static hosting
@@ -696,7 +696,7 @@ Create an Azure app registration and set:
 ```env
 MICROSOFT_CLIENT_ID=...
 MICROSOFT_CLIENT_SECRET=...
-MICROSOFT_REDIRECT_URI=http://localhost:3001/api/microsoft/auth/callback
+MICROSOFT_REDIRECT_URI=http://localhost:3000/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=64_CHAR_HEX
 ```
 
@@ -725,7 +725,7 @@ npm run dev
 
 Expected URL:
 
-- `http://localhost:3001`
+- `http://localhost:3000`
 
 ### Step 2: Start The Client
 
@@ -744,7 +744,7 @@ Expected URL:
 
 In development, Vite proxies `/api` requests to:
 
-- `http://localhost:3001`
+- `http://localhost:3000`
 
 That means you usually do not need to set `VITE_API_URL` for local work.
 
@@ -782,7 +782,7 @@ Set in `server/.env`:
 ```env
 NODE_ENV=development
 HOST=0.0.0.0
-PORT=3001
+PORT=3000
 CLIENT_URL=http://YOUR_SERVER_IP:5173
 ```
 
@@ -838,12 +838,12 @@ Use values like:
 ```env
 NODE_ENV=production
 HOST=0.0.0.0
-PORT=3001
+PORT=3000
 
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_KEY=YOUR_SERVICE_ROLE_KEY
 
-CLIENT_URL=http://YOUR_SERVER_IP:3001
+CLIENT_URL=http://YOUR_SERVER_IP:3000
 CLIENT_DIST_PATH=../client/dist
 ```
 
@@ -855,11 +855,11 @@ npm run start
 
 Users connect to:
 
-- `http://YOUR_SERVER_IP:3001`
+- `http://YOUR_SERVER_IP:3000`
 
 or:
 
-- `http://your-hostname:3001`
+- `http://your-hostname:3000`
 
 ### Important Production Note
 

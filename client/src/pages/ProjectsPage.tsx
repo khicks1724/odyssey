@@ -13,7 +13,6 @@ import {
   Loader2,
   LogIn,
   Lock,
-  Globe,
   LogOut,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -350,8 +349,8 @@ export default function ProjectsPage() {
                     {new Date(project.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </span>
                   <span className="inline-flex items-center gap-0.5 text-[9px] text-muted/70 font-mono border border-border px-1 py-0.5 rounded">
-                    {project.is_private ? <Lock size={8} /> : <Globe size={8} />}
-                    {project.is_private ? 'Private' : 'Public'}
+                    <Lock size={8} />
+                    Approval
                   </span>
                 </div>
               </Link>

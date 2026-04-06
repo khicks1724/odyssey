@@ -4,6 +4,7 @@ export interface FileRef {
   type: 'github' | 'gitlab';
   repo: string; // "owner/repo" for github, "group/project" for gitlab
   path: string;
+  projectId?: string | null;
 }
 
 interface UseProjectFilePathsResult {
@@ -28,7 +29,8 @@ function addPathAliases(pathMap: Map<string, FileRef>, ref: FileRef) {
 }
 
 export function useProjectFilePaths(
-  githubRepo: string | null | undefined,
+  projectId: string | null | undefined,
+  githubRepo: string | string[] | null | undefined,
   gitlabRepos: string[],
 ): UseProjectFilePathsResult {
   const [filePaths, setFilePaths] = useState<Map<string, FileRef>>(new Map());
@@ -37,20 +39,25 @@ export function useProjectFilePaths(
   const gitlabKey = gitlabRepos.join(',');
 
   useEffect(() => {
-    if (!githubRepo && gitlabRepos.length === 0) return;
+    const githubRepos = Array.isArray(githubRepo)
+      ? githubRepo.filter(Boolean)
+      : githubRepo
+        ? [githubRepo]
+        : [];
+    if (githubRepos.length === 0 && gitlabRepos.length === 0) return;
 
     setLoading(true);
     const pathMap = new Map<string, FileRef>();
     const fetches: Promise<void>[] = [];
 
-    if (githubRepo) {
-      const [owner, repo] = githubRepo.split('/');
+    for (const repoId of githubRepos) {
+      const [owner, repo] = repoId.split('/');
       fetches.push(
         fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree`)
           .then((r) => (r.ok ? r.json() : null))
           .then((data: { files?: { path: string }[] } | null) => {
             for (const f of data?.files ?? []) {
-              const ref: FileRef = { type: 'github', repo: githubRepo, path: f.path };
+              const ref: FileRef = { type: 'github', repo: repoId, path: f.path };
               addPathAliases(pathMap, ref);
             }
           })
@@ -60,11 +67,11 @@ export function useProjectFilePaths(
 
     for (const repo of gitlabRepos) {
       fetches.push(
-        fetch(`/api/gitlab/tree?repo=${encodeURIComponent(repo)}`)
+        fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}`)
           .then((r) => (r.ok ? r.json() : null))
           .then((data: { files?: { path: string }[] } | null) => {
             for (const f of data?.files ?? []) {
-              const ref: FileRef = { type: 'gitlab', repo, path: f.path };
+              const ref: FileRef = { type: 'gitlab', repo, path: f.path, projectId };
               addPathAliases(pathMap, ref);
             }
           })
@@ -77,7 +84,7 @@ export function useProjectFilePaths(
       setLoading(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [githubRepo, gitlabKey]);
+  }, [projectId, Array.isArray(githubRepo) ? githubRepo.join(',') : githubRepo, gitlabKey]);
 
   const fetchFileContent = useCallback(async (ref: FileRef): Promise<string> => {
     let url: string;
@@ -85,13 +92,13 @@ export function useProjectFilePaths(
       const [owner, repo] = ref.repo.split('/');
       url = `/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/file?path=${encodeURIComponent(ref.path)}`;
     } else {
-      url = `/api/gitlab/file?repo=${encodeURIComponent(ref.repo)}&path=${encodeURIComponent(ref.path)}`;
+      url = `/api/gitlab/file?projectId=${encodeURIComponent(ref.projectId ?? projectId ?? '')}&repo=${encodeURIComponent(ref.repo)}&path=${encodeURIComponent(ref.path)}`;
     }
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as { content?: string };
     return data.content ?? '';
-  }, []);
+  }, [projectId]);
 
   return { filePaths, loading, fetchFileContent };
 }

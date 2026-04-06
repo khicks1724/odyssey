@@ -397,11 +397,13 @@ export function useRecentCommits() {
 export function useActivityByDate() {
   const { user } = useAuth();
   const [data, setData] = useState<{ date: string; count: number }[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user) return;
 
     async function load() {
+      setLoading(true);
       // RLS requires project_id — scope through memberships
       const { data: memberships } = await supabase
         .from('project_members')
@@ -409,61 +411,67 @@ export function useActivityByDate() {
         .eq('user_id', user!.id);
 
       const projectIds = (memberships ?? []).map((m: any) => m.project_id);
-      if (projectIds.length === 0) return;
+      if (projectIds.length === 0) {
+        setData([]);
+        setLoading(false);
+        return;
+      }
 
       // 52 weeks = 364 days — match the heatmap display range
       const since = new Date();
       since.setDate(since.getDate() - 364);
       const sinceIso = since.toISOString();
+      const sinceDay = since.toISOString().slice(0, 10);
 
       const counts = new Map<string, number>();
 
-      // Pull events (manual activity)
-      const { data: events } = await supabase
-        .from('events')
-        .select('occurred_at')
-        .in('project_id', projectIds)
-        .gte('occurred_at', sinceIso);
+      const [eventsRes, goalsRes, commitResults] = await Promise.all([
+        supabase
+          .from('events')
+          .select('occurred_at')
+          .in('project_id', projectIds)
+          .gte('occurred_at', sinceIso),
+        supabase
+          .from('goals')
+          .select('created_at')
+          .in('project_id', projectIds)
+          .gte('created_at', sinceIso),
+        Promise.all(
+          projectIds.map(async (pid: string) => {
+            try {
+              const r = await fetch(`/api/projects/${pid}/commit-history`);
+              if (!r.ok) return [] as { date: string; count: number }[];
+              const json: { commits?: { date: string; count: number }[] } = await r.json();
+              return json.commits ?? [];
+            } catch {
+              return [] as { date: string; count: number }[];
+            }
+          }),
+        ),
+      ]);
 
-      (events ?? []).forEach((e: any) => {
+      (eventsRes.data ?? []).forEach((e: any) => {
         const date = (e.occurred_at as string).slice(0, 10);
         counts.set(date, (counts.get(date) ?? 0) + 1);
       });
 
-      // Pull goal creation/updates as activity proxy
-      const { data: goals } = await supabase
-        .from('goals')
-        .select('created_at')
-        .in('project_id', projectIds)
-        .gte('created_at', sinceIso);
-
-      (goals ?? []).forEach((g: any) => {
+      (goalsRes.data ?? []).forEach((g: any) => {
         const date = (g.created_at as string).slice(0, 10);
         counts.set(date, (counts.get(date) ?? 0) + 1);
       });
 
-      // Pull commit history from all integrated GitHub/GitLab repos per project
-      await Promise.all(
-        projectIds.map(async (pid: string) => {
-          try {
-            const r = await fetch(`/api/projects/${pid}/commit-history`);
-            if (!r.ok) return;
-            const json: { commits: { date: string; count: number }[] } = await r.json();
-            for (const { date, count } of json.commits ?? []) {
-              // include all commits within the 52-week window
-              if (date >= since.toISOString().slice(0, 10)) {
-                counts.set(date, (counts.get(date) ?? 0) + count);
-              }
-            }
-          } catch { /* ignore per-project failures */ }
-        })
-      );
+      commitResults.flat().forEach(({ date, count }) => {
+        if (date >= sinceDay) {
+          counts.set(date, (counts.get(date) ?? 0) + count);
+        }
+      });
 
       setData(Array.from(counts.entries()).map(([date, count]) => ({ date, count })));
+      setLoading(false);
     }
 
     load();
   }, [user]);
 
-  return { data };
+  return { data, loading };
 }

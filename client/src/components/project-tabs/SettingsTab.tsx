@@ -14,7 +14,6 @@ import {
   CheckCircle,
   X,
   Settings,
-  Folder,
   ClipboardList,
   ChevronRight,
   Pencil,
@@ -23,7 +22,6 @@ import {
   Table,
   Copy,
   Lock,
-  Globe,
   LogOut,
   FileText,
   Check,
@@ -31,10 +29,12 @@ import {
 import { QRCodeSVG } from 'qrcode.react';
 import LabelColorPicker from '../LabelColorPicker';
 import { generateProjectCode, sanitizeProjectCode, PROJECT_CODE_LENGTH } from '../../lib/project-code';
+import { getProjectFingerprint } from '../../lib/project-fingerprint';
 import { DEFAULT_PROMPTS } from '../../lib/defaultPrompts';
 import { PROMPT_LABELS, type PromptFeature } from '../../hooks/useProjectPrompts';
+import { getGitLabRepoPaths, getGitLabRepoUrl, type GitLabIntegrationConfig } from '../../lib/gitlab';
+import { getGitHubRepos } from '../../lib/github';
 import { supabase } from '../../lib/supabase';
-import { fetchOneDriveFiles, useMicrosoftIntegration } from '../../hooks/useMicrosoftIntegration';
 import type { OdysseyEvent } from '../../types';
 
 interface MemberRow {
@@ -61,9 +61,9 @@ interface JoinRequest {
 // ── GitLab repo section ───────────────────────────────────────────────────────
 function GitLabSection({ projectId, onReposChanged }: { projectId: string; onReposChanged?: (repos: string[]) => void }) {
   const [linkedRepos, setLinkedRepos] = React.useState<string[]>([]);
+  const [linkedHost, setLinkedHost] = React.useState<string | null>(null);
   const [repoInput, setRepoInput] = React.useState('');
   const [tokenInput, setTokenInput] = React.useState('');
-  const [hostInput, setHostInput] = React.useState('');
   const [savedToken, setSavedToken] = React.useState(false); // whether a token is already stored
   const [showToken, setShowToken] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -73,10 +73,19 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
     supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle()
       .then(({ data }) => {
         if (data?.config) {
-          const cfg = data.config as { repos?: string[]; repo?: string; token?: string; host?: string };
-          setLinkedRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
+          const cfg = data.config as GitLabIntegrationConfig;
+          setLinkedRepos(getGitLabRepoPaths(cfg));
+          const repoUrl = getGitLabRepoUrl(cfg);
+          if (repoUrl) {
+            try {
+              setLinkedHost(new URL(repoUrl).origin);
+            } catch {
+              setLinkedHost(cfg.host ?? null);
+            }
+          } else {
+            setLinkedHost(cfg.host ?? null);
+          }
           setSavedToken(!!cfg.token);
-          if (cfg.host) setHostInput(cfg.host);
         }
       });
   }, [projectId]);
@@ -84,30 +93,34 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
   const handleLink = async () => {
     const raw = repoInput.trim();
     if (!raw) return;
-    const path = raw.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '');
-    if (linkedRepos.includes(path)) { setError('This repo is already linked.'); return; }
     setSaving(true);
     setError(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { setError('Not signed in — please refresh.'); return; }
-      const body: Record<string, string> = { projectId, repo: path };
+      const body: Record<string, string> = { projectId, repoUrl: raw };
       if (tokenInput.trim()) body['token'] = tokenInput.trim();
-      if (hostInput.trim()) body['host'] = hostInput.trim();
       const res = await fetch('/api/gitlab/link', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify(body),
       });
-      const data = await res.json() as { repos?: string[]; error?: string };
+      const data = await res.json() as { repoPath?: string; repoUrl?: string; repos?: string[]; error?: string };
       if (!res.ok) {
         setError(data.error ?? 'Failed to link repo');
       } else {
-        const updated = data.repos ?? [...linkedRepos, path];
-        setLinkedRepos(updated);
+        const repos = data.repos ?? [];
+        setLinkedRepos(repos);
+        if (data.repoUrl) {
+          try {
+            setLinkedHost(new URL(data.repoUrl).origin);
+          } catch {
+            setLinkedHost(null);
+          }
+        }
         setRepoInput('');
         if (tokenInput.trim()) { setSavedToken(true); setTokenInput(''); }
-        onReposChanged?.(updated);
+        onReposChanged?.(repos);
       }
     } catch {
       setError('Network error — check server is running');
@@ -125,9 +138,9 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
       const data = await res.json() as { repos?: string[] };
-      const updated = data.repos ?? linkedRepos.filter((r) => r !== repo);
-      setLinkedRepos(updated);
-      onReposChanged?.(updated);
+      setLinkedRepos(data.repos ?? []);
+      if ((data.repos ?? []).length === 0) setLinkedHost(null);
+      onReposChanged?.(data.repos ?? []);
     } catch { /* ignore */ }
   };
 
@@ -141,7 +154,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
         </svg>
         <h3 className="font-sans text-sm font-bold text-heading">GitLab Repositories</h3>
         {linkedRepos.length > 0 && (
-          <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">{linkedRepos.length} linked</span>
+          <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">connected</span>
         )}
         {savedToken && (
           <span className="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-400 rounded font-mono">token saved</span>
@@ -154,6 +167,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
             <div key={repo} className="flex items-center gap-3 p-3 border border-[#FC6D26]/20 bg-[#FC6D26]/5 rounded">
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-heading font-mono truncate">{repo}</div>
+                <div className="text-[10px] text-muted font-mono truncate mt-0.5">{linkedHost ? `${linkedHost}/${repo}` : repo}</div>
               </div>
               <button type="button" onClick={() => handleUnlink(repo)}
                 className="px-2.5 py-1 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded shrink-0">
@@ -161,26 +175,14 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
               </button>
             </div>
           ))}
-          <p className="text-[11px] text-muted">Commits, README, and source files from all repos are included in AI insights and chat context.</p>
+          <p className="text-[11px] text-muted">Commits, README, and source files from the connected repo are included in AI insights and chat context.</p>
         </div>
       )}
 
       <div className="space-y-3 max-w-lg">
         {linkedRepos.length === 0 && (
-          <p className="text-xs text-muted">Link GitLab repositories so the AI can read commits, README, and source files.</p>
+          <p className="text-xs text-muted">Connect one GitLab repository so the AI can read commits, README, and source files.</p>
         )}
-
-        {/* Host */}
-        <div>
-          <label className="block text-[10px] text-muted font-mono mb-1 uppercase tracking-wider">GitLab Host</label>
-          <input
-            type="text"
-            value={hostInput}
-            onChange={(e) => setHostInput(e.target.value)}
-            placeholder="https://gitlab.nps.edu (default)"
-            className={inputCls}
-          />
-        </div>
 
         {/* Personal access token */}
         <div>
@@ -192,7 +194,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
               type={showToken ? 'text' : 'password'}
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
-              placeholder={savedToken ? '••••••••••••••••' : 'glpat-xxxxxxxxxxxxxxxxxxxx'}
+              placeholder={savedToken ? '••••••••••••••••' : 'Paste your personal access token'}
               className={`${inputCls} pr-10`}
             />
             <button
@@ -210,24 +212,25 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
           <p className="text-[10px] text-muted mt-1">Create at GitLab → Settings → Access Tokens. Needs <span className="font-mono">read_repository</span> scope.</p>
         </div>
 
-        {/* Repo path */}
+        {/* Repo URL */}
         <div>
-          <label className="block text-[10px] text-muted font-mono mb-1 uppercase tracking-wider">Repository Path</label>
+          <label className="block text-[10px] text-muted font-mono mb-1 uppercase tracking-wider">Repository URL</label>
           <div className="flex gap-2">
             <input
               type="text"
               value={repoInput}
               onChange={(e) => setRepoInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleLink()}
-              placeholder="group/project-name or full URL"
+              placeholder="https://gitlab.example.com/group/project-name"
               className={inputCls}
             />
             <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
               className="px-4 py-2.5 bg-[#FC6D26]/10 border border-[#FC6D26]/30 text-[#FC6D26] text-xs font-semibold tracking-wider uppercase hover:bg-[#FC6D26]/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2 shrink-0">
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
-              {linkedRepos.length > 0 ? 'Add' : 'Connect'}
+              Connect
             </button>
           </div>
+          <p className="text-[10px] text-muted mt-1">Enter the full HTTPS URL for the GitLab project. Each connect adds another repo for this project.</p>
         </div>
 
         {error && <p className="text-xs text-danger font-mono">{error}</p>}
@@ -244,7 +247,7 @@ function ProjectNameForm({
   imageUploading,
   handleImageUpload,
 }: {
-  project: { name: string; description?: string | null; start_date?: string | null; invite_code?: string | null; image_url?: string | null };
+  project: { id?: string; name: string; description?: string | null; start_date?: string | null; invite_code?: string | null; image_url?: string | null };
   updateProject: (updates: { name?: string; description?: string; start_date?: string | null; invite_code?: string; image_url?: string | null }) => Promise<unknown>;
   isOwner: boolean;
   imageUploading?: boolean;
@@ -257,11 +260,12 @@ function ProjectNameForm({
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [copiedInviteCode, setCopiedInviteCode] = React.useState(false);
+  const projectFingerprint = project.id ? getProjectFingerprint(project.id) : null;
 
   const dirty = name.trim() !== project.name
     || description.trim() !== (project.description ?? '')
     || startDate !== (project.start_date ?? '')
-    || (isOwner && inviteCode !== (project.invite_code ?? ''));
+    || inviteCode !== (project.invite_code ?? '');
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -271,7 +275,7 @@ function ProjectNameForm({
       name: name.trim(),
       description: description.trim() || undefined,
       start_date: startDate || null,
-      invite_code: isOwner ? inviteCode : undefined,
+      invite_code: inviteCode,
     });
     setSaving(false);
     setSaved(true);
@@ -346,46 +350,53 @@ function ProjectNameForm({
                 className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
               />
             </div>
-            {isOwner && (
+            {projectFingerprint && (
               <div>
-                <div className="flex items-center justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-3">
-                    <label className="block text-[10px] tracking-[0.2em] uppercase text-muted">Project ID Code</label>
-                    <button
-                      type="button"
-                      onClick={() => setInviteCode(generateProjectCode())}
-                      className="text-[10px] font-mono text-accent hover:underline"
-                    >
-                      Generate
-                    </button>
-                  </div>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Project Hash</label>
+                <div className="w-full px-3 py-2 bg-surface2 border border-border text-heading text-sm font-mono rounded">
+                  {projectFingerprint}
                 </div>
-                <div className="flex items-stretch gap-2">
-                  <input
-                    type="text"
-                    value={inviteCode}
-                    onChange={(e) => setInviteCode(sanitizeProjectCode(e.target.value))}
-                    title="Project ID code"
-                    placeholder="Project ID code"
-                    className="min-w-0 flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono tracking-[0.12em] uppercase focus:outline-none focus:border-accent/50 transition-colors rounded"
-                  />
-                  {inviteCode.trim() && (
-                    <button
-                      type="button"
-                      onClick={handleCopyInviteCode}
-                      title="Copy project ID code"
-                      className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
-                    >
-                      {copiedInviteCode ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
-                      <span>{copiedInviteCode ? 'Copied' : 'Copy'}</span>
-                    </button>
-                  )}
-                </div>
-                <p className="mt-1 text-[10px] text-muted">
-                  {PROJECT_CODE_LENGTH}-character join code. Changing it invalidates the old code immediately.
-                </p>
+                <p className="mt-1 text-[10px] text-muted">All users in the same project will see the same hash.</p>
               </div>
             )}
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-3">
+                  <label className="block text-[10px] tracking-[0.2em] uppercase text-muted">Project ID Code</label>
+                  <button
+                    type="button"
+                    onClick={() => setInviteCode(generateProjectCode())}
+                    className="text-[10px] font-mono text-accent hover:underline"
+                  >
+                    Generate
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-stretch gap-2">
+                <input
+                  type="text"
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(sanitizeProjectCode(e.target.value))}
+                  title="Project ID code"
+                  placeholder="Project ID code"
+                  className="min-w-0 flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono tracking-[0.12em] uppercase focus:outline-none focus:border-accent/50 transition-colors rounded"
+                />
+                {inviteCode.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleCopyInviteCode}
+                    title="Copy project ID code"
+                    className="shrink-0 inline-flex items-center justify-center gap-1.5 px-3 py-2 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
+                  >
+                    {copiedInviteCode ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
+                    <span>{copiedInviteCode ? 'Copied' : 'Copy'}</span>
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-muted">
+                {PROJECT_CODE_LENGTH}-character join code. Changing it invalidates the old code immediately.
+              </p>
+            </div>
           </div>
           <div className="flex-1 flex flex-col pb-[20px]">
             <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-1.5">Description (optional)</label>
@@ -412,100 +423,6 @@ function ProjectNameForm({
   );
 }
 
-// ── Teams folder picker modal ─────────────────────────────────────────────────
-function TeamsFolderPickerModal({
-  onSelect,
-  onClose,
-}: {
-  onSelect: (folder: { id: string; name: string }) => void;
-  onClose: () => void;
-}) {
-  const [files, setFiles] = React.useState<Array<{ id: string; name: string; folder?: unknown; lastModifiedDateTime: string }>>([]);
-  const [folderStack, setFolderStack] = React.useState<{ id: string; name: string }[]>([]);
-  const [loading, setLoading] = React.useState(true);
-
-  React.useEffect(() => {
-    const current = folderStack[folderStack.length - 1];
-    setLoading(true);
-    fetchOneDriveFiles({ folderId: current?.id }).then((data) => {
-      setFiles(data as Array<{ id: string; name: string; folder?: unknown; lastModifiedDateTime: string }>);
-      setLoading(false);
-    });
-  }, [folderStack]);
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-surface border border-border w-full max-w-lg max-h-[70vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-          <div>
-            <h2 className="font-sans text-sm font-bold text-heading">Select OneDrive / Teams Folder</h2>
-            <p className="text-[11px] text-muted font-mono">Choose a folder to link to this project</p>
-          </div>
-          <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-heading">
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-1 px-5 py-2 border-b border-border text-[11px] text-muted font-mono">
-          <button type="button" onClick={() => setFolderStack([])} className="hover:text-heading">My Drive</button>
-          {folderStack.map((f, i) => (
-            <span key={f.id} className="flex items-center gap-1">
-              <ChevronRight size={10} />
-              <button type="button" onClick={() => setFolderStack((p) => p.slice(0, i + 1))} className="hover:text-heading">
-                {f.name}
-              </button>
-            </span>
-          ))}
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-px bg-border">
-          {loading ? (
-            <div className="bg-surface flex items-center gap-2 p-4 text-xs text-muted">
-              <Loader2 size={12} className="animate-spin" /> Loading…
-            </div>
-          ) : (
-            <>
-              {folderStack.length > 0 && (
-                <div className="bg-surface px-4 py-2 flex items-center justify-between mb-2 border border-accent/20">
-                  <span className="text-xs text-accent font-medium">
-                    Link "{folderStack[folderStack.length - 1].name}"
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(folderStack[folderStack.length - 1])}
-                    className="px-3 py-1 border border-accent/30 text-accent text-[10px] tracking-wider uppercase hover:bg-accent/5 rounded"
-                  >
-                    Select this folder
-                  </button>
-                </div>
-              )}
-              {files.filter((f) => !!f.folder).map((item) => (
-                <div key={item.id} className="bg-surface flex items-center gap-3 px-4 py-3 hover:bg-surface2 cursor-pointer group"
-                  onClick={() => setFolderStack((p) => [...p, { id: item.id, name: item.name }])}
-                >
-                  <Folder size={13} className="text-accent shrink-0" />
-                  <span className="text-xs text-heading flex-1 truncate">{item.name}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); onSelect({ id: item.id, name: item.name }); }}
-                    className="opacity-0 group-hover:opacity-100 px-2 py-0.5 border border-accent/30 text-accent text-[10px] tracking-wider uppercase hover:bg-accent/5 rounded transition-opacity"
-                  >
-                    Link
-                  </button>
-                  <ChevronRight size={12} className="text-muted" />
-                </div>
-              ))}
-              {files.filter((f) => !!f.folder).length === 0 && (
-                <div className="bg-surface px-4 py-6 text-center text-xs text-muted">No folders here</div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export interface SettingsTabProps {
   project: {
@@ -513,6 +430,7 @@ export interface SettingsTabProps {
     name: string;
     description?: string | null;
     github_repo?: string | null;
+    github_repos?: string[] | null;
     is_private?: boolean;
     invite_code?: string | null;
     start_date?: string | null;
@@ -535,12 +453,6 @@ export interface SettingsTabProps {
   memberSearching: boolean;
   inviting: string | null;
   copySuccess: boolean;
-  teamsFolder: { id: string; name: string } | null;
-  setTeamsFolder: React.Dispatch<React.SetStateAction<{ id: string; name: string } | null>>;
-  teamsFolderPickerOpen: boolean;
-  setTeamsFolderPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  teamsFolderSaving: boolean;
-  setTeamsFolderSaving: React.Dispatch<React.SetStateAction<boolean>>;
   repoInput: string;
   setRepoInput: React.Dispatch<React.SetStateAction<string>>;
   repoSaving: boolean;
@@ -588,8 +500,8 @@ export interface SettingsTabProps {
   handleRemoveMember: (userId: string) => void;
   handleImageUpload: (file: File, inputEl?: HTMLInputElement | null) => void;
   handleExportAuditCSV: () => void;
-  addLabel: (type: 'category' | 'loe', name: string, color: string) => void;
-  deleteLabel: (id: string) => void;
+  addLabel: (type: 'category' | 'loe', name: string, color: string) => Promise<void>;
+  deleteLabel: (id: string) => Promise<void>;
   getPrompt: (feature: PromptFeature) => string | null | undefined;
   savePrompt: (feature: PromptFeature, text: string) => void;
   resetPrompt: (feature: PromptFeature) => void;
@@ -679,12 +591,6 @@ function SettingsTab({
   memberSearching,
   inviting,
   copySuccess,
-  teamsFolder,
-  setTeamsFolder,
-  teamsFolderPickerOpen,
-  setTeamsFolderPickerOpen,
-  teamsFolderSaving,
-  setTeamsFolderSaving,
   repoInput,
   setRepoInput,
   repoSaving,
@@ -741,14 +647,16 @@ function SettingsTab({
   setDeleteModalOpen,
   setGitlabRepos,
 }: SettingsTabProps) {
-  const { status: msStatus } = useMicrosoftIntegration();
-
+  const githubRepos = getGitHubRepos(project);
   // ── Report Templates ──────────────────────────────────────────────────────
   const [templates, setTemplates] = React.useState<{
     id: string; templateType: 'docx' | 'pptx' | 'pdf'; filename: string; sizeBytes: number; uploadedAt: string;
   }[]>([]);
   const [templateUploading, setTemplateUploading] = React.useState<'docx' | 'pptx' | 'pdf' | null>(null);
   const [templateError, setTemplateError] = React.useState<string | null>(null);
+  const [labelError, setLabelError] = React.useState<string | null>(null);
+  const [labelDeletingId, setLabelDeletingId] = React.useState<string | null>(null);
+  const [labelSaving, setLabelSaving] = React.useState(false);
   // One ref per template slot so the hidden inputs are stable across re-renders
   const tmplInputDocx = React.useRef<HTMLInputElement>(null);
   const tmplInputPptx = React.useRef<HTMLInputElement>(null);
@@ -810,41 +718,45 @@ function SettingsTab({
     if (res.ok) setTemplates((prev) => prev.filter((t) => t.templateType !== templateType));
   };
 
+  const handleAddLabel = async () => {
+    const trimmed = newLabelName.trim();
+    if (!trimmed) return;
+    setLabelSaving(true);
+    setLabelError(null);
+    try {
+      await addLabel(newLabelType, trimmed, newLabelColor);
+      setNewLabelName('');
+    } catch (err) {
+      setLabelError(err instanceof Error ? err.message : 'Unable to save label.');
+    } finally {
+      setLabelSaving(false);
+    }
+  };
+
+  const handleDeleteLabel = async (id: string) => {
+    setLabelDeletingId(id);
+    setLabelError(null);
+    try {
+      await deleteLabel(id);
+    } catch (err) {
+      setLabelError(err instanceof Error ? err.message : 'Unable to delete label.');
+    } finally {
+      setLabelDeletingId(null);
+    }
+  };
+
   return (
     <div className="space-y-8">
 
-      {/* Project ID Code + Privacy — owners only */}
-      {isOwner && project?.invite_code && (
+      {/* Project ID Code */}
+      {project?.invite_code && (
         <div className="border border-border bg-surface p-6">
-          <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-            <div className="flex items-center gap-2">
-              <Lock size={14} className="text-accent" />
-              <h3 className="font-sans text-sm font-bold text-heading">Project Access</h3>
-            </div>
-            {/* Public / Private toggle */}
-            <div className="flex items-center gap-1 border border-border rounded overflow-hidden">
-              <button
-                type="button"
-                onClick={() => updateProject({ is_private: false })}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${!project.is_private ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
-              >
-                <Globe size={10} />
-                Public
-              </button>
-              <button
-                type="button"
-                onClick={() => updateProject({ is_private: true })}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${project.is_private ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}
-              >
-                <Lock size={10} />
-                Private
-              </button>
-            </div>
+          <div className="flex items-center gap-2 mb-4">
+            <Lock size={14} className="text-accent" />
+            <h3 className="font-sans text-sm font-bold text-heading">Project Access</h3>
           </div>
           <p className="text-[11px] text-muted mb-4">
-            {project.is_private
-              ? 'Private — join requests require owner approval before access is granted.'
-              : 'Public — anyone with the project ID code can join instantly.'}
+            Project ID codes create a join request. Owners must approve access before the user can view the project.
           </p>
           <div className="flex items-center gap-3">
             <div>
@@ -880,7 +792,7 @@ function SettingsTab({
             {/* Current user — always rendered first */}
             {user && (() => {
               const myRow = members.find((m) => m.user_id === user.id);
-              const myRole = myRow?.role ?? (isOwner ? 'owner' : 'member');
+              const myRole = myRow?.role ?? 'member';
               const myName = user.user_metadata?.user_name ?? user.email ?? 'You';
               const myAvatar = user.user_metadata?.avatar_url ?? null;
               return (
@@ -909,20 +821,17 @@ function SettingsTab({
                   <div className="text-xs text-heading font-medium truncate">{m.profile?.display_name ?? m.user_id}</div>
                   <div className="text-[10px] text-muted capitalize">{m.role}</div>
                 </div>
-                {isOwner && (
-                  <button type="button" onClick={() => handleRemoveMember(m.user_id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all" title="Remove member">
-                    <X size={12} />
-                  </button>
-                )}
+                <button type="button" onClick={() => handleRemoveMember(m.user_id)}
+                  className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all" title="Remove member">
+                  <X size={12} />
+                </button>
               </div>
             ))}
           </div>
         </div>
 
         {/* Invite Members to Project */}
-        {isOwner ? (
-          <div className="border border-border bg-surface p-6">
+        <div className="border border-border bg-surface p-6">
             <div className="flex items-center gap-2 mb-5">
               <UserPlus size={14} className="text-accent" />
               <h3 className="font-sans text-sm font-bold text-heading">Invite Members to Project</h3>
@@ -997,8 +906,7 @@ function SettingsTab({
             {inviteTab === 'qr' && projectId && project?.invite_code && (
               <div className="flex flex-col items-center gap-4">
                 <p className="text-[11px] text-muted text-center">
-                  Share this QR code. Anyone who scans it and authenticates with GitHub will be added
-                  {project.is_private ? ' pending owner approval' : ' instantly'}.
+                  Share this QR code. Anyone who scans it and authenticates will send a join request to the project owners.
                 </p>
                 <div className="p-4 bg-white rounded-xl shadow-lg">
                   <QRCodeSVG
@@ -1026,17 +934,11 @@ function SettingsTab({
                 Generate an Invite Code in Project Details first to enable QR sharing.
               </p>
             )}
-          </div>
-        ) : (
-          <div className="border border-border bg-surface p-6 flex flex-col items-center justify-center text-center gap-3 min-h-[140px]">
-            <Users size={24} className="text-muted/30" />
-            <p className="text-xs text-muted">Only project owners can invite new members.</p>
-          </div>
-        )}
+        </div>
       </div>
 
-      {/* Join Requests — owners only, shown when there are pending requests */}
-      {isOwner && joinRequests.length > 0 && (
+      {/* Join Requests */}
+      {joinRequests.length > 0 && (
         <div className="border border-border bg-surface p-6">
           <div className="flex items-center gap-2 mb-4">
             <UserPlus size={14} className="text-accent2" />
@@ -1094,93 +996,41 @@ function SettingsTab({
       {/* Project Name & Description */}
       <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} imageUploading={imageUploading} handleImageUpload={handleImageUpload} />
 
-      {/* Microsoft 365 / Teams Folder */}
-      <div className="border border-border bg-surface p-6">
-        <div className="flex items-center gap-2 mb-6">
-          <Link size={14} className="text-heading" />
-          <h3 className="font-sans text-sm font-bold text-heading">Microsoft 365 / Teams Folder</h3>
-        </div>
-        <p className="text-xs text-muted mb-5">
-          Link a OneDrive or Teams channel folder. Files from this folder will be included in AI insights generation.
-        </p>
-
-        {teamsFolder ? (
-          <div className="space-y-4">
-            <div className="flex items-center gap-3 p-4 border border-accent/20 bg-accent/5 rounded">
-              <Folder size={18} className="text-accent" />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-heading font-medium truncate">{teamsFolder.name}</div>
-                <div className="text-[10px] text-muted mt-0.5">Linked OneDrive folder</div>
-              </div>
-              <button
-                type="button"
-                onClick={async () => {
-                  await supabase.from('integrations').delete()
-                    .eq('project_id', projectId!).eq('type', 'teams');
-                  setTeamsFolder(null);
-                }}
-                className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
-              >
-                Unlink
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => setTeamsFolderPickerOpen(true)}
-              className="text-xs text-accent hover:underline"
-            >
-              Change folder →
-            </button>
-          </div>
-        ) : msStatus?.connected ? (
-          <button
-            type="button"
-            onClick={() => setTeamsFolderPickerOpen(true)}
-            disabled={teamsFolderSaving}
-            className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md disabled:opacity-50"
-          >
-            {teamsFolderSaving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-            Select Folder
-          </button>
-        ) : (
-          <p className="text-xs text-muted">
-            Connect your Microsoft 365 account in{' '}
-            <a href="/settings" className="text-accent hover:underline">Settings</a>{' '}
-            first, then come back to link a folder.
-          </p>
-        )}
-      </div>
-
       {/* GitHub Repository */}
       <div className="border border-border bg-surface p-6">
         <div className="flex items-center gap-2 mb-6">
           <Github size={14} className="text-heading" />
-          <h3 className="font-sans text-sm font-bold text-heading">GitHub Repository</h3>
+          <h3 className="font-sans text-sm font-bold text-heading">GitHub Repositories</h3>
         </div>
 
-        {project.github_repo ? (
+        {githubRepos.length > 0 ? (
           <div className="space-y-4">
-            <div className="flex items-center gap-3 p-4 border border-accent/20 bg-accent/5 rounded">
-              <Github size={18} className="text-accent" />
-              <div className="flex-1 min-w-0">
-                <a
-                  href={`https://github.com/${project.github_repo}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-accent hover:underline font-mono"
+            {githubRepos.map((repo, index) => (
+              <div key={repo} className="flex items-center gap-3 p-4 border border-accent/20 bg-accent/5 rounded">
+                <Github size={18} className="text-accent" />
+                <div className="flex-1 min-w-0">
+                  <a
+                    href={`https://github.com/${repo}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-accent hover:underline font-mono"
+                  >
+                    {repo}
+                  </a>
+                  <div className="text-[10px] text-muted mt-0.5">{index === 0 ? 'Primary connected repository' : 'Connected repository'}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextRepos = githubRepos.filter((value) => value !== repo);
+                    void updateProject({ github_repo: nextRepos[0] ?? null, github_repos: nextRepos });
+                  }}
+                  className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
                 >
-                  {project.github_repo}
-                </a>
-                <div className="text-[10px] text-muted mt-0.5">Connected repository</div>
+                  Disconnect
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => updateProject({ github_repo: null })}
-                className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] tracking-wider uppercase hover:bg-danger/5 transition-colors rounded"
-              >
-                Disconnect
-              </button>
-            </div>
+            ))}
 
             {scanResults && (
               <div className="space-y-3 mt-4 border-t border-border pt-4">
@@ -1233,38 +1083,37 @@ function SettingsTab({
               </div>
             )}
           </div>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-muted">
-              Connect a GitHub repository to enable AI-powered goal analysis and activity tracking.
-            </p>
-            <div className="flex gap-2 max-w-md">
-              <input
-                value={repoInput}
-                onChange={(e) => setRepoInput(e.target.value)}
-                placeholder="https://github.com/owner/repo.git"
-                className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
-              />
-              <button
-                type="button"
-                onClick={handleSaveRepo}
-                disabled={repoSaving || !repoInput.trim()}
-                className="px-4 py-3 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
-              >
-                {repoSaving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
-                Connect
-              </button>
-            </div>
+        ) : null}
+
+        <div className="space-y-3 mt-4">
+          <p className="text-xs text-muted">
+            Connect one or more GitHub repositories to enable AI-powered goal analysis and activity tracking.
+          </p>
+          <div className="flex gap-2 max-w-md">
+            <input
+              value={repoInput}
+              onChange={(e) => setRepoInput(e.target.value)}
+              placeholder="https://github.com/owner/repo.git"
+              className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+            />
+            <button
+              type="button"
+              onClick={handleSaveRepo}
+              disabled={repoSaving || !repoInput.trim()}
+              className="px-4 py-3 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-2"
+            >
+              {repoSaving ? <Loader2 size={14} className="animate-spin" /> : <Link size={14} />}
+              Add Repo
+            </button>
           </div>
-        )}
+        </div>
       </div>
 
       {/* GitLab Repository */}
       <GitLabSection projectId={projectId!} onReposChanged={(repos) => setGitlabRepos(repos)} />
 
       {/* Report Templates */}
-      {isOwner && (
-        <div className="border border-border bg-surface p-6">
+      <div className="border border-border bg-surface p-6">
           {/* Hidden file inputs — stable refs, never re-mounted */}
           <input ref={tmplInputDocx} type="file" accept=".docx,.pdf" title="Word report template file" className="sr-only"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('docx', f); e.target.value = ''; }} />
@@ -1330,8 +1179,7 @@ function SettingsTab({
               );
             })}
           </div>
-        </div>
-      )}
+      </div>
 
       {/* Task Labels — Categories & LOEs */}
       <div className="border border-border bg-surface p-6">
@@ -1342,30 +1190,35 @@ function SettingsTab({
         <p className="text-[11px] text-muted mb-5">
           Define project-specific categories and lines of effort. These appear in the task editor dropdowns.
         </p>
+        {labelError && (
+          <p className="text-[11px] text-danger mb-4">{labelError}</p>
+        )}
 
         {/* Add new label */}
-        {isOwner && (
-          <div className="flex items-center gap-2 mb-5 flex-wrap">
-            <div className="flex items-center gap-px border border-border rounded overflow-hidden">
-              {(['category', 'loe'] as const).map((t) => (
-                <button key={t} type="button" onClick={() => setNewLabelType(t)}
-                  className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${newLabelType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}>
-                  {t === 'category' ? 'Category' : 'LOE'}
-                </button>
-              ))}
-            </div>
-            <input value={newLabelName} onChange={(e) => setNewLabelName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { addLabel(newLabelType, newLabelName, newLabelColor); setNewLabelName(''); } }}
-              placeholder="Label name…"
-              className="px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded w-48" />
-            <LabelColorPicker value={newLabelColor} onChange={setNewLabelColor} />
-            <button type="button" onClick={() => { addLabel(newLabelType, newLabelName, newLabelColor); setNewLabelName(''); }}
-              disabled={!newLabelName.trim()}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40">
-              <Plus size={11} /> Add
-            </button>
+        <div className="flex items-center gap-2 mb-5 flex-wrap">
+          <div className="flex items-center gap-px border border-border rounded overflow-hidden">
+            {(['category', 'loe'] as const).map((t) => (
+              <button key={t} type="button" onClick={() => setNewLabelType(t)}
+                className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${newLabelType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}>
+                {t === 'category' ? 'Category' : 'LOE'}
+              </button>
+            ))}
           </div>
-        )}
+          <input value={newLabelName} onChange={(e) => setNewLabelName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                void handleAddLabel();
+              }
+            }}
+            placeholder="Label name…"
+            className="px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded w-48" />
+          <LabelColorPicker value={newLabelColor} onChange={setNewLabelColor} />
+          <button type="button" onClick={() => { void handleAddLabel(); }}
+            disabled={!newLabelName.trim() || labelSaving}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40">
+            {labelSaving ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} Add
+          </button>
+        </div>
 
         {/* Existing labels by type */}
         {(['category', 'loe'] as const).map((type) => {
@@ -1383,12 +1236,19 @@ function SettingsTab({
                     <span className="w-2.5 h-2.5 rounded-full shrink-0 block" title={lbl.color}
                       style={{ background: lbl.color }} />
                     <span className="text-xs text-heading font-mono">{lbl.name}</span>
-                    {isOwner && (
-                      <button type="button" title={`Remove ${lbl.name}`} onClick={() => deleteLabel(lbl.id)}
-                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-danger transition-all ml-0.5">
-                        <X size={10} />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      title={`Remove ${lbl.name}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void handleDeleteLabel(lbl.id);
+                      }}
+                      disabled={labelDeletingId === lbl.id}
+                      className="text-muted hover:text-danger transition-colors ml-0.5 p-0.5 disabled:opacity-40"
+                    >
+                      {labelDeletingId === lbl.id ? <Loader2 size={10} className="animate-spin" /> : <X size={10} />}
+                    </button>
                   </div>
                 ))}
               </div>
@@ -1624,27 +1484,6 @@ function SettingsTab({
           );
         })()}
       </div>
-
-      {/* Teams Folder Picker modal */}
-      {teamsFolderPickerOpen && (
-        <TeamsFolderPickerModal
-          onSelect={async (folder) => {
-            setTeamsFolderSaving(true);
-            setTeamsFolderPickerOpen(false);
-            await supabase.from('integrations').upsert(
-              {
-                project_id: projectId,
-                type: 'teams',
-                config: { folder_id: folder.id, folder_name: folder.name },
-              },
-              { onConflict: 'project_id,type' },
-            );
-            setTeamsFolder(folder);
-            setTeamsFolderSaving(false);
-          }}
-          onClose={() => setTeamsFolderPickerOpen(false)}
-        />
-      )}
 
       {/* AI Prompt Edit Modal */}
       {editPromptFeature && (() => {

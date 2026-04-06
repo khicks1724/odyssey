@@ -9,8 +9,10 @@
 
 create table public.profiles (
   id          uuid primary key references auth.users(id) on delete cascade,
+  username    text check (username is null or username ~ '^[a-z0-9_]{3,32}$'),
   display_name text,
   avatar_url  text,
+  email       text,
   created_at  timestamptz default now()
 );
 
@@ -35,7 +37,7 @@ create table public.goals (
   project_id  uuid references public.projects(id) on delete cascade,
   title       text not null,
   deadline    date,
-  status      text default 'active' check (status in ('active', 'at_risk', 'complete', 'missed')),
+  status      text default 'not_started' check (status in ('not_started', 'in_progress', 'in_review', 'complete')),
   risk_score  float,
   progress    int default 0 check (progress >= 0 and progress <= 100),
   created_at  timestamptz default now()
@@ -74,6 +76,10 @@ create index idx_events_project_occurred
 create index idx_events_source
   on public.events (source);
 
+create unique index profiles_username_lower_unique_idx
+  on public.profiles (lower(username))
+  where username is not null;
+
 
 -- ════════════════════════════════════════════════════
 -- 3. ENABLE RLS ON ALL TABLES
@@ -99,6 +105,10 @@ create policy "Users can read own profile"
 create policy "Users can update own profile"
   on public.profiles for update
   using (auth.uid() = id);
+
+create policy "Users can search profiles"
+  on public.profiles for select
+  using (auth.uid() is not null);
 
 -- Projects
 create policy "Project members can read projects"
@@ -177,13 +187,33 @@ create policy "Project owners can manage integrations"
 -- Auto-create profile on signup
 create or replace function public.handle_new_user()
 returns trigger as $$
+declare
+  metadata_username text;
 begin
-  insert into public.profiles (id, display_name, avatar_url)
+  metadata_username := lower(trim(new.raw_user_meta_data ->> 'username'));
+
+  if metadata_username is not null and metadata_username !~ '^[a-z0-9_]{3,32}$' then
+    metadata_username := null;
+  end if;
+
+  insert into public.profiles (id, username, display_name, avatar_url, email)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data ->> 'user_name', new.raw_user_meta_data ->> 'name'),
-    new.raw_user_meta_data ->> 'avatar_url'
-  );
+    metadata_username,
+    coalesce(
+      nullif(trim(new.raw_user_meta_data ->> 'display_name'), ''),
+      nullif(trim(new.raw_user_meta_data ->> 'user_name'), ''),
+      nullif(trim(new.raw_user_meta_data ->> 'name'), ''),
+      metadata_username
+    ),
+    new.raw_user_meta_data ->> 'avatar_url',
+    new.email
+  )
+  on conflict (id) do update set
+    email = excluded.email,
+    avatar_url = coalesce(excluded.avatar_url, profiles.avatar_url),
+    username = coalesce(profiles.username, excluded.username),
+    display_name = coalesce(profiles.display_name, excluded.display_name);
   return new;
 end;
 $$ language plpgsql security definer;

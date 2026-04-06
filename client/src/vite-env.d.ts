@@ -13,3 +13,10 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+interface Window {
+  __ODYSSEY_RUNTIME_CONFIG__?: {
+    supabaseUrl?: string;
+    supabaseAnonKey?: string;
+  };
+}

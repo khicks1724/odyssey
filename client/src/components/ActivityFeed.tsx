@@ -15,9 +15,6 @@ const eventIcons: Record<string, React.ComponentType<{ size?: number }>> = {
 const sourceColors: Record<string, string> = {
   github: 'text-heading',
   gitlab: 'text-accent',
-  teams: 'text-accent2',
-  onedrive: 'text-accent2',
-  onenote: 'text-accent3',
   manual: 'text-muted',
   local: 'text-accent3',
   ai: 'text-accent',

@@ -5,3 +5,6 @@ dist/
 *.log
 .mcp.json
 .claude/
+deploy/odyssey.env
+deploy/supabase/.env
+export/

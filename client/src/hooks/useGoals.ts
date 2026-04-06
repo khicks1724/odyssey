@@ -32,6 +32,7 @@ export function useGoals(projectId: string | undefined) {
         project_id: projectId,
         title: goal.title,
         deadline: goal.deadline || null,
+        status: 'not_started',
         category: goal.category || null,
         loe: goal.loe || null,
         assigned_to: assignees[0] ?? null,

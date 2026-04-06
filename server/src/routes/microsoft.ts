@@ -43,7 +43,7 @@ async function getUserFromJWT(authHeader: string | undefined): Promise<string | 
 const CLIENT_ID = process.env.MICROSOFT_CLIENT_ID ?? '';
 const CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET ?? '';
 const REDIRECT_URI =
-  process.env.MICROSOFT_REDIRECT_URI ?? 'http://localhost:3001/api/microsoft/auth/callback';
+  process.env.MICROSOFT_REDIRECT_URI ?? 'http://localhost:3000/api/microsoft/auth/callback';
 const SCOPES = 'openid profile email User.Read Notes.Read Notes.Read.All Files.Read Sites.Read.All Team.ReadBasic.All offline_access';
 const MS_AUTH_BASE = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 const GRAPH_URL = 'https://graph.microsoft.com/v1.0';

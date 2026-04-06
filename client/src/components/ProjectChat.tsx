@@ -13,6 +13,8 @@ import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 import RepoTreeModal from './RepoTreeModal';
 import type { Project } from '../types';
 import { useAIErrorDialog } from '../lib/ai-error';
+import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
+import { getGitHubRepos } from '../lib/github';
 import './ProjectChat.css';
 
 type PendingAction = NonNullable<Message['pendingAction']>;
@@ -151,11 +153,11 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   // Project resources (fetched once)
   const [projectDocs,  setProjectDocs]  = useState<ProjectDoc[]>([]);
-  const [githubRepo,   setGithubRepo]   = useState<string | null>(null);
+  const [githubRepo,   setGithubRepo]   = useState<string[]>([]);
   const [gitlabRepos,  setGitlabRepos]  = useState<string[]>([]);
   const [resourcesReady, setResourcesReady] = useState(false);
-  const { filePaths } = useProjectFilePaths(githubRepo, gitlabRepos);
-  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string } | null>(null);
+  const { filePaths } = useProjectFilePaths(resolvedProjectId, githubRepo, gitlabRepos);
+  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string; projectId?: string | null } | null>(null);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const projectPickerRef = useRef<HTMLDivElement>(null);
 
@@ -197,13 +199,13 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     }
 
     async function load() {
-      // Project record (github_repo)
+      // Project record (GitHub repos)
       const { data: proj } = await supabase
         .from('projects')
-        .select('github_repo')
+        .select('github_repo, github_repos')
         .eq('id', resolvedProjectId)
         .maybeSingle();
-      if (!cancelled) setGithubRepo(proj?.github_repo ?? null);
+      if (!cancelled) setGithubRepo(getGitHubRepos(proj));
 
       // GitLab repos
       const { data: gl } = await supabase
@@ -213,8 +215,8 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         .eq('type', 'gitlab')
         .maybeSingle();
       if (!cancelled && gl?.config) {
-        const cfg = gl.config as { repos?: string[]; repo?: string };
-        setGitlabRepos(cfg.repos ?? (cfg.repo ? [cfg.repo] : []));
+        const cfg = gl.config as GitLabIntegrationConfig;
+        setGitlabRepos(getGitLabRepoPaths(cfg));
       }
 
       // Uploaded documents
@@ -647,7 +649,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   // ── Context menu sections ────────────────────────────────────────────────
 
-  const hasRepos = githubRepo || gitlabRepos.length > 0;
+  const hasRepos = githubRepo.length > 0 || gitlabRepos.length > 0;
 
   function ContextMenu() {
     if (contextView === 'docs') {
@@ -692,18 +694,18 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
             {!hasRepos && (
               <div className="px-3 py-4 text-center text-[10px] text-muted">No repos linked.</div>
             )}
-            {githubRepo && (() => {
-              const id = `repo:${githubRepo}`;
+            {githubRepo.map((repo) => {
+              const id = `repo:${repo}`;
               const checked = addedIds.has(id);
               return (
-                <button type="button" onClick={() => toggleRepo(githubRepo, 'github')}
+                <button key={repo} type="button" onClick={() => toggleRepo(repo, 'github')}
                   className={`pc-ctx-item ${checked ? 'pc-ctx-item--active' : ''}`}>
                   <Github size={11} className="shrink-0" />
-                  <span className="truncate flex-1 font-mono">{githubRepo}</span>
+                  <span className="truncate flex-1 font-mono">{repo}</span>
                   {checked && <Check size={10} className="text-accent shrink-0" />}
                 </button>
               );
-            })()}
+            })}
             {gitlabRepos.map((r) => {
               const id = `repo:${r}`;
               const checked = addedIds.has(id);
@@ -751,7 +753,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
               <span>Repositories</span>
             </div>
             <span className="flex items-center gap-1 text-muted text-[10px]">
-              {(githubRepo ? 1 : 0) + gitlabRepos.length}
+              {githubRepo.length + gitlabRepos.length}
               <ChevronRight size={10} />
             </span>
           </button>
@@ -1020,10 +1022,10 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                     <MarkdownWithFileLinks
                       block
                       filePaths={filePaths}
-                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path })}
+                      onFileClick={(ref: FileRef) => setRepoTreeTarget({ repo: ref.repo, type: ref.type, initialPath: ref.path, projectId: ref.projectId ?? resolvedProjectId })}
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
-                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type })}
+                      onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? resolvedProjectId : null })}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>
@@ -1163,6 +1165,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         <RepoTreeModal
           repo={repoTreeTarget.repo}
           type={repoTreeTarget.type}
+          projectId={repoTreeTarget.projectId}
           initialPath={repoTreeTarget.initialPath}
           onClose={() => setRepoTreeTarget(null)}
         />

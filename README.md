@@ -267,7 +267,7 @@ Create `server/.env`:
 ```env
 NODE_ENV=development
 HOST=0.0.0.0
-PORT=3001
+PORT=3000
 
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
@@ -287,7 +287,7 @@ GITLAB_HOST=https://YOUR_HOST_URL
 
 MICROSOFT_CLIENT_ID=
 MICROSOFT_CLIENT_SECRET=
-MICROSOFT_REDIRECT_URI=http://localhost:3001/api/microsoft/auth/callback
+MICROSOFT_REDIRECT_URI=http://localhost:3000/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=
 ```
 
@@ -339,9 +339,9 @@ npm run dev
 Default local URLs:
 
 - frontend: `http://localhost:5173`
-- API: `http://localhost:3001`
+- API: `http://localhost:3000`
 
-The Vite dev server proxies `/api` requests to `http://localhost:3001`.
+The Vite dev server proxies `/api` requests to `http://localhost:3000`.
 
 ## Internal Network Hosting
 
@@ -369,7 +369,7 @@ npm run start
 
 Users then connect to:
 
-- `http://YOUR_SERVER_IP:3001`
+- `http://YOUR_SERVER_IP:3000`
 
 You can also front the server with a reverse proxy such as:
 
