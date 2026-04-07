@@ -1,8 +1,10 @@
 FROM node:22-bookworm-slim AS client-builder
 WORKDIR /app/client
+ARG VITE_APP_BASE_PATH=/
 COPY client/package*.json ./
 RUN npm ci --legacy-peer-deps
 COPY client/ ./
+ENV VITE_APP_BASE_PATH=${VITE_APP_BASE_PATH}
 RUN npx vite build
 
 FROM node:22-bookworm-slim AS server-builder

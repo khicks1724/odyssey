@@ -1,0 +1,51 @@
+server {
+    listen 80;
+    server_name example.mil;
+
+    # Public URL example:
+    # https://example.mil/odyssey/
+    #
+    # IMPORTANT:
+    # Odyssey must be built for this same sub-path. If the running container
+    # was built with the default base "/", the browser will request /assets/*
+    # and /odyssey-config.js from the domain root and you will get 404s.
+    #
+    # For docker-compose.odyssey.yml set:
+    # VITE_APP_BASE_PATH=/odyssey/
+    # then rebuild and restart the odyssey service.
+    #
+    # The trailing slash on proxy_pass is intentional. It strips the
+    # /odyssey/ prefix before forwarding to Odyssey on localhost:3000.
+
+    client_max_body_size 100m;
+
+    location = /odyssey {
+        return 301 /odyssey/;
+    }
+
+    location /odyssey/ {
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /odyssey;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_pass http://127.0.0.1:3000/;
+    }
+
+    # If you bypass Odyssey's built-in /supabase proxy and expose Supabase
+    # directly under the same prefix, add a more specific block above the
+    # /odyssey/ location and point it at your Supabase gateway instead.
+    #
+    # location /odyssey/supabase/ {
+    #     proxy_http_version 1.1;
+    #     proxy_set_header Host $host;
+    #     proxy_set_header X-Real-IP $remote_addr;
+    #     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    #     proxy_set_header X-Forwarded-Proto $scheme;
+    #     proxy_pass http://127.0.0.1:8000/;
+    # }
+}

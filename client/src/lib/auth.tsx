@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Provider, User, Session, UserIdentity } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { toAbsoluteAppUrl, withBasePath } from './base-path';
 import { normalizeUsername, usernameToInternalEmail } from './username-auth';
 
 export type OAuthProvider = Extract<Provider, 'github' | 'google' | 'azure'>;
@@ -83,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const getRedirectTo = () => {
     const next = new URLSearchParams(window.location.search).get('next');
-    return `${window.location.origin}/auth/callback${next ? `?next=${encodeURIComponent(next)}` : ''}`;
+    return toAbsoluteAppUrl(`/auth/callback${next ? `?next=${encodeURIComponent(next)}` : ''}`);
   };
 
   const signInWithGitHub = async () => {
@@ -161,7 +162,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const connectGoogleAI = async () => {
     // Request the Gemini scope so provider_token can call Google AI APIs.
     // offline access gives us a refresh_token for the callback to store.
-    const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent('/settings')}&connect_google_ai=1`;
+    const redirectTo = toAbsoluteAppUrl(`/auth/callback?next=${encodeURIComponent(withBasePath('/settings'))}&connect_google_ai=1`);
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {

@@ -3,8 +3,15 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const apiProxyTarget = process.env.VITE_API_URL ?? 'http://127.0.0.1:3000'
+const configuredBase = process.env.VITE_APP_BASE_PATH?.trim()
+const appBasePath = !configuredBase || configuredBase === '/'
+  ? '/'
+  : configuredBase.startsWith('/')
+    ? (configuredBase.endsWith('/') ? configuredBase : `${configuredBase}/`)
+    : `/${configuredBase.endsWith('/') ? configuredBase : `${configuredBase}/`}`
 
 export default defineConfig({
+  base: appBasePath,
   plugins: [react(), tailwindcss()],
   build: {
     rollupOptions: {
@@ -24,6 +31,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': apiProxyTarget,
+      '/supabase': apiProxyTarget,
     },
   },
 })

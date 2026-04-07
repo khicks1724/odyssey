@@ -4,6 +4,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+      args:
+        VITE_APP_BASE_PATH: ${VITE_APP_BASE_PATH:-/}
     restart: unless-stopped
     depends_on:
       kong:

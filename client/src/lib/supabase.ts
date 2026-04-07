@@ -1,12 +1,25 @@
 import { createClient } from '@supabase/supabase-js';
+import { appBasePath, toAbsoluteAppUrl } from './base-path';
 
 const runtimeConfig = typeof window !== 'undefined' ? window.__ODYSSEY_RUNTIME_CONFIG__ : undefined;
 
 const configuredSupabaseUrl = runtimeConfig?.supabaseUrl ?? (import.meta.env.VITE_SUPABASE_URL as string | undefined);
+const resolveSupabaseUrl = (value: string): string => {
+  if (typeof window === 'undefined') return value;
+  if (/^[a-z]+:\/\//i.test(value) || value.startsWith('//')) return value;
+
+  if (value.startsWith('/')) {
+    const relativeToApp = value.startsWith(appBasePath) ? value : toAbsoluteAppUrl(value);
+    return new URL(relativeToApp, window.location.origin).toString();
+  }
+
+  return new URL(value, toAbsoluteAppUrl('/')).toString();
+};
+
 const supabaseUrl = typeof window !== 'undefined'
   ? configuredSupabaseUrl
-    ? new URL(configuredSupabaseUrl, window.location.origin).toString()
-    : `${window.location.origin}/supabase`
+    ? resolveSupabaseUrl(configuredSupabaseUrl)
+    : toAbsoluteAppUrl('/supabase')
   : configuredSupabaseUrl;
 const supabaseAnonKey = runtimeConfig?.supabaseAnonKey ?? (import.meta.env.VITE_SUPABASE_ANON_KEY as string);
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { RefreshCw, Loader2, QrCode, Clock, Copy, Check, ExternalLink } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { toAbsoluteAppUrl } from '../lib/base-path';
 import { useTheme } from '../lib/theme';
 import Modal from './Modal';
 
@@ -132,7 +133,7 @@ export default function ProjectQRCode({ projectId }: Props) {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [tokenData]);
 
-  const inviteUrl = tokenData ? `${window.location.origin}/join/qr/${tokenData.token}` : null;
+  const inviteUrl = tokenData ? toAbsoluteAppUrl(`/join/qr/${tokenData.token}`) : null;
 
   const handleCopyLink = async () => {
     if (!inviteUrl) return;

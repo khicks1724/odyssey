@@ -34,6 +34,7 @@ import { DEFAULT_PROMPTS } from '../../lib/defaultPrompts';
 import { PROMPT_LABELS, type PromptFeature } from '../../hooks/useProjectPrompts';
 import { getGitLabRepoPaths, getGitLabRepoUrl, type GitLabIntegrationConfig } from '../../lib/gitlab';
 import { getGitHubRepos } from '../../lib/github';
+import { toAbsoluteAppUrl, withBasePath } from '../../lib/base-path';
 import { supabase } from '../../lib/supabase';
 import type { OdysseyEvent } from '../../types';
 
@@ -910,12 +911,12 @@ function SettingsTab({
                 </p>
                 <div className="p-4 bg-white rounded-xl shadow-lg">
                   <QRCodeSVG
-                    value={`${window.location.origin}/join?code=${project.invite_code}`}
+                    value={toAbsoluteAppUrl(`/join?code=${encodeURIComponent(project.invite_code)}`)}
                     size={180}
                     level="H"
                     includeMargin={false}
                     imageSettings={{
-                      src: '/favicon.ico',
+                      src: withBasePath('/favicon.ico'),
                       height: 32,
                       width: 32,
                       excavate: true,

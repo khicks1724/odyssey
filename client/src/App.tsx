@@ -7,6 +7,7 @@ import { TimeFormatProvider } from './lib/time-format';
 import { AIAgentProvider } from './lib/ai-agent';
 import { ChatPanelProvider } from './lib/chat-panel';
 import { lazyWithRetry } from './lib/lazy-with-retry';
+import { routerBasename } from './lib/base-path';
 import AppLayout from './components/layout/AppLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 
@@ -104,7 +105,7 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={routerBasename}>
       <FontThemeProvider>
       <ThemeProvider>
         <TimeFormatProvider>
