@@ -1,11 +1,9 @@
-import { useEffect, useMemo, useRef, type RefObject } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 const VIEWBOX_WIDTH = 1600;
 const VIEWBOX_HEIGHT = 900;
 const SAMPLE_STEP = 72;
 const MOTION_SPEED_MULTIPLIER = 1.34;
-const POINTER_AREA_PADDING = 48;
-const MAX_WAKE_POINTS = 10;
 
 type Point = { x: number; y: number };
 
@@ -229,19 +227,9 @@ function buildInteractiveWaveLine(
   return buildSmoothPath(points);
 }
 
-type LoginWaveBackgroundProps = {
-  interactionTargetRef?: RefObject<HTMLElement | null>;
-};
-
-export default function LoginWaveBackground({ interactionTargetRef }: LoginWaveBackgroundProps) {
+export default function LoginWaveBackground() {
   const frameRef = useRef<number | null>(null);
   const startRef = useRef<number | null>(null);
-  const targetRef = useRef({ x: 0.5, y: 0.5 });
-  const pointerRef = useRef<PointerState>({ x: 0.5, y: 0.5, velocityX: 0, velocityY: 0, speed: 0 });
-  const pointerMetaRef = useRef({ clientX: 0, clientY: 0, timestamp: 0 });
-  const interactionStrengthRef = useRef(0);
-  const interactionTargetStrengthRef = useRef(0);
-  const wakeTrailRef = useRef<WakePoint[]>([]);
   const primaryRefs = useRef<(SVGGElement | null)[]>([]);
   const secondaryRefs = useRef<(SVGGElement | null)[]>([]);
   const crestRefs = useRef<(SVGGElement | null)[]>([]);
@@ -257,29 +245,16 @@ export default function LoginWaveBackground({ interactionTargetRef }: LoginWaveB
     const animate = (timestamp: number) => {
       if (startRef.current === null) startRef.current = timestamp;
       const elapsed = (timestamp - startRef.current) / 1000;
-      const pointer = pointerRef.current;
-      const target = targetRef.current;
-      const wakeTrail = wakeTrailRef.current;
-
-      pointer.x += (target.x - pointer.x) * 0.04;
-      pointer.y += (target.y - pointer.y) * 0.04;
-      pointer.velocityX *= 0.88;
-      pointer.velocityY *= 0.88;
-      pointer.speed *= 0.9;
-
-      interactionStrengthRef.current += (interactionTargetStrengthRef.current - interactionStrengthRef.current) * 0.08;
-      const interactionStrength = interactionStrengthRef.current;
-
-      wakeTrailRef.current = wakeTrail
-        .map((wakePoint) => ({ ...wakePoint, age: wakePoint.age + 0.035 }))
-        .filter((wakePoint) => wakePoint.age < 1);
+      const pointer: PointerState = { x: 0.5, y: 0.5, velocityX: 0, velocityY: 0, speed: 0 };
+      const wakeTrail: WakePoint[] = [];
+      const interactionStrength = 0;
 
       primaryLayers.forEach((layer, index) => {
         const node = primaryRefs.current[index];
         if (!node) return;
         const phase = elapsed * layer.speed + layer.phase;
         const paths = primaryPathRefs.current[index];
-        const path = buildInteractiveWaveLine(layer, phase, pointer, wakeTrailRef.current, interactionStrength);
+        const path = buildInteractiveWaveLine(layer, phase, pointer, wakeTrail, interactionStrength);
         paths?.outline?.setAttribute('d', path);
         paths?.stroke?.setAttribute('d', path);
 
@@ -298,7 +273,7 @@ export default function LoginWaveBackground({ interactionTargetRef }: LoginWaveB
         const node = secondaryRefs.current[index];
         if (!node) return;
         const phase = elapsed * layer.speed + layer.phase;
-        const path = buildInteractiveWaveLine(layer, phase, pointer, wakeTrailRef.current, interactionStrength * 0.86);
+        const path = buildInteractiveWaveLine(layer, phase, pointer, wakeTrail, interactionStrength * 0.86);
         secondaryPathRefs.current[index]?.setAttribute('d', path);
 
         const x =
@@ -338,88 +313,6 @@ export default function LoginWaveBackground({ interactionTargetRef }: LoginWaveB
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
     };
   }, [crestLayers, primaryLayers, secondaryLayers]);
-
-  useEffect(() => {
-    const updatePointer = (clientX: number, clientY: number, timestamp: number) => {
-      const viewportWidth = window.innerWidth || 1;
-      const viewportHeight = window.innerHeight || 1;
-      const cardRect = interactionTargetRef?.current?.getBoundingClientRect() ?? null;
-      const activeRect = cardRect
-        ? {
-            left: cardRect.left - POINTER_AREA_PADDING,
-            top: cardRect.top - POINTER_AREA_PADDING,
-            right: cardRect.right + POINTER_AREA_PADDING,
-            bottom: cardRect.bottom + POINTER_AREA_PADDING,
-          }
-        : {
-            left: 0,
-            top: 0,
-            right: viewportWidth,
-            bottom: viewportHeight,
-          };
-      const isActive =
-        clientX >= activeRect.left &&
-        clientX <= activeRect.right &&
-        clientY >= activeRect.top &&
-        clientY <= activeRect.bottom;
-
-      interactionTargetStrengthRef.current = isActive ? 1 : 0;
-      if (!isActive) return;
-
-      targetRef.current = {
-        x: clamp(clientX / viewportWidth, 0, 1),
-        y: clamp(clientY / viewportHeight, 0, 1),
-      };
-
-      const meta = pointerMetaRef.current;
-      if (meta.timestamp > 0) {
-        const deltaTime = Math.max((timestamp - meta.timestamp) / 1000, 1 / 240);
-        const deltaX = clientX - meta.clientX;
-        const deltaY = clientY - meta.clientY;
-        const normalizedVelocityX = clamp(deltaX / viewportWidth / deltaTime, -2.2, 2.2);
-        const normalizedVelocityY = clamp(deltaY / viewportHeight / deltaTime, -2.2, 2.2);
-        const speed = Math.hypot(deltaX, deltaY) / Math.max(Math.min(cardRect?.width ?? viewportWidth, cardRect?.height ?? viewportHeight), 240);
-
-        pointerRef.current.velocityX = normalizedVelocityX;
-        pointerRef.current.velocityY = normalizedVelocityY;
-        pointerRef.current.speed = clamp(speed * 0.9, 0, 1.4);
-
-        if (Math.hypot(deltaX, deltaY) > 1.5) {
-          wakeTrailRef.current = [
-            {
-              x: targetRef.current.x * VIEWBOX_WIDTH,
-              y: targetRef.current.y * VIEWBOX_HEIGHT,
-              velocityX: normalizedVelocityX,
-              velocityY: normalizedVelocityY,
-              energy: clamp(speed * 0.75 + 0.16, 0.18, 1),
-              age: 0,
-            },
-            ...wakeTrailRef.current,
-          ].slice(0, MAX_WAKE_POINTS);
-        }
-      }
-
-      pointerMetaRef.current = { clientX, clientY, timestamp };
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      updatePointer(event.clientX, event.clientY, event.timeStamp);
-    };
-
-    const handlePointerLeave = () => {
-      interactionTargetStrengthRef.current = 0;
-      targetRef.current = { x: 0.5, y: 0.5 };
-      pointerMetaRef.current = { clientX: 0, clientY: 0, timestamp: 0 };
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerleave', handlePointerLeave);
-
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerleave', handlePointerLeave);
-    };
-  }, [interactionTargetRef]);
 
   return (
     <div className="absolute inset-0 overflow-hidden" aria-hidden="true">

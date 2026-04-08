@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../lib/auth';
@@ -45,7 +45,6 @@ const LOGIN_THEME_STYLE = {
 
 export default function LoginPage() {
   const location = useLocation();
-  const loginCardRef = useRef<HTMLDivElement | null>(null);
   const {
     signInWithUsernamePassword,
     registerWithUsernamePassword,
@@ -117,14 +116,11 @@ export default function LoginPage() {
 
   return (
     <div className="login-theme-scope relative min-h-screen overflow-y-auto" style={LOGIN_THEME_STYLE}>
-      <LoginWaveBackground interactionTargetRef={loginCardRef} />
+      <LoginWaveBackground />
 
       <div className="relative z-10 min-h-screen flex flex-col px-6 py-6">
         <div className="flex-1 flex items-center justify-center">
-          <div
-            ref={loginCardRef}
-            className="w-full max-w-5xl rounded-[28px] border border-border/80 bg-surface/92 shadow-[0_32px_120px_rgba(15,31,51,0.16)] backdrop-blur-[2px] overflow-hidden"
-          >
+          <div className="w-full max-w-5xl rounded-[28px] border border-border/80 bg-surface/92 shadow-[0_32px_120px_rgba(15,31,51,0.16)] backdrop-blur-[2px] overflow-hidden">
           <div className="flex items-center px-6 h-11 border-b border-border/80 bg-surface/90">
             <DateTime />
           </div>
