@@ -565,7 +565,7 @@ function TabVisibilitySection({ projectId }: { projectId: string }) {
           {updated ? <><Check size={11} /> Updated</> : 'Update'}
         </button>
       </div>
-      <p className="text-xs text-muted mb-4">Choose which tabs appear in the navigation bar for this project. The default layout shows Overview, Timeline, Activity, Tasks, Coordination, Reports, Documents, and Settings, while optional tabs stay available here but start hidden.</p>
+      <p className="text-xs text-muted mb-4">Choose which tabs appear in the navigation bar for this project. The default layout shows Overview, Timeline, Tasks, Activity, Coordination, Reports, Documents, and Settings, while optional tabs stay available here but start hidden.</p>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {ALL_TABS.map((tab) => {
           const locked = lockedVisible.includes(tab.id);

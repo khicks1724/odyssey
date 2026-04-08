@@ -97,8 +97,8 @@ function readFileAsDataUrl(file: File): Promise<string> {
 const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
   { id: 'timeline',      label: 'Timeline',      icon: Clock },
-  { id: 'activity',      label: 'Activity',      icon: Activity },
   { id: 'goals',         label: 'Tasks',         icon: Target },
+  { id: 'activity',      label: 'Activity',      icon: Activity },
   { id: 'coordination',  label: 'Coordination',  icon: GitBranch },
   { id: 'metrics',       label: 'Metrics',       icon: TrendingUp },
   { id: 'financials',    label: 'Financials',    icon: DollarSign },

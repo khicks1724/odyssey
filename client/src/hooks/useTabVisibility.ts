@@ -5,8 +5,8 @@ import { supabase } from '../lib/supabase';
 export const ALL_TABS = [
   { id: 'overview',     label: 'Overview',     defaultVisible: true },
   { id: 'timeline',     label: 'Timeline',     defaultVisible: true },
-  { id: 'activity',     label: 'Activity',     defaultVisible: true },
   { id: 'goals',        label: 'Tasks',        defaultVisible: true },
+  { id: 'activity',     label: 'Activity',     defaultVisible: true },
   { id: 'coordination', label: 'Coordination', defaultVisible: true },
   { id: 'metrics',      label: 'Metrics',      defaultVisible: false },
   { id: 'financials',   label: 'Financials',   defaultVisible: false },

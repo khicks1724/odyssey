@@ -1,268 +1,194 @@
 # Odyssey
 
-> AI-assisted project operations for engineering teams, with project dashboards, task tracking, repo-aware analysis, reports, file previews, and multi-source activity in one workspace.
+> AI-assisted project operations for engineering teams, with tasks, timelines, chat, document context, repo activity, reporting, and cross-project coordination in one workspace.
 
-## Overview
+## What Odyssey Is
 
-Odyssey is a full-stack project management platform built around:
+Odyssey is a full-stack application, not just a React frontend. The repository includes:
 
-- project-level task and milestone tracking
-- AI chat, AI insights, standups, task guidance, intelligent updates, and report generation
-- GitHub and GitLab repository context
-- Microsoft 365 document import
-- Supabase-backed auth, data, storage, and realtime updates
+- a Vite + React client in `client/`
+- a Fastify API server in `server/`
+- a Supabase schema and migration set in `supabase/`
+- a self-hosted Supabase deployment in `deploy/supabase/`
+- an Odyssey runtime container and VM helper scripts in `deploy/` and `scripts/vm/`
 
-The app is designed to work in two main modes:
+The current codebase expects Supabase features directly:
 
-1. local development on a single machine
-2. shared internal hosting on a machine that users reach by IP address or hostname
+- Auth
+- Postgres
+- Storage
+- Realtime
+- RLS
+- RPC-backed project and invite flows
 
-For the code as it exists in this repository, the supported backend model is Supabase. A plain SQL database is not a drop-in replacement because the app depends on Supabase Auth, Storage, Realtime, RLS, and RPC behavior.
+A plain PostgreSQL database is not a drop-in replacement.
 
-## Current State
+## What The Product Does
 
-Odyssey currently includes:
+Core product areas in the current codebase:
 
-- persistent project dashboards with AI-generated summaries
-- per-project tabs for overview, activity, tasks, metrics, reports, documents, integrations, and settings
-- long-form project ID join codes that owners can regenerate or edit
-- QR-based project invites with expiry and token redemption
-- project privacy and join-request flows
-- drag-reorderable project lists with shared ordering reflected in the dashboard
-- always-available AI chat panel, including outside a specific project
-- project inference in AI chat when the user references a project by name
-- AI report generation with follow-up regeneration in a different format
-- clickable repo names, file paths, and task references across AI-rendered markdown
-- repo/file preview flows for GitHub and GitLab sources
-- theme system with multiple built-in themes, including Odyssey Dark, USA, Digital Trident, NPS, Claude, GitHub Dark, Nord, and Dracula variants
-
-## Tech Stack
-
-| Layer | Technology |
-| --- | --- |
-| Frontend | React 19, TypeScript, Vite, Tailwind CSS 4 |
-| Backend | Node.js, Fastify 5, TypeScript |
-| Database | Supabase Postgres |
-| Auth | Supabase Auth |
-| Storage | Supabase Storage |
-| Realtime | Supabase Realtime |
-| AI providers | Anthropic, OpenAI, Google Gemini |
-| Routing | React Router 7 |
-| Markdown rendering | `react-markdown` + `remark-gfm` |
-| Document/report tooling | `pdf-parse`, `mammoth`, `docx`, `jspdf`, `pptxgenjs` |
+- multi-project dashboard with AI summaries and project health
+- detailed project pages with tabs for overview, timeline, tasks, activity, coordination, metrics, financials, reports, documents, integrations, and settings
+- task tracking with dependencies, multi-assignee support, comments, AI guidance, time logging, categories, LOE, deadlines, and status/risk tracking
+- global and project-scoped chat, including direct messages
+- AI-generated project insights, standups, intelligent updates, and report generation
+- GitHub and GitLab repository linking, commit activity, repo browsing, and file previews
+- Microsoft 365 import flows for documents and notes
+- invite-code, QR invite, private project, join-request, and shared access workflows
+- theme support, including NPS-branded themes and several non-NPS themes
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  U[Browser] --> C[React / Vite Client]
-  C --> A[Fastify API Server]
-  C --> S[(Supabase Auth + Postgres + Storage + Realtime)]
+  B[Browser] --> C[React Client]
+  C --> A[Fastify API]
+  C --> S[(Supabase)]
   A --> S
-  A --> AI[Anthropic / OpenAI / Gemini]
+  A --> AI[Anthropic / OpenAI / Gemini / Azure OpenAI]
   A --> GH[GitHub API]
   A --> GL[GitLab API]
   A --> MS[Microsoft Graph]
 ```
 
+In development:
+
+- the client usually runs on `http://localhost:5173`
+- the API usually runs on `http://localhost:3000`
+- Vite proxies `/api` and `/supabase` to the Fastify server
+
+In production:
+
+- the React app is built into static assets
+- Fastify serves the built client and API from the same container
+- Supabase runs as a separate compose stack
+
+## How Hosting Works In This Repo
+
+The checked-in production path is container-based and built around these pieces:
+
+- [Dockerfile](/home/kyle/odyssey/Dockerfile)
+  Builds the client, builds the server, then produces one runtime image that serves both.
+- [deploy/docker-compose.odyssey.yml](/home/kyle/odyssey/deploy/docker-compose.odyssey.yml)
+  Runs the Odyssey app container and wires it to Supabase.
+- [deploy/supabase/docker-compose.yml](/home/kyle/odyssey/deploy/supabase/docker-compose.yml)
+  Runs the self-hosted Supabase services.
+- [scripts/vm/up.sh](/home/kyle/odyssey/scripts/vm/up.sh)
+  Generates the derived Supabase env and brings the full stack up.
+- [scripts/vm/down.sh](/home/kyle/odyssey/scripts/vm/down.sh)
+  Stops the stack.
+- [scripts/vm/generate-supabase-env.sh](/home/kyle/odyssey/scripts/vm/generate-supabase-env.sh)
+  Syncs Odyssey app settings into the Supabase env, including auth redirect URLs.
+
+The production container exposes port `3000`. Supabase services are exposed through the bundled gateway/proxy layer and are also routed back to the browser under `/supabase`.
+
 ## Repository Layout
 
 ```text
-Odyssey/
-  client/                 React + Vite frontend
-  server/                 Fastify backend
-  supabase/               Base schema and incremental migrations
-  setup.md                Detailed setup and deployment guide
+odyssey/
+  client/                    React 19 + Vite frontend
+  server/                    Fastify 5 API server
+  supabase/                  Base schema and app migrations
+  deploy/
+    docker-compose.odyssey.yml
+    odyssey.env.example
+    supabase/                Self-hosted Supabase stack
+  scripts/vm/                Bring-up, shutdown, schema, export/import helpers
+  setup.md                   Longer setup and deployment guide
 ```
 
-High-value frontend areas:
+Important frontend entry points:
 
-- `client/src/pages/DashboardPage.tsx`
-- `client/src/pages/ProjectDetailPage.tsx`
-- `client/src/components/ProjectChat.tsx`
-- `client/src/components/ReportsTab.tsx`
-- `client/src/components/MarkdownWithFileLinks.tsx`
-- `client/src/components/ProjectQRCode.tsx`
-- `client/src/components/GoalEditModal.tsx`
-- `client/src/lib/theme.tsx`
+- [client/src/pages/DashboardPage.tsx](/home/kyle/odyssey/client/src/pages/DashboardPage.tsx)
+- [client/src/pages/ProjectDetailPage.tsx](/home/kyle/odyssey/client/src/pages/ProjectDetailPage.tsx)
+- [client/src/pages/ChatPage.tsx](/home/kyle/odyssey/client/src/pages/ChatPage.tsx)
+- [client/src/pages/LoginPage.tsx](/home/kyle/odyssey/client/src/pages/LoginPage.tsx)
+- [client/src/components/project-tabs/OverviewTab.tsx](/home/kyle/odyssey/client/src/components/project-tabs/OverviewTab.tsx)
+- [client/src/components/project-tabs/ActivityTab.tsx](/home/kyle/odyssey/client/src/components/project-tabs/ActivityTab.tsx)
+- [client/src/components/Timeline.tsx](/home/kyle/odyssey/client/src/components/Timeline.tsx)
+- [client/src/components/CommitActivityCharts.tsx](/home/kyle/odyssey/client/src/components/CommitActivityCharts.tsx)
 
-High-value backend areas:
+Important backend entry points:
 
-- `server/src/index.ts`
-- `server/src/routes/ai.ts`
-- `server/src/routes/github.ts`
-- `server/src/routes/gitlab.ts`
-- `server/src/routes/microsoft.ts`
-- `server/src/routes/uploads.ts`
-- `server/src/routes/webhooks.ts`
+- [server/src/index.ts](/home/kyle/odyssey/server/src/index.ts)
+- [server/src/routes/ai.ts](/home/kyle/odyssey/server/src/routes/ai.ts)
+- [server/src/routes/auth.ts](/home/kyle/odyssey/server/src/routes/auth.ts)
+- [server/src/routes/github.ts](/home/kyle/odyssey/server/src/routes/github.ts)
+- [server/src/routes/gitlab.ts](/home/kyle/odyssey/server/src/routes/gitlab.ts)
+- [server/src/routes/microsoft.ts](/home/kyle/odyssey/server/src/routes/microsoft.ts)
+- [server/src/routes/uploads.ts](/home/kyle/odyssey/server/src/routes/uploads.ts)
+- [server/src/routes/coordination.ts](/home/kyle/odyssey/server/src/routes/coordination.ts)
 
-## Feature Areas
+Important database areas:
 
-### Projects And Dashboard
+- [supabase/schema.sql](/home/kyle/odyssey/supabase/schema.sql)
+- [supabase/](/home/kyle/odyssey/supabase)
+- [deploy/supabase/README.md](/home/kyle/odyssey/deploy/supabase/README.md)
+- [deploy/supabase/volumes/db/_supabase.sql](/home/kyle/odyssey/deploy/supabase/volumes/db/_supabase.sql)
 
-- multi-project dashboard with top-level health indicators
-- hoverable dashboard stat cards with detail popovers
-- project ordering by name, creation recency, or custom drag order
-- shared project ordering reflected in both the projects page and dashboard
-- project settings with editable project ID code, start date, description, privacy, and member controls
+## Tech Stack
 
-### Tasks And Execution Tracking
+| Layer | Technology |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite 8, Tailwind CSS 4 |
+| Backend | Node.js, Fastify 5, TypeScript |
+| Auth / DB / Storage / Realtime | Supabase |
+| AI providers | Anthropic, OpenAI, Google Gemini, Azure OpenAI |
+| Repo integrations | GitHub, GitLab |
+| Microsoft integration | Microsoft Graph |
+| Document tooling | `pdf-parse`, `mammoth`, `docx`, `jspdf`, `pptxgenjs`, `xlsx` |
 
-- task creation and editing with status, progress, category, line of effort, deadline, multi-assignee support, dependencies, comments, and AI guidance
-- risk labels and project-level risk reporting
-- task detail modal with markdown-rendered AI guidance and clickable repo/file/task references
-- timeline, activity, and metrics views for project execution
+## Deployment Modes
 
-### AI Features
+### 1. Local Development
 
-- global AI chat panel
-- project AI chat with repo, task, event, and document context
-- AI-generated project insights
-- intelligent update flow that proposes project/task changes
-- 2-week standup generation and storage
-- report generation to PDF, DOCX, or PPTX
-- follow-up report edits through chat, including format changes after the first generation
-- themed AI error popups that interpret common provider failures such as missing keys, billing/quota issues, or service unavailability
+Use this when you are building features or debugging.
 
-### Repo And File Awareness
+Typical process:
 
-- GitHub repo linking, browsing, commit ingestion, and file preview
-- GitLab repo linking, browsing, commit ingestion, and file preview
-- recursive file indexing for relative-path resolution
-- clickable repo names and file references across AI output
-- markdown-aware linking that can resolve:
-  - full file paths
-  - repo-qualified paths
-  - suffix paths
-  - bare filenames when they map cleanly
+- run Fastify from `server/`
+- run Vite from `client/`
+- point both at a Supabase project or local Supabase stack
 
-### Documents And Reports
+Typical URLs:
 
-- project document upload to Supabase Storage
-- document text extraction for AI context
-- Microsoft 365 document import flows
-- saved reports per project
-- goal reports, attachments, and comments
+- `http://localhost:5173` for the client
+- `http://localhost:3000` for the API
 
-### Access And Collaboration
+### 2. Full Self-Hosted Stack
 
-- project creation and ownership
-- invite by project ID code
-- QR-based invite generation and redemption
-- private project join requests
-- GitHub username-based member adds
-- member role management
+Use this when you want Odyssey and Supabase running together on one machine.
 
-### Theming
+Typical process:
 
-Odyssey currently ships with these built-in themes:
+- create `deploy/odyssey.env`
+- let the VM scripts generate `deploy/supabase/.env`
+- run `bash scripts/vm/up.sh`
 
-- Odyssey Dark
-- Odyssey Light
-- One Dark Pro
-- Dark Modern
-- Light Modern
-- Claude Dark
-- Claude Light
-- NPS Dark
-- NPS Light
-- USA
-- Digital Trident
-- GitHub Dark
-- Nord
-- Dracula
+This is the most accurate way to run the repo as designed.
 
-The theme system also drives AI markdown token styling, including distinct theme-aware colors for:
+## Quick Start
 
-- clickable repos
-- clickable files/programs
-- clickable task references
-- non-clickable formatted tokens
+### Local App Development Against Supabase
 
-## AI Model Behavior
+1. Install Node.js 22 or newer, npm, Docker, and Docker Compose.
+2. Clone the repo.
+3. Install dependencies in `client/` and `server/`.
+4. Create a Supabase backend, either cloud-hosted or local/self-hosted.
+5. Apply [supabase/schema.sql](/home/kyle/odyssey/supabase/schema.sql) and all migrations in [supabase/](/home/kyle/odyssey/supabase).
+6. Create `client/.env.local`.
+7. Create `server/.env`.
+8. Start the server and client.
 
-The UI exposes an AI model selector with:
-
-- `Auto`
-- Anthropic Claude models
-- OpenAI models when configured
-- Google Gemini models when configured
-
-Provider availability depends on server-side keys. If a provider key is missing, that provider stays unavailable in the UI. If a request fails at runtime, the app now surfaces a themed error modal instead of a raw browser alert.
-
-Main AI surfaces:
-
-- dashboard AI summary
-- project AI insights
-- project AI chat
-- task AI guidance
-- intelligent update panel
-- report generation chat
-
-## Integrations
-
-### Supabase
-
-Supabase is the primary application backend and is required for full functionality.
-
-Used for:
-
-- auth
-- relational data
-- row-level security
-- storage buckets
-- realtime subscriptions
-- RPCs for invite/join flows
-
-### GitHub
-
-GitHub integration supports:
-
-- repository linking
-- commit history ingestion
-- file tree browsing
-- file preview
-- AI repo-aware context
-- webhook ingestion for activity normalization
-
-### GitLab
-
-GitLab integration supports:
-
-- repository linking
-- commit history ingestion
-- file tree browsing
-- file preview
-- AI repo-aware context
-
-The preferred server env names are `GITLAB_TOKEN` and `GITLAB_HOST`.
-For backward compatibility, the server still accepts the older `GITLAB_NPS_TOKEN` and `GITLAB_NPS_HOST` names.
-
-### Microsoft 365
-
-Microsoft integration supports:
-
-- OneDrive document access
-- OneNote content access
-- Teams-related browsing paths where configured
-
-This is backed by an Azure app registration and Microsoft Graph on the server.
-
-## Environment Variables
-
-### Client
-
-Create `client/.env.local`:
+Client env:
 
 ```env
 VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
-VITE_API_URL=
+VITE_API_URL=http://127.0.0.1:3000
 ```
 
-### Server
-
-Create `server/.env`:
+Server env:
 
 ```env
 NODE_ENV=development
@@ -278,181 +204,183 @@ CLIENT_DIST_PATH=
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 GOOGLE_AI_API_KEY=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_BASE_URL=
+AZURE_OPENAI_MODEL=
 
 GITHUB_TOKEN=
 GITHUB_WEBHOOK_SECRET=
 
-GITLAB_TOKEN=
-GITLAB_HOST=https://YOUR_HOST_URL
-
 MICROSOFT_CLIENT_ID=
 MICROSOFT_CLIENT_SECRET=
+MICROSOFT_TENANT_URL=https://login.microsoftonline.com/common
 MICROSOFT_REDIRECT_URI=http://localhost:3000/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=
+
+AI_KEY_SECRET=
 ```
 
-Generate a Microsoft token encryption key:
+Commands:
 
-```powershell
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```bash
+cd client && npm install
+cd ../server && npm install
+cd ../server && npm run dev
+cd ../client && npm run dev
 ```
 
-## Running Locally
+### Full Local Or VM Deployment With Bundled Supabase
 
-1. Clone the repository.
-2. Install dependencies in the root, `client`, and `server`.
-3. Create a Supabase project.
-4. Apply `supabase/schema.sql`.
-5. Apply all checked-in migrations in numeric order.
-6. Create `client/.env.local`.
-7. Create `server/.env`.
-8. Add at least one AI provider key.
-9. Start the API server.
-10. Start the client.
+1. Install Docker and Docker Compose.
+2. Copy [deploy/odyssey.env.example](/home/kyle/odyssey/deploy/odyssey.env.example) to `deploy/odyssey.env`.
+3. Update `CLIENT_URL` and any provider/integration settings.
+4. Run the VM helper.
 
-Install dependencies:
-
-```powershell
-npm install
-cd client
-npm install
-cd ..
-cd server
-npm install
-cd ..
+```bash
+cp deploy/odyssey.env.example deploy/odyssey.env
+bash scripts/vm/up.sh
 ```
 
-Start the server:
+The helper will:
 
-```powershell
-cd server
-npm run dev
+- generate or update `deploy/supabase/.env`
+- align Supabase auth redirect URLs with `CLIENT_URL`
+- build the Odyssey runtime image
+- start Supabase and Odyssey together
+
+To stop the stack:
+
+```bash
+bash scripts/vm/down.sh
 ```
 
-Start the client:
+## Non-NPS Setup Notes
 
-```powershell
-cd client
-npm run dev
-```
+This repository can be used outside NPS. The NPS-specific branding and sample values are not hard requirements.
 
-Default local URLs:
+For a non-NPS deployment:
 
-- frontend: `http://localhost:5173`
-- API: `http://localhost:3000`
+- set `CLIENT_URL` to your own hostname or local URL
+- use `MICROSOFT_TENANT_URL=https://login.microsoftonline.com/common` unless you have a tenant-specific reason not to
+- set `MICROSOFT_REDIRECT_URI` to your own Odyssey host, for example `https://your-domain.example/api/microsoft/auth/callback`
+- supply your own GitHub, GitLab, Google, Microsoft, and AI credentials
+- do not rely on any checked-in NPS hostnames or example tenant IDs
 
-The Vite dev server proxies `/api` requests to `http://localhost:3000`.
+Important clarification:
 
-## Internal Network Hosting
+- names like `GITLAB_NPS_HOST` in the example env are legacy/example naming, not a hard dependency on NPS
+- the live GitLab integration is project-driven and stores the actual GitLab host and repo URL in integration config
+- NPS themes are optional UI themes, not deployment requirements
 
-Odyssey supports shared internal hosting on a machine reachable by IP address or hostname.
+If you are standing up a brand-new non-NPS install, start from [deploy/odyssey.env.example](/home/kyle/odyssey/deploy/odyssey.env.example), not from an environment file that already contains organization-specific values.
 
-Recommended production-style internal setup:
+## Environment Variables
 
-1. build the client
-2. build the server
-3. set `NODE_ENV=production`
-4. set `HOST=0.0.0.0`
-5. set `CLIENT_DIST_PATH=../client/dist`
-6. run the built Fastify server
+### App-Level Runtime
 
-Build steps:
+Main file for the containerized deployment:
 
-```powershell
-cd client
-npm run build
-cd ..
-cd server
-npm run build
-npm run start
-```
+- `deploy/odyssey.env`
 
-Users then connect to:
+Common keys:
 
-- `http://YOUR_SERVER_IP:3000`
+- `CLIENT_URL`
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `GOOGLE_AI_API_KEY`
+- `AZURE_OPENAI_API_KEY`
+- `AZURE_OPENAI_BASE_URL`
+- `AZURE_OPENAI_MODEL`
+- `GITHUB_TOKEN`
+- `GITHUB_WEBHOOK_SECRET`
+- `GITHUB_OAUTH_CLIENT_ID`
+- `GITHUB_OAUTH_CLIENT_SECRET`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `MICROSOFT_CLIENT_ID`
+- `MICROSOFT_CLIENT_SECRET`
+- `MICROSOFT_TENANT_URL`
+- `MICROSOFT_REDIRECT_URI`
+- `MICROSOFT_TOKEN_ENCRYPT_KEY`
 
-You can also front the server with a reverse proxy such as:
+### Derived Supabase Runtime
 
-- Caddy
-- Nginx
-- IIS
+Generated file:
 
-If you use Nginx, set `client_max_body_size 100m;` on the Odyssey location or server block. Report templates and generated report uploads can otherwise fail with `413 Request Entity Too Large` before the request reaches Fastify.
+- `deploy/supabase/.env`
 
-## Database Notes
+This file is partly managed by [scripts/vm/generate-supabase-env.sh](/home/kyle/odyssey/scripts/vm/generate-supabase-env.sh). It sets:
 
-The repository contains:
+- Supabase public URL
+- site URL
+- redirect URLs
+- provider enablement flags for Supabase Auth
+- generated keys when missing
 
-- `supabase/schema.sql`
-- `supabase/migration-*.sql`
+Do not treat this as a purely hand-maintained file if you are using the VM scripts.
 
-Important checked-in migrations cover:
+## Auth And Identity
 
-- policies and recursion fixes
-- goal tracking improvements
-- user connections
-- project insights
-- document storage
-- standup reports
-- saved reports
-- task dependencies
-- comments
-- delete-project cascade handling
-- invite codes and privacy
-- QR invite tokens
-- hardened project ID codes
-- hardened project deletion via RPC
-- notifications and shared chat foundations
-- chat-thread membership recovery for project chats
-- project-chat membership repair for users with existing project access
+Odyssey currently supports:
 
-There are also goal report / goal attachment features in the UI that may require supplemental SQL depending on your target environment. See [`setup.md`](./setup.md) for the detailed operator guide and the manual SQL required for those pieces.
+- Supabase Auth
+- username/password auth flows built on top of Supabase
+- Google OAuth through Supabase Auth when configured
+- Microsoft account linking and Microsoft Graph document access when configured
 
-## Security Model
+For production use, verify these are aligned:
 
-- Supabase RLS is enabled across core tables
-- data access is scoped to project owners and members
-- server-side keys stay on the backend only
-- GitHub webhooks are signed
-- Microsoft tokens are encrypted before storage
-- AI provider keys are server-side only
+- `CLIENT_URL`
+- Supabase `SITE_URL`
+- Supabase redirect URLs
+- Microsoft redirect URI
+- any OAuth provider callback URLs
 
-## Project Status And Known Assumptions
+The VM scripts handle much of this automatically when you use the bundled deployment path.
 
-This README reflects the repository in its current state, not an idealized deployment.
+## Repo Integrations
 
-Important assumptions:
+### GitHub
 
-- Supabase is the intended backend
-- AI features require at least one valid provider key
-- repo-aware features require GitHub and/or GitLab server tokens
-- Microsoft 365 features require Azure app registration
-- full operator setup is documented in [`setup.md`](./setup.md)
+Supports:
 
-## Setup Documentation
+- repository linking
+- commit activity
+- file tree browsing
+- file preview
+- webhook-backed activity ingestion
+- AI context from linked repos
 
-For the full deployment and environment manual, including:
+### GitLab
 
-- database bootstrap order
-- Supabase auth configuration
-- local development setup
-- LAN/internal hosting setup
-- supplemental SQL for report/attachment support
-- troubleshooting and validation
+Supports:
 
-read:
+- repository linking by full repo URL
+- per-project repo host tracking
+- encrypted per-user project tokens
+- commit activity
+- file tree browsing
+- file preview
+- AI context from linked repos
 
-- [`setup.md`](./setup.md)
+The checked-in code no longer assumes a single global GitLab host.
 
-## Scripts
+## Microsoft 365 Integration
 
-### Root
+Supports:
 
-No main orchestration scripts are defined at the root. Install dependencies from the root and run the client/server separately.
+- Microsoft sign-in/account linking
+- OneDrive browsing and import
+- OneNote content access
+- Graph-backed document ingestion
+
+For non-NPS users, the main requirement is your own Azure app registration. The code does not require an NPS tenant.
+
+## Build And Run Commands
 
 ### Client
 
-```text
+```bash
 npm run dev
 npm run build
 npm run lint
@@ -461,27 +389,42 @@ npm run preview
 
 ### Server
 
-```text
+```bash
 npm run dev
 npm run build
 npm run start
 ```
 
+### Full Stack
+
+```bash
+bash scripts/vm/up.sh
+bash scripts/vm/down.sh
+```
+
 ## Recommended Smoke Test
 
-After setup, verify:
+After setup, verify all of these before calling the environment healthy:
 
-- you can sign in
-- you can create a project
-- you can create and edit tasks
-- AI chat responds
-- AI insights generate
-- a repo can be linked and browsed
-- file links in AI output are clickable
-- a report can be generated
-- a QR invite can be created
-- a project can be joined by project ID code
+- sign in works
+- project creation works
+- task create/edit works
+- the dashboard loads project data
+- the project overview and timeline load
+- AI chat works with at least one configured provider
+- contributor and activity views load without auth errors
+- GitHub or GitLab linking works
+- repo commit activity appears when repos are linked
+- Microsoft import works if Microsoft integration is enabled
+- reports can be generated and saved
+- invites and join flows work
 
-## License / Ownership
+## Where To Read Next
 
-No explicit open-source license is declared in this repository. If you intend to distribute or commercialize the code outside your organization, add a license file and any required contribution or deployment policy documentation.
+- [setup.md](/home/kyle/odyssey/setup.md) for the longer operator guide
+- [deploy/VM_MIGRATION.md](/home/kyle/odyssey/deploy/VM_MIGRATION.md) for VM-oriented notes
+- [deploy/supabase/README.md](/home/kyle/odyssey/deploy/supabase/README.md) for the bundled Supabase stack
+
+## License
+
+No explicit open-source license is declared in this repository. If you plan to distribute it outside your organization, add the appropriate license and policy files first.

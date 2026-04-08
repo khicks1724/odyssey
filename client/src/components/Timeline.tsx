@@ -212,7 +212,7 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
             className={`text-[10px] font-mono px-2 py-1 rounded border transition-colors ${groupBy === g ? 'bg-accent/10 border-accent/30 text-accent' : 'bg-surface border-border text-muted hover:text-heading hover:border-border/80'}`}
             onClick={() => setGroupBy(g)}
           >
-            {g.charAt(0).toUpperCase() + g.slice(1)}
+            {g === 'loe' ? 'LOE' : g.charAt(0).toUpperCase() + g.slice(1)}
           </button>
         ))}
       </div>
