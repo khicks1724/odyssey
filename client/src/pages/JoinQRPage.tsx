@@ -113,7 +113,7 @@ export default function JoinQRPage() {
             <CheckCircle size={36} className="text-accent mx-auto" />
             <h2 className="font-sans text-lg font-bold text-heading">Request sent</h2>
             <p className="text-sm text-muted">
-              The owners of <span className="text-heading font-semibold">{state.projectName}</span> have been notified of your request.
+              The current members of <span className="text-heading font-semibold">{state.projectName}</span> have been notified of your request.
             </p>
             <Link
               to="/projects"

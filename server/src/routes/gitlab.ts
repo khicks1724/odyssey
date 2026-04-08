@@ -1,5 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { supabase } from '../lib/supabase.js';
+import { getInternalUserId, getUserFromAuthHeader, isInternalRequest, userHasProjectAccess } from '../lib/request-auth.js';
+import { getGitLabToken, storeGitLabToken } from '../lib/gitlab-token.js';
 
 interface GitLabIntegrationConfig {
   repoUrl?: string;
@@ -7,6 +9,9 @@ interface GitLabIntegrationConfig {
   repo?: string;
   repos?: string[];
   token?: string;
+  tokenEncrypted?: string;
+  tokenIv?: string;
+  tokenAuthTag?: string;
   host?: string;
 }
 
@@ -15,6 +20,16 @@ interface GitLabAccess {
   repoUrl: string;
   token: string;
   host: string;
+}
+
+interface GitLabTokenRow {
+  id: string;
+  project_id: string;
+  user_id: string;
+  host: string;
+  token_encrypted: string;
+  token_iv: string;
+  token_auth_tag: string;
 }
 
 function normalizeGitLabHost(host: string): string {
@@ -50,6 +65,15 @@ function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): stri
     }
   }
   return '';
+}
+
+function getGitLabRepoUrl(config: GitLabIntegrationConfig | null | undefined): string | null {
+  const repoUrl = config?.repoUrl?.trim();
+  if (repoUrl) return repoUrl;
+
+  const repoPath = getGitLabRepoPaths(config)[0];
+  const host = getGitLabHost(config);
+  return repoPath && host ? buildGitLabRepoUrl(host, repoPath) : null;
 }
 
 function parseGitLabRepoUrl(input: string): { host: string; repoPath: string; repoUrl: string } {
@@ -105,11 +129,40 @@ async function saveGitLabIntegration(projectId: string, config: GitLabIntegratio
   return error;
 }
 
+async function getGitLabTokenRow(projectId: string, userId: string): Promise<GitLabTokenRow | null> {
+  const { data, error } = await supabase
+    .from('user_project_gitlab_tokens')
+    .select('id, project_id, user_id, host, token_encrypted, token_iv, token_auth_tag')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) return null;
+  return (data as GitLabTokenRow | null) ?? null;
+}
+
+async function saveGitLabTokenForUser(projectId: string, userId: string, host: string, token: string): Promise<string | null> {
+  const encryptedConfig = storeGitLabToken({}, token) as GitLabIntegrationConfig;
+  const { error } = await supabase
+    .from('user_project_gitlab_tokens')
+    .upsert({
+      project_id: projectId,
+      user_id: userId,
+      host,
+      token_encrypted: encryptedConfig.tokenEncrypted,
+      token_iv: encryptedConfig.tokenIv,
+      token_auth_tag: encryptedConfig.tokenAuthTag,
+    });
+
+  return error?.message ?? null;
+}
+
 async function resolveGitLabAccess(input: {
   projectId?: string;
   repo?: string;
   tokenHeader?: string;
   hostHeader?: string;
+  userId?: string | null;
 }): Promise<GitLabAccess | null> {
   const requestedRepo = input.repo?.trim().replace(/^\/+|\/+$/g, '') ?? '';
 
@@ -117,8 +170,15 @@ async function resolveGitLabAccess(input: {
     const integration = await getGitLabIntegration(input.projectId.trim());
     const config = (integration?.config ?? null) as GitLabIntegrationConfig | null;
     const repoPath = requestedRepo || getGitLabRepoPath(config);
-    const token = config?.token?.trim() ?? '';
     const host = getGitLabHost(config);
+    const tokenRow = input.userId ? await getGitLabTokenRow(input.projectId.trim(), input.userId) : null;
+    const token = tokenRow
+      ? getGitLabToken({
+          tokenEncrypted: tokenRow.token_encrypted,
+          tokenIv: tokenRow.token_iv,
+          tokenAuthTag: tokenRow.token_auth_tag,
+        })
+      : getGitLabToken(config);
     if (!repoPath || !token || !host) return null;
     return {
       repoPath,
@@ -164,20 +224,44 @@ async function glGet(repoPath: string, path: string, token: string, host: string
 }
 
 async function requireProjectAccess(projectId: string, userId: string): Promise<boolean> {
-  const [{ data: project }, { data: membership }] = await Promise.all([
-    supabase.from('projects').select('owner_id').eq('id', projectId).maybeSingle(),
-    supabase.from('project_members').select('user_id').eq('project_id', projectId).eq('user_id', userId).maybeSingle(),
-  ]);
-  return project?.owner_id === userId || !!membership;
+  return userHasProjectAccess(projectId, userId);
+}
+
+async function authorizeGitLabProjectRequest(
+  authorization: string | undefined,
+  projectId: string | undefined,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  if (!projectId?.trim()) {
+    return { ok: false, status: 400, error: 'projectId is required' };
+  }
+
+  const userId = await getUserFromAuthHeader(authorization);
+  if (!userId) {
+    return { ok: false, status: 401, error: 'Unauthorized' };
+  }
+
+  const allowed = await requireProjectAccess(projectId, userId);
+  if (!allowed) {
+    return { ok: false, status: 403, error: 'Forbidden' };
+  }
+
+  return { ok: true };
 }
 
 export async function gitlabRoutes(server: FastifyInstance) {
   server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/recent', async (request, reply) => {
+    const internalUserId = isInternalRequest(request.headers) ? getInternalUserId(request.headers) : null;
+    if (!isInternalRequest(request.headers)) {
+      const accessCheck = await authorizeGitLabProjectRequest(request.headers.authorization, request.query.projectId);
+      if (!accessCheck.ok) return reply.status(accessCheck.status).send({ error: accessCheck.error });
+    }
+
     const access = await resolveGitLabAccess({
       projectId: request.query.projectId,
       repo: request.query.repo,
       tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
       hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+      userId: internalUserId ?? await getUserFromAuthHeader(request.headers.authorization),
     });
     if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
@@ -197,12 +281,70 @@ export async function gitlabRoutes(server: FastifyInstance) {
     return { commits, readme, host: access.host, repo: access.repoPath, repoUrl: access.repoUrl };
   });
 
-  server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/info', async (request, reply) => {
+  server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/commits', async (request, reply) => {
+    const internalUserId = isInternalRequest(request.headers) ? getInternalUserId(request.headers) : null;
+    if (!isInternalRequest(request.headers)) {
+      const accessCheck = await authorizeGitLabProjectRequest(request.headers.authorization, request.query.projectId);
+      if (!accessCheck.ok) return reply.status(accessCheck.status).send({ error: accessCheck.error });
+    }
+
     const access = await resolveGitLabAccess({
       projectId: request.query.projectId,
       repo: request.query.repo,
       tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
       hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+      userId: internalUserId ?? await getUserFromAuthHeader(request.headers.authorization),
+    });
+    if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
+
+    try {
+      const data = await glGet(access.repoPath, '/repository/commits?per_page=6&order_by=created_at&sort=desc', access.token, access.host) as Array<{ id: string; title: string }>;
+      return { commits: data };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
+  server.get<{ Querystring: { projectId?: string; repo?: string; sha?: string } }>('/gitlab/commit-diff', async (request, reply) => {
+    const internalUserId = isInternalRequest(request.headers) ? getInternalUserId(request.headers) : null;
+    if (!isInternalRequest(request.headers)) {
+      const accessCheck = await authorizeGitLabProjectRequest(request.headers.authorization, request.query.projectId);
+      if (!accessCheck.ok) return reply.status(accessCheck.status).send({ error: accessCheck.error });
+    }
+
+    const access = await resolveGitLabAccess({
+      projectId: request.query.projectId,
+      repo: request.query.repo,
+      tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
+      hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+      userId: internalUserId ?? await getUserFromAuthHeader(request.headers.authorization),
+    });
+    const sha = request.query.sha?.trim();
+    if (!access || !sha) return reply.status(400).send({ error: 'projectId, repo, and sha are required' });
+
+    try {
+      const data = await glGet(access.repoPath, `/repository/commits/${encodeURIComponent(sha)}/diff`, access.token, access.host);
+      return { diffs: data };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
+  server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/info', async (request, reply) => {
+    const internalUserId = isInternalRequest(request.headers) ? getInternalUserId(request.headers) : null;
+    if (!isInternalRequest(request.headers)) {
+      const accessCheck = await authorizeGitLabProjectRequest(request.headers.authorization, request.query.projectId);
+      if (!accessCheck.ok) return reply.status(accessCheck.status).send({ error: accessCheck.error });
+    }
+
+    const access = await resolveGitLabAccess({
+      projectId: request.query.projectId,
+      repo: request.query.repo,
+      tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
+      hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+      userId: internalUserId ?? await getUserFromAuthHeader(request.headers.authorization),
     });
     if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
@@ -235,11 +377,18 @@ export async function gitlabRoutes(server: FastifyInstance) {
   });
 
   server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/tree', async (request, reply) => {
+    const internalUserId = isInternalRequest(request.headers) ? getInternalUserId(request.headers) : null;
+    if (!isInternalRequest(request.headers)) {
+      const accessCheck = await authorizeGitLabProjectRequest(request.headers.authorization, request.query.projectId);
+      if (!accessCheck.ok) return reply.status(accessCheck.status).send({ error: accessCheck.error });
+    }
+
     const access = await resolveGitLabAccess({
       projectId: request.query.projectId,
       repo: request.query.repo,
       tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
       hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+      userId: internalUserId ?? await getUserFromAuthHeader(request.headers.authorization),
     });
     if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
@@ -285,6 +434,32 @@ export async function gitlabRoutes(server: FastifyInstance) {
     }
   });
 
+  server.get<{ Querystring: { projectId: string } }>('/gitlab/link', async (request, reply) => {
+    const authHeader = request.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
+    const { data: { user }, error: authErr } = await supabase.auth.getUser(authHeader.slice(7));
+    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const { projectId } = request.query;
+    if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+
+    const hasAccess = await requireProjectAccess(projectId, user.id);
+    if (!hasAccess) return reply.status(403).send({ error: 'Not a member of this project' });
+
+    const integration = await getGitLabIntegration(projectId);
+    const config = (integration?.config ?? null) as GitLabIntegrationConfig | null;
+    const tokenRow = await getGitLabTokenRow(projectId, user.id);
+    const repos = getGitLabRepoPaths(config);
+    const repoUrl = getGitLabRepoUrl(config);
+
+    return {
+      repos,
+      repoUrl,
+      host: getGitLabHost(config) || tokenRow?.host || null,
+      tokenSaved: Boolean(tokenRow || getGitLabToken(config)),
+    };
+  });
+
   server.post<{ Body: { projectId: string; repoUrl: string; token?: string } }>('/gitlab/link', async (request, reply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
@@ -306,7 +481,16 @@ export async function gitlabRoutes(server: FastifyInstance) {
 
     const existing = await getGitLabIntegration(projectId);
     const existingConfig = (existing?.config ?? null) as GitLabIntegrationConfig | null;
-    const effectiveToken = providedToken?.trim() || existingConfig?.token?.trim() || '';
+    const tokenRow = await getGitLabTokenRow(projectId, user.id);
+    const existingUserToken = tokenRow
+      ? getGitLabToken({
+          tokenEncrypted: tokenRow.token_encrypted,
+          tokenIv: tokenRow.token_iv,
+          tokenAuthTag: tokenRow.token_auth_tag,
+        })
+      : '';
+    const legacySharedToken = getGitLabToken(existingConfig);
+    const effectiveToken = providedToken?.trim() || existingUserToken || legacySharedToken || '';
     if (!effectiveToken) {
       return reply.status(422).send({ error: 'Personal access token is required the first time you connect a GitLab repo.' });
     }
@@ -319,16 +503,19 @@ export async function gitlabRoutes(server: FastifyInstance) {
 
     const existingRepos = getGitLabRepoPaths(existingConfig);
     const mergedRepos = [...new Set([...existingRepos, parsedRepo.repoPath])];
-    const configToSave: GitLabIntegrationConfig = {
+    const configToSave = {
       repoUrl: parsedRepo.repoUrl,
       repoPath: mergedRepos[0] ?? parsedRepo.repoPath,
       repos: mergedRepos,
       host: parsedRepo.host,
-      token: effectiveToken,
-    };
+    } satisfies GitLabIntegrationConfig;
 
     const dbErr = await saveGitLabIntegration(projectId, configToSave);
     if (dbErr) return reply.status(500).send({ error: dbErr.message });
+    if (providedToken?.trim() || (!tokenRow && legacySharedToken)) {
+      const tokenSaveError = await saveGitLabTokenForUser(projectId, user.id, parsedRepo.host, effectiveToken);
+      if (tokenSaveError) return reply.status(500).send({ error: tokenSaveError });
+    }
 
     return {
       linked: true,
@@ -336,15 +523,23 @@ export async function gitlabRoutes(server: FastifyInstance) {
       repoUrl: parsedRepo.repoUrl,
       repos: mergedRepos,
       host: parsedRepo.host,
+      tokenSaved: true,
     };
   });
 
   server.get<{ Querystring: { projectId?: string; repo?: string; path: string } }>('/gitlab/file', async (request, reply) => {
+    const internalUserId = isInternalRequest(request.headers) ? getInternalUserId(request.headers) : null;
+    if (!isInternalRequest(request.headers)) {
+      const accessCheck = await authorizeGitLabProjectRequest(request.headers.authorization, request.query.projectId);
+      if (!accessCheck.ok) return reply.status(accessCheck.status).send({ error: accessCheck.error });
+    }
+
     const access = await resolveGitLabAccess({
       projectId: request.query.projectId,
       repo: request.query.repo,
       tokenHeader: request.headers['x-gitlab-token'] as string | undefined,
       hostHeader: request.headers['x-gitlab-host'] as string | undefined,
+      userId: internalUserId ?? await getUserFromAuthHeader(request.headers.authorization),
     });
     const { path } = request.query;
     if (!access || !path) return reply.status(400).send({ error: 'projectId and path required for GitLab file access' });

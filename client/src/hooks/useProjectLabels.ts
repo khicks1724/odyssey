@@ -36,10 +36,10 @@ export function useProjectLabels(projectId: string | undefined) {
 
   useEffect(() => { fetch(); }, [fetch]);
 
-  const addLabel = async (type: 'category' | 'loe', name: string, color: string) => {
-    if (!projectId) return;
+  const addLabel = async (type: 'category' | 'loe', name: string, color: string): Promise<ProjectLabel | null> => {
+    if (!projectId) return null;
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed) return null;
     setError(null);
     const { data, error } = await supabase
       .from('project_labels')
@@ -51,9 +51,12 @@ export function useProjectLabels(projectId: string | undefined) {
       throw new Error(error.message);
     }
     if (data) {
-      setLabels((prev) => [...prev, data as ProjectLabel]);
+      const created = data as ProjectLabel;
+      setLabels((prev) => [...prev, created]);
       await fetch();
+      return created;
     }
+    return null;
   };
 
   const updateLabel = async (id: string, updates: Partial<Pick<ProjectLabel, 'name' | 'color'>>) => {

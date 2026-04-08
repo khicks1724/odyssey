@@ -2,6 +2,7 @@ import { Bell, CheckCheck, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useNotifications } from '../hooks/useNotifications';
+import type { NotificationItem } from '../types';
 
 export default function NotificationsPage() {
   const navigate = useNavigate();
@@ -14,6 +15,30 @@ export default function NotificationsPage() {
 
   const getJoinRequestStatus = (metadata: Record<string, unknown> | null) => {
     return typeof metadata?.status === 'string' ? metadata.status : null;
+  };
+
+  const getTaskOpenState = (notification: NotificationItem) => {
+    if (notification.kind !== 'task_assigned') return null;
+    const goalId = typeof notification.metadata?.goal_id === 'string' ? notification.metadata.goal_id : null;
+    if (!goalId || !notification.project_id) return null;
+    return {
+      pathname: `/projects/${notification.project_id}`,
+      state: { openTab: 'goals' as const, editGoalId: goalId },
+    };
+  };
+
+  const handleOpenNotification = async (notification: NotificationItem) => {
+    if (!notification.read_at) await markRead(notification.id);
+
+    const taskOpenState = getTaskOpenState(notification);
+    if (taskOpenState) {
+      navigate(taskOpenState.pathname, { state: taskOpenState.state });
+      return;
+    }
+
+    if (!notification.link) return;
+    if (notification.link.startsWith('/')) navigate(notification.link);
+    else window.location.href = notification.link;
   };
 
   return (
@@ -132,11 +157,7 @@ export default function NotificationsPage() {
                           {notificationLink && (
                             <button
                               type="button"
-                              onClick={async () => {
-                                if (!notification.read_at) await markRead(notification.id);
-                                if (notificationLink.startsWith('/')) navigate(notificationLink);
-                                else window.location.href = notificationLink;
-                              }}
+                              onClick={() => void handleOpenNotification(notification)}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded"
                             >
                               Open

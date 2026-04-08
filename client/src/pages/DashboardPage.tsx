@@ -10,9 +10,10 @@ import {
   CheckCircle,
   Circle,
   GitCommitHorizontal,
+  RefreshCw,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { useDashboardStats, useUpcomingDeadlines, useActivityByDate, useLatestInsight, useRecentCommits, useDashboardHoverDetails } from '../hooks/useDashboard';
+import { useDashboardStats, useActivityByDate, useLatestInsight, useRecentCommits, useDashboardHoverDetails, useMyAssignedTasks, useDashboardAISummary } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
 import { getSortMode, sortProjects } from '../lib/project-sort';
 import ContributionGraph from '../components/ContributionGraph';
@@ -34,6 +35,13 @@ const statusColors: Record<string, string> = {
 const statusIcons: Record<string, typeof Circle> = {
   at_risk: AlertTriangle,
   complete: CheckCircle,
+};
+
+const STATUS_LABELS: Record<string, string> = {
+  not_started: 'Not Started',
+  in_progress: 'In Progress',
+  in_review: 'In Review',
+  complete: 'Complete',
 };
 
 function StatHoverCard({
@@ -61,9 +69,7 @@ function StatHoverCard({
     >
       <div className="flex items-center gap-2 mb-3">
         <Icon size={14} className={color} />
-        <span className="text-[10px] tracking-[0.2em] uppercase text-muted">
-          {label}
-        </span>
+        <span className="text-[10px] tracking-[0.2em] uppercase text-muted">{label}</span>
       </div>
       <div className="font-sans text-2xl font-bold text-heading">{value}</div>
 
@@ -81,11 +87,12 @@ export default function DashboardPage() {
   const { projects: rawProjects } = useProjects();
   const projects = sortProjects(rawProjects, getSortMode());
   const [projectMemberCounts, setProjectMemberCounts] = useState<Record<string, number>>({});
-  const { deadlines, loading: deadlinesLoading } = useUpcomingDeadlines();
   const { data: activityData, loading: activityLoading } = useActivityByDate();
   const { insight, loading: insightLoading } = useLatestInsight();
   const { commits: recentCommits, loading: commitsLoading } = useRecentCommits();
   const { tasks: hoverTasks, events: hoverEvents, breakdown, loading: hoverLoading } = useDashboardHoverDetails();
+  const { tasks: myTasks, loading: myTasksLoading } = useMyAssignedTasks();
+  const { summary: aiSummary, loading: aiSummaryLoading, error: aiSummaryError, generate: generateAISummary } = useDashboardAISummary();
 
   // Repo context for the insight's project
   const [insightGitlabRepos, setInsightGitlabRepos] = useState<string[]>([]);
@@ -111,22 +118,13 @@ export default function DashboardPage() {
       .eq('type', 'gitlab')
       .maybeSingle()
       .then(({ data }) => {
-        if (data?.config) {
-          const cfg = data.config as GitLabIntegrationConfig;
-          setInsightGitlabRepos(getGitLabRepoPaths(cfg));
-        } else {
-          setInsightGitlabRepos([]);
-        }
+        setInsightGitlabRepos(data?.config ? getGitLabRepoPaths(data.config as GitLabIntegrationConfig) : []);
       });
   }, [insight?.project_id]);
 
   useEffect(() => {
     const projectIds = projects.map((p) => p.id);
-    if (projectIds.length === 0) {
-      setProjectMemberCounts({});
-      return;
-    }
-
+    if (projectIds.length === 0) { setProjectMemberCounts({}); return; }
     supabase
       .from('project_members')
       .select('project_id')
@@ -134,8 +132,8 @@ export default function DashboardPage() {
       .then(({ data, error }) => {
         if (error || !data) return;
         const counts = data.reduce<Record<string, number>>((acc, row) => {
-          const projectId = row.project_id as string;
-          acc[projectId] = (acc[projectId] ?? 0) + 1;
+          const pid = row.project_id as string;
+          acc[pid] = (acc[pid] ?? 0) + 1;
           return acc;
         }, {});
         setProjectMemberCounts(counts);
@@ -160,8 +158,6 @@ export default function DashboardPage() {
     }
   };
 
-  // Empty file map — dashboard has no local file preview
-
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
     { label: 'Tasks Tracked', value: statsLoading ? '…' : String(stats.goalsTracked), icon: Target, color: 'text-accent2' },
@@ -173,16 +169,40 @@ export default function DashboardPage() {
     <div className="p-8 max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-10">
-        <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">
-          Dashboard
-        </p>
-        <h1 className="font-sans text-3xl font-extrabold text-heading tracking-tight">
-          At A Glance
-        </h1>
-        <p className="text-sm text-muted mt-1">
-          Everything you are working on, in one place.
-        </p>
+        <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">Dashboard</p>
+        <h1 className="font-sans text-3xl font-extrabold text-heading tracking-tight">At A Glance</h1>
+        <p className="text-sm text-muted mt-1">Everything you are working on, in one place.</p>
       </div>
+
+      {projects.length === 0 && (
+        <div className="border border-accent/20 bg-accent/5 p-6 mb-10">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <p className="text-[10px] tracking-[0.18em] uppercase text-accent font-mono mb-2">Getting Started</p>
+              <h2 className="font-sans text-lg font-bold text-heading">This account does not have any projects yet.</h2>
+              <p className="text-sm text-muted mt-2 max-w-2xl">
+                Create your first project or join an existing one to unlock the rest of the workspace views.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Link
+                to="/projects/new"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded-md"
+              >
+                <FolderKanban size={13} />
+                New Project
+              </Link>
+              <Link
+                to="/projects"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-border text-muted text-xs font-semibold tracking-wider uppercase hover:bg-surface2 hover:text-heading transition-colors rounded-md"
+              >
+                <Activity size={13} />
+                Open Projects
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border mb-10">
@@ -196,23 +216,13 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2">
               {projects.slice(0, 6).map((project) => (
-                <Link
-                  key={project.id}
-                  to={`/projects/${project.id}`}
-                  className="block w-full border border-border/70 bg-surface2/60 rounded-md px-3 py-2.5 hover:bg-surface2 transition-colors"
-                >
+                <Link key={project.id} to={`/projects/${project.id}`}
+                  className="block w-full border border-border bg-surface2/60 rounded-md px-3 py-2.5 hover:bg-surface2 transition-colors">
                   <div className="flex items-start justify-between gap-3">
                     <p className="min-w-0 text-xs text-heading font-sans font-semibold leading-snug truncate hover:text-accent">{project.name}</p>
-                    <span className="shrink-0 text-[9px] font-mono text-muted">
-                      {projectMemberCounts[project.id] ?? 1}
-                    </span>
+                    <span className="shrink-0 text-[9px] font-mono text-muted">{projectMemberCounts[project.id] ?? 1}</span>
                   </div>
-                  {project.description && (
-                    <p className="text-[10px] text-muted mt-1.5 line-clamp-2 leading-relaxed">{project.description}</p>
-                  )}
-                  <p className="text-[9px] text-muted/75 font-mono mt-2">
-                    {new Date(project.created_at).toLocaleDateString()}
-                  </p>
+                  {project.description && <p className="text-[10px] text-muted mt-1.5 line-clamp-2 leading-relaxed">{project.description}</p>}
                 </Link>
               ))}
             </div>
@@ -231,22 +241,16 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2">
               {hoverTasks.slice(0, 5).map((task) => (
-                <Link
-                  key={task.id}
-                  to={`/projects/${task.projectId}`}
-                  state={{ openTab: 'goals', editGoalId: task.id }}
-                  className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors"
-                >
+                <Link key={task.id} to={`/projects/${task.projectId}`} state={{ openTab: 'goals', editGoalId: task.id }}
+                  className="block w-full border border-border bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-xs text-heading font-sans font-semibold leading-snug">{task.title}</p>
                     <span className="text-[10px] font-mono text-muted shrink-0">{task.progress}%</span>
                   </div>
-                  <p className="text-[10px] text-muted mt-1 truncate">
-                    {task.assignees.length ? task.assignees.join(', ') : 'Unassigned'} · {task.projectName}
-                  </p>
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                    {task.category && <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{task.category}</span>}
-                    {task.loe && <span className="text-[9px] px-1.5 py-0.5 border border-accent2/30 rounded text-accent2 font-mono uppercase">{task.loe}</span>}
+                  <p className="text-[10px] text-muted mt-1 truncate">{task.projectName}</p>
+                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    {task.category && <span className="text-[9px] px-1.5 py-0.5 border border-white/20 bg-white/5 rounded text-muted font-mono uppercase">{task.category}</span>}
+                    {task.loe && <span className="text-[9px] px-1.5 py-0.5 border border-accent2/50 bg-accent2/10 rounded text-accent2 font-mono uppercase">{task.loe}</span>}
                   </div>
                 </Link>
               ))}
@@ -266,13 +270,13 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2">
               {hoverEvents.slice(0, 5).map((event) => (
-                <Link key={event.id} to={`/projects/${event.projectId}`} state={{ openTab: 'activity' }} className="w-full text-left border border-border/70 bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors">
+                <Link key={event.id} to={`/projects/${event.projectId}`} state={{ openTab: 'activity' }}
+                  className="block w-full border border-border bg-surface2/60 rounded px-3 py-2 hover:bg-surface2 transition-colors">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-xs text-heading font-sans font-semibold leading-snug">{event.title}</p>
                     <span className="text-[9px] font-mono text-muted shrink-0">{new Date(event.occurredAt).toLocaleDateString()}</span>
                   </div>
-                  <p className="text-[10px] text-muted mt-1 truncate">{event.projectName} · {event.source}/{event.eventType}</p>
-                  {event.summary && <p className="text-[10px] text-muted/80 mt-1 line-clamp-2">{event.summary}</p>}
+                  <p className="text-[10px] text-muted mt-1 truncate">{event.projectName}</p>
                 </Link>
               ))}
             </div>
@@ -294,194 +298,177 @@ export default function DashboardPage() {
               <p className="text-lg font-sans font-bold text-accent">{breakdown.needsAttention}</p>
             </div>
           </div>
-          <p className="text-[11px] text-muted leading-relaxed mb-3">
-            {breakdown.total > 0
-              ? `${breakdown.onTrack} of ${breakdown.total} tracked tasks are marked active or complete, with an average progress of ${breakdown.avgProgress}%.`
-              : 'No tracked tasks yet, so the on-track rate is not calculated.'}
-          </p>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] text-muted font-mono">Complete {breakdown.complete}</span>
             <span className="text-[10px] text-muted font-mono">In Progress {breakdown.inProgress}</span>
             <span className="text-[10px] text-muted font-mono">Not Started {breakdown.notStarted}</span>
           </div>
-          {breakdown.topCategories.length > 0 && (
-            <p className="text-[10px] text-muted mt-2">
-              Heaviest areas: {breakdown.topCategories.map((cat) => `${cat.name} (${cat.count})`).join(', ')}.
-            </p>
-          )}
         </StatHoverCard>
+      </div>
+
+      {/* ── My Assigned Tasks ─────────────────────────────────────── */}
+      <div className="border border-border bg-surface p-6 mb-px">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Target size={14} className="text-accent2" />
+            <h2 className="font-sans text-base font-bold text-heading">My Tasks</h2>
+            {!myTasksLoading && (
+              <span className="text-[10px] text-muted font-mono bg-surface2 px-1.5 py-0.5 rounded">{myTasks.length}</span>
+            )}
+          </div>
+        </div>
+
+        {myTasksLoading ? (
+          <div className="flex gap-3 overflow-hidden">
+            {[1,2,3,4].map((i) => <div key={i} className="h-24 w-64 shrink-0 bg-border/40 rounded animate-pulse" />)}
+          </div>
+        ) : myTasks.length === 0 ? (
+          <div className="py-6 text-center">
+            <p className="text-xs text-muted tracking-wide">No tasks assigned to you. Tasks assigned to you across all projects appear here.</p>
+          </div>
+        ) : (
+          <div className="flex gap-px overflow-x-auto pb-1 bg-border border border-border" style={{ scrollbarWidth: 'thin' }}>
+            {myTasks.map((task) => {
+              const daysLeft = task.deadline
+                ? Math.ceil((new Date(task.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+                : null;
+              const overdue = daysLeft !== null && daysLeft < 0;
+              const urgent = daysLeft !== null && !overdue && daysLeft <= 3;
+              const StatusIcon = statusIcons[task.status] ?? Circle;
+              return (
+                <Link
+                  key={task.id}
+                  to={`/projects/${task.projectId}`}
+                  state={{ openTab: 'goals', editGoalId: task.id }}
+                  className="bg-surface hover:bg-surface2 transition-colors shrink-0 w-60 px-4 py-3 flex flex-col gap-2 group"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <StatusIcon size={11} className={`${statusColors[task.status] ?? 'text-muted'} shrink-0 mt-0.5`} />
+                    {daysLeft !== null && (
+                      <span className={`text-[9px] font-mono shrink-0 ${overdue ? 'text-accent' : urgent ? 'text-accent' : 'text-muted'}`}>
+                        {overdue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Due today' : `${daysLeft}d left`}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-heading font-semibold leading-snug line-clamp-2 group-hover:text-accent transition-colors">{task.title}</p>
+                  <p className="text-[10px] text-muted truncate">{task.projectName}</p>
+                  {/* Progress bar */}
+                  <div className="w-full h-1 bg-border rounded-full overflow-hidden">
+                    <div className="h-full bg-accent2 rounded-full" style={{ width: `${task.progress}%` }} />
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {task.category && (
+                      <span className="text-[9px] px-1.5 py-0.5 border border-white/20 bg-white/5 rounded text-muted font-mono uppercase">{task.category}</span>
+                    )}
+                    {task.loe && (
+                      <span className="text-[9px] px-1.5 py-0.5 border border-accent2/50 bg-accent2/10 rounded text-accent2 font-mono uppercase">{task.loe}</span>
+                    )}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── AI Summary ────────────────────────────────────────────── */}
+      <div className="border border-border border-t-0 bg-surface p-6 mb-px">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className="text-accent" />
+            <h2 className="font-sans text-base font-bold text-heading">AI Summary</h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => void generateAISummary()}
+            disabled={aiSummaryLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-50"
+          >
+            <RefreshCw size={10} className={aiSummaryLoading ? 'animate-spin' : ''} />
+            {aiSummaryLoading ? 'Generating…' : aiSummary ? 'Regenerate' : 'Generate'}
+          </button>
+        </div>
+        {aiSummaryError && <p className="text-xs text-accent font-mono mb-2">{aiSummaryError}</p>}
+        {aiSummary ? (
+          <div>
+            <p className="text-sm text-heading leading-relaxed">{aiSummary.summary}</p>
+            <p className="text-[9px] text-muted/50 font-mono mt-3">
+              Generated {new Date(aiSummary.generatedAt).toLocaleString()}
+            </p>
+          </div>
+        ) : !aiSummaryLoading && (
+          <p className="text-xs text-muted">Click Generate for a personalized summary of your projects and tasks.</p>
+        )}
+      </div>
+
+      {/* ── Recent Activity + Commits ─────────────────────────────── */}
+      <div className="border border-border border-t-0 bg-surface p-6 mb-px">
+        <div className="flex items-center gap-2 mb-6">
+          <Clock size={14} className="text-accent" />
+          <h2 className="font-sans text-base font-bold text-heading">Recent Activity</h2>
+        </div>
+        <div className="pr-6 min-h-[164px]">
+          {activityLoading ? (
+            <div className="animate-pulse">
+              <div className="h-3 w-40 rounded bg-border/50 mb-4" />
+              <div className="h-28 rounded-md bg-border/45" />
+            </div>
+          ) : (
+            <ContributionGraph data={activityData} />
+          )}
+        </div>
+
+        {/* Recent commits feed */}
+        <div className="mt-6">
+          <div className="flex items-center gap-2 mb-3">
+            <GitCommitHorizontal size={12} className="text-muted" />
+            <span className="text-[10px] tracking-[0.2em] uppercase text-muted">Recent Commits</span>
+          </div>
+          {commitsLoading ? (
+            <div className="space-y-2">
+              {[1,2,3].map((i) => <div key={i} className="h-8 bg-border/40 rounded animate-pulse" />)}
+            </div>
+          ) : recentCommits.length === 0 ? (
+            <p className="text-xs text-muted/60 py-2">No commits found. Connect a GitHub or GitLab repo in project settings.</p>
+          ) : (
+            <div className="space-y-px">
+              {recentCommits.slice(0, 12).map((c, i) => {
+                const ms = Date.now() - new Date(c.date).getTime();
+                const h = Math.floor(ms / 3600000);
+                const d = Math.floor(h / 24);
+                const ago = d > 0 ? `${d}d ago` : h > 0 ? `${h}h ago` : 'just now';
+                return (
+                  <div key={i} className="flex items-center gap-3 py-1.5 border-b border-border/50 last:border-0">
+                    <span className="font-mono text-[9px] text-accent/70 shrink-0 w-12">{c.sha}</span>
+                    <span className="text-[11px] text-heading truncate flex-1">{c.message}</span>
+                    <span className="text-[10px] text-muted/70 shrink-0 truncate max-w-[90px] hidden sm:block">{c.repo}</span>
+                    <span className="text-[10px] text-muted shrink-0 truncate max-w-[70px] hidden md:block">{c.author}</span>
+                    <span className="text-[9px] font-mono text-muted/60 shrink-0">{ago}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Quick Project Access */}
       {projects.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-border border border-border mb-10">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-border border border-border border-t-0">
           {projects.slice(0, 4).map((p) => (
-            <Link
-              key={p.id}
-              to={`/projects/${p.id}`}
-              className="bg-surface p-4 hover:bg-surface2 transition-colors group"
-            >
+            <Link key={p.id} to={`/projects/${p.id}`}
+              className="bg-surface p-4 hover:bg-surface2 transition-colors group">
               <div className="flex items-center gap-2">
                 <FolderKanban size={12} className="text-accent" />
-                <span className="text-xs text-heading font-sans font-semibold truncate group-hover:text-accent transition-colors">
-                  {p.name}
-                </span>
+                <span className="text-xs text-heading font-sans font-semibold truncate group-hover:text-accent transition-colors">{p.name}</span>
               </div>
               <div className="mt-2 pl-5">
-                <p className="text-[10px] text-muted font-mono">
-                  Created {new Date(p.created_at).toLocaleDateString()}
-                </p>
-                <p className="text-[10px] text-muted font-mono">
-                  {projectMemberCounts[p.id] ?? 1} member{(projectMemberCounts[p.id] ?? 1) === 1 ? '' : 's'}
-                </p>
+                <p className="text-[10px] text-muted font-mono">{projectMemberCounts[p.id] ?? 1} member{(projectMemberCounts[p.id] ?? 1) === 1 ? '' : 's'}</p>
               </div>
             </Link>
           ))}
         </div>
       )}
-
-      {/* Recent Activity + AI Panel */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-px bg-border border border-border mb-px">
-        {/* Contribution heatmap + recent commits */}
-        <div className="lg:col-span-2 bg-surface p-6 overflow-hidden">
-          <div className="flex items-center gap-2 mb-6">
-            <Clock size={14} className="text-accent" />
-            <h2 className="font-sans text-base font-bold text-heading">Recent Activity</h2>
-          </div>
-          <div className="pr-6 min-h-[164px]">
-            {activityLoading ? (
-              <div className="animate-pulse">
-                <div className="h-3 w-40 rounded bg-border/50 mb-4" />
-                <div className="flex items-start gap-2">
-                  <div className="w-8 space-y-2 pt-5">
-                    <div className="h-2 rounded bg-border/40" />
-                    <div className="h-2 rounded bg-border/40" />
-                    <div className="h-2 rounded bg-border/40" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="h-28 rounded-md bg-border/45" />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <ContributionGraph data={activityData} />
-            )}
-          </div>
-
-          {/* Recent commits feed */}
-          <div className="mt-6">
-            <div className="flex items-center gap-2 mb-3">
-              <GitCommitHorizontal size={12} className="text-muted" />
-              <span className="text-[10px] tracking-[0.2em] uppercase text-muted">Recent Commits</span>
-            </div>
-            {commitsLoading ? (
-              <div className="space-y-2">
-                {[1, 2, 3].map((i) => <div key={i} className="h-8 bg-border/40 rounded animate-pulse" />)}
-              </div>
-            ) : recentCommits.length === 0 ? (
-              <p className="text-xs text-muted/60 py-2">No commits found. Connect a GitHub or GitLab repo in project settings.</p>
-            ) : (
-              <div className="space-y-px">
-                {recentCommits.slice(0, 12).map((c, i) => {
-                  const ago = (() => {
-                    const ms = Date.now() - new Date(c.date).getTime();
-                    const h = Math.floor(ms / 3600000);
-                    const d = Math.floor(h / 24);
-                    if (d > 0) return `${d}d ago`;
-                    if (h > 0) return `${h}h ago`;
-                    return 'just now';
-                  })();
-                  return (
-                    <div key={i} className="flex items-center gap-3 py-1.5 border-b border-border/50 last:border-0 group">
-                      <span className="font-mono text-[9px] text-accent/70 shrink-0 w-12">{c.sha}</span>
-                      <span className="text-[11px] text-heading truncate flex-1">{c.message}</span>
-                      <span className="text-[10px] text-muted/70 shrink-0 truncate max-w-[90px] hidden sm:block">{c.repo}</span>
-                      <span className="text-[10px] text-muted shrink-0 truncate max-w-[70px] hidden md:block">{c.author}</span>
-                      <span className="text-[9px] font-mono text-muted/60 shrink-0">{ago}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* AI Summary */}
-        <div className="bg-surface p-6 border-l border-border overflow-hidden min-w-0">
-          <div className="flex items-center gap-2 mb-6">
-            <Sparkles size={14} className="text-accent" />
-            <h2 className="font-sans text-base font-bold text-heading">AI Summary</h2>
-          </div>
-
-          {insightLoading ? (
-            <div className="space-y-2">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-3 bg-border/50 rounded animate-pulse" />
-              ))}
-            </div>
-          ) : insight ? (
-            <div className="space-y-4">
-              {/* Project label */}
-              <Link
-                to={`/projects/${insight.project_id}`}
-                className="text-[10px] tracking-widest uppercase text-accent hover:underline font-mono"
-              >
-                {insight.project_name}
-              </Link>
-
-              {/* Status */}
-              <div className="text-xs text-heading leading-relaxed break-words min-w-0">
-                <MarkdownWithFileLinks
-                  block
-                  filePaths={insightFilePaths}
-                  onFileClick={handleFileClick}
-                  githubRepo={getGitHubRepos(insightProject)}
-                  gitlabRepos={insightGitlabRepos}
-                  onRepoClick={handleRepoClick}
-                >
-                  {insight.status}
-                </MarkdownWithFileLinks>
-              </div>
-
-              {/* Next Steps */}
-              {insight.next_steps.length > 0 && (
-                <div>
-                  <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1.5">Next Steps</p>
-                  <ul className="space-y-1">
-                    {insight.next_steps.slice(0, 3).map((step, i) => (
-                      <li key={i} className="flex items-start gap-1.5 min-w-0">
-                        <span className="text-accent2 mt-0.5 shrink-0">›</span>
-                        <span className="text-[11px] text-muted leading-snug break-words min-w-0">
-                          <MarkdownWithFileLinks
-                            filePaths={insightFilePaths}
-                            onFileClick={handleFileClick}
-                            githubRepo={getGitHubRepos(insightProject)}
-                            gitlabRepos={insightGitlabRepos}
-                            onRepoClick={handleRepoClick}
-                          >
-                            {step}
-                          </MarkdownWithFileLinks>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Generated at + provider */}
-              <p className="text-[9px] text-muted/50 font-mono pt-1">
-                {new Date(insight.generated_at).toLocaleDateString()} · {insight.provider}
-              </p>
-            </div>
-          ) : (
-            <div className="py-8 text-center">
-              <p className="text-xs text-muted tracking-wide">
-                Open a project and click "Generate" in the AI Insights panel for analysis.
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
 
       {repoTreeTarget && (
         <RepoTreeModal
@@ -491,7 +478,6 @@ export default function DashboardPage() {
           onClose={() => setRepoTreeTarget(null)}
         />
       )}
-
       {previewFileRef && (
         <FilePreviewModal
           fileRef={previewFileRef}
@@ -501,75 +487,6 @@ export default function DashboardPage() {
           onClose={() => setPreviewFileRef(null)}
         />
       )}
-
-      {/* Upcoming Deadlines */}
-      <div className="border border-border bg-surface p-6">
-        <div className="flex items-center gap-2 mb-6">
-          <Target size={14} className="text-accent2" />
-          <h2 className="font-sans text-base font-bold text-heading">Upcoming Deadlines</h2>
-        </div>
-
-        {deadlinesLoading ? (
-          <div className="space-y-2">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-10 bg-border/40 rounded animate-pulse" />
-            ))}
-          </div>
-        ) : deadlines.length === 0 ? (
-          <div className="py-8 text-center">
-            <p className="text-xs text-muted tracking-wide">
-              No upcoming deadlines in the next 3 weeks. Add task deadlines in your projects.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-px border border-border bg-border">
-            {deadlines.map((d) => {
-              const daysLeft = Math.ceil(
-                (new Date(d.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
-              );
-              const overdue = daysLeft < 0;
-              const urgent = !overdue && daysLeft <= 3;
-              const StatusIcon = statusIcons[d.status] ?? Circle;
-              return (
-                <Link
-                  key={d.id}
-                  to={`/projects/${d.project_id}`}
-                  className="flex items-center gap-3 bg-surface px-4 py-3 hover:bg-surface2 transition-colors group"
-                >
-                  <StatusIcon
-                    size={13}
-                    className={statusColors[d.status] ?? 'text-muted'}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-heading font-sans font-semibold truncate">
-                      {d.title}
-                    </p>
-                    <p className="text-[10px] text-muted truncate">{d.projectName}</p>
-                  </div>
-                  {/* Progress bar */}
-                  <div className="w-16 h-1.5 bg-border rounded-full overflow-hidden shrink-0">
-                    <div
-                      className="h-full bg-accent2 rounded-full"
-                      style={{ width: `${d.progress}%` }}
-                    />
-                  </div>
-                  <span
-                    className={`text-[10px] font-mono shrink-0 ${
-                      overdue ? 'text-danger' : urgent ? 'text-accent' : 'text-muted'
-                    }`}
-                  >
-                    {overdue
-                      ? `${Math.abs(daysLeft)}d overdue`
-                      : daysLeft === 0
-                      ? 'Due today'
-                      : `${daysLeft}d left`}
-                  </span>
-                </Link>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

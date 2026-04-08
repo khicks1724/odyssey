@@ -21,20 +21,20 @@ import {
   Download,
   Table,
   Copy,
-  Lock,
   LogOut,
   FileText,
   Check,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import LabelColorPicker from '../LabelColorPicker';
+import UserAvatar from '../UserAvatar';
 import { generateProjectCode, sanitizeProjectCode, PROJECT_CODE_LENGTH } from '../../lib/project-code';
 import { getProjectFingerprint } from '../../lib/project-fingerprint';
 import { DEFAULT_PROMPTS } from '../../lib/defaultPrompts';
 import { PROMPT_LABELS, type PromptFeature } from '../../hooks/useProjectPrompts';
-import { getGitLabRepoPaths, getGitLabRepoUrl, type GitLabIntegrationConfig } from '../../lib/gitlab';
 import { getGitHubRepos } from '../../lib/github';
 import { toAbsoluteAppUrl, withBasePath } from '../../lib/base-path';
+import { formatMemberRole } from '../../lib/member-role';
 import { supabase } from '../../lib/supabase';
 import type { OdysseyEvent } from '../../types';
 
@@ -45,18 +45,39 @@ interface MemberRow {
   profile?: { display_name: string | null; avatar_url: string | null; email?: string | null };
 }
 
-interface GitHubUser {
-  login: string;
-  avatar_url: string;
-  html_url: string;
-  github_id: number;
-}
-
 interface JoinRequest {
   id: string;
   user_id: string;
   created_at: string;
   profile?: { display_name: string | null; avatar_url: string | null } | null;
+}
+
+interface SharedInviteCandidate {
+  id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  project_id: string | null;
+  project_name: string | null;
+}
+
+const REPORT_TEMPLATE_CHUNK_BYTES = 256 * 1024;
+
+async function readTemplateUploadError(res: Response, fallback: string): Promise<string> {
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    const payload = await res.json().catch(() => ({ error: '' })) as { error?: string };
+    return payload.error?.trim() || fallback;
+  }
+
+  const text = await res.text().catch(() => '');
+  const normalized = text
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return fallback;
+  if (/<html|<!doctype html|request entity too large/i.test(text)) return fallback;
+  return normalized.slice(0, 220);
 }
 
 // ── GitLab repo section ───────────────────────────────────────────────────────
@@ -71,24 +92,31 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle()
-      .then(({ data }) => {
-        if (data?.config) {
-          const cfg = data.config as GitLabIntegrationConfig;
-          setLinkedRepos(getGitLabRepoPaths(cfg));
-          const repoUrl = getGitLabRepoUrl(cfg);
-          if (repoUrl) {
-            try {
-              setLinkedHost(new URL(repoUrl).origin);
-            } catch {
-              setLinkedHost(cfg.host ?? null);
-            }
-          } else {
-            setLinkedHost(cfg.host ?? null);
-          }
-          setSavedToken(!!cfg.token);
-        }
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session) return;
+      const res = await fetch(`/api/gitlab/link?projectId=${encodeURIComponent(projectId)}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
       });
+      if (!res.ok) return;
+      const data = await res.json() as {
+        repos?: string[];
+        repoUrl?: string | null;
+        host?: string | null;
+        tokenSaved?: boolean;
+      };
+      const repos = data.repos ?? [];
+      setLinkedRepos(repos);
+      if (data.repoUrl) {
+        try {
+          setLinkedHost(new URL(data.repoUrl).origin);
+        } catch {
+          setLinkedHost(data.host ?? null);
+        }
+      } else {
+        setLinkedHost(data.host ?? null);
+      }
+      setSavedToken(Boolean(data.tokenSaved));
+    });
   }, [projectId]);
 
   const handleLink = async () => {
@@ -157,8 +185,8 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
         {linkedRepos.length > 0 && (
           <span className="text-[9px] px-1.5 py-0.5 bg-[#FC6D26]/10 text-[#FC6D26] rounded font-mono">connected</span>
         )}
-        {savedToken && (
-          <span className="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-400 rounded font-mono">token saved</span>
+      {savedToken && (
+          <span className="text-[9px] px-1.5 py-0.5 bg-green-500/10 text-green-400 rounded font-mono">your token saved</span>
         )}
       </div>
 
@@ -210,7 +238,7 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
               }
             </button>
           </div>
-          <p className="text-[10px] text-muted mt-1">Create at GitLab → Settings → Access Tokens. Needs <span className="font-mono">read_repository</span> scope.</p>
+          <p className="text-[10px] text-muted mt-1">Create at GitLab → Settings → Access Tokens. Needs <span className="font-mono">read_repository</span> scope. The token is saved only for your Odyssey account.</p>
         </div>
 
         {/* Repo URL */}
@@ -429,6 +457,7 @@ export interface SettingsTabProps {
   project: {
     id: string;
     name: string;
+    owner_id: string;
     description?: string | null;
     github_repo?: string | null;
     github_repos?: string[] | null;
@@ -446,14 +475,13 @@ export interface SettingsTabProps {
   refetchJoinRequests: () => void;
   inviteRole: 'member' | 'owner';
   setInviteRole: React.Dispatch<React.SetStateAction<'member' | 'owner'>>;
-  inviteTab: 'github' | 'email' | 'qr';
-  setInviteTab: React.Dispatch<React.SetStateAction<'github' | 'email' | 'qr'>>;
+  inviteTab: 'username' | 'nps_email' | 'shared' | 'qr';
+  setInviteTab: React.Dispatch<React.SetStateAction<'username' | 'nps_email' | 'shared' | 'qr'>>;
   memberSearch: string;
   setMemberSearch: React.Dispatch<React.SetStateAction<string>>;
-  memberResults: GitHubUser[];
   memberSearching: boolean;
-  inviting: string | null;
-  copySuccess: boolean;
+  sharedInviteCandidates: SharedInviteCandidate[];
+  sharedInviteLoading: boolean;
   repoInput: string;
   setRepoInput: React.Dispatch<React.SetStateAction<string>>;
   repoSaving: boolean;
@@ -471,12 +499,6 @@ export interface SettingsTabProps {
   setAuditPage: React.Dispatch<React.SetStateAction<number>>;
   AUDIT_PAGE_SIZE: number;
   imageUploading: boolean;
-  newLabelName: string;
-  setNewLabelName: React.Dispatch<React.SetStateAction<string>>;
-  newLabelColor: string;
-  setNewLabelColor: React.Dispatch<React.SetStateAction<string>>;
-  newLabelType: 'category' | 'loe';
-  setNewLabelType: React.Dispatch<React.SetStateAction<'category' | 'loe'>>;
   projectLabels: { id: string; name: string; color: string; type: 'category' | 'loe' }[];
   editPromptFeature: PromptFeature | null;
   setEditPromptFeature: React.Dispatch<React.SetStateAction<PromptFeature | null>>;
@@ -492,16 +514,16 @@ export interface SettingsTabProps {
   updateProject: (updates: Record<string, unknown>) => Promise<unknown>;
   updateGoal: (id: string, updates: Record<string, unknown>) => Promise<unknown>;
   createGoal: (data: { title: string }) => Promise<unknown>;
-  handleCopyInviteCode: () => void;
   handleSaveRepo: () => void;
   handleRepoScan: () => void;
   scanLoading: boolean;
-  handleMemberSearch: () => void;
-  handleInviteMember: (ghUser: GitHubUser) => void;
+  handleInviteByIdentifier: () => Promise<void>;
+  handleInviteSharedCollaborator: (userId: string) => Promise<void>;
   handleRemoveMember: (userId: string) => void;
+  handlePromoteMember: (userId: string) => void;
   handleImageUpload: (file: File, inputEl?: HTMLInputElement | null) => void;
   handleExportAuditCSV: () => void;
-  addLabel: (type: 'category' | 'loe', name: string, color: string) => Promise<void>;
+  addLabel: (type: 'category' | 'loe', name: string, color: string) => Promise<unknown>;
   deleteLabel: (id: string) => Promise<void>;
   getPrompt: (feature: PromptFeature) => string | null | undefined;
   savePrompt: (feature: PromptFeature, text: string) => void;
@@ -543,7 +565,7 @@ function TabVisibilitySection({ projectId }: { projectId: string }) {
           {updated ? <><Check size={11} /> Updated</> : 'Update'}
         </button>
       </div>
-      <p className="text-xs text-muted mb-4">Choose which tabs appear in the navigation bar for this project.</p>
+      <p className="text-xs text-muted mb-4">Choose which tabs appear in the navigation bar for this project. The default layout shows Overview, Timeline, Activity, Tasks, Coordination, Reports, Documents, and Settings, while optional tabs stay available here but start hidden.</p>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {ALL_TABS.map((tab) => {
           const locked = lockedVisible.includes(tab.id);
@@ -588,10 +610,9 @@ function SettingsTab({
   setInviteTab,
   memberSearch,
   setMemberSearch,
-  memberResults,
   memberSearching,
-  inviting,
-  copySuccess,
+  sharedInviteCandidates,
+  sharedInviteLoading,
   repoInput,
   setRepoInput,
   repoSaving,
@@ -609,12 +630,6 @@ function SettingsTab({
   setAuditPage,
   AUDIT_PAGE_SIZE,
   imageUploading,
-  newLabelName,
-  setNewLabelName,
-  newLabelColor,
-  setNewLabelColor,
-  newLabelType,
-  setNewLabelType,
   projectLabels,
   editPromptFeature,
   setEditPromptFeature,
@@ -630,13 +645,13 @@ function SettingsTab({
   updateProject,
   updateGoal,
   createGoal,
-  handleCopyInviteCode,
   handleSaveRepo,
   handleRepoScan,
   scanLoading,
-  handleMemberSearch,
-  handleInviteMember,
+  handleInviteByIdentifier,
+  handleInviteSharedCollaborator,
   handleRemoveMember,
+  handlePromoteMember,
   handleImageUpload,
   handleExportAuditCSV,
   addLabel,
@@ -648,16 +663,65 @@ function SettingsTab({
   setDeleteModalOpen,
   setGitlabRepos,
 }: SettingsTabProps) {
+  const [memberActionError, setMemberActionError] = React.useState<string | null>(null);
+  const [inviteError, setInviteError] = React.useState<string | null>(null);
+  const [inviteSuccess, setInviteSuccess] = React.useState<string | null>(null);
+  const [sharedInviteOpen, setSharedInviteOpen] = React.useState(false);
+  const [sharedInviteSearch, setSharedInviteSearch] = React.useState('');
+  const [selectedSharedInviteKey, setSelectedSharedInviteKey] = React.useState<string | null>(null);
+  const [sharedInviteSubmitting, setSharedInviteSubmitting] = React.useState(false);
+  const [promotingMemberId, setPromotingMemberId] = React.useState<string | null>(null);
+  const [removingMemberId, setRemovingMemberId] = React.useState<string | null>(null);
   const githubRepos = getGitHubRepos(project);
+  const sharedInviteCandidateKey = React.useCallback(
+    (candidate: SharedInviteCandidate) => `${candidate.id}:${candidate.project_id ?? 'none'}`,
+    [],
+  );
+  const selectedSharedInvite = React.useMemo(
+    () => sharedInviteCandidates.find((candidate) => sharedInviteCandidateKey(candidate) === selectedSharedInviteKey) ?? null,
+    [selectedSharedInviteKey, sharedInviteCandidateKey, sharedInviteCandidates],
+  );
+  const filteredSharedInviteCandidates = React.useMemo(() => {
+    const query = sharedInviteSearch.trim().toLowerCase();
+    if (!query) return sharedInviteCandidates;
+    return sharedInviteCandidates.filter((candidate) => {
+      const haystack = [
+        candidate.display_name,
+        candidate.project_name,
+        candidate.id,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [sharedInviteCandidates, sharedInviteSearch]);
   // ── Report Templates ──────────────────────────────────────────────────────
   const [templates, setTemplates] = React.useState<{
-    id: string; templateType: 'docx' | 'pptx' | 'pdf'; filename: string; sizeBytes: number; uploadedAt: string;
+    id: string;
+    templateType: 'docx' | 'pptx' | 'pdf';
+    filename: string;
+    sizeBytes: number;
+    storagePath: string;
+    uploadedAt: string;
+    documentId?: string | null;
+    analysis?: {
+      summary?: string;
+      styleHints?: string[];
+      layoutHints?: string[];
+      fonts?: string[];
+      palette?: string[];
+    } | null;
   }[]>([]);
   const [templateUploading, setTemplateUploading] = React.useState<'docx' | 'pptx' | 'pdf' | null>(null);
   const [templateError, setTemplateError] = React.useState<string | null>(null);
   const [labelError, setLabelError] = React.useState<string | null>(null);
   const [labelDeletingId, setLabelDeletingId] = React.useState<string | null>(null);
   const [labelSaving, setLabelSaving] = React.useState(false);
+  const [newCategoryLabelName, setNewCategoryLabelName] = React.useState('');
+  const [newCategoryLabelColor, setNewCategoryLabelColor] = React.useState('#6a9fd8');
+  const [newLoeLabelName, setNewLoeLabelName] = React.useState('');
+  const [newLoeLabelColor, setNewLoeLabelColor] = React.useState('#e0ab11');
   // One ref per template slot so the hidden inputs are stable across re-renders
   const tmplInputDocx = React.useRef<HTMLInputElement>(null);
   const tmplInputPptx = React.useRef<HTMLInputElement>(null);
@@ -676,30 +740,122 @@ function SettingsTab({
     });
   }, [projectId]);
 
+  React.useEffect(() => {
+    setInviteError(null);
+    setInviteSuccess(null);
+    if (inviteTab !== 'shared') {
+      setSharedInviteOpen(false);
+      setSharedInviteSearch('');
+      setSelectedSharedInviteKey(null);
+    }
+  }, [inviteTab]);
+
+  React.useEffect(() => {
+    if (!selectedSharedInviteKey) return;
+    if (sharedInviteCandidates.some((candidate) => sharedInviteCandidateKey(candidate) === selectedSharedInviteKey)) return;
+    setSelectedSharedInviteKey(null);
+  }, [selectedSharedInviteKey, sharedInviteCandidateKey, sharedInviteCandidates]);
+
+  const uploadTemplateInChunks = async (
+    templateType: 'docx' | 'pptx' | 'pdf',
+    file: File,
+    accessToken: string,
+  ) => {
+    const totalChunks = Math.max(1, Math.ceil(file.size / REPORT_TEMPLATE_CHUNK_BYTES));
+    const initRes = await fetch('/api/uploads/report-template/init', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        projectId,
+        templateType,
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        totalChunks,
+      }),
+    });
+
+    if (!initRes.ok) {
+      const fallback = initRes.status === 413
+        ? 'Template upload was rejected before it reached Odyssey. Raise the reverse-proxy request limit or retry with a smaller file.'
+        : 'Unable to start template upload.';
+      throw new Error(await readTemplateUploadError(initRes, fallback));
+    }
+
+    const initData = await initRes.json() as { uploadId?: string; chunkSizeBytes?: number };
+    const uploadId = initData.uploadId?.trim();
+    if (!uploadId) throw new Error('Upload session did not start correctly.');
+    const chunkSize = Math.max(32 * 1024, Math.min(Number(initData.chunkSizeBytes) || REPORT_TEMPLATE_CHUNK_BYTES, REPORT_TEMPLATE_CHUNK_BYTES));
+
+    for (let chunkIndex = 0, start = 0; start < file.size; chunkIndex += 1, start += chunkSize) {
+      const form = new FormData();
+      form.append('uploadId', uploadId);
+      form.append('chunkIndex', String(chunkIndex));
+      form.append('file', file.slice(start, start + chunkSize), `${file.name}.part`);
+
+      const chunkRes = await fetch('/api/uploads/report-template/chunk', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: form,
+      });
+
+      if (!chunkRes.ok) {
+        const fallback = chunkRes.status === 413
+          ? 'A template chunk still exceeded the proxy limit. Increase nginx client_max_body_size and retry.'
+          : `Template upload failed on chunk ${chunkIndex + 1} of ${totalChunks}.`;
+        throw new Error(await readTemplateUploadError(chunkRes, fallback));
+      }
+    }
+
+    const completeRes = await fetch('/api/uploads/report-template/complete', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ uploadId }),
+    });
+
+    if (!completeRes.ok) {
+      throw new Error(await readTemplateUploadError(completeRes, 'Unable to finalize template upload.'));
+    }
+
+    return completeRes.json();
+  };
+
   const handleTemplateUpload = async (templateType: 'docx' | 'pptx' | 'pdf', file: File) => {
     setTemplateUploading(templateType);
     setTemplateError(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      const form = new FormData();
-      form.append('projectId', projectId);
-      form.append('templateType', templateType);
-      form.append('filename', file.name);
-      form.append('file', file);
-      const res = await fetch('/api/uploads/report-template', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-        body: form,
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Upload failed' }));
-        setTemplateError(err.error ?? 'Upload failed');
-      } else {
-        const d = await res.json();
-        if (d.template) {
-          setTemplates((prev) => [...prev.filter((t) => t.templateType !== templateType), d.template]);
-        }
+      if (file.size <= 0) {
+        throw new Error('Selected file is empty.');
+      }
+
+      const uploadResult = await uploadTemplateInChunks(templateType, file, session.access_token) as {
+        template?: {
+          id: string;
+          templateType: 'docx' | 'pptx' | 'pdf';
+          filename: string;
+          sizeBytes: number;
+          storagePath: string;
+          uploadedAt: string;
+          documentId?: string | null;
+          analysis?: {
+            summary?: string;
+            styleHints?: string[];
+            layoutHints?: string[];
+            fonts?: string[];
+            palette?: string[];
+          } | null;
+        };
+      };
+
+      if (uploadResult.template) {
+        setTemplates((prev) => [...prev.filter((t) => t.templateType !== templateType), uploadResult.template!]);
       }
     } catch (err: unknown) {
       setTemplateError(err instanceof Error ? err.message : 'Upload failed');
@@ -719,14 +875,38 @@ function SettingsTab({
     if (res.ok) setTemplates((prev) => prev.filter((t) => t.templateType !== templateType));
   };
 
-  const handleAddLabel = async () => {
-    const trimmed = newLabelName.trim();
+  const handleTemplateOpen = async (storagePath: string) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session || !storagePath) return;
+    const res = await fetch('/api/uploads/sign', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ storagePath }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.url) {
+      setTemplateError(data.error ?? 'Unable to open template file.');
+      return;
+    }
+    window.open(data.url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleAddLabel = async (
+    type: 'category' | 'loe',
+    name: string,
+    color: string,
+    resetName: React.Dispatch<React.SetStateAction<string>>,
+  ) => {
+    const trimmed = name.trim();
     if (!trimmed) return;
     setLabelSaving(true);
     setLabelError(null);
     try {
-      await addLabel(newLabelType, trimmed, newLabelColor);
-      setNewLabelName('');
+      await addLabel(type, trimmed, color);
+      resetName('');
     } catch (err) {
       setLabelError(err instanceof Error ? err.message : 'Unable to save label.');
     } finally {
@@ -746,38 +926,61 @@ function SettingsTab({
     }
   };
 
+  const promoteMember = async (userId: string) => {
+    setMemberActionError(null);
+    setPromotingMemberId(userId);
+    try {
+      await handlePromoteMember(userId);
+    } catch (err) {
+      setMemberActionError(err instanceof Error ? err.message : 'Unable to promote member.');
+    } finally {
+      setPromotingMemberId(null);
+    }
+  };
+
+  const removeMember = async (userId: string) => {
+    setMemberActionError(null);
+    setRemovingMemberId(userId);
+    try {
+      await handleRemoveMember(userId);
+    } catch (err) {
+      setMemberActionError(err instanceof Error ? err.message : 'Unable to remove member.');
+    } finally {
+      setRemovingMemberId(null);
+    }
+  };
+
+  const submitInvite = async () => {
+    setInviteError(null);
+    setInviteSuccess(null);
+    try {
+      if (inviteTab === 'shared') {
+        if (!selectedSharedInvite) throw new Error('Choose a person first.');
+        setSharedInviteSubmitting(true);
+        await handleInviteSharedCollaborator(selectedSharedInvite.id);
+        setInviteSuccess(`${selectedSharedInvite.display_name ?? 'Selected user'} was added to the project.`);
+        setSelectedSharedInviteKey(null);
+        setSharedInviteSearch('');
+        setSharedInviteOpen(false);
+        return;
+      }
+
+      await handleInviteByIdentifier();
+      setInviteSuccess(inviteTab === 'username'
+        ? 'User added to the project by Odyssey username.'
+        : 'User added to the project by linked email.');
+      setMemberSearch('');
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : 'Unable to invite that user.');
+    } finally {
+      setSharedInviteSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
-
-      {/* Project ID Code */}
-      {project?.invite_code && (
-        <div className="border border-border bg-surface p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Lock size={14} className="text-accent" />
-            <h3 className="font-sans text-sm font-bold text-heading">Project Access</h3>
-          </div>
-          <p className="text-[11px] text-muted mb-4">
-            Project ID codes create a join request. Owners must approve access before the user can view the project.
-          </p>
-          <div className="flex items-center gap-3">
-            <div>
-              <p className="text-[10px] tracking-[0.15em] uppercase text-muted mb-1">Project ID Code</p>
-              <span className="font-mono text-lg font-bold text-heading tracking-widest">
-                {project.invite_code}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={handleCopyInviteCode}
-              title="Copy project ID code"
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-border text-muted hover:text-heading hover:bg-surface2 text-[10px] font-semibold tracking-wider uppercase transition-colors rounded"
-            >
-              {copySuccess ? <Check size={11} className="text-accent2" /> : <Copy size={11} />}
-              {copySuccess ? 'Copied!' : 'Copy'}
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Project Name & Description */}
+      <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} imageUploading={imageUploading} handleImageUpload={handleImageUpload} />
 
       {/* Team Members + Invite Members to Project — side by side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -789,45 +992,79 @@ function SettingsTab({
               Team Members ({1 + members.filter((m) => m.user_id !== user?.id).length})
             </h3>
           </div>
+          {memberActionError && (
+            <div className="mb-4 rounded border border-danger/30 bg-danger/5 px-3 py-2 text-[11px] text-danger">
+              {memberActionError}
+            </div>
+          )}
           <div className="space-y-px border border-border bg-border">
             {/* Current user — always rendered first */}
             {user && (() => {
               const myRow = members.find((m) => m.user_id === user.id);
-              const myRole = myRow?.role ?? 'member';
-              const myName = user.user_metadata?.user_name ?? user.email ?? 'You';
-              const myAvatar = user.user_metadata?.avatar_url ?? null;
+              const myRole = myRow?.role ?? (isOwner ? 'owner' : 'member');
+              const myName = myRow?.profile?.display_name ?? user.user_metadata?.user_name ?? user.email ?? 'You';
+              const myAvatar = myRow?.profile?.avatar_url ?? user.user_metadata?.avatar_url ?? null;
+              const myRoleLabel = formatMemberRole(myRole);
               return (
                 <div className="flex items-center gap-3 bg-surface px-4 py-3">
-                  {myAvatar
-                    ? <img src={myAvatar} alt="" className="w-7 h-7 rounded-full" />
-                    : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center"><span className="text-[10px] text-accent font-bold uppercase">{myName[0]}</span></div>
-                  }
+                  <UserAvatar
+                    label={myName}
+                    avatar={myAvatar}
+                    className="w-7 h-7"
+                    fallbackClassName="bg-accent/20 text-accent"
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="text-xs text-heading font-medium truncate">
                       {myName} <span className="ml-1 text-[9px] text-muted">(you)</span>
                     </div>
-                    <div className="text-[10px] text-muted capitalize">{myRole}</div>
+                    <div className="text-[10px] text-muted">{myRoleLabel}</div>
                   </div>
                 </div>
               );
             })()}
             {/* Other members from DB */}
-            {members.filter((m) => m.user_id !== user?.id).map((m) => (
-              <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
-                {m.profile?.avatar_url
-                  ? <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                  : <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center"><span className="text-[10px] text-accent2 font-bold uppercase">{(m.profile?.display_name ?? '?')[0]}</span></div>
-                }
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs text-heading font-medium truncate">{m.profile?.display_name ?? m.user_id}</div>
-                  <div className="text-[10px] text-muted capitalize">{m.role}</div>
+            {members.filter((m) => m.user_id !== user?.id).map((m) => {
+              const memberLabel = m.profile?.display_name ?? m.user_id;
+              const roleLabel = formatMemberRole(m.role);
+              return (
+                <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-3 group">
+                  <UserAvatar
+                    label={memberLabel}
+                    avatar={m.profile?.avatar_url ?? null}
+                    className="w-7 h-7"
+                    fallbackClassName="bg-accent2/20 text-accent2"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-heading font-medium truncate">{memberLabel}</div>
+                    <div className="text-[10px] text-muted">{roleLabel}</div>
+                  </div>
+                  {isOwner && (
+                    <div className="flex items-center gap-2 shrink-0">
+                      {m.role !== 'owner' && (
+                        <button
+                          type="button"
+                          onClick={() => { void promoteMember(m.user_id); }}
+                          disabled={promotingMemberId === m.user_id || removingMemberId === m.user_id}
+                          className="px-2 py-1 text-[9px] border border-accent3/30 text-accent3 rounded hover:bg-accent3/10 transition-colors uppercase tracking-wider disabled:opacity-50"
+                          title="Promote member to owner"
+                        >
+                          {promotingMemberId === m.user_id ? 'Promoting…' : 'Make Owner'}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => { void removeMember(m.user_id); }}
+                        disabled={promotingMemberId === m.user_id || removingMemberId === m.user_id}
+                        className="p-1 text-muted hover:text-danger transition-colors disabled:opacity-50"
+                        title="Remove member"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <button type="button" onClick={() => handleRemoveMember(m.user_id)}
-                  className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all" title="Remove member">
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -840,18 +1077,22 @@ function SettingsTab({
 
             {/* Invite tabs */}
             <div className="flex items-center gap-px border border-border rounded overflow-hidden mb-5 w-fit">
-              {(['github', 'email', 'qr'] as const).map((tab) => (
+              {(['shared', 'nps_email', 'username', 'qr'] as const).map((tab) => (
                 <button key={tab} type="button" onClick={() => setInviteTab(tab)}
                   className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${inviteTab === tab ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}>
-                  {tab === 'github' ? 'GitHub' : tab === 'email' ? 'Email' : 'QR Code'}
+                  {tab === 'shared' ? 'In Common' : tab === 'nps_email' ? 'Email' : tab === 'username' ? 'Username' : 'QR Code'}
                 </button>
               ))}
             </div>
 
-            {inviteTab === 'github' && (
+            {(inviteTab === 'username' || inviteTab === 'nps_email' || inviteTab === 'shared') && (
               <div>
                 <p className="text-[11px] text-muted mb-4">
-                  Search by GitHub username — they must have signed into Odyssey at least once.
+                  {inviteTab === 'username'
+                    ? 'Invite someone by the exact username they used when they joined Odyssey.'
+                    : inviteTab === 'nps_email'
+                      ? 'Invite someone by the email linked to their Odyssey Microsoft sign-in.'
+                      : 'Choose someone you already share another project with, just like the direct-message picker in chat.'}
                 </p>
                 <div className="flex items-center gap-2 mb-4">
                   <span className="text-[10px] tracking-[0.15em] uppercase text-muted">Invite as</span>
@@ -864,50 +1105,121 @@ function SettingsTab({
                     ))}
                   </div>
                 </div>
-                <div className="flex gap-2 mb-4">
-                  <input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleMemberSearch()}
-                    placeholder="GitHub username…"
-                    className="flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded" />
-                  <button type="button" onClick={handleMemberSearch}
-                    disabled={memberSearching || memberSearch.trim().length < 2}
-                    className="px-3 py-2 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5">
-                    {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-                    Search
-                  </button>
-                </div>
-                {memberResults.length > 0 && (
-                  <div className="space-y-px border border-border bg-border">
-                    {memberResults.map((u) => (
-                      <div key={u.login} className="flex items-center gap-3 bg-surface px-4 py-2.5">
-                        <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                        <div className="flex-1 min-w-0">
-                          <a href={u.html_url} target="_blank" rel="noopener noreferrer"
-                            className="text-xs text-heading font-medium hover:text-accent transition-colors">{u.login}</a>
-                        </div>
-                        <button type="button" onClick={() => handleInviteMember(u)} disabled={inviting === u.login}
-                          className="text-[10px] px-3 py-1 border border-accent/30 text-accent hover:bg-accent/10 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5">
-                          {inviting === u.login ? <Loader2 size={10} className="animate-spin" /> : <UserPlus size={10} />}
-                          {inviting === u.login ? 'Adding…' : `Add as ${inviteRole}`}
-                        </button>
-                      </div>
-                    ))}
+                {inviteError && (
+                  <div className="mb-4 rounded border border-danger/30 bg-danger/5 px-3 py-2 text-[11px] text-danger">
+                    {inviteError}
                   </div>
                 )}
-              </div>
-            )}
-
-            {inviteTab === 'email' && (
-              <div className="flex flex-col items-center justify-center gap-3 py-8 text-center border border-dashed border-border rounded">
-                <span className="text-[11px] text-muted">Email invites — coming soon.</span>
-                <span className="text-[10px] text-muted/60">Users will receive a link to join directly.</span>
+                {inviteSuccess && (
+                  <div className="mb-4 rounded border border-accent2/30 bg-accent2/10 px-3 py-2 text-[11px] text-heading">
+                    {inviteSuccess}
+                  </div>
+                )}
+                {inviteTab === 'shared' ? (
+                  <div className="space-y-4 mb-4">
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setSharedInviteOpen((open) => !open)}
+                        className="w-full flex items-center justify-between gap-3 px-3 py-2.5 bg-surface border border-border text-left text-sm rounded"
+                      >
+                        <div className="min-w-0">
+                          <div className={`truncate ${selectedSharedInvite ? 'text-heading font-medium' : 'text-muted'}`}>
+                            {selectedSharedInvite
+                              ? (selectedSharedInvite.display_name ?? selectedSharedInvite.id)
+                              : 'Choose from shared collaborators'}
+                          </div>
+                          {selectedSharedInvite && (
+                            <div className="text-[11px] text-muted truncate mt-0.5">
+                              {selectedSharedInvite.project_name ? `Shared project: ${selectedSharedInvite.project_name}` : 'Shared collaborator'}
+                            </div>
+                          )}
+                        </div>
+                        <ChevronRight size={14} className={`shrink-0 text-muted transition-transform ${sharedInviteOpen ? 'rotate-90' : ''}`} />
+                      </button>
+                      {sharedInviteOpen && (
+                        <div className="absolute z-20 left-0 right-0 mt-2 rounded-xl border border-border bg-surface shadow-lg overflow-hidden">
+                          <div className="p-3 border-b border-border">
+                            <div className="relative">
+                              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                              <input
+                                value={sharedInviteSearch}
+                                onChange={(e) => setSharedInviteSearch(e.target.value)}
+                                placeholder="Search people or projects"
+                                className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-surface text-sm text-heading placeholder:text-muted/60 focus:outline-none focus:border-accent/40"
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-56 overflow-y-auto p-2">
+                            {sharedInviteLoading ? (
+                              <p className="px-3 py-4 text-xs text-muted">Loading shared collaborators…</p>
+                            ) : filteredSharedInviteCandidates.length === 0 ? (
+                              <p className="px-3 py-4 text-xs text-muted">No eligible people found.</p>
+                            ) : filteredSharedInviteCandidates.map((candidate) => (
+                              <button
+                                key={sharedInviteCandidateKey(candidate)}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedSharedInviteKey(sharedInviteCandidateKey(candidate));
+                                  setSharedInviteOpen(false);
+                                }}
+                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors text-left ${
+                                  selectedSharedInviteKey === sharedInviteCandidateKey(candidate) ? 'bg-accent/8 border border-accent/20' : 'hover:bg-surface2 border border-transparent'
+                                }`}
+                              >
+                                <UserAvatar
+                                  label={candidate.display_name ?? candidate.id}
+                                  avatar={candidate.avatar_url}
+                                  className="w-9 h-9"
+                                  fallbackClassName="bg-accent/20 text-accent"
+                                />
+                                <div className="min-w-0">
+                                  <p className="text-sm text-heading font-semibold truncate">{candidate.display_name ?? candidate.id}</p>
+                                  <p className="text-[11px] text-muted truncate">
+                                    {candidate.project_name ? `Shared project: ${candidate.project_name}` : 'Shared collaborator'}
+                                  </p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <button type="button" onClick={() => { void submitInvite(); }}
+                      disabled={!selectedSharedInvite || sharedInviteSubmitting}
+                      className="px-3 py-2 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5">
+                      {sharedInviteSubmitting ? <Loader2 size={12} className="animate-spin" /> : <UserPlus size={12} />}
+                      Invite
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2 mb-4">
+                    <input value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && void submitInvite()}
+                      placeholder={inviteTab === 'username' ? 'Odyssey username…' : 'name@nps.gov'}
+                      className="flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded" />
+                    <button type="button" onClick={() => { void submitInvite(); }}
+                      disabled={memberSearching || memberSearch.trim().length < 1}
+                      className="px-3 py-2 bg-accent/10 border border-accent/30 text-accent text-xs font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded disabled:opacity-50 flex items-center gap-1.5">
+                      {memberSearching ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                      Invite
+                    </button>
+                  </div>
+                )}
+                <div className="rounded border border-dashed border-border px-4 py-3 text-[11px] text-muted">
+                  {inviteTab === 'username'
+                    ? 'This matches the Odyssey username exactly and immediately adds them to the project.'
+                    : inviteTab === 'nps_email'
+                      ? 'This matches the email they linked in Odyssey and immediately adds them to the project.'
+                      : 'This only shows people you already share another project with and adds them directly to this project.'}
+                </div>
               </div>
             )}
 
             {inviteTab === 'qr' && projectId && project?.invite_code && (
               <div className="flex flex-col items-center gap-4">
                 <p className="text-[11px] text-muted text-center">
-                  Share this QR code. Anyone who scans it and authenticates will send a join request to the project owners.
+                  Share this QR code. Anyone who scans it and authenticates will send a join request to the current project members.
                 </p>
                 <div className="p-4 bg-white rounded-xl shadow-lg">
                   <QRCodeSVG
@@ -953,15 +1265,12 @@ function SettingsTab({
           <div className="space-y-px border border-border bg-border">
             {joinRequests.map((req) => (
               <div key={req.id} className="flex items-center gap-3 bg-surface px-4 py-3">
-                {req.profile?.avatar_url ? (
-                  <img src={req.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
-                    <span className="text-[10px] text-accent2 font-bold uppercase">
-                      {(req.profile?.display_name ?? '?')[0]}
-                    </span>
-                  </div>
-                )}
+                <UserAvatar
+                  label={req.profile?.display_name ?? req.user_id}
+                  avatar={req.profile?.avatar_url ?? null}
+                  className="w-7 h-7"
+                  fallbackClassName="bg-accent2/20 text-accent2"
+                />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-heading font-medium truncate">
                     {req.profile?.display_name ?? req.user_id}
@@ -993,9 +1302,6 @@ function SettingsTab({
           </div>
         </div>
       )}
-
-      {/* Project Name & Description */}
-      <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} imageUploading={imageUploading} handleImageUpload={handleImageUpload} />
 
       {/* GitHub Repository */}
       <div className="border border-border bg-surface p-6">
@@ -1128,7 +1434,7 @@ function SettingsTab({
             <h3 className="font-sans text-sm font-bold text-heading">Report Templates</h3>
           </div>
           <p className="text-[11px] text-muted mb-5">
-            Upload a template file for each report type. The AI will analyze its structure and mirror the layout, headings, and style when generating reports.
+            Upload a template file for each report type. The AI will analyze its structure and mirror the layout, headings, and style when generating reports. Large templates are uploaded in smaller chunks so they can survive stricter proxy limits.
           </p>
 
           {templateError && (
@@ -1150,7 +1456,12 @@ function SettingsTab({
                     <div className="min-w-0">
                       <p className="text-[11px] font-semibold text-heading">{label}</p>
                       {existing ? (
-                        <p className="text-[10px] text-muted truncate">{existing.filename} · {(existing.sizeBytes / 1024).toFixed(0)} KB</p>
+                        <>
+                          <p className="text-[10px] text-muted truncate">{existing.filename} · {(existing.sizeBytes / 1024).toFixed(0)} KB</p>
+                          <p className="text-[10px] text-muted/80 truncate">
+                            {existing.analysis?.summary ?? 'Saved to project storage and used during report generation.'}
+                          </p>
+                        </>
                       ) : (
                         <p className="text-[10px] text-muted">No template — {hint}</p>
                       )}
@@ -1168,12 +1479,22 @@ function SettingsTab({
                       {uploading ? 'Uploading…' : existing ? 'Replace' : 'Upload'}
                     </button>
                     {existing && (
-                      <button type="button"
-                        title={`Remove ${label} template`}
-                        onClick={() => handleTemplateDelete(existing.id, existing.templateType)}
-                        className="flex items-center justify-center w-7 h-7 border border-danger/30 text-danger hover:bg-danger/5 transition-colors rounded">
-                        <X size={10} />
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          title={`Open ${label} template`}
+                          onClick={() => { void handleTemplateOpen(existing.storagePath); }}
+                          className="flex items-center justify-center w-7 h-7 border border-border text-muted hover:text-heading hover:bg-surface transition-colors rounded"
+                        >
+                          <Download size={10} />
+                        </button>
+                        <button type="button"
+                          title={`Remove ${label} template`}
+                          onClick={() => handleTemplateDelete(existing.id, existing.templateType)}
+                          className="flex items-center justify-center w-7 h-7 border border-danger/30 text-danger hover:bg-danger/5 transition-colors rounded">
+                          <X size={10} />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1195,30 +1516,58 @@ function SettingsTab({
           <p className="text-[11px] text-danger mb-4">{labelError}</p>
         )}
 
-        {/* Add new label */}
-        <div className="flex items-center gap-2 mb-5 flex-wrap">
-          <div className="flex items-center gap-px border border-border rounded overflow-hidden">
-            {(['category', 'loe'] as const).map((t) => (
-              <button key={t} type="button" onClick={() => setNewLabelType(t)}
-                className={`px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase transition-colors ${newLabelType === t ? 'bg-accent/10 text-accent' : 'text-muted hover:bg-surface2'}`}>
-                {t === 'category' ? 'Category' : 'LOE'}
+        {/* Add new labels */}
+        <div className="grid gap-4 mb-5 lg:grid-cols-2">
+          <div className="space-y-2 rounded border border-border bg-surface2/30 p-4">
+            <p className="text-[10px] tracking-[0.15em] uppercase text-muted">Add Category</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                value={newCategoryLabelName}
+                onChange={(e) => setNewCategoryLabelName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    void handleAddLabel('category', newCategoryLabelName, newCategoryLabelColor, setNewCategoryLabelName);
+                  }
+                }}
+                placeholder="Category name…"
+                className="min-w-0 flex-1 px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+              <LabelColorPicker value={newCategoryLabelColor} onChange={setNewCategoryLabelColor} />
+              <button
+                type="button"
+                onClick={() => { void handleAddLabel('category', newCategoryLabelName, newCategoryLabelColor, setNewCategoryLabelName); }}
+                disabled={!newCategoryLabelName.trim() || labelSaving}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40"
+              >
+                {labelSaving ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} Add
               </button>
-            ))}
+            </div>
           </div>
-          <input value={newLabelName} onChange={(e) => setNewLabelName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                void handleAddLabel();
-              }
-            }}
-            placeholder="Label name…"
-            className="px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded w-48" />
-          <LabelColorPicker value={newLabelColor} onChange={setNewLabelColor} />
-          <button type="button" onClick={() => { void handleAddLabel(); }}
-            disabled={!newLabelName.trim() || labelSaving}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40">
-            {labelSaving ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} Add
-          </button>
+          <div className="space-y-2 rounded border border-border bg-surface2/30 p-4">
+            <p className="text-[10px] tracking-[0.15em] uppercase text-muted">Add LOE</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                value={newLoeLabelName}
+                onChange={(e) => setNewLoeLabelName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    void handleAddLabel('loe', newLoeLabelName, newLoeLabelColor, setNewLoeLabelName);
+                  }
+                }}
+                placeholder="LOE name…"
+                className="min-w-0 flex-1 px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
+              />
+              <LabelColorPicker value={newLoeLabelColor} onChange={setNewLoeLabelColor} />
+              <button
+                type="button"
+                onClick={() => { void handleAddLabel('loe', newLoeLabelName, newLoeLabelColor, setNewLoeLabelName); }}
+                disabled={!newLoeLabelName.trim() || labelSaving}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-semibold tracking-wider uppercase hover:bg-accent/10 transition-colors rounded disabled:opacity-40"
+              >
+                {labelSaving ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} Add
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Existing labels by type */}

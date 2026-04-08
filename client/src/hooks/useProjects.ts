@@ -17,20 +17,49 @@ type RemoveProjectResult = {
 };
 
 async function removeProjectBucketFiles(bucket: string, projectId: string) {
-  const prefix = `${projectId}`;
-  const { data, error } = await supabase.storage.from(bucket).list(prefix, {
-    limit: 1000,
-    sortBy: { column: 'name', order: 'asc' },
-  });
+  const queue = [`${projectId}`];
+  if (bucket === 'project-assets') queue.unshift(`project-images/${projectId}`);
+
+  while (queue.length > 0) {
+    const prefix = queue.shift();
+    if (!prefix) continue;
+
+    const { data, error } = await supabase.storage.from(bucket).list(prefix, {
+      limit: 1000,
+      sortBy: { column: 'name', order: 'asc' },
+    });
+
+    if (error || !data || data.length === 0) continue;
+
+    const filePaths: string[] = [];
+
+    for (const item of data) {
+      if (!item.name) continue;
+      const fullPath = `${prefix}/${item.name}`;
+      if (item.id) filePaths.push(fullPath);
+      else queue.push(fullPath);
+    }
+
+    if (filePaths.length > 0) {
+      await supabase.storage.from(bucket).remove(filePaths);
+    }
+  }
+}
+
+async function removeGoalAttachmentFiles(projectId: string) {
+  const { data, error } = await supabase
+    .from('goal_attachments')
+    .select('file_path')
+    .eq('project_id', projectId);
 
   if (error || !data || data.length === 0) return;
 
   const paths = data
-    .filter((item) => item.name)
-    .map((item) => `${prefix}/${item.name}`);
+    .map((row) => row.file_path)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
 
   if (paths.length > 0) {
-    await supabase.storage.from(bucket).remove(paths);
+    await supabase.storage.from('goal-attachments').remove(paths);
   }
 }
 
@@ -39,8 +68,8 @@ export async function deleteProjectCascade(id: string) {
   // Clean up storage buckets via the Storage API first (DB function can't do this directly)
   await Promise.allSettled([
     removeProjectBucketFiles('project-documents', id),
-    removeProjectBucketFiles('goal-attachments', id),
     removeProjectBucketFiles('project-assets', id),
+    removeGoalAttachmentFiles(id),
   ]);
 
   const { error } = await supabase.rpc('delete_project_cascade', { p_project_id: id });

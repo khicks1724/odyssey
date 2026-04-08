@@ -73,28 +73,47 @@ function packSprints(sprints: Sprint[]): Sprint[][] {
 }
 
 interface MemberInfo { user_id: string; display_name: string | null; }
-interface HoverState  { id: string; y: number; }
+interface HoverState  { id: string; x: number; y: number; }
+
+function resolveMemberDisplayName(members: MemberInfo[], userId: string): string | null {
+  for (let index = members.length - 1; index >= 0; index -= 1) {
+    const member = members[index];
+    if (member.user_id !== userId) continue;
+    const displayName = member.display_name?.trim();
+    if (displayName) return displayName;
+  }
+  return null;
+}
 
 function getGoalGroupKey(goal: Goal, groupBy: GroupBy, members: MemberInfo[]): string {
   if (groupBy === 'category') return goal.category ?? '';
   if (groupBy === 'loe') return goal.loe ?? '';
   const ids = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
   if (ids.length === 0) return '';
-  return members.find((m) => m.user_id === ids[0])?.display_name ?? ids[0] ?? '';
+  return resolveMemberDisplayName(members, ids[0]) ?? ids[0] ?? '';
 }
 
-function GoalTooltip({ goal, members, y, color }: {
+function GoalTooltip({ goal, members, x, y, color }: {
   goal: Goal;
   members: MemberInfo[];
+  x: number;
   y: number;
   color: { bg: string; border: string; label: string };
 }) {
   const assigneeIds: string[] = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
-  const assigneeNames = assigneeIds.map((id) => members.find((m) => m.user_id === id)?.display_name ?? 'Unknown');
+  const assigneeNames = assigneeIds.map((id) => resolveMemberDisplayName(members, id) ?? 'Unknown');
   const statusLabels: Record<string, string> = {
     not_started: 'Not Started', in_progress: 'In Progress', in_review: 'In Review', complete: 'Complete',
   };
-  const style = cv({ '--tlo-color': color.border, top: `${y}px`, left: '190px', transform: 'translateY(-50%)' });
+  const tooltipWidth = 300;
+  const gutter = 16;
+  const maxLeft = Math.max(gutter, window.innerWidth - tooltipWidth - gutter);
+  const style = cv({
+    '--tlo-color': color.border,
+    top: `${y}px`,
+    left: `${Math.min(Math.max(gutter, x), maxLeft)}px`,
+    transform: 'translateY(-50%)',
+  });
   return (
     <div className="tlo-tooltip tl-tooltip-fixed" {...({ style } as any)}>
       <div className="tlo-tooltip-bar" />
@@ -176,6 +195,16 @@ export default function TimelinePage({
   const [sprintForm, setSprintForm] = useState<{ name: string; type: 'sprint' | 'phase'; start_date: string; end_date: string }>(
     { name: '', type: 'sprint', start_date: '', end_date: '' }
   );
+
+  const setHoverFromRect = useCallback((goalId: string, rect: DOMRect, align: 'label' | 'bar' = 'bar') => {
+    const tooltipGap = 12;
+    const preferredX = rect.right + tooltipGap;
+    setHovered({
+      id: goalId,
+      x: preferredX,
+      y: rect.top + rect.height / 2,
+    });
+  }, []);
 
   /* ── Load sprints ── */
   useEffect(() => {
@@ -628,14 +657,13 @@ export default function TimelinePage({
                   className={`tl-row tl-label-hover flex items-center px-3 gap-2 border-b border-border/30 ${onGoalClick ? 'cursor-pointer' : ''}`}
                   {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}
                   onMouseEnter={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setHovered({ id: goal.id, y: rect.top + rect.height / 2 });
+                    setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect(), 'label');
                   }}
                   onMouseLeave={() => setHovered(null)}
                   onClick={() => onGoalClick?.(goal)}
                 >
                   <span className="tl-label-dot shrink-0" />
-                  <span className="text-[11px] font-mono truncate leading-tight tl-label-text" title={goal.title}>
+                  <span className="text-[11px] font-mono truncate leading-tight tl-label-text">
                     {goal.title}
                   </span>
                 </div>
@@ -764,7 +792,8 @@ export default function TimelinePage({
                   <div key={goal.id}
                     className={`tl-bar-wrap ${onGoalClick ? 'cursor-pointer' : ''}`}
                     {...({ style: cv({ '--tl-top': `${barTop}px`, '--tl-left': `${createdOff}px`, '--tl-w': `${barW}px` }) } as any)}
-                    title={`${goal.title} — ${goal.progress}%`}
+                    onMouseEnter={(e) => setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect(), 'bar')}
+                    onMouseLeave={() => setHovered(null)}
                     onClick={() => onGoalClick?.(goal)}
                   >
                     <div className="tl-bar-track" {...({ style: cv({ '--tl-bg': c.bg, '--tl-border': `${c.border}40` }) } as any)} />
@@ -782,7 +811,7 @@ export default function TimelinePage({
 
       {/* ── Fixed-position tooltip ── */}
       {hovered && hoveredGoal && (
-        <GoalTooltip goal={hoveredGoal} members={members} y={hovered.y} color={hoveredColor} />
+        <GoalTooltip goal={hoveredGoal} members={members} x={hovered.x} y={hovered.y} color={hoveredColor} />
       )}
     </div>
   );

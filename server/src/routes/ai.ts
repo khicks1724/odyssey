@@ -1,11 +1,13 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import OpenAI from 'openai';
-import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, isGenAiMilKey, type AIProvider, type AIProviderSelection, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProvider, type AIProviderSelection, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models.js';
 import { decryptUserKey } from './user-ai-keys.js';
 import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
 import { getGitHubRepos } from '../lib/github.js';
+import { getInternalRequestHeaders, getUserFromAuthHeader, userHasProjectAccess } from '../lib/request-auth.js';
+import { getGitLabToken } from '../lib/gitlab-token.js';
 
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
@@ -23,6 +25,9 @@ interface GitLabIntegrationConfig {
   repo?: string;
   repos?: string[];
   token?: string;
+  tokenEncrypted?: string;
+  tokenIv?: string;
+  tokenAuthTag?: string;
   host?: string;
 }
 
@@ -118,6 +123,21 @@ function normalizeConfiguredModelIds(values: unknown): string[] {
   )];
 }
 
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(
+    values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )];
+}
+
+function emailLocalPart(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const local = email.split('@')[0]?.trim();
+  return local || null;
+}
+
 function getEnabledModelsFromConfig(config: unknown): string[] {
   if (!config || typeof config !== 'object') return [];
   return normalizeConfiguredModelIds((config as { enabledModels?: unknown }).enabledModels);
@@ -155,14 +175,10 @@ function normalizeGitLabHost(host: string): string {
 }
 
 function getGitLabRepoPaths(config: GitLabIntegrationConfig | null | undefined): string[] {
-  const repoPath = config?.repoPath?.trim();
-  if (repoPath) return [repoPath];
-
   const repos = (config?.repos ?? []).map((value) => value.trim()).filter(Boolean);
-  if (repos.length > 0) return [...new Set(repos)];
-
+  const repoPath = config?.repoPath?.trim();
   const repo = config?.repo?.trim();
-  return repo ? [repo] : [];
+  return [...new Set([repoPath, ...repos, repo].filter((value): value is string => !!value))];
 }
 
 function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): string {
@@ -177,10 +193,6 @@ function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): stri
   return '';
 }
 
-function getGitLabToken(config: GitLabIntegrationConfig | null | undefined): string {
-  return config?.token?.trim() ?? '';
-}
-
 // Prefer order when auto-selecting from stored user keys
 const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gemini-pro', 'gpt-4o'];
 
@@ -189,7 +201,7 @@ const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet',
  * When the user has a personal key stored in the DB, prefer that service.
  * Falls back to `fallback` only as a final default selection hint.
  */
-async function resolveAutoProvider(authHeader: string | undefined, fallback: AIProvider): Promise<AIProvider> {
+async function resolveAutoProvider(authHeader: string | undefined, fallback: AIProviderSelection): Promise<AIProviderSelection> {
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     const { data: { user } } = await supabase.auth.getUser(token);
@@ -217,6 +229,9 @@ async function resolveAutoProvider(authHeader: string | undefined, fallback: AIP
         }
       }
     }
+  }
+  if (getServerOpenAiCredential()?.apiKey) {
+    return `openai:${getServerOpenAiPrimaryModel(OPENAI_FALLBACK_MODEL)}`;
   }
   return fallback;
 }
@@ -333,7 +348,7 @@ async function getOpenAiModelsForRequest(authHeader: string | undefined): Promis
   }
 
   const userCredential = await getUserApiKey(authHeader, 'gpt-4o');
-  const credential = userCredential;
+  const credential = userCredential ?? getServerOpenAiCredential();
 
   if (!credential) {
     const merged = mergeOpenAiModels([], userConfig?.preferredModel);
@@ -350,7 +365,7 @@ async function getOpenAiModelsForRequest(authHeader: string | undefined): Promis
     // Fall through to the standard fallback model below.
   }
 
-  const merged = mergeOpenAiModels([OPENAI_FALLBACK_MODEL], userConfig?.preferredModel);
+  const merged = mergeOpenAiModels([getServerOpenAiPrimaryModel(OPENAI_FALLBACK_MODEL)], userConfig?.preferredModel);
   return normalizeOpenAiModelIds(merged);
 }
 
@@ -465,6 +480,26 @@ Write as a narrative, under 300 words. ${MD_STYLE}`,
 const providersCache = new Map<string, { result: unknown; ts: number }>();
 const PROVIDERS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
+async function ensureProjectAccess(
+  reply: FastifyReply,
+  authHeader: string | undefined,
+  projectId: string,
+): Promise<string | null> {
+  const userId = await getUserFromAuthHeader(authHeader);
+  if (!userId) {
+    await reply.status(401).send({ error: 'Unauthorized' });
+    return null;
+  }
+
+  const allowed = await userHasProjectAccess(projectId, userId);
+  if (!allowed) {
+    await reply.status(403).send({ error: 'Forbidden' });
+    return null;
+  }
+
+  return userId;
+}
+
 export async function aiRoutes(server: FastifyInstance) {
   // ── Available providers endpoint ──
   // Returns user-key availability enriched with per-user key detection.
@@ -537,6 +572,7 @@ export async function aiRoutes(server: FastifyInstance) {
 
       const genaiMilModel = userStarkKey ? (process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash') : undefined;
       const openAiMode = openAiRow?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai';
+      const serverOpenAiCredential = getServerOpenAiCredential();
       const openAiModels = await getOpenAiModelsForRequest(authHeader);
       const openAiPreferredModelCanonical = openAiMode === 'azure_openai'
         ? openAiPreferredModel
@@ -560,8 +596,9 @@ export async function aiRoutes(server: FastifyInstance) {
         ? (getCachedProviderStatus('genai-mil', userStarkKey) ?? 'ready')
         : 'no_key';
       const genAiMilAvailable = !!userStarkKey && genAiMilStatus === 'ready';
-      const openAiStatus = openAiCredential
-        ? (getCachedProviderStatus('gpt-4o', openAiCredential) ?? 'ready')
+      const effectiveOpenAiCredential = openAiCredential ?? serverOpenAiCredential;
+      const openAiStatus = effectiveOpenAiCredential
+        ? (getCachedProviderStatus('gpt-4o', effectiveOpenAiCredential) ?? 'ready')
         : 'no_key';
 
       const enriched = base.map((p) => {
@@ -595,13 +632,15 @@ export async function aiRoutes(server: FastifyInstance) {
           : p.id === 'gpt-4o'
             ? openAiStatus
             : 'no_key';
-        const available = hasUserKey && status === 'ready';
+        const available = (service === 'openai' ? !!effectiveOpenAiCredential : hasUserKey) && status === 'ready';
         return {
           ...p,
           available,
           status,
           userKeyLinked: hasUserKey,
-          keySource: hasUserKey ? 'user' : 'none',
+          keySource: service === 'openai'
+            ? (hasUserKey ? 'user' : effectiveOpenAiCredential ? 'server' : 'none')
+            : (hasUserKey ? 'user' : 'none'),
           ...(service === 'anthropic' ? { visibleModels: anthropicEnabledModels.includes(p.id) ? [p.id] : [] } : {}),
           ...(p.id === 'gpt-4o'
             ? {
@@ -624,6 +663,8 @@ export async function aiRoutes(server: FastifyInstance) {
   // ── Commit history: aggregate commits from all linked GitHub + GitLab repos ──
   server.get<{ Params: { projectId: string } }>('/projects/:projectId/commit-history', async (request, reply) => {
     const { projectId } = request.params;
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
 
     const [projectRes, gitlabRes] = await Promise.all([
       supabase.from('projects').select('github_repo, github_repos').eq('id', projectId).single(),
@@ -911,11 +952,14 @@ Analyze which goals are completed and suggest new goals.`,
       return reply.status(400).send({ error: 'projectId is required' });
     }
 
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
+
     const provider = (request.body.agent && request.body.agent !== 'auto')
       ? resolveProvider(request.body, 'claude-sonnet')
       : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
-    const ctx = await getCachedContext(projectId);
+    const ctx = await getCachedContext(projectId, userId);
 
     const codeBlock = [
       ctx.githubContext ? `GITHUB (commits + diffs + source):\n${ctx.githubContext.slice(0, 35_000)}` : '',
@@ -1039,6 +1083,8 @@ Analyze this document and extract structured insights.`,
     const { projectId } = request.body;
 
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
 
     // Fetch goals + onenote/onedrive events
     const [{ data: goals }, { data: events }, { data: project }] = await Promise.all([
@@ -1160,20 +1206,72 @@ Analyze which goals these documents show progress on, who did the work, and when
   });
 
   // ── Helper: gather full project context from DB + connected sources ─────────
-  async function buildProjectContext(projectId: string) {
+  async function buildProjectContext(projectId: string, userId?: string | null) {
     const [
       { data: project },
       { data: goals },
       { data: events },
       { data: members },
       { data: gitlabInteg },
+      { data: structuredDocuments },
     ] = await Promise.all([
-      supabase.from('projects').select('name, description, github_repo, github_repos, created_at').eq('id', projectId).single(),
+      supabase.from('projects').select('name, description, github_repo, github_repos, created_at, owner_id').eq('id', projectId).single(),
       supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(50),
-      supabase.from('project_members').select('user_id, role, profiles:user_id(display_name)').eq('project_id', projectId),
+      supabase.from('project_members').select('user_id, role').eq('project_id', projectId),
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
+      supabase.from('project_documents').select('filename, extracted_text, summary, keywords, created_at').eq('project_id', projectId).order('created_at', { ascending: false }).limit(25),
     ]);
+
+    const memberRows = (members ?? []) as Array<{ user_id: string; role: string | null }>;
+    const memberUserIds = uniqueNonEmptyStrings(memberRows.map((member) => member.user_id));
+    const fallbackOwnerId = memberUserIds.length === 0 && project?.owner_id ? [project.owner_id as string] : [];
+    const allProjectUserIds = uniqueNonEmptyStrings([
+      ...fallbackOwnerId,
+      ...memberUserIds,
+    ]);
+    const { data: profileRows } = allProjectUserIds.length
+      ? await supabase.from('profiles').select('id, display_name, username, email').in('id', allProjectUserIds)
+      : { data: [] as Array<{ id: string; display_name: string | null; username: string | null; email: string | null }> };
+    const profileMap = new Map((profileRows ?? []).map((profile) => [profile.id, profile]));
+    const teamMembers = new Map<string, {
+      userId: string;
+      role: string;
+      displayName: string;
+      username: string | null;
+      email: string | null;
+    }>();
+
+    for (const member of memberRows) {
+      const profile = profileMap.get(member.user_id);
+      teamMembers.set(member.user_id, {
+        userId: member.user_id,
+        role: member.role ?? 'member',
+        displayName: profile?.display_name?.trim() || profile?.username?.trim() || profile?.email?.trim() || member.user_id,
+        username: profile?.username?.trim() || null,
+        email: profile?.email?.trim() || null,
+      });
+    }
+
+    const ownerId = memberUserIds.length === 0 && typeof project?.owner_id === 'string' ? project.owner_id : null;
+    if (ownerId) {
+      const ownerProfile = profileMap.get(ownerId);
+      const existingOwner = teamMembers.get(ownerId);
+      if (existingOwner) {
+        existingOwner.role = 'owner';
+        existingOwner.displayName = ownerProfile?.display_name?.trim() || existingOwner.displayName;
+        existingOwner.username = ownerProfile?.username?.trim() || existingOwner.username;
+        existingOwner.email = ownerProfile?.email?.trim() || existingOwner.email;
+      } else {
+        teamMembers.set(ownerId, {
+          userId: ownerId,
+          role: 'owner',
+          displayName: ownerProfile?.display_name?.trim() || ownerProfile?.username?.trim() || ownerProfile?.email?.trim() || ownerId,
+          username: ownerProfile?.username?.trim() || null,
+          email: ownerProfile?.email?.trim() || null,
+        });
+      }
+    }
 
     // Tasks list — IDs kept for action proposals in chat, but format uses "task" terminology
     const goalsText = (goals ?? []).map((g) =>
@@ -1185,9 +1283,15 @@ Analyze which goals these documents show progress on, who did the work, and when
       `- [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [${g.category}]` : ''}`
     ).join('\n') || 'No tasks';
 
-    const membersText = (members ?? []).map((m) => {
-      const p = m.profiles as { display_name?: string | null } | null;
-      return `- ${p?.display_name ?? m.user_id} (${m.role}) [user_id:${m.user_id}]`;
+    const membersText = [...teamMembers.values()].map((member) => {
+      const aliases = uniqueNonEmptyStrings([
+        member.displayName,
+        member.username,
+        member.email,
+        emailLocalPart(member.email),
+      ]);
+      const aliasText = aliases.length > 0 ? ` aliases:${aliases.map((value) => `"${value}"`).join(', ')}` : '';
+      return `- ${member.displayName} (${member.role}) [user_id:${member.userId}]${member.username ? ` [username:${member.username}]` : ''}${member.email ? ` [email:${member.email}]` : ''}${aliasText}`;
     }).join('\n') || 'No members';
 
     // Separate uploaded documents from regular activity events
@@ -1207,19 +1311,44 @@ Analyze which goals these documents show progress on, who did the work, and when
     const DOC_PER_FILE = 15_000;
     const DOC_TOTAL    = 50_000;
     let docBudget = DOC_TOTAL;
-    const documentsContext = fileEvents.map((e) => {
-      const meta = e.metadata as { filename?: string; extracted_text?: string; readable?: boolean } | null;
-      const name = meta?.filename ?? e.title ?? 'Unknown file';
-      const date = new Date(e.occurred_at).toLocaleDateString();
-      if (!meta?.extracted_text) return `[${date}] ${name}: (no text extracted)`;
+    const normalizedDocuments = (structuredDocuments?.length
+      ? structuredDocuments.map((document) => ({
+          name: document.filename ?? 'Unknown file',
+          date: document.created_at,
+          extractedText: document.extracted_text ?? null,
+          summary: document.summary ?? null,
+          keywords: Array.isArray(document.keywords) ? document.keywords : [],
+        }))
+      : fileEvents.map((event) => {
+          const meta = event.metadata as {
+            filename?: string;
+            extracted_text?: string;
+            document_summary?: string;
+            keywords?: string[];
+          } | null;
+          return {
+            name: meta?.filename ?? event.title ?? 'Unknown file',
+            date: event.occurred_at,
+            extractedText: meta?.extracted_text ?? null,
+            summary: meta?.document_summary ?? null,
+            keywords: Array.isArray(meta?.keywords) ? meta.keywords : [],
+          };
+        }));
+
+    const documentsContext = normalizedDocuments.map((document) => {
+      const date = new Date(document.date).toLocaleDateString();
+      if (!document.extractedText) return `[${date}] ${document.name}: (no text extracted)`;
       const alloc = Math.min(DOC_PER_FILE, docBudget);
-      if (alloc <= 0) return `[${date}] ${name}: (document budget exhausted — download to read)`;
-      const text = meta.extracted_text.slice(0, alloc);
+      if (alloc <= 0) return `[${date}] ${document.name}: (document budget exhausted — download to read)`;
+      const text = document.extractedText.slice(0, alloc);
       docBudget -= text.length;
-      return `[${date}] FILE: ${name}\n${text}${meta.extracted_text.length > alloc ? '\n[...truncated]' : ''}`;
+      const summary = document.summary ? `Summary: ${document.summary}\n` : '';
+      const keywords = document.keywords.length ? `Keywords: ${document.keywords.join(', ')}\n` : '';
+      return `[${date}] FILE: ${document.name}\n${summary}${keywords}${text}${document.extractedText.length > alloc ? '\n[...truncated]' : ''}`;
     }).join('\n\n---\n\n') || '';
 
     // GitHub data — commits, README, code files, and recent commit diffs
+    const internalHeaders = getInternalRequestHeaders(userId);
     let githubContext = '';
     for (const githubRepo of getGitHubRepos(project)) {
       const [owner, repo] = githubRepo.split('/');
@@ -1230,7 +1359,10 @@ Analyze which goals these documents show progress on, who did the work, and when
 
       // 1. Commits + README
       try {
-        const r = await fetch(`${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`);
+        const r = await fetch(
+          `${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(projectId)}`,
+          { headers: internalHeaders },
+        );
         if (r.ok) {
           const rd = await r.json() as { commits?: string[]; readme?: string };
           if (rd.commits?.length) githubContext += `${githubContext ? '\n\n' : ''}GitHub repo: ${githubRepo}\nCommits:\n${rd.commits.slice(0, 20).join('\n')}`;
@@ -1283,7 +1415,10 @@ Analyze which goals these documents show progress on, who did the work, and when
         return 4;
       };
       try {
-        const treeRes = await fetch(`${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree`);
+        const treeRes = await fetch(
+          `${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(projectId)}`,
+          { headers: internalHeaders },
+        );
         if (treeRes.ok) {
           const treeData = await treeRes.json() as { files: { path: string; size: number }[] };
           const allFiles = treeData.files ?? [];
@@ -1307,7 +1442,10 @@ Analyze which goals these documents show progress on, who did the work, and when
           for (const f of eligible) {
             if (ghBytes >= GH_BUDGET) { skippedBudget.push(f.path); continue; }
             try {
-              const fr = await fetch(`${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/file?path=${encodeURIComponent(f.path)}`);
+              const fr = await fetch(
+                `${BASE}/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/file?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(f.path)}`,
+                { headers: internalHeaders },
+              );
               if (!fr.ok) continue;
               const fd = await fr.json() as { content?: string };
               if (!fd.content) continue;
@@ -1338,10 +1476,9 @@ Analyze which goals these documents show progress on, who did the work, and when
     if (gitlabInteg?.config) {
       const cfg = gitlabInteg.config as GitLabIntegrationConfig;
       const repos = getGitLabRepoPaths(cfg);
-      const glToken = getGitLabToken(cfg);
       const glHost = getGitLabHost(cfg);
 
-      if (repos.length > 0 && glToken && glHost) {
+      if (repos.length > 0 && glHost) {
         const BINARY_EXTS_GL = new Set(['.png','.jpg','.jpeg','.gif','.ico','.pdf','.zip','.tar','.gz','.bin','.onnx','.pt','.weights','.h264','.mp4','.so','.dylib','.exe','.wasm','.pkl','.npy','.npz','.db','.sqlite','.lock']);
         const CODE_EXTS = new Set(['.py','.js','.ts','.jsx','.tsx','.json','.yaml','.yml','.md','.sh','.txt','.html','.css','.toml','.ini','.cfg','.rs','.go','.java','.c','.cpp','.h','.gitignore','.env.example','.svelte','.vue','.rb','.php','.kt','.swift','.cs','.r','.scala','.jl']);
         const ENTRY_NAMES = new Set(['main.py','app.py','index.ts','index.js','server.ts','server.js','main.ts','main.js','__init__.py','manage.py','run.py','wsgi.py','asgi.py']);
@@ -1356,7 +1493,10 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1. Commits + README
           try {
-            const r = await fetch(`${BASE}/api/gitlab/recent?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`);
+            const r = await fetch(
+              `${BASE}/api/gitlab/recent?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`,
+              { headers: internalHeaders },
+            );
             if (r.ok) {
               const rd = await r.json() as { commits?: string[]; readme?: string };
               if (rd.commits?.length) repoCtx += `GitLab${repoLabel} commits:\n${rd.commits.slice(0, 10).join('\n')}\n`;
@@ -1366,22 +1506,25 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 1b. Recent commit diffs
           try {
-            const encoded = encodeURIComponent(repo);
             const commitsRes = await fetch(
-              `${glHost}/api/v4/projects/${encoded}/repository/commits?per_page=6&order_by=created_at&sort=desc`,
-              { headers: { 'PRIVATE-TOKEN': glToken } }
+              `${BASE}/api/gitlab/commits?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`,
+              { headers: internalHeaders }
             );
             if (commitsRes.ok) {
-              const commits: { id: string; title: string }[] = await commitsRes.json();
+              const commitsData = await commitsRes.json() as { commits?: { id: string; title: string }[] };
+              const commits = commitsData.commits ?? [];
               const diffParts: string[] = [];
               for (const c of commits.slice(0, 6)) {
                 try {
                   const diffRes = await fetch(
-                    `${glHost}/api/v4/projects/${encoded}/repository/commits/${c.id}/diff`,
-                    { headers: { 'PRIVATE-TOKEN': glToken } }
+                    `${BASE}/api/gitlab/commit-diff?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}&sha=${encodeURIComponent(c.id)}`,
+                    { headers: internalHeaders }
                   );
                   if (!diffRes.ok) continue;
-                  const diffs: { new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean }[] = await diffRes.json();
+                  const diffData = await diffRes.json() as {
+                    diffs?: { new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean }[];
+                  };
+                  const diffs = diffData.diffs ?? [];
                   const files = diffs.slice(0, 10).map((d) => {
                     const status = d.new_file ? 'added' : d.deleted_file ? 'deleted' : d.renamed_file ? 'renamed' : 'modified';
                     return `  [${status}] ${d.new_path}\n${(d.diff ?? '').slice(0, 600)}`;
@@ -1395,7 +1538,10 @@ Analyze which goals these documents show progress on, who did the work, and when
 
           // 2. Full source code — recursive tree + prioritized file fetch
           try {
-            const treeRes = await fetch(`${BASE}/api/gitlab/tree?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`);
+            const treeRes = await fetch(
+              `${BASE}/api/gitlab/tree?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`,
+              { headers: internalHeaders },
+            );
             if (treeRes.ok) {
               const treeData = await treeRes.json() as { files: { path: string; size?: number }[] };
               const allFiles = treeData.files ?? [];
@@ -1431,7 +1577,10 @@ Analyze which goals these documents show progress on, who did the work, and when
               for (const f of eligible) {
                 if (repoBytesUsed >= REPO_BUDGET || totalCharsUsed >= TOTAL_BUDGET) { skippedBudget.push(f.path); continue; }
                 try {
-                  const fr = await fetch(`${BASE}/api/gitlab/file?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`);
+                  const fr = await fetch(
+                    `${BASE}/api/gitlab/file?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(f.path)}`,
+                    { headers: internalHeaders },
+                  );
                   if (!fr.ok) continue;
                   const fd = await fr.json() as { content?: string };
                   if (!fd.content) continue;
@@ -1468,7 +1617,7 @@ Analyze which goals these documents show progress on, who did the work, and when
       }
     }
 
-    return { project, goals: goals ?? [], members: members ?? [], goalsText, tasksText, membersText, eventsText, documentsContext, githubContext, gitlabContext };
+    return { project, goals: goals ?? [], members: [...teamMembers.values()], goalsText, tasksText, membersText, eventsText, documentsContext, githubContext, gitlabContext };
   }
 
   // Light context: DB-only (no GitHub/GitLab API calls) — used for haiku/simple chat messages
@@ -1476,11 +1625,12 @@ Analyze which goals these documents show progress on, who did the work, and when
   type ProjectCtx = Awaited<ReturnType<typeof buildProjectContext>>;
   const ctxCache = new Map<string, { data: ProjectCtx; expiresAt: number }>();
 
-  async function getCachedContext(projectId: string): Promise<ProjectCtx> {
-    const cached = ctxCache.get(projectId);
+  async function getCachedContext(projectId: string, userId?: string | null): Promise<ProjectCtx> {
+    const cacheKey = `${projectId}:${userId ?? 'anon'}`;
+    const cached = ctxCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.data;
-    const data = await buildProjectContext(projectId);
-    ctxCache.set(projectId, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
+    const data = await buildProjectContext(projectId, userId);
+    ctxCache.set(cacheKey, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
     return data;
   }
 
@@ -1525,18 +1675,52 @@ Analyze which goals these documents show progress on, who did the work, and when
 
   const CHAT_STYLE_WITH_REPO_PATHS = `${CHAT_STYLE} When referencing a file from a linked repository, prefer the most specific repo-qualified path you can infer such as \`repo-name/src/components/File.tsx\` or \`org/repo/src/components/File.tsx\`, not just \`src/components/File.tsx\`.`;
 
-  server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
-    // Rate limiting: per-user (from JWT) or per-IP fallback
-    const rlKey = (request.headers['x-user-id'] as string | undefined) ?? request.ip;
-    if (isRateLimited(rlKey)) {
-      return reply.status(429).send({ error: `Rate limit exceeded — max 30 AI requests per minute. Retry in ${resetInSeconds(rlKey)}s.` });
+  function parseTaskProposals(text: string): { message: string; pendingActions: object[] | null } {
+    const actionsMatch = text.match(/<actions>([\s\S]*?)<\/actions>/);
+    if (actionsMatch) {
+      try {
+        const parsed = JSON.parse(actionsMatch[1].trim());
+        if (Array.isArray(parsed)) {
+          return {
+            message: text.replace(/<actions>[\s\S]*?<\/actions>/, '').trim(),
+            pendingActions: parsed.filter((entry) => !!entry && typeof entry === 'object'),
+          };
+        }
+      } catch {
+        // Fall back to legacy single-action parsing
+      }
     }
 
+    const actionMatch = text.match(/<action>([\s\S]*?)<\/action>/);
+    if (actionMatch) {
+      try {
+        const parsed = JSON.parse(actionMatch[1].trim());
+        return {
+          message: text.replace(/<action>[\s\S]*?<\/action>/, '').trim(),
+          pendingActions: parsed && typeof parsed === 'object' ? [parsed] : null,
+        };
+      } catch {
+        // Ignore malformed legacy action
+      }
+    }
+
+    return { message: text.trim(), pendingActions: null };
+  }
+
+  server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
     const { projectId, messages, reportMode, attachments } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
 
     if (!projectId || !messages?.length) {
       return reply.status(400).send({ error: 'projectId and messages are required' });
+    }
+
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
+
+    const rlKey = userId;
+    if (isRateLimited(rlKey)) {
+      return reply.status(429).send({ error: `Rate limit exceeded — max 30 AI requests per minute. Retry in ${resetInSeconds(rlKey)}s.` });
     }
 
     // Resolve provider: explicit selection wins; auto picks based on user's stored keys
@@ -1549,7 +1733,7 @@ Analyze which goals these documents show progress on, who did the work, and when
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
 
     // Always use full context so documents and repo code are available
-    const ctx = await getCachedContext(projectId);
+    const ctx = await getCachedContext(projectId, userId);
 
     const docsSection = ctx.documentsContext
       ? `\n\nUPLOADED DOCUMENTS (full text):\n${ctx.documentsContext}`
@@ -1577,20 +1761,44 @@ PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescri
 TASKS (${ctx.goals.length} total):
 ${ctx.tasksText}
 
+TASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):
+${ctx.goalsText}
+
 TEAM MEMBERS:
 ${ctx.membersText}
 
 RECENT ACTIVITY:
 ${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}
 
-CAPABILITIES: When appropriate, you may propose ONE action on goals. Include it at the end of your message using this exact format:
-<action>{"type":"create_goal","description":"Human-readable description of what you'll do","args":{"title":"...","deadline":"YYYY-MM-DD","category":"...","assignedTo":"user_id_or_null"}}</action>
-OR for updates:
-<action>{"type":"update_goal","description":"...","args":{"goalId":"exact-id","updates":{"status":"in_progress","progress":50,"deadline":"YYYY-MM-DD"}}}</action>
-OR for delete:
-<action>{"type":"delete_goal","description":"...","args":{"goalId":"exact-id","goalTitle":"..."}}</action>
+CAPABILITIES: When appropriate, you may propose MULTIPLE task actions in a single response. Put them at the very end of your message using this exact wrapper:
+<actions>[
+  {
+    "id":"short-stable-id",
+    "type":"create_goal" | "update_goal" | "delete_goal" | "review_redundancy",
+    "title":"Short card title",
+    "description":"Human-readable description of the proposed action",
+    "reasoning":"1-2 sentences explaining why this specific task action is warranted",
+    "args": { ... }
+  }
+]</actions>
 
-Rules: Only propose an action when clearly relevant. Always explain reasoning before the tag. User must approve before anything executes.`;
+Action args:
+- create_goal: {"title":"...","deadline":"YYYY-MM-DD_or_null","category":"...","assignedTo":"user_id_or_null"}
+- update_goal: {"goalId":"exact task_id from TASK ACTION TARGETS","goalTitle":"exact task title","updates":{"title":"optional","status":"not_started|in_progress|in_review|complete","progress":0-100,"deadline":"YYYY-MM-DD_or_null","category":"optional","assigned_to":"user_id_or_null"}}
+- delete_goal: {"goalId":"exact task_id from TASK ACTION TARGETS","goalTitle":"exact task title"}
+- review_redundancy: {"goalIds":["exact task_id from TASK ACTION TARGETS"],"goalTitles":["task title"],"summary":"what appears redundant","recommendedAction":"merge|delete|keep|clarify"}
+
+Rules:
+- Keep proposals task-scoped: one card per task mutation or redundancy finding.
+- Only emit proposals when clearly relevant.
+- If the user asks for another iteration, respond normally and optionally include a new <actions> block.
+- Never mention internal IDs in the visible prose outside the JSON block.
+- For any action that targets an existing task, copy the exact task_id from TASK ACTION TARGETS. Never emit placeholders such as "exact-id".
+- For assignment requests, resolve people using the TEAM MEMBERS aliases above. Match against display name, username, full email, or email local-part.
+- If exactly one team member matches the requested person, use that member's user_id in the action payload.
+- If there are multiple plausible matches or no confident match, ask a short follow-up question that lists the closest candidate team members and wait for clarification instead of claiming the person is unavailable.
+- Only say a person cannot be assigned if there is truly no plausible team-member match in the TEAM MEMBERS list.
+- User approval is always required before any automated task mutation executes.`;
 
     const history = messages.slice(-20);
     const lastMsg = history[history.length - 1]?.content ?? '';
@@ -1627,18 +1835,8 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
         webSearch: !usingGenAiMil,
       }, userApiKey);
 
-      // Parse optional action tag
-      let pendingAction: object | null = null;
-      let displayMessage = result.text;
-      const actionMatch = result.text.match(/<action>([\s\S]*?)<\/action>/);
-      if (actionMatch) {
-        try {
-          pendingAction = JSON.parse(actionMatch[1].trim());
-          displayMessage = result.text.replace(/<action>[\s\S]*?<\/action>/, '').trim();
-        } catch { /* ignore malformed action */ }
-      }
-
-      return { message: displayMessage, pendingAction, provider: result.provider };
+      const { message: displayMessage, pendingActions } = parseTaskProposals(result.text);
+      return { message: displayMessage, pendingActions, provider: result.provider };
     } catch (err: any) {
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
@@ -1650,6 +1848,21 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
   // ── Chat with real token streaming (SSE) ─────────────────────────────────
   server.post<{ Body: ChatBody }>('/ai/chat-stream', async (request, reply) => {
+    const { projectId, messages, reportMode, attachments } = request.body;
+    const lastMessage = messages?.[messages.length - 1]?.content ?? '';
+
+    if (!projectId || !messages?.length) {
+      return reply.status(400).send({ error: 'projectId and messages are required' });
+    }
+
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
+
+    const rlKey = userId;
+    if (isRateLimited(rlKey)) {
+      return reply.status(429).send({ error: `Rate limit exceeded — max 30 AI requests per minute. Retry in ${resetInSeconds(rlKey)}s.` });
+    }
+
     reply.hijack();
     const res = reply.raw;
     res.setHeader('Content-Type', 'text/event-stream');
@@ -1658,23 +1871,6 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
     res.flushHeaders();
 
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-
-    // Rate limiting: per-user (from JWT) or per-IP fallback
-    const rlKey = (request.headers['x-user-id'] as string | undefined) ?? request.ip;
-    if (isRateLimited(rlKey)) {
-      send({ type: 'error', message: `Rate limit exceeded — max 30 AI requests per minute. Retry in ${resetInSeconds(rlKey)}s.` });
-      res.end();
-      return;
-    }
-
-    const { projectId, messages, reportMode, attachments } = request.body;
-    const lastMessage = messages?.[messages.length - 1]?.content ?? '';
-
-    if (!projectId || !messages?.length) {
-      send({ type: 'error', message: 'projectId and messages are required' });
-      res.end();
-      return;
-    }
 
     const explicitAgentStream = request.body.agent && request.body.agent !== 'auto';
     const provider = explicitAgentStream
@@ -1686,7 +1882,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
     try {
       send({ type: 'status', text: 'Loading project context…' });
-      const ctx = await getCachedContext(projectId);
+      const ctx = await getCachedContext(projectId, userId);
       send({ type: 'status', text: 'Generating response…' });
 
       const docsSection = ctx.documentsContext ? `\n\nUPLOADED DOCUMENTS (full text):\n${ctx.documentsContext}` : '';
@@ -1695,7 +1891,7 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
 
       const systemPrompt = reportMode
         ? `You are Odyssey's report advisor. Help the user plan a project report. Be concise and specific. Always refer to tasks by their title, never by ID.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}\nTASKS:\n${ctx.tasksText}\nACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose ONE action on goals at the end using: <action>{"type":"create_goal"|"update_goal"|"delete_goal","description":"...","args":{...}}</action>`;
+        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):\n${ctx.goalsText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose multiple task actions at the end using:\n<actions>[{"id":"short-stable-id","type":"create_goal"|"update_goal"|"delete_goal"|"review_redundancy","title":"Short card title","description":"...","reasoning":"...","args":{...}}]</actions>\n\nASSIGNMENT RULES:\n- Resolve people using the TEAM MEMBERS aliases above.\n- Match by display name, username, full email, or email local-part.\n- If exactly one team member matches, use that member's user_id.\n- If multiple candidates could match, or no confident match exists, ask a short clarification question listing the closest candidates instead of claiming the person is unavailable.\n- Only say someone cannot be assigned if the TEAM MEMBERS list truly has no plausible match.\n- For any action that targets an existing task, copy the exact task_id from TASK ACTION TARGETS. Never emit placeholders such as \"exact-id\".\n\nUse one array entry per task mutation or redundancy finding. User approval is always required before automated changes execute.`;
 
       const history = messages.slice(-20);
       const lastMsg = history[history.length - 1]?.content ?? '';
@@ -1731,18 +1927,8 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
         userApiKey,
       );
 
-      // Parse optional action tag from full accumulated text
-      let pendingAction: object | null = null;
-      let displayMessage = result.text || fullText;
-      const actionMatch = displayMessage.match(/<action>([\s\S]*?)<\/action>/);
-      if (actionMatch) {
-        try {
-          pendingAction = JSON.parse(actionMatch[1].trim());
-          displayMessage = displayMessage.replace(/<action>[\s\S]*?<\/action>/, '').trim();
-        } catch { /* ignore */ }
-      }
-
-      send({ type: 'done', message: displayMessage, pendingAction, provider: result.provider });
+      const { message: displayMessage, pendingActions } = parseTaskProposals(result.text || fullText);
+      send({ type: 'done', message: displayMessage, pendingActions, provider: result.provider });
     } catch (err: any) {
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
@@ -1763,25 +1949,105 @@ Rules: Only propose an action when clearly relevant. Always explain reasoning be
     dateTo?: string;
   }
 
+  type StoredTemplateAnalysis = {
+    version?: number;
+    sourceFormat?: 'docx' | 'pptx' | 'pdf';
+    summary?: string;
+    sectionHeadings?: string[];
+    layoutHints?: string[];
+    styleHints?: string[];
+    palette?: string[];
+    fonts?: string[];
+    sampleExcerpt?: string;
+    renderHints?: Record<string, unknown>;
+  };
+
+  function buildTemplatePromptSection(template: {
+    filename?: string;
+    extractedText?: string | null;
+    analysis?: StoredTemplateAnalysis | null;
+  } | null): string {
+    if (!template) return '';
+
+    const analysis = template.analysis;
+    const lines: string[] = [];
+    if (analysis?.summary) lines.push(`Summary: ${analysis.summary}`);
+    if (analysis?.sectionHeadings?.length) {
+      lines.push(`Section headings to mirror when the data supports them: ${analysis.sectionHeadings.slice(0, 10).join(' | ')}`);
+    }
+    if (analysis?.layoutHints?.length) {
+      lines.push(`Layout cues: ${analysis.layoutHints.slice(0, 6).join(' ')}`);
+    }
+    if (analysis?.styleHints?.length) {
+      lines.push(`Style cues: ${analysis.styleHints.slice(0, 6).join(' ')}`);
+    }
+    if (analysis?.palette?.length) {
+      lines.push(`Palette hints: ${analysis.palette.slice(0, 6).join(', ')}`);
+    }
+    if (analysis?.fonts?.length) {
+      lines.push(`Font hints: ${analysis.fonts.slice(0, 4).join(', ')}`);
+    }
+    if (analysis?.renderHints && Object.keys(analysis.renderHints).length > 0) {
+      lines.push(`Render hints: ${JSON.stringify(analysis.renderHints)}`);
+    }
+    if (analysis?.sampleExcerpt) {
+      lines.push(`Representative excerpt: ${analysis.sampleExcerpt.slice(0, 1000)}`);
+    } else if (template.extractedText) {
+      lines.push(`Representative excerpt: ${template.extractedText.slice(0, 1200)}`);
+    }
+
+    if (!lines.length) return '';
+
+    return `\n\nREPORT TEMPLATE (match the uploaded template as closely as the data and output format allow. Preserve its section cadence, document density, heading behavior, and visual tone rather than defaulting to a generic report layout):\nTemplate file: ${template.filename ?? 'uploaded template'}\n${lines.join('\n')}`;
+  }
+
   server.post<{ Body: GenerateReportBody }>('/ai/generate-report', async (request, reply) => {
-    const provider = resolveProvider(request.body, 'claude-sonnet');
     const { projectId, prompt, format, dateFrom, dateTo } = request.body;
     if (!projectId || !prompt) return reply.status(400).send({ error: 'projectId and prompt are required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
+
+    const provider = (request.body.agent && request.body.agent !== 'auto')
+      ? resolveProvider(request.body, 'claude-sonnet')
+      : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
 
     // Fetch the project's report template for the requested format (if any)
     const { data: templateEvents } = await supabase
       .from('events')
-      .select('metadata')
+      .select('id, metadata')
       .eq('project_id', projectId)
       .eq('event_type', 'report_template')
       .filter('metadata->>template_type', 'eq', format ?? 'docx')
       .limit(1);
-    const templateMeta = templateEvents?.[0]?.metadata as { extracted_text?: string; filename?: string } | null;
-    const templateSection = templateMeta?.extracted_text
-      ? `\n\nREPORT TEMPLATE (follow this structure, layout, and style closely — mirror the section headings, tone, and formatting from the template below):\nTemplate file: ${templateMeta.filename ?? 'uploaded template'}\n${templateMeta.extracted_text.slice(0, 8000)}`
-      : '';
+    const templateEvent = templateEvents?.[0] ?? null;
+    const templateMeta = templateEvent?.metadata as {
+      extracted_text?: string;
+      content_preview?: string;
+      document_id?: string | null;
+      filename?: string;
+      template_analysis?: StoredTemplateAnalysis | null;
+    } | null;
+    let templateDocumentText: string | null = null;
+    if (templateEvent) {
+      let templateDocumentQuery = supabase
+        .from('project_documents')
+        .select('extracted_text, content_preview')
+        .eq('project_id', projectId)
+        .limit(1);
+      templateDocumentQuery = templateMeta?.document_id
+        ? templateDocumentQuery.eq('id', templateMeta.document_id)
+        : templateDocumentQuery.eq('event_id', templateEvent.id);
+      const { data: templateDocument } = await templateDocumentQuery.maybeSingle();
+      templateDocumentText = templateDocument?.extracted_text ?? templateDocument?.content_preview ?? null;
+    }
+    const templateSection = buildTemplatePromptSection(templateMeta ? {
+      filename: templateMeta.filename,
+      extractedText: templateMeta.extracted_text ?? templateDocumentText ?? templateMeta.content_preview ?? null,
+      analysis: templateMeta.template_analysis ?? null,
+    } : null);
 
-    const ctx = await getCachedContext(projectId);
+    const ctx = await getCachedContext(projectId, userId);
 
     const dateFilter = dateFrom || dateTo
       ? `\nDate range filter: ${dateFrom ?? 'beginning'} → ${dateTo ?? 'today'}`
@@ -1863,7 +2129,7 @@ Return an object with:
         user: contextBlock + templateSection + '\n\nAnalyze the project data thoroughly and plan the full report structure as JSON.',
         maxTokens: 2500,
         jsonMode: true,
-      });
+      }, userApiKey);
       const t1 = extractJson(r1.text);
       pass1 = JSON.parse(t1);
     } catch (err) {
@@ -1915,7 +2181,7 @@ QUALITY REQUIREMENTS:
             user: `${contextBlock}${templateSection}\n\nREPORT METADATA (use this context):\n${pass1Summary}\n\nWrite the section titled: "${sectionTitle}"`,
             maxTokens: 1800,
             jsonMode: true,
-          });
+          }, userApiKey);
           const sec = JSON.parse(extractJson(r2.text));
           if (sec && typeof sec.title === 'string') return sec;
         } catch { /* fall through to placeholder */ }
@@ -1930,6 +2196,11 @@ QUALITY REQUIREMENTS:
       generatedAt: (pass1.generatedAt as string) || new Date().toISOString(),
       subtitle: (pass1.subtitle as string) || `Project Status Report — ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`,
       provider,
+      template: templateMeta ? {
+        id: templateEvent?.id ?? null,
+        filename: templateMeta.filename ?? null,
+        analysis: templateMeta.template_analysis ?? null,
+      } : null,
     };
 
     // Attach raw data for client-side chart generation
@@ -1959,6 +2230,8 @@ QUALITY REQUIREMENTS:
   server.post<{ Body: StandupBody }>('/ai/standup', async (request, reply) => {
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
 
     const provider = (request.body.agent && request.body.agent !== 'auto')
       ? resolveProvider(request.body, 'claude-haiku')
@@ -2124,12 +2397,14 @@ Generate the standup summary.`,
   server.post<{ Body: IntelligentUpdateBody }>('/ai/intelligent-update', async (request, reply) => {
     const { projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
 
     const provider = (request.body.agent && request.body.agent !== 'auto')
       ? resolveProvider(request.body, 'claude-haiku')
       : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
-    const ctx = await getCachedContext(projectId);
+    const ctx = await getCachedContext(projectId, userId);
 
     // ── Fetch project labels (categories + LOEs) ─────────────────────────────
     const { data: labelsData } = await supabase
@@ -2301,6 +2576,8 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
   // ── Load persisted standup report ─────────────────────────────────────────
   server.get<{ Params: { projectId: string } }>('/ai/standup/:projectId', async (request, reply) => {
     const { projectId } = request.params;
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
     const { data, error } = await supabase
       .from('standup_reports')
       .select('*')
@@ -2334,12 +2611,14 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
   server.post<{ Body: TaskGuidanceBody }>('/ai/task-guidance', async (request, reply) => {
     const { agent, projectId, taskTitle, taskStatus, taskProgress, taskCategory, taskLoe } = request.body;
     if (!projectId || !taskTitle) return reply.status(400).send({ error: 'projectId and taskTitle are required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
     // Prefer haiku for lightweight guidance; for auto, pick based on what the user actually has
     const provider = (agent && agent !== 'auto')
       ? resolveProvider({ agent }, 'claude-haiku')
       : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
-    const ctx = await getCachedContext(projectId);
+    const ctx = await getCachedContext(projectId, userId);
 
     const repoCtx = [
       ctx.githubContext ? `GITHUB COMMITS & README:\n${ctx.githubContext.slice(0, 3000)}` : '',
@@ -2375,6 +2654,7 @@ Give me the 4-6 most impactful next steps to make concrete progress on this task
   server.post<{ Body: AISearchBody }>('/ai/search', async (request, reply) => {
     const { agent, projectId, query } = request.body;
     if (!projectId || !query) return reply.status(400).send({ error: 'projectId and query are required' });
+    if (!(await ensureProjectAccess(reply, request.headers.authorization, projectId))) return;
 
     // Fetch goals + recent events
     const [goalsRes, eventsRes] = await Promise.all([
@@ -2446,6 +2726,8 @@ ${eventsText || 'none'}`,
   server.post<{ Body: RiskAssessBody }>('/ai/risk-assess', async (request, reply) => {
     const { agent, projectId } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
 
     const [goalsRes, depsRes] = await Promise.all([
       supabase.from('goals').select('id,title,status,progress,deadline,updated_at,assignees,category').eq('project_id', projectId),
@@ -2497,8 +2779,6 @@ Assess every goal listed.`,
       );
 
       // Log a single audit event
-      const session = await supabase.auth.getSession();
-      const userId = session.data?.session?.user?.id ?? null;
       await supabase.from('events').insert({
         project_id: projectId,
         source: 'ai',
@@ -2529,6 +2809,8 @@ Assess every goal listed.`,
     const { agent, projectId, fileContent, fileName, existingTaskTitles = [] } = request.body;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
     if (!fileContent?.trim()) return reply.status(400).send({ error: 'fileContent is required' });
+    const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
+    if (!userId) return;
 
     const provider = agent && agent !== 'auto'
       ? resolveProvider(request.body, 'claude-sonnet')
@@ -2560,6 +2842,78 @@ Return only the JSON array, no other text.`;
     } catch (err: any) {
       server.log.error(err);
       return reply.status(500).send({ error: err?.message ?? 'Failed to extract tasks from meeting notes' });
+    }
+  });
+
+  server.post('/ai/dashboard-summary', async (request, reply) => {
+    const userId = await getUserFromAuthHeader(request.headers.authorization);
+    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const provider = await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
+    const userApiKey = await getUserApiKey(request.headers.authorization, provider);
+
+    const [{ data: memberships }, { data: ownedProjects }] = await Promise.all([
+      supabase
+        .from('project_members')
+        .select('project_id')
+        .eq('user_id', userId),
+      supabase
+        .from('projects')
+        .select('id')
+        .eq('owner_id', userId),
+    ]);
+    const projectIds = [...new Set([
+      ...(memberships ?? []).map((membership: any) => membership.project_id as string),
+      ...(ownedProjects ?? []).map((project: any) => project.id as string),
+    ])];
+    if (projectIds.length === 0) {
+      return { summary: 'You are not a member of any projects yet.', provider };
+    }
+
+    // Fetch project names + assigned tasks + recent events
+    const [projectsRes, tasksRes, eventsRes] = await Promise.all([
+      supabase.from('projects').select('id, name, description').in('id', projectIds),
+      supabase.from('goals')
+        .select('title, status, progress, deadline, category, project_id')
+        .in('project_id', projectIds)
+        .or(`assigned_to.eq.${userId},assignees.cs.{${userId}}`)
+        .neq('status', 'complete')
+        .order('deadline', { ascending: true, nullsFirst: false })
+        .limit(30),
+      supabase.from('events')
+        .select('title, event_type, occurred_at, project_id')
+        .in('project_id', projectIds)
+        .order('occurred_at', { ascending: false })
+        .limit(20),
+    ]);
+
+    const projects = (projectsRes.data ?? []) as { id: string; name: string; description: string | null }[];
+    const tasks = (tasksRes.data ?? []) as { title: string; status: string; progress: number; deadline: string | null; category: string | null; project_id: string }[];
+    const events = (eventsRes.data ?? []) as { title: string; event_type: string; occurred_at: string; project_id: string }[];
+    const projectNameMap = Object.fromEntries(projects.map((p) => [p.id, p.name]));
+
+    const projectsContext = projects.map((p) =>
+      `Project: ${p.name}${p.description ? ` — ${p.description}` : ''}`
+    ).join('\n');
+
+    const tasksContext = tasks.length
+      ? tasks.map((t) => `[${projectNameMap[t.project_id] ?? 'Unknown'}] ${t.title} (${t.status}, ${t.progress}%${t.deadline ? `, due ${t.deadline}` : ''})`).join('\n')
+      : 'No tasks assigned.';
+
+    const eventsContext = events.length
+      ? events.slice(0, 10).map((e) => `[${projectNameMap[e.project_id] ?? 'Unknown'}] ${e.title || e.event_type} (${e.occurred_at.slice(0, 10)})`).join('\n')
+      : 'No recent activity.';
+
+    const systemPrompt = `You are a project intelligence assistant. Write a concise, personal dashboard summary for a specific team member. 2-4 sentences. Focus on: what they should prioritize today, any upcoming deadlines, and notable recent activity. Be direct and actionable. No bullet points, no headers — just plain prose.`;
+
+    const userPrompt = `My projects:\n${projectsContext}\n\nMy assigned tasks:\n${tasksContext}\n\nRecent activity:\n${eventsContext}`;
+
+    try {
+      const result = await chat(provider, { system: systemPrompt, user: userPrompt, maxTokens: 300 }, userApiKey);
+      return { summary: result.text, provider: result.provider };
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: err?.message ?? 'Failed to generate summary' });
     }
   });
 }

@@ -2,6 +2,26 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 
+async function fetchAccessibleProjectIds(): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('id');
+
+  if (error || !data) return [];
+  return [...new Set(data.map((project) => project.id).filter((id): id is string => typeof id === 'string' && id.length > 0))];
+}
+
+async function fetchCommitHistoryForProject(projectId: string, accessToken?: string | null) {
+  const res = await fetch(`/api/projects/${projectId}/commit-history`, {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  });
+  if (!res.ok) throw new Error(`commit-history ${res.status}`);
+  return res.json() as Promise<{
+    commits?: { date: string; count: number }[];
+    recentCommits?: RecentCommit[];
+  }>;
+}
+
 interface DashboardStats {
   activeProjects: number;
   goalsTracked: number;
@@ -64,16 +84,11 @@ export function useDashboardHoverDetails() {
 
   useEffect(() => {
     if (!user) return;
+    const currentUserId = user.id;
 
     async function load() {
       setLoading(true);
-
-      const { data: memberships } = await supabase
-        .from('project_members')
-        .select('project_id')
-        .eq('user_id', user.id);
-
-      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      const projectIds = await fetchAccessibleProjectIds();
       if (projectIds.length === 0) {
         setTasks([]);
         setEvents([]);
@@ -363,21 +378,16 @@ export function useRecentCommits() {
     if (!user) return;
 
     async function load() {
-      const { data: memberships } = await supabase
-        .from('project_members')
-        .select('project_id')
-        .eq('user_id', user!.id);
-
-      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      const projectIds = await fetchAccessibleProjectIds();
       if (projectIds.length === 0) { setLoading(false); return; }
 
       const all: RecentCommit[] = [];
       await Promise.all(
         projectIds.map(async (pid: string) => {
           try {
-            const r = await fetch(`/api/projects/${pid}/commit-history`);
-            if (!r.ok) return;
-            const json: { recentCommits?: RecentCommit[] } = await r.json();
+            const json = await fetchCommitHistoryForProject(pid, token);
             all.push(...(json.recentCommits ?? []));
           } catch { /* ignore */ }
         })
@@ -394,6 +404,153 @@ export function useRecentCommits() {
   return { commits, loading };
 }
 
+export interface AssignedTask {
+  id: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  status: string;
+  progress: number;
+  deadline: string | null;
+  category: string | null;
+  loe: string | null;
+}
+
+export function useMyAssignedTasks() {
+  const { user } = useAuth();
+  const [tasks, setTasks] = useState<AssignedTask[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    async function load() {
+      setLoading(true);
+      const projectIds = await fetchAccessibleProjectIds();
+      if (projectIds.length === 0) { setTasks([]); setLoading(false); return; }
+
+      const { data } = await supabase
+        .from('goals')
+        .select('id, title, status, progress, deadline, category, loe, project_id, assignees, assigned_to, projects(name)')
+        .in('project_id', projectIds)
+        .neq('status', 'complete')
+        .or(`assigned_to.eq.${user!.id},assignees.cs.{${user!.id}}`)
+        .order('deadline', { ascending: true, nullsFirst: false });
+
+      setTasks(
+        (data ?? []).map((g: any) => ({
+          id: g.id,
+          projectId: g.project_id,
+          projectName: g.projects?.name ?? 'Unknown',
+          title: g.title,
+          status: g.status,
+          progress: g.progress ?? 0,
+          deadline: g.deadline ?? null,
+          category: g.category ?? null,
+          loe: g.loe ?? null,
+        })),
+      );
+      setLoading(false);
+    }
+    load();
+  }, [user]);
+
+  return { tasks, loading };
+}
+
+export interface DashboardAISummary {
+  summary: string;
+  generatedAt: string;
+  provider?: string | null;
+}
+
+export function useDashboardAISummary() {
+  const { user } = useAuth();
+  const [summary, setSummary] = useState<DashboardAISummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const generate = async () => {
+    if (!user) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch('/api/ai/dashboard-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({}),
+      });
+      const json = await res.json().catch(() => null) as { summary?: string; provider?: string; error?: string } | null;
+      if (!res.ok || !json?.summary) throw new Error(json?.error ?? `Failed to generate summary (${res.status})`);
+      const result = {
+        summary: json.summary,
+        generatedAt: new Date().toISOString(),
+        provider: json.provider ?? null,
+      };
+      setSummary(result);
+      const { error: saveError } = await supabase
+        .from('user_dashboard_summaries')
+        .upsert({
+          user_id: user.id,
+          summary: result.summary,
+          provider: result.provider,
+          generated_at: result.generatedAt,
+          updated_at: new Date().toISOString(),
+        });
+      if (saveError) {
+        console.error('Failed to persist dashboard summary:', saveError);
+      }
+      localStorage.setItem(`dashboard-summary:${user.id}`, JSON.stringify(result));
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to generate summary');
+    }
+    setLoading(false);
+  };
+
+  // Load cached summary on mount
+  useEffect(() => {
+    if (!user) return;
+    const userId = user.id;
+    let cancelled = false;
+
+    async function loadStoredSummary() {
+      const { data, error } = await supabase
+        .from('user_dashboard_summaries')
+        .select('summary, provider, generated_at')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!cancelled && data?.summary) {
+        const stored = {
+          summary: data.summary,
+          provider: data.provider ?? null,
+          generatedAt: data.generated_at,
+        } satisfies DashboardAISummary;
+        setSummary(stored);
+        localStorage.setItem(`dashboard-summary:${userId}`, JSON.stringify(stored));
+        return;
+      }
+
+      if (!cancelled) {
+        const cached = localStorage.getItem(`dashboard-summary:${userId}`);
+        if (cached) {
+          try { setSummary(JSON.parse(cached) as DashboardAISummary); } catch { /* ignore */ }
+        }
+      }
+
+      if (error) {
+        console.error('Failed to load persisted dashboard summary:', error);
+      }
+    }
+
+    void loadStoredSummary();
+    return () => { cancelled = true; };
+  }, [user]);
+
+  return { summary, loading, error, generate };
+}
+
 export function useActivityByDate() {
   const { user } = useAuth();
   const [data, setData] = useState<{ date: string; count: number }[]>([]);
@@ -404,13 +561,9 @@ export function useActivityByDate() {
 
     async function load() {
       setLoading(true);
-      // RLS requires project_id — scope through memberships
-      const { data: memberships } = await supabase
-        .from('project_members')
-        .select('project_id')
-        .eq('user_id', user!.id);
-
-      const projectIds = (memberships ?? []).map((m: any) => m.project_id);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token ?? null;
+      const projectIds = await fetchAccessibleProjectIds();
       if (projectIds.length === 0) {
         setData([]);
         setLoading(false);
@@ -439,9 +592,7 @@ export function useActivityByDate() {
         Promise.all(
           projectIds.map(async (pid: string) => {
             try {
-              const r = await fetch(`/api/projects/${pid}/commit-history`);
-              if (!r.ok) return [] as { date: string; count: number }[];
-              const json: { commits?: { date: string; count: number }[] } = await r.json();
+              const json = await fetchCommitHistoryForProject(pid, token);
               return json.commits ?? [];
             } catch {
               return [] as { date: string; count: number }[];

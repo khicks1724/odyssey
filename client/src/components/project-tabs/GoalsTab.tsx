@@ -59,6 +59,9 @@ const barColors: Record<GoalStatus, string> = {
   in_progress: 'bg-[#D97E2A]/70',
   in_review:   'bg-[#facc15]/70',
   complete:    'bg-[#6DBE7D]/70',
+  active:      'bg-[#D97E2A]/70',
+  at_risk:     'bg-[#D94F4F]/70',
+  missed:      'bg-[#7f1d1d]/80',
 };
 
 const riskDotColor = (score: number | null | undefined) => {
@@ -278,7 +281,7 @@ export interface GoalsTabProps {
   goals: Goal[];
   events: OdysseyEvent[];
   projectId: string | null;
-  searchRef: React.RefObject<SearchPanelHandle>;
+  searchRef: React.RefObject<SearchPanelHandle | null>;
   projectCategories?: string[];
   projectLoes?: string[];
   /** Optional ref that will be set to a function that triggers the "From Notes" file picker */
@@ -305,7 +308,7 @@ export interface GoalsTabProps {
   setEditAutoGuidance: (v: boolean) => void;
   setActiveTab: (tab: string) => void;
   goalModalOnOpen: () => void;
-  createGoal: (data: { title: string; description?: string; category?: string; loe?: string; deadline?: string }) => Promise<unknown>;
+  createGoal: (data: { title: string; description?: string; category?: string; loe?: string; deadline?: string; createdByAI?: boolean }) => Promise<unknown>;
 }
 
 function GoalsTab({
@@ -419,6 +422,7 @@ function GoalsTab({
         ...(t.category ? { category: t.category } : {}),
         ...(t.loe ? { loe: t.loe } : {}),
         ...(t.deadline ? { deadline: t.deadline } : {}),
+        createdByAI: true,
       });
     }
     setNotesModalOpen(false);
@@ -458,6 +462,7 @@ function GoalsTab({
 
   const progressMap: Record<GoalStatus, number> = {
     not_started: 0, in_progress: 40, in_review: 75, complete: 100,
+    active: 40, at_risk: 25, missed: 0,
   };
 
   return (

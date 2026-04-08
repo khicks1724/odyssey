@@ -154,7 +154,7 @@ function JoinByCodePanel() {
       } else if (res.result === 'already_member') {
         navigate(`/projects/${res.project_id}`);
       } else if (res.result === 'request_sent') {
-        setResult(`Join request sent to the owners of "${res.project_name}". You will be notified when approved.`);
+        setResult(`Join request sent to the current members of "${res.project_name}". You will be notified when someone responds.`);
         setCode('');
       } else if (res.result === 'request_already_pending') {
         setResult(`You already have a pending request to join "${res.project_name}".`);

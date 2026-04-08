@@ -329,11 +329,14 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
+const defaultThemeId = 'ivory';
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     const saved = localStorage.getItem('odyssey-theme');
-    return themes.find((t) => t.id === saved) ?? themes[0];
+    return themes.find((t) => t.id === saved)
+      ?? themes.find((t) => t.id === defaultThemeId)
+      ?? themes[0];
   });
 
   useEffect(() => {

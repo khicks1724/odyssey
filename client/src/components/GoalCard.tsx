@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import type { Goal } from '../../types';
+import type { Goal } from '../types';
 import { CheckCircle, Circle, Loader, ChevronDown, AlertTriangle } from 'lucide-react';
 import ProgressRing from './ProgressRing';
 

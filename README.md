@@ -377,6 +377,8 @@ You can also front the server with a reverse proxy such as:
 - Nginx
 - IIS
 
+If you use Nginx, set `client_max_body_size 100m;` on the Odyssey location or server block. Report templates and generated report uploads can otherwise fail with `413 Request Entity Too Large` before the request reaches Fastify.
+
 ## Database Notes
 
 The repository contains:

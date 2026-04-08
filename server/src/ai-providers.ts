@@ -35,6 +35,7 @@ export interface OpenAiCredentialOverride {
   apiKey: string;
   baseURL?: string;
   authMode?: 'bearer' | 'api-key';
+  modelOverride?: string;
 }
 
 export type ProviderCredentialOverride = string | OpenAiCredentialOverride;
@@ -42,6 +43,49 @@ export type ProviderCredentialOverride = string | OpenAiCredentialOverride;
 function extractCredentialValue(credential?: ProviderCredentialOverride): string {
   if (!credential) return '';
   return typeof credential === 'string' ? credential : credential.apiKey;
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function normalizeModelOverride(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+export function getServerOpenAiCredential(): OpenAiCredentialOverride | undefined {
+  const azureApiKey = process.env.AZURE_OPENAI_API_KEY?.trim() ?? '';
+  const azureBaseUrl = process.env.AZURE_OPENAI_BASE_URL?.trim() ?? '';
+  const azureModel = normalizeModelOverride(process.env.AZURE_OPENAI_MODEL);
+
+  if (azureApiKey && azureBaseUrl) {
+    return {
+      apiKey: azureApiKey,
+      baseURL: normalizeBaseUrl(azureBaseUrl),
+      authMode: 'api-key',
+      ...(azureModel ? { modelOverride: azureModel } : {}),
+    };
+  }
+
+  const openAiApiKey = process.env.OPENAI_API_KEY?.trim() ?? '';
+  if (openAiApiKey) {
+    return { apiKey: openAiApiKey, authMode: 'bearer' };
+  }
+
+  return undefined;
+}
+
+export function getServerOpenAiPrimaryModel(defaultModel = 'gpt-4o'): string {
+  return normalizeModelOverride(process.env.AZURE_OPENAI_MODEL) ?? defaultModel;
+}
+
+function isSameOpenAiCredential(a?: OpenAiCredentialOverride, b?: OpenAiCredentialOverride): boolean {
+  if (!a || !b) return false;
+  return a.apiKey === b.apiKey
+    && (a.baseURL ?? '') === (b.baseURL ?? '')
+    && (a.authMode ?? 'bearer') === (b.authMode ?? 'bearer')
+    && (a.modelOverride ?? '') === (b.modelOverride ?? '');
 }
 
 function getProviderStatusCacheKey(provider: AIProvider, credential?: ProviderCredentialOverride): string {
@@ -132,9 +176,10 @@ function resolveOpenAiCredential(apiKeyOverride?: ProviderCredentialOverride): O
       apiKey: apiKeyOverride.apiKey,
       baseURL: apiKeyOverride.baseURL,
       authMode: apiKeyOverride.authMode ?? 'bearer',
+      modelOverride: apiKeyOverride.modelOverride,
     };
   }
-  return { apiKey: '', authMode: 'bearer' };
+  return getServerOpenAiCredential() ?? { apiKey: '', authMode: 'bearer' };
 }
 
 async function callGPT(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
@@ -145,51 +190,89 @@ function isOpenAiProviderSelection(provider: AIProviderSelection): provider is O
   return provider.startsWith('openai:');
 }
 
+function shouldRetryWithMaxCompletionTokens(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unsupported parameter:\s*['"]max_tokens['"]/i.test(message)
+    || (/max_tokens/i.test(message) && /max_completion_tokens/i.test(message));
+}
+
 async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
-  const credential = resolveOpenAiCredential(apiKeyOverride);
-  const apiKey = credential.apiKey;
-  if (!apiKey) throw new Error('No OpenAI API key configured. Add your key in Settings → AI Providers.');
+  async function executeWithCredential(credential: OpenAiCredentialOverride): Promise<ChatResult> {
+    const apiKey = credential.apiKey;
+    if (!apiKey) throw new Error('No OpenAI API key configured. Add your key in Settings → AI Providers.');
 
-  const openai = new OpenAI({
-    apiKey,
-    ...(credential.baseURL ? { baseURL: credential.baseURL } : {}),
-    ...(credential.authMode === 'api-key' ? { defaultHeaders: { 'api-key': apiKey } } : {}),
-  });
-  const userContent = msg.images?.length
-    ? [
-        ...msg.images.map((img) => ({
-          type: 'image_url' as const,
-          image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
-        })),
-        { type: 'text' as const, text: msg.user },
-      ]
-    : msg.user;
+    const openai = new OpenAI({
+      apiKey,
+      ...(credential.baseURL ? { baseURL: credential.baseURL } : {}),
+      ...(credential.authMode === 'api-key' ? { defaultHeaders: { 'api-key': apiKey } } : {}),
+    });
+    const userContent = msg.images?.length
+      ? [
+          ...msg.images.map((img) => ({
+            type: 'image_url' as const,
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+          { type: 'text' as const, text: msg.user },
+        ]
+      : msg.user;
 
-  const isAzureOpenAi = !!credential.baseURL;
-  // Standard OpenAI can swap to the search-preview model. Azure must keep using the configured deployment name.
-  const effectiveModel = msg.webSearch && !isAzureOpenAi ? 'gpt-4o-search-preview' : model;
-  const completionParams: Parameters<typeof openai.chat.completions.create>[0] = {
-    model: effectiveModel,
-    messages: [
-      { role: 'system', content: msg.system },
-      { role: 'user', content: userContent as any },
-    ],
-    ...(msg.webSearch ? {} : { max_tokens: msg.maxTokens || 500 }),
-    ...(msg.jsonMode && !msg.webSearch ? { response_format: { type: 'json_object' } } : {}),
-  };
+    const isAzureOpenAi = !!credential.baseURL;
+    const resolvedModel = credential.modelOverride ?? model;
+    // Standard OpenAI can swap to the search-preview model. Azure must keep using the configured deployment name.
+    const effectiveModel = msg.webSearch && !isAzureOpenAi ? 'gpt-4o-search-preview' : resolvedModel;
+    const baseCompletionParams: Parameters<typeof openai.chat.completions.create>[0] = {
+      model: effectiveModel,
+      messages: [
+        { role: 'system', content: msg.system },
+        { role: 'user', content: userContent as any },
+      ],
+      ...(msg.jsonMode && !msg.webSearch ? { response_format: { type: 'json_object' } } : {}),
+    };
+    const tokenLimit = msg.maxTokens || 500;
+    const completionParams: Parameters<typeof openai.chat.completions.create>[0] = msg.webSearch
+      ? baseCompletionParams
+      : { ...baseCompletionParams, max_tokens: tokenLimit };
+
+    try {
+      const completion = await openai.chat.completions.create({ ...completionParams, stream: false }) as Awaited<ReturnType<typeof openai.chat.completions.create>> & {
+        choices?: Array<{ message?: { content?: string | null } }>;
+      };
+      clearProviderError('gpt-4o', credential);
+      return { text: completion.choices?.[0]?.message?.content || '', provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}` };
+    } catch (err: any) {
+      if (!msg.webSearch && shouldRetryWithMaxCompletionTokens(err)) {
+        const retryParams = { ...baseCompletionParams, max_completion_tokens: tokenLimit, stream: false } as Parameters<typeof openai.chat.completions.create>[0];
+        const completion = await openai.chat.completions.create(retryParams) as Awaited<ReturnType<typeof openai.chat.completions.create>> & {
+          choices?: Array<{ message?: { content?: string | null } }>;
+        };
+        clearProviderError('gpt-4o', credential);
+        return { text: completion.choices?.[0]?.message?.content || '', provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}` };
+      }
+
+      const status = err?.status ?? err?.response?.status ?? 0;
+      const body = err?.message ?? String(err);
+      markProviderError('gpt-4o', status, body, credential);
+      if (isAzureOpenAi && status === 404 && /deployment/i.test(body)) {
+        throw new Error(`Azure OpenAI deployment "${resolvedModel}" was not found. Update the deployment name in Settings → AI Providers.`);
+      }
+      throw err;
+    }
+  }
+
+  const primaryCredential = resolveOpenAiCredential(apiKeyOverride);
+  if (!primaryCredential.apiKey) throw new Error('No OpenAI API key configured. Add your key in Settings → AI Providers.');
 
   try {
-    const completion = await openai.chat.completions.create({ ...completionParams, stream: false });
-    clearProviderError('gpt-4o', credential);
-    return { text: completion.choices[0]?.message?.content || '', provider: model === 'gpt-4o' ? 'gpt-4o' : `openai:${model}` };
-  } catch (err: any) {
-    const status = err?.status ?? err?.response?.status ?? 0;
-    const body = err?.message ?? String(err);
-    markProviderError('gpt-4o', status, body, credential);
-    if (isAzureOpenAi && status === 404 && /deployment/i.test(body)) {
-      throw new Error(`Azure OpenAI deployment "${model}" was not found. Update the deployment name in Settings → AI Providers.`);
-    }
-    throw err;
+    return await executeWithCredential(primaryCredential);
+  } catch (primaryError) {
+    const serverCredential = getServerOpenAiCredential();
+    const shouldTryServerFallback = !!apiKeyOverride
+      && serverCredential?.apiKey
+      && !isSameOpenAiCredential(primaryCredential, serverCredential);
+
+    if (!shouldTryServerFallback) throw primaryError;
+
+    return executeWithCredential(serverCredential);
   }
 }
 

@@ -34,7 +34,7 @@ function JoinSection() {
       } else if (res.result === 'already_member') {
         navigate(`/projects/${res.project_id}`);
       } else if (res.result === 'request_sent') {
-        setResult({ text: `Join request sent to the owners of "${res.project_name}". You'll be notified when approved.`, ok: true });
+        setResult({ text: `Join request sent to the current members of "${res.project_name}". You'll be notified when someone responds.`, ok: true });
         setCode('');
       } else if (res.result === 'request_already_pending') {
         setResult({ text: `You already have a pending request for "${res.project_name}".`, ok: false });
@@ -89,8 +89,8 @@ function JoinSection() {
           <span className="text-[9px] font-mono bg-border text-muted px-1.5 py-0.5 rounded uppercase tracking-wider">Coming Soon</span>
         </div>
         <p className="text-[11px] text-muted">
-          Project owners can generate a time-limited QR code in their project settings. Scanning it
-          will authenticate you and send a join request to the project owners automatically.
+          Project members can generate a time-limited QR code in their project settings. Scanning it
+          will authenticate you and send a join request to the current project members automatically.
         </p>
         <div className="mt-3 flex items-center gap-2 text-[10px] text-muted/60 font-mono">
           <span>· Scan with camera</span>

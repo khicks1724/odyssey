@@ -12,7 +12,7 @@ function isRetryableLazyImportError(error: unknown): boolean {
   );
 }
 
-export function lazyWithRetry<T extends ComponentType<unknown>>(
+export function lazyWithRetry<T extends ComponentType<any>>(
   importer: () => Promise<{ default: T }>,
   key: string,
 ): LazyExoticComponent<T> {

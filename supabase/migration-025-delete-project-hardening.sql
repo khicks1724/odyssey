@@ -19,14 +19,6 @@ begin
     raise exception 'Not authorised to delete project %', p_project_id;
   end if;
 
-  delete from storage.objects
-  where bucket_id = 'project-documents'
-    and split_part(name, '/', 1) = p_project_id::text;
-
-  delete from storage.objects
-  where bucket_id = 'goal-attachments'
-    and split_part(name, '/', 1) = p_project_id::text;
-
   if to_regclass('public.goal_comments') is not null then
     execute 'delete from public.goal_comments where goal_id in (select id from public.goals where project_id = $1)'
     using p_project_id;

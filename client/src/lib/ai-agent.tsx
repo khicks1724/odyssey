@@ -8,7 +8,7 @@ export type AIProvider = FixedAIProvider | OpenAIAgentValue;
 export type AIAgentValue = AIProvider | 'auto';
 
 export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'error';
-export type KeySource = 'user' | 'none';
+export type KeySource = 'user' | 'server' | 'none';
 
 export interface ProviderInfo {
   id: FixedAIProvider;
@@ -96,19 +96,6 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
             if (canonicalModelId && canonicalAgent !== agent && current?.visibleModels?.includes(canonicalAgent)) {
               setAgentState(canonicalAgent);
               localStorage.setItem(STORAGE_KEY, canonicalAgent);
-              return;
-            }
-            const modelAvailable = current?.available && ((current.visibleModels?.length ?? 0) === 0 || current?.visibleModels?.includes(agent));
-            if (!modelAvailable) {
-              setAgentState('auto');
-              localStorage.setItem(STORAGE_KEY, 'auto');
-            }
-          } else {
-            const current = list.find((p) => p.id === agent);
-            const fixedVisible = current?.visibleModels ?? [];
-            if (!current?.available || (fixedVisible.length > 0 && !fixedVisible.includes(agent))) {
-              setAgentState('auto');
-              localStorage.setItem(STORAGE_KEY, 'auto');
             }
           }
         }

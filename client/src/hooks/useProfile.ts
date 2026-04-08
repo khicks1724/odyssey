@@ -26,7 +26,7 @@ export function useProfile() {
       });
   }, [user]);
 
-  const updateProfile = async (updates: Partial<Pick<Profile, 'display_name'>>) => {
+  const updateProfile = async (updates: Partial<Pick<Profile, 'display_name' | 'avatar_url'>>) => {
     if (!user) throw new Error('Not authenticated');
     const { data, error } = await supabase
       .from('profiles')

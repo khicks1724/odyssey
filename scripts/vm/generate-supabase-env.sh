@@ -139,6 +139,14 @@ app_url = sys.argv[3]
 frontend_url = sys.argv[4]
 tenant_id = sys.argv[5]
 
+def build_public_supabase_url(frontend: str, fallback: str) -> str:
+    candidate = (frontend or "").strip() or fallback
+    if not candidate:
+        return fallback
+    return f"{candidate.rstrip('/')}/supabase"
+
+public_supabase_url = build_public_supabase_url(frontend_url, app_url)
+
 redirect_urls = []
 for candidate in [
     frontend_url,
@@ -154,8 +162,8 @@ for candidate in [
         redirect_urls.append(candidate)
 
 updates = {
-    "SUPABASE_PUBLIC_URL": kong_url,
-    "API_EXTERNAL_URL": kong_url,
+    "SUPABASE_PUBLIC_URL": public_supabase_url,
+    "API_EXTERNAL_URL": public_supabase_url,
     "SITE_URL": frontend_url,
     "ADDITIONAL_REDIRECT_URLS": ",".join(redirect_urls),
     "STUDIO_DEFAULT_ORGANIZATION": "Odyssey",
@@ -236,6 +244,10 @@ for provider, client_id, client_secret in provider_specs:
             f"{provider}_CLIENT_ID": client_id,
             f"{provider}_SECRET": client_secret,
         })
+
+azure_url = app_values.get("MICROSOFT_TENANT_URL", "").strip()
+if azure_url:
+    updates["AZURE_URL"] = azure_url
 
 lines = supabase_env.read_text().splitlines()
 seen = set()

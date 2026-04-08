@@ -22,19 +22,34 @@ export interface SuggestedTask {
   priority?: string | null;
 }
 
+export type TaskProposalType =
+  | 'create_goal'
+  | 'update_goal'
+  | 'delete_goal'
+  | 'review_redundancy'
+  | 'extend_deadline'
+  | 'contract_deadline';
+export type TaskProposalState = 'pending' | 'approved' | 'denied' | 'executing';
+
+export interface TaskProposal {
+  id?: string;
+  type: TaskProposalType;
+  title?: string;
+  description: string;
+  reasoning?: string;
+  args: Record<string, unknown>;
+}
+
 export interface ChatMessage {
+  id?: string;
   role: 'user' | 'assistant';
   content: string;
   provider?: string;
   attachments?: MessageAttachment[];
-  pendingAction?: {
-    type: 'create_goal' | 'update_goal' | 'delete_goal';
-    description: string;
-    args: Record<string, unknown>;
-  };
-  actionState?: 'pending' | 'approved' | 'denied';
+  pendingActions?: TaskProposal[];
+  actionStates?: Record<string, TaskProposalState>;
   /** Populated when the AI generated a downloadable report */
-  reportReady?: { data: ReportContent; format: ReportFormat };
+  reportReady?: { data: ReportContent; format: ReportFormat; autoDownloadKey?: string };
   /** Populated when the AI generated task suggestions from meeting notes */
   suggestedTasks?: SuggestedTask[];
   /** Tracks which suggested task indices the user has accepted/rejected */

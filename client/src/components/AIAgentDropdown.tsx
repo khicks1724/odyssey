@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Zap, Bot, RefreshCw } from 'lucide-react';
-import { isOpenAIAgentValue, useAIAgent, type AIAgentValue, type FixedAIProvider, type ProviderInfo, type ProviderStatus } from '../lib/ai-agent';
+import { isOpenAIAgentValue, useAIAgent, type AIAgentValue, type FixedAIProvider, type KeySource, type ProviderInfo, type ProviderStatus } from '../lib/ai-agent';
 import { canonicalizeOpenAiModelId } from '../lib/openai-models';
 import './AIAgentDropdown.css';
 
@@ -59,23 +59,29 @@ function StatusBadge({ available, active, serverReachable, status }: {
   return <span className="aid-badge aid-badge--nokey">NO KEY</span>;
 }
 
+function KeySourceBadge({ keySource }: { keySource?: KeySource }) {
+  if (keySource !== 'server') return null;
+  return <span className="aid-badge aid-badge--server">Server Key</span>;
+}
+
 function getProviderForAgent(id: AIAgentValue, providers: ProviderInfo[]) {
   return providers.find((p) => p.id === (isOpenAIAgentValue(id) ? 'gpt-4o' : id));
+}
+
+function toAgentValues(values: string[] | undefined): AIAgentValue[] {
+  return (values ?? []).filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
 }
 
 function buildProviderGroups(providers: ProviderInfo[]): { label: string; ids: AIAgentValue[] }[] {
   const anthropic: AIAgentValue[] = providers
     .filter((provider) => ['claude-haiku', 'claude-sonnet', 'claude-opus'].includes(provider.id))
-    .flatMap((provider) => (provider.visibleModels ?? []).filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0));
-  const openai: AIAgentValue[] = (providers.find((provider) => provider.id === 'gpt-4o')?.visibleModels ?? [])
-    .filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
-  const google: AIAgentValue[] = (providers.find((provider) => provider.id === 'gemini-pro')?.visibleModels ?? [])
-    .filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
-  const genai: AIAgentValue[] = (providers.find((provider) => provider.id === 'genai-mil')?.visibleModels ?? [])
-    .filter((id): id is AIAgentValue => typeof id === 'string' && id.length > 0);
+    .flatMap((provider) => toAgentValues(provider.visibleModels));
+  const openai = toAgentValues(providers.find((provider) => provider.id === 'gpt-4o')?.visibleModels);
+  const google = toAgentValues(providers.find((provider) => provider.id === 'gemini-pro')?.visibleModels);
+  const genai = toAgentValues(providers.find((provider) => provider.id === 'genai-mil')?.visibleModels);
 
   return [
-    { label: 'Auto', ids: ['auto'] },
+    { label: 'Auto', ids: ['auto' as AIAgentValue] },
     { label: 'Anthropic', ids: anthropic },
     { label: 'OpenAI', ids: openai },
     { label: 'Google', ids: google },
@@ -101,6 +107,9 @@ export default function AIAgentDropdown() {
   const buttonMeta = getAgentMeta(displayAgent);
   const lastUsedMeta = displayLastUsed ? getAgentMeta(displayLastUsed) : null;
   const buttonColorClass = displayAgent === 'auto' ? (lastUsedMeta?.colorClass ?? 'aid-auto') : buttonMeta.colorClass;
+  const displayProviderInfo = displayAgent !== 'auto' ? getProviderForAgent(displayAgent, providers) : undefined;
+  const lastUsedProviderInfo = displayLastUsed ? getProviderForAgent(displayLastUsed, providers) : undefined;
+  const buttonKeySource = displayAgent === 'auto' ? lastUsedProviderInfo?.keySource : displayProviderInfo?.keySource;
 
   const isAvailable = (id: AIAgentValue) => {
     if (id === 'auto') return true;
@@ -138,6 +147,8 @@ export default function AIAgentDropdown() {
             ? lastUsedMeta ? `Auto · ${lastUsedMeta.shortName}` : 'Auto'
             : buttonMeta.shortName}
         </span>
+
+        <KeySourceBadge keySource={buttonKeySource} />
 
         <svg width="10" height="10" viewBox="0 0 12 12" fill="none" className="text-[var(--color-muted)]">
           <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -216,8 +227,11 @@ export default function AIAgentDropdown() {
                           </span>
 
                           <div className={`flex-1 min-w-0 ${dimmed ? 'opacity-40' : ''}`}>
-                            <div className={`text-xs font-medium ${isActive ? 'text-[var(--color-heading)]' : 'text-[var(--color-text)]'}`}>
-                              {meta.name}
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className={`text-xs font-medium truncate ${isActive ? 'text-[var(--color-heading)]' : 'text-[var(--color-text)]'}`}>
+                                {meta.name}
+                              </div>
+                              <KeySourceBadge keySource={pInfo?.keySource} />
                             </div>
                             <div className="text-[10px] text-[var(--color-muted)] truncate">
                               {pInfo?.activeModel

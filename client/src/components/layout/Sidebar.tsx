@@ -10,8 +10,12 @@ import {
   ChevronsUpDown,
 } from 'lucide-react';
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { withBasePath } from '../../lib/base-path';
 import { useAuth } from '../../lib/auth';
+import { useProfile } from '../../hooks/useProfile';
 import { useProjects } from '../../hooks/useProjects';
+import { useNotifications } from '../../hooks/useNotifications';
+import UserAvatar from '../UserAvatar';
 import { useEffect, useRef, useState } from 'react';
 
 const navItems = [
@@ -24,7 +28,9 @@ const navItems = [
 
 export default function Sidebar() {
   const { user, signOut } = useAuth();
+  const { profile } = useProfile();
   const { projects } = useProjects();
+  const { unreadCount } = useNotifications();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -33,6 +39,8 @@ export default function Sidebar() {
   const switcherRef = useRef<HTMLDivElement | null>(null);
   const routeCollapsed = location.pathname.startsWith('/chat');
   const sidebarCollapsed = routeCollapsed || collapsed;
+  const userLabel = profile?.display_name ?? user?.user_metadata?.user_name ?? user?.email ?? 'You';
+  const userAvatar = profile?.avatar_url ?? user?.user_metadata?.avatar_url ?? null;
 
   // Detect current project from URL
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
@@ -63,13 +71,13 @@ export default function Sidebar() {
     try {
       await signOut();
     } finally {
-      window.location.replace('/login');
+      window.location.replace(withBasePath('/login'));
     }
   };
 
   return (
     <aside
-      className={`relative z-20 pointer-events-auto flex flex-col border-r border-border bg-surface h-full shrink-0 transition-all duration-200 ${
+      className={`relative z-40 pointer-events-auto flex flex-col border-r border-border bg-surface h-full shrink-0 transition-all duration-200 ${
         sidebarCollapsed ? 'w-16' : 'w-60'
       }`}
     >
@@ -142,7 +150,7 @@ export default function Sidebar() {
       )}
 
       {/* Nav Links */}
-      <nav className="relative z-20 flex-1 px-3 py-2 space-y-1">
+      <nav className="relative z-40 flex-1 px-3 py-2 space-y-1">
         {navItems.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
@@ -156,8 +164,19 @@ export default function Sidebar() {
               }`
             }
           >
-            <Icon size={16} />
-            {!sidebarCollapsed && label}
+            <span className="relative shrink-0 overflow-visible">
+              <Icon size={16} />
+              {to === '/notifications' && unreadCount > 0 && (
+                <span className="absolute -right-2.5 -top-2.5 z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3c7c7] text-[#a61b1b] border border-[#e7a8a8] shadow-sm text-[9px] font-semibold leading-[18px] text-center">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </span>
+            {!sidebarCollapsed && (
+              <span className="flex items-center justify-between gap-2 min-w-0 flex-1">
+                <span className="truncate">{label}</span>
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>
@@ -167,35 +186,13 @@ export default function Sidebar() {
         <div className="border-t border-border px-3 py-3">
           {sidebarCollapsed ? (
             <div className="flex justify-center">
-              {user.user_metadata?.avatar_url ? (
-                <img
-                  src={user.user_metadata.avatar_url as string}
-                  alt=""
-                  className="w-7 h-7 rounded-full"
-                />
-              ) : (
-                <div className="w-7 h-7 rounded-full bg-surface2 flex items-center justify-center text-[10px] text-muted font-semibold">
-                  {(user.user_metadata?.user_name ?? user.email ?? '?')[0].toUpperCase()}
-                </div>
-              )}
+              <UserAvatar label={userLabel} avatar={userAvatar} className="w-7 h-7" />
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              {user.user_metadata?.avatar_url ? (
-                <img
-                  src={user.user_metadata.avatar_url as string}
-                  alt=""
-                  className="w-7 h-7 rounded-full shrink-0"
-                />
-              ) : (
-                <div className="w-7 h-7 rounded-full bg-surface2 flex items-center justify-center text-[10px] text-muted font-semibold shrink-0">
-                  {(user.user_metadata?.user_name ?? user.email ?? '?')[0].toUpperCase()}
-                </div>
-              )}
+              <UserAvatar label={userLabel} avatar={userAvatar} className="w-7 h-7 shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-heading truncate">
-                  {user.user_metadata?.user_name ?? user.email}
-                </div>
+                <div className="text-xs text-heading truncate">{userLabel}</div>
               </div>
               <button
                 type="button"

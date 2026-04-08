@@ -21,8 +21,10 @@ import CommitActivityCharts from '../CommitActivityCharts';
 import Timeline from '../Timeline';
 import MarkdownWithFileLinks from '../MarkdownWithFileLinks';
 import FilterDropdown from '../FilterDropdown';
+import UserAvatar from '../UserAvatar';
 import { fmtDate } from '../../lib/time-format';
 import { getGitHubRepos } from '../../lib/github';
+import { formatMemberRole } from '../../lib/member-role';
 import type { FileRef } from '../../hooks/useProjectFilePaths';
 import type { Goal, OdysseyEvent } from '../../types';
 
@@ -356,7 +358,31 @@ interface MemberRow {
   user_id: string;
   role: string;
   joined_at: string;
-  profile?: { display_name: string | null; avatar_url: string | null; email?: string | null };
+  profile?: { display_name: string | null; avatar_url: string | null; email?: string | null; username?: string | null };
+}
+
+function memberEmailLocalPart(email?: string | null): string | null {
+  if (!email) return null;
+  const [localPart] = email.split('@');
+  return localPart?.trim() || null;
+}
+
+function getMemberLabel(member: MemberRow, currentUser?: OverviewTabProps['user']): string {
+  if (member.user_id === currentUser?.id) {
+    return (
+      member.profile?.display_name?.trim()
+      || currentUser.user_metadata?.user_name?.trim()
+      || currentUser.email?.trim()
+      || 'You'
+    );
+  }
+
+  return (
+    member.profile?.display_name?.trim()
+    || member.profile?.username?.trim()
+    || memberEmailLocalPart(member.profile?.email)
+    || member.user_id
+  );
 }
 
 type StandupData = {
@@ -389,7 +415,7 @@ export interface OverviewTabProps {
   hasCommitData: boolean;
   setHasCommitData: (v: boolean) => void;
   gitlabRepos: string[];
-  filePaths: string[];
+  filePaths: Map<string, FileRef>;
   insights: {
     status: string;
     nextSteps: string[];
@@ -454,6 +480,11 @@ function OverviewTab({
   categoryLabels,
   loeLabels,
 }: OverviewTabProps) {
+  const currentUserRole = user?.id
+    ? (members.find((member) => member.user_id === user.id)?.role ?? null)
+    : null;
+  const canManageMembers = currentUserRole === 'owner';
+
   const githubRepos = getGitHubRepos(project);
   const primaryGitHubRepo = githubRepos[0] ?? null;
 
@@ -877,7 +908,7 @@ function OverviewTab({
           <div className="flex items-center gap-2">
             <Users size={14} className="text-accent2" />
             <h3 className="font-sans text-sm font-bold text-heading">Team Members</h3>
-            <span className="text-[10px] text-muted font-mono bg-surface2 px-1.5 py-0.5 rounded">{members.length + 1}</span>
+            <span className="text-[10px] text-muted font-mono bg-surface2 px-1.5 py-0.5 rounded">{members.length + (members.some((m) => m.user_id === user?.id) ? 0 : 1)}</span>
           </div>
           <button type="button" onClick={() => setActiveTab('settings')}
             className="text-[10px] text-accent hover:underline">
@@ -885,32 +916,40 @@ function OverviewTab({
           </button>
         </div>
         <div className="space-y-px border border-border bg-border">
-          {/* Owner row — current user */}
-          <div className="flex items-center gap-3 bg-surface px-4 py-2.5">
-            {user?.user_metadata?.avatar_url
-              ? <img src={user.user_metadata.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-              : <div className="w-7 h-7 rounded-full bg-accent/20 flex items-center justify-center"><span className="text-[10px] text-accent font-bold">You</span></div>
-            }
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-heading font-medium truncate">{user?.user_metadata?.user_name ?? user?.email ?? 'You'}</div>
-            </div>
-            <span className="text-[9px] px-1.5 py-0.5 border border-accent3/30 text-accent3 rounded uppercase font-mono">Owner</span>
-          </div>
-          {members.map((m) => (
-            <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-2.5 group">
-              {m.profile?.avatar_url
-                ? <img src={m.profile.avatar_url} alt="" className="w-7 h-7 rounded-full" />
-                : <div className="w-7 h-7 rounded-full bg-accent2/20 flex items-center justify-center">
-                    <span className="text-[10px] text-accent2 font-bold uppercase">{(m.profile?.display_name ?? '?')[0]}</span>
-                  </div>
-              }
+          {/* Current user — only shown if not already in the members list */}
+          {user && !members.some((m) => m.user_id === user.id) && (
+            <div className="flex items-center gap-3 bg-surface px-4 py-2.5">
+              <UserAvatar
+                label={user.user_metadata?.user_name ?? user.email ?? 'You'}
+                avatar={user.user_metadata?.avatar_url ?? null}
+                className="w-7 h-7"
+                fallbackClassName="bg-accent/20 text-accent"
+              />
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-heading font-medium truncate">{m.profile?.display_name ?? m.user_id}</div>
+                <div className="text-xs text-heading font-medium truncate">{user.user_metadata?.user_name ?? user.email ?? 'You'}</div>
               </div>
-              <span className={`text-[9px] px-1.5 py-0.5 border rounded uppercase font-mono ${
+              <span className={`text-[9px] px-1.5 py-0.5 border rounded font-mono ${
+                currentUserRole === 'owner' ? 'border-accent3/30 text-accent3' : 'border-border text-muted'
+              }`}>
+                {formatMemberRole(currentUserRole ?? 'member')}
+              </span>
+            </div>
+          )}
+          {members.sort((a, b) => (a.user_id === user?.id ? -1 : b.user_id === user?.id ? 1 : 0)).map((m) => (
+            <div key={m.user_id} className="flex items-center gap-3 bg-surface px-4 py-2.5 group">
+              <UserAvatar
+                label={getMemberLabel(m, user)}
+                avatar={m.user_id === user?.id ? (m.profile?.avatar_url ?? user.user_metadata?.avatar_url ?? null) : (m.profile?.avatar_url ?? null)}
+                className="w-7 h-7"
+                fallbackClassName={m.user_id === user?.id ? 'bg-accent/20 text-accent' : 'bg-accent2/20 text-accent2'}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-heading font-medium truncate">{getMemberLabel(m, user)}</div>
+              </div>
+              <span className={`text-[9px] px-1.5 py-0.5 border rounded font-mono ${
                 m.role === 'owner' ? 'border-accent3/30 text-accent3' : 'border-border text-muted'
-              }`}>{m.role}</span>
-              {m.role !== 'owner' && (
+              }`}>{formatMemberRole(m.role)}</span>
+              {canManageMembers && m.role !== 'owner' && (
                 <button
                   type="button"
                   title="Promote to owner"

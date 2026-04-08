@@ -91,3 +91,26 @@ body {
   font-family: "Roboto", "Segoe UI", system-ui, sans-serif;
   font-weight: 700;
 }
+
+.login-theme-scope {
+  font-family: var(--font-ui);
+}
+
+.login-theme-scope button,
+.login-theme-scope input,
+.login-theme-scope select,
+.login-theme-scope textarea {
+  font: inherit;
+}
+
+.login-theme-scope .font-serif {
+  font-family: var(--font-serif) !important;
+}
+
+.login-theme-scope .font-sans {
+  font-family: var(--font-sans) !important;
+}
+
+.login-theme-scope .font-mono {
+  font-family: var(--font-mono) !important;
+}

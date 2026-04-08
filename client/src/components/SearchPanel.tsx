@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Search, X, Loader2, Sparkles, Target, Activity, Circle, Loader, AlertTriangle, CheckCircle } from 'lucide-react';
 import type { Goal, OdysseyEvent } from '../types';
 import { useAIAgent } from '../lib/ai-agent';
+import { supabase } from '../lib/supabase';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -131,9 +132,14 @@ const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(
       if (!projectId || q.length < 3) { setAiGoalIds([]); setAiEventIds([]); setInterpretation(null); return; }
       setAiLoading(true);
       try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (sessionData.session?.access_token) {
+          headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+        }
         const res = await fetch(`${API_BASE}/api/ai/search`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({ projectId, query: q, agent }),
         });
         if (res.ok) {
@@ -249,7 +255,11 @@ const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs text-[var(--color-heading)] truncate">{goal.title}</span>
-                      {score === 'ai' && <Sparkles size={8} className="text-[var(--color-accent)] shrink-0" title="AI match" />}
+                      {score === 'ai' && (
+                        <span title="AI match">
+                          <Sparkles size={8} className="text-[var(--color-accent)] shrink-0" />
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 mt-0.5">
                       {goal.category && <span className="text-[9px] text-[var(--color-muted)] font-mono">{goal.category}</span>}
@@ -291,7 +301,11 @@ const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs text-[var(--color-heading)] truncate">{event.title ?? event.event_type}</span>
-                      {score === 'ai' && <Sparkles size={8} className="text-[var(--color-accent)] shrink-0" title="AI match" />}
+                      {score === 'ai' && (
+                        <span title="AI match">
+                          <Sparkles size={8} className="text-[var(--color-accent)] shrink-0" />
+                        </span>
+                      )}
                     </div>
                     {event.summary && <p className="text-[9px] text-[var(--color-muted)] truncate mt-0.5">{event.summary}</p>}
                   </div>

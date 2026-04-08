@@ -21,6 +21,7 @@ const MAIN_MIN = 500;
 
 export default function AppLayout() {
   const location = useLocation();
+  const isChatRoute = location.pathname.startsWith('/chat');
   const { open, setOpen, iuOpen, setIuOpen, projectId, projectName, onGoalMutated } = useChatPanel();
   const { projects } = useProjects();
   const anyPanelOpen = open || iuOpen;
@@ -63,9 +64,11 @@ export default function AppLayout() {
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Top header — counter-zoomed so A+/A- never shifts its contents */}
-        <header className="app-header-fixed flex items-center justify-between px-6 h-11 shrink-0
+        <header className="app-header-fixed relative z-30 flex items-center justify-between px-6 h-11 shrink-0
                             border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-          <DateTime />
+          <div className="flex items-center gap-3 min-w-0">
+            <DateTime />
+          </div>
           <div className="flex items-center gap-2">
             <AIAgentDropdown />
             <FontSizeControl />
@@ -90,8 +93,8 @@ export default function AppLayout() {
 
         {/* Content row: main + optional chat panel */}
         <div className="flex-1 flex overflow-hidden min-h-0">
-          <main className={`flex-1 overflow-y-auto min-w-0 ${location.pathname.startsWith('/chat') ? 'bg-surface' : ''}`}>
-            <div key={location.pathname}>
+          <main className={`flex-1 min-w-0 ${isChatRoute ? 'flex flex-col overflow-hidden bg-surface' : 'overflow-y-auto'}`}>
+            <div key={location.pathname} className={isChatRoute ? 'flex-1 min-h-0' : ''}>
               <Outlet />
             </div>
           </main>
@@ -119,7 +122,7 @@ export default function AppLayout() {
                 onGoalMutated={onGoalMutated ?? undefined}
               />
             )}
-            {iuOpen && (
+            {iuOpen && projectId && (
               <IntelligentUpdatePanel
                 projectId={projectId}
                 onClose={() => setIuOpen(false)}

@@ -50,6 +50,7 @@
 .aid-badge--nokey     { background: rgba(239,68,68,0.10);   color: #f87171;  border: 1px solid rgba(239,68,68,0.20); }
 .aid-badge--offline   { background: rgba(239,68,68,0.10);   color: #f87171;  border: 1px solid rgba(239,68,68,0.20); }
 .aid-badge--nocredits { background: rgba(234,179,8,0.10);   color: #facc15;  border: 1px solid rgba(234,179,8,0.20); }
+.aid-badge--server    { background: rgba(59,130,246,0.10);  color: #60a5fa;  border: 1px solid rgba(59,130,246,0.22); }
 
 .aid-badge-dot {
   width: 5px; height: 5px;

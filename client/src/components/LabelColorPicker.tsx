@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { PROJECT_LABEL_PALETTE as PALETTE } from '../lib/project-label-colors';
 
 // ── Color conversion helpers ────────────────────────────────────────────────
 
@@ -39,19 +40,6 @@ function hexToHsv(hex: string): [number, number, number] {
 function hueToHex(hue: number): string {
   return hsvToHex(hue, 100, 100);
 }
-
-// ── Palette ─────────────────────────────────────────────────────────────────
-
-const PALETTE: string[] = [
-  // Blues
-  '#6a9fd8', '#3b82f6', '#60a5fa', '#1e40af', '#93c5fd',
-  // Greens / Teals
-  '#5a9e8a', '#10b981', '#34d399', '#059669', '#2dd4bf',
-  // Purples / Pinks
-  '#7c3aed', '#8b5cf6', '#a78bfa', '#c084fc', '#e879f9',
-  // Reds / Oranges / Yellows
-  '#e05555', '#f97316', '#fb923c', '#eab308', '#fbbf24',
-];
 
 // ── Custom color canvas picker ───────────────────────────────────────────────
 

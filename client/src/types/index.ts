@@ -26,8 +26,9 @@ export interface Goal {
   id: string;
   project_id: string;
   title: string;
+  description?: string | null;
   deadline: string | null;
-  status: 'not_started' | 'in_progress' | 'in_review' | 'complete';
+  status: 'not_started' | 'in_progress' | 'in_review' | 'complete' | 'active' | 'at_risk' | 'missed';
   risk_score: number | null;
   progress: number;
   completed_at: string | null;
@@ -35,10 +36,11 @@ export interface Goal {
   assignees: string[];
   category: string | null;
   loe: string | null;
-  ai_guidance: string | null;
+  ai_guidance?: string | null;
   created_at: string;
   updated_at: string;
   updated_by: string | null;
+  created_by?: string | null;
 }
 
 export interface OdysseyEvent {
@@ -146,6 +148,195 @@ export interface GoalComment {
   content: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskOwnerSuggestion {
+  taskId: string;
+  taskTitle: string;
+  currentOwnerId: string | null;
+  currentOwnerName: string | null;
+  recommendedOwnerId: string | null;
+  recommendedOwnerName: string | null;
+  confidence: number;
+  evidence: string[];
+  suggestedCollaboratorIds: string[];
+  suggestedCollaboratorNames: string[];
+  workloadState: 'light' | 'balanced' | 'heavy' | 'unknown';
+  urgency: 'critical' | 'high' | 'medium' | 'low';
+  status: string;
+  dueDate: string | null;
+}
+
+export interface PersonQueueItem {
+  taskId: string;
+  taskTitle: string;
+  kind: 'assigned' | 'suggested_owner' | 'suggested_collaborator';
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  dueDate: string | null;
+  status: string;
+  reason: string;
+  confidence: number;
+  blockedByTaskId: string | null;
+  blockedByTaskTitle: string | null;
+  suggestedAction: string;
+}
+
+export interface PersonQueue {
+  userId: string;
+  displayName: string;
+  role: string;
+  totalOpenTasks: number;
+  totalBlockedTasks: number;
+  recentHours: number;
+  items: PersonQueueItem[];
+}
+
+export interface ContributionProfile {
+  userId: string;
+  displayName: string;
+  role: string;
+  activeTasks: number;
+  completedTasks: number;
+  recentHours: number;
+  documentsContributed: number;
+  commentsContributed: number;
+  collaborationCount: number;
+  topConcepts: Array<{ label: string; score: number }>;
+}
+
+export interface HandoffRisk {
+  taskId: string;
+  taskTitle: string;
+  ownerId: string | null;
+  ownerName: string | null;
+  blockedByTaskId: string;
+  blockedByTaskTitle: string;
+  blockerOwnerId: string | null;
+  blockerOwnerName: string | null;
+  severity: 'high' | 'medium' | 'low';
+  reason: string;
+  suggestedNextStep: string;
+}
+
+export interface CoverageGap {
+  id: string;
+  gapType: 'concept' | 'deliverable';
+  label: string;
+  reason: string;
+  linkedTaskIds: string[];
+  linkedTaskTitles: string[];
+  suggestedOwnerIds: string[];
+  suggestedOwnerNames: string[];
+}
+
+export interface CoordinationMetric {
+  label: string;
+  value: number;
+  tone: 'normal' | 'warning' | 'critical' | 'positive';
+}
+
+export interface CoordinationWorkloadPerson {
+  userId: string;
+  displayName: string;
+  role: string;
+  activeTasks: number;
+  blockedTasks: number;
+  overdueTasks: number;
+  recentHours: number;
+  loadScore: number;
+  capacityStatus: 'light' | 'balanced' | 'heavy' | 'unknown';
+}
+
+export interface KnowledgeCoverageEntry {
+  label: string;
+  taskCount: number;
+  documentCount: number;
+  expertCount: number;
+  coverageScore: number;
+  ownerNames: string[];
+}
+
+export interface CoordinationSnapshot {
+  projectId: string;
+  generatedAt: string;
+  status: 'ready' | 'missing' | 'stale' | 'error';
+  viewerRole: 'owner' | 'member';
+  stale: boolean;
+  myNextActions: PersonQueue | null;
+  errorMessage?: string | null;
+  teamCoordination: {
+    summary: string[];
+    metrics: CoordinationMetric[];
+    ownerSuggestions: TaskOwnerSuggestion[];
+    suggestedResponsibilities: TaskOwnerSuggestion[];
+  };
+  needsOwner: TaskOwnerSuggestion[];
+  blockedHandoffs: HandoffRisk[];
+  workloadBalance: {
+    averageActiveTasks: number;
+    averageRecentHours: number;
+    people: CoordinationWorkloadPerson[];
+  };
+  knowledgeCoverage: {
+    coveredConcepts: KnowledgeCoverageEntry[];
+    gaps: CoverageGap[];
+  };
+  contributionProfiles: ContributionProfile[];
+  personQueues: PersonQueue[];
+  ownerSuggestions: TaskOwnerSuggestion[];
+  graphStats: {
+    nodeCount: number;
+    edgeCount: number;
+    nodeTypeCounts: Record<string, number>;
+    edgeTypeCounts: Record<string, number>;
+  };
+  graphInference: {
+    status: 'none' | 'available' | 'skipped' | 'error';
+    provider: string | null;
+    message: string | null;
+    generatedAt: string | null;
+    inferredNodeCount: number;
+    inferredEdgeCount: number;
+  };
+}
+
+export interface CoordinationGraphNode {
+  id: string;
+  nodeType: string;
+  externalId: string;
+  label: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface CoordinationGraphEdge {
+  id: string;
+  edgeType: string;
+  fromNodeId: string;
+  toNodeId: string;
+  weight: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface CoordinationGraph {
+  generatedAt: string;
+  stale: boolean;
+  nodes: CoordinationGraphNode[];
+  edges: CoordinationGraphEdge[];
+  inferredNodeIds: string[];
+  inferredEdgeIds: string[];
+  inference: {
+    status: 'none' | 'available' | 'skipped' | 'error';
+    provider: string | null;
+    message: string | null;
+    generatedAt: string | null;
+    inferredNodeCount: number;
+    inferredEdgeCount: number;
+  };
+}
+
+export interface CoordinationBundle {
+  snapshot: CoordinationSnapshot;
+  graph: CoordinationGraph;
 }
 
 export interface RiskAssessment {

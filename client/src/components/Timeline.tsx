@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Goal } from '../../types';
+import type { Goal } from '../types';
 import './Timeline.css';
 import FilterDropdown from './FilterDropdown';
 
@@ -33,9 +33,19 @@ interface TimelineProps {
   members?: MemberInfo[];
 }
 
+function resolveMemberDisplayName(members: MemberInfo[], userId: string): string | null {
+  for (let index = members.length - 1; index >= 0; index -= 1) {
+    const member = members[index];
+    if (member.user_id !== userId) continue;
+    const displayName = member.display_name?.trim();
+    if (displayName) return displayName;
+  }
+  return null;
+}
+
 function GoalTooltip({ goal, members, color }: { goal: Goal; members: MemberInfo[]; color: string }) {
   const assigneeIds: string[] = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
-  const assigneeNames = assigneeIds.map((id) => members.find((m) => m.user_id === id)?.display_name ?? 'Unknown');
+  const assigneeNames = assigneeIds.map((id) => resolveMemberDisplayName(members, id) ?? 'Unknown');
 
   const statusLabels: Record<string, string> = {
     not_started: 'Not Started',
@@ -320,7 +330,7 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
                 >
                   <div className="tlo-label tlo-label-hover">
                     <span className="tlo-cat-dot" />
-                    <span className="text-[10px] font-mono truncate tlo-cat-text" title={goal.title}>
+                    <span className="text-[10px] font-mono truncate tlo-cat-text">
                       {goal.title}
                     </span>
                   </div>

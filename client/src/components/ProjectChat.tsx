@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
-  Send, Loader2, Bot, Check, Ban, Plus, Pencil, Trash2, Copy, CheckCheck,
+  Send, Loader2, Bot, Check, Ban, Plus, Pencil, Trash2, Copy, CheckCheck, AlertTriangle,
   X, FileText, Github, GitBranch, Image, File, ChevronRight, ChevronDown,
   Download, TableIcon,
 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
-import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask } from '../lib/chat-panel';
-import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV } from '../lib/report-download';
+import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask, type TaskProposal } from '../lib/chat-panel';
+import { downloadReport, exportGoalsCSV } from '../lib/report-download';
 import { supabase } from '../lib/supabase';
+import { saveGeneratedReportToProject } from '../lib/report-storage';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 import RepoTreeModal from './RepoTreeModal';
@@ -17,7 +18,7 @@ import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab'
 import { getGitHubRepos } from '../lib/github';
 import './ProjectChat.css';
 
-type PendingAction = NonNullable<Message['pendingAction']>;
+type PendingAction = NonNullable<Message['pendingActions']>[number];
 
 interface Props {
   projectId: string | null;
@@ -50,19 +51,334 @@ interface ProjectDoc {
   extractedText?: string;
 }
 
+interface ProjectMemberCandidate {
+  userId: string;
+  role: string;
+  displayName: string;
+  username: string | null;
+  email: string | null;
+}
+
+interface ProjectGoalCandidate {
+  id: string;
+  title: string;
+}
+
 // ── Action config ───────────────────────────────────────────────────────────
 
 const ACTION_ICONS: Record<string, React.ReactNode> = {
   create_goal: <Plus size={12} />,
   update_goal: <Pencil size={12} />,
   delete_goal: <Trash2 size={12} />,
+  review_redundancy: <AlertTriangle size={12} />,
+  extend_deadline: <Pencil size={12} />,
+  contract_deadline: <Pencil size={12} />,
 };
 
 const ACTION_COLORS: Record<string, string> = {
   create_goal: 'border-accent3/30 bg-accent3/5 text-accent3',
   update_goal: 'border-accent2/30 bg-accent2/5 text-accent2',
   delete_goal: 'border-danger/30  bg-danger/5  text-danger',
+  review_redundancy: 'border-amber-500/30 bg-amber-500/5 text-amber-300',
+  extend_deadline: 'border-accent/30 bg-accent/5 text-accent',
+  contract_deadline: 'border-border bg-surface2 text-muted',
 };
+
+const ACTION_LABELS: Record<TaskProposal['type'], string> = {
+  create_goal: 'Create Task',
+  update_goal: 'Update Task',
+  delete_goal: 'Delete Task',
+  review_redundancy: 'Redundancy Check',
+  extend_deadline: 'Extend Deadline',
+  contract_deadline: 'Move Deadline Up',
+};
+
+function getProposalKey(action: PendingAction, index: number): string {
+  return action.id?.trim() || `proposal-${index}`;
+}
+
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+}
+
+function emailLocalPart(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const [localPart] = email.split('@');
+  return localPart?.trim() || null;
+}
+
+function normalizeMemberAlias(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isLikelyUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function normalizeGoalMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[*`"_']/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getMemberAliases(member: ProjectMemberCandidate): string[] {
+  return uniqueNonEmptyStrings([
+    member.userId,
+    member.displayName,
+    member.username,
+    member.email,
+    emailLocalPart(member.email),
+  ]).map(normalizeMemberAlias);
+}
+
+function describeMember(member: ProjectMemberCandidate): string {
+  return member.username
+    ? `${member.displayName} (@${member.username})`
+    : member.displayName;
+}
+
+function resolveAssigneeIdentifiers(
+  values: unknown[],
+  members: ProjectMemberCandidate[],
+): { assignees: string[]; unresolved: string[]; ambiguous: Array<{ input: string; candidates: string[] }> } {
+  const assignees: string[] = [];
+  const unresolved: string[] = [];
+  const ambiguous: Array<{ input: string; candidates: string[] }> = [];
+
+  for (const rawValue of values) {
+    const value = String(rawValue ?? '').trim();
+    if (!value) continue;
+
+    if (members.length === 0 && isLikelyUuid(value)) {
+      assignees.push(value);
+      continue;
+    }
+
+    const normalizedValue = normalizeMemberAlias(value);
+    const matches = members.filter((member) => getMemberAliases(member).includes(normalizedValue));
+
+    if (matches.length === 1) {
+      assignees.push(matches[0].userId);
+      continue;
+    }
+
+    if (matches.length > 1) {
+      ambiguous.push({
+        input: value,
+        candidates: matches.map(describeMember),
+      });
+      continue;
+    }
+
+    unresolved.push(value);
+  }
+
+  return {
+    assignees: [...new Set(assignees)],
+    unresolved,
+    ambiguous,
+  };
+}
+
+function buildAssigneeResolutionError(
+  unresolved: string[],
+  ambiguous: Array<{ input: string; candidates: string[] }>,
+): Error {
+  const parts: string[] = [];
+
+  if (unresolved.length > 0) {
+    parts.push(`No project member matched: ${unresolved.join(', ')}.`);
+  }
+
+  if (ambiguous.length > 0) {
+    parts.push(
+      ambiguous
+        .map((entry) => `Multiple project members matched "${entry.input}": ${entry.candidates.join(', ')}`)
+        .join(' '),
+    );
+  }
+
+  parts.push('Ask Project AI to use the exact display name, username, or email of the intended member.');
+  return new Error(parts.join(' '));
+}
+
+function getGoalLookupCandidates(action: PendingAction): string[] {
+  const candidates: string[] = [];
+
+  const goalTitle = typeof action.args.goalTitle === 'string' ? action.args.goalTitle : null;
+  const argTitle = typeof action.args.title === 'string' ? action.args.title : null;
+  const actionTitle = typeof action.title === 'string' ? action.title : null;
+  const description = typeof action.description === 'string' ? action.description : null;
+
+  if (goalTitle) candidates.push(goalTitle);
+  if (argTitle) candidates.push(argTitle);
+  if (actionTitle) candidates.push(actionTitle);
+  if (description) candidates.push(description);
+
+  if (description) {
+    const boldMatches = [...description.matchAll(/\*\*(.+?)\*\*/g)].map((match) => match[1]?.trim()).filter(Boolean) as string[];
+    candidates.push(...boldMatches);
+  }
+
+  return uniqueNonEmptyStrings(candidates);
+}
+
+function resolveGoalId(action: PendingAction, goals: ProjectGoalCandidate[]): string {
+  const rawGoalId = typeof action.args.goalId === 'string' ? action.args.goalId.trim() : '';
+  if (isLikelyUuid(rawGoalId)) return rawGoalId;
+
+  const normalizedCandidates = getGoalLookupCandidates(action)
+    .map(normalizeGoalMatchText)
+    .filter(Boolean);
+  const combinedText = normalizedCandidates.join(' ');
+
+  const exactMatches = goals.filter((goal) => normalizedCandidates.includes(normalizeGoalMatchText(goal.title)));
+  if (exactMatches.length === 1) return exactMatches[0].id;
+  if (exactMatches.length > 1) {
+    throw new Error(`Multiple tasks matched this proposal: ${exactMatches.map((goal) => goal.title).join(', ')}.`);
+  }
+
+  const inclusionMatches = goals.filter((goal) => {
+    const normalizedGoalTitle = normalizeGoalMatchText(goal.title);
+    return normalizedGoalTitle.length >= 8 && combinedText.includes(normalizedGoalTitle);
+  });
+  if (inclusionMatches.length === 1) return inclusionMatches[0].id;
+  if (inclusionMatches.length > 1) {
+    throw new Error(`Multiple tasks matched this proposal: ${inclusionMatches.map((goal) => goal.title).join(', ')}.`);
+  }
+
+  throw new Error('This proposal did not include a valid task target. Ask Project AI to regenerate the action for the specific task.');
+}
+
+function normalizeUpdateArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const candidateUpdates = args.updates && typeof args.updates === 'object' && !Array.isArray(args.updates)
+    ? args.updates as Record<string, unknown>
+    : args;
+  const updates = { ...candidateUpdates };
+
+  delete updates.goalId;
+  delete updates.goalTitle;
+  delete updates.currentDeadline;
+  delete updates.suggestedDeadline;
+  delete updates.reason;
+  delete updates.summary;
+  delete updates.recommendedAction;
+
+  if (updates.assignedTo && !updates.assigned_to) {
+    updates.assigned_to = updates.assignedTo;
+    delete updates.assignedTo;
+  }
+
+  const allowedKeys = new Set([
+    'title',
+    'status',
+    'progress',
+    'deadline',
+    'category',
+    'loe',
+    'assigned_to',
+    'assignees',
+    'completed_at',
+    'ai_guidance',
+    'description',
+  ]);
+
+  for (const key of Object.keys(updates)) {
+    if (!allowedKeys.has(key)) delete updates[key];
+  }
+
+  if (updates.assignees !== undefined) {
+    const assignees = Array.isArray(updates.assignees)
+      ? updates.assignees.map((value) => String(value)).filter(Boolean)
+      : [];
+    updates.assignees = assignees;
+    if (updates.assigned_to === undefined) updates.assigned_to = assignees[0] ?? null;
+  } else if (Object.prototype.hasOwnProperty.call(updates, 'assigned_to')) {
+    const assignedTo = updates.assigned_to ? String(updates.assigned_to) : null;
+    updates.assigned_to = assignedTo;
+    updates.assignees = assignedTo ? [assignedTo] : [];
+  }
+
+  if (updates.progress !== undefined) {
+    const progress = Number(updates.progress);
+    if (Number.isFinite(progress)) updates.progress = progress;
+    else delete updates.progress;
+  }
+
+  if (updates.deadline === '') updates.deadline = null;
+
+  return updates;
+}
+
+function getActionErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === 'object') {
+    const maybeError = error as { message?: unknown; details?: unknown; hint?: unknown; error_description?: unknown };
+    const parts = [maybeError.message, maybeError.details, maybeError.hint, maybeError.error_description]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    if (parts.length > 0) return parts.join(' ');
+  }
+  return 'Unknown error';
+}
+
+function formatProposalSummary(action: PendingAction): string[] {
+  if (action.type === 'create_goal') {
+    return [
+      `Title: ${String(action.args.title ?? 'Untitled task')}`,
+      `Deadline: ${String(action.args.deadline ?? 'None')}`,
+      `Category: ${String(action.args.category ?? 'Uncategorized')}`,
+    ];
+  }
+
+  if (action.type === 'update_goal') {
+    const updates = normalizeUpdateArgs(action.args);
+    return Object.entries(updates).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`);
+  }
+
+  if (action.type === 'delete_goal') {
+    return [`Target: ${String(action.args.goalTitle ?? action.title ?? 'Selected task')}`];
+  }
+
+  if (action.type === 'extend_deadline' || action.type === 'contract_deadline') {
+    return [
+      `Target: ${String(action.args.goalTitle ?? action.title ?? 'Selected task')}`,
+      `Deadline: ${String(action.args.suggestedDeadline ?? 'None')}`,
+    ];
+  }
+
+  const goalTitles = Array.isArray(action.args.goalTitles)
+    ? action.args.goalTitles.map((value) => String(value)).filter(Boolean)
+    : [];
+
+  return [
+    goalTitles.length ? `Tasks: ${goalTitles.join(' · ')}` : 'Tasks: Review candidate duplicates',
+    `Finding: ${String(action.args.summary ?? 'Potential overlap detected.')}`,
+    `Recommendation: ${String(action.args.recommendedAction ?? 'clarify')}`,
+  ];
+}
+
+function withProposalState(
+  messages: Message[],
+  msgIdx: number,
+  action: PendingAction,
+  actionIdx: number,
+  state: 'pending' | 'approved' | 'denied' | 'executing',
+): Message[] {
+  const key = getProposalKey(action, actionIdx);
+  return messages.map((message, index) => {
+    if (index !== msgIdx) return message;
+    return {
+      ...message,
+      actionStates: {
+        ...(message.actionStates ?? {}),
+        [key]: state,
+      },
+    };
+  });
+}
 
 // ── Attachment chip (display) ───────────────────────────────────────────────
 
@@ -155,6 +471,8 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   const [projectDocs,  setProjectDocs]  = useState<ProjectDoc[]>([]);
   const [githubRepo,   setGithubRepo]   = useState<string[]>([]);
   const [gitlabRepos,  setGitlabRepos]  = useState<string[]>([]);
+  const [projectMembers, setProjectMembers] = useState<ProjectMemberCandidate[]>([]);
+  const [projectGoals, setProjectGoals] = useState<ProjectGoalCandidate[]>([]);
   const [resourcesReady, setResourcesReady] = useState(false);
   const { filePaths } = useProjectFilePaths(resolvedProjectId, githubRepo, gitlabRepos);
   const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string; projectId?: string | null } | null>(null);
@@ -163,9 +481,11 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   const bottomRef    = useRef<HTMLDivElement>(null);
   const messagesRef  = useRef<HTMLDivElement>(null);
+  const messagesStateRef = useRef<Message[]>(messages);
   const inputRef     = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contextRef  = useRef<HTMLDivElement>(null);
+  const autoDownloadedReportKeysRef = useRef<Set<string>>(new Set());
 
   // Close project picker on outside click
   useEffect(() => {
@@ -177,6 +497,27 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  const handleReportDownload = useCallback(async (data: NonNullable<Message['reportReady']>['data'], format: NonNullable<Message['reportReady']>['format']) => {
+    try {
+      await downloadReport(data, format);
+    } catch (downloadError) {
+      console.error('Failed to download generated report:', downloadError);
+      setError('Failed to download report.');
+    }
+  }, []);
+
+  useEffect(() => {
+    for (const message of messages) {
+      const reportReady = message.reportReady;
+      const autoDownloadKey = reportReady?.autoDownloadKey;
+      if (!autoDownloadKey || autoDownloadedReportKeysRef.current.has(autoDownloadKey)) continue;
+      autoDownloadedReportKeysRef.current.add(autoDownloadKey);
+      if (reportReady) {
+        void handleReportDownload(reportReady.data, reportReady.format);
+      }
+    }
+  }, [handleReportDownload, messages]);
 
   // ── Fetch project resources ──────────────────────────────────────────────
 
@@ -191,7 +532,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   useEffect(() => {
     let cancelled = false;
     if (!resolvedProjectId) {
-      setGithubRepo(null);
+      setGithubRepo([]);
       setGitlabRepos([]);
       setProjectDocs([]);
       setResourcesReady(true);
@@ -202,10 +543,73 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
       // Project record (GitHub repos)
       const { data: proj } = await supabase
         .from('projects')
-        .select('github_repo, github_repos')
+        .select('github_repo, github_repos, owner_id')
         .eq('id', resolvedProjectId)
         .maybeSingle();
       if (!cancelled) setGithubRepo(getGitHubRepos(proj));
+
+      const { data: goalRows } = await supabase
+        .from('goals')
+        .select('id, title')
+        .eq('project_id', resolvedProjectId);
+      if (!cancelled) {
+        setProjectGoals((goalRows ?? []).map((goal) => ({
+          id: String(goal.id),
+          title: String(goal.title ?? ''),
+        })));
+      }
+
+      const { data: memberRows } = await supabase
+        .from('project_members')
+        .select('user_id, role')
+        .eq('project_id', resolvedProjectId);
+
+      const memberUserIds = uniqueNonEmptyStrings([
+        typeof proj?.owner_id === 'string' ? proj.owner_id : null,
+        ...(memberRows ?? []).map((member) => member.user_id),
+      ]);
+
+      const { data: profileRows } = memberUserIds.length
+        ? await supabase
+          .from('profiles')
+          .select('id, display_name, username, email')
+          .in('id', memberUserIds)
+        : { data: [] as Array<{ id: string; display_name: string | null; username: string | null; email: string | null }> };
+
+      const profileMap = new Map((profileRows ?? []).map((profile) => [profile.id, profile]));
+      const nextMembers = new Map<string, ProjectMemberCandidate>();
+
+      for (const member of memberRows ?? []) {
+        const profile = profileMap.get(member.user_id);
+        nextMembers.set(member.user_id, {
+          userId: member.user_id,
+          role: member.role ?? 'member',
+          displayName: profile?.display_name?.trim() || profile?.username?.trim() || profile?.email?.trim() || member.user_id,
+          username: profile?.username?.trim() || null,
+          email: profile?.email?.trim() || null,
+        });
+      }
+
+      if (typeof proj?.owner_id === 'string' && proj.owner_id) {
+        const ownerProfile = profileMap.get(proj.owner_id);
+        const existingOwner = nextMembers.get(proj.owner_id);
+        if (existingOwner) {
+          existingOwner.role = 'owner';
+          existingOwner.displayName = ownerProfile?.display_name?.trim() || existingOwner.displayName;
+          existingOwner.username = ownerProfile?.username?.trim() || existingOwner.username;
+          existingOwner.email = ownerProfile?.email?.trim() || existingOwner.email;
+        } else {
+          nextMembers.set(proj.owner_id, {
+            userId: proj.owner_id,
+            role: 'owner',
+            displayName: ownerProfile?.display_name?.trim() || ownerProfile?.username?.trim() || ownerProfile?.email?.trim() || proj.owner_id,
+            username: ownerProfile?.username?.trim() || null,
+            email: ownerProfile?.email?.trim() || null,
+          });
+        }
+      }
+
+      if (!cancelled) setProjectMembers([...nextMembers.values()]);
 
       // GitLab repos
       const { data: gl } = await supabase
@@ -261,6 +665,9 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   useEffect(() => {
     const el = messagesRef.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
+  useEffect(() => {
+    messagesStateRef.current = messages;
   }, [messages]);
   // Reset textarea height when input is cleared (e.g. after send)
   useEffect(() => {
@@ -373,9 +780,10 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   // ── Send ─────────────────────────────────────────────────────────────────
 
-  const sendMessage = useCallback(async (overrideText?: string) => {
+  const sendMessage = useCallback(async (overrideText?: string, historyOverride?: Message[]) => {
     const text = (overrideText ?? input).trim();
-    if ((!text && attachments.length === 0) || loading) return;
+    const activeAttachments = overrideText ? [] : attachments;
+    if ((!text && activeAttachments.length === 0) || loading) return;
     const targetProjectId = inferProjectFromPrompt(text, projects, resolvedProjectId);
     if (!targetProjectId) {
       setError('No accessible project is available for chat.');
@@ -385,7 +793,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     setResolvedProjectId(targetProjectId);
 
     // Build display attachments for the message bubble
-    const displayAtts: MessageAttachment[] = attachments.map((a) => ({
+    const displayAtts: MessageAttachment[] = activeAttachments.map((a) => ({
       type: a.type,
       name: a.name,
       previewUrl: a.previewUrl,
@@ -395,7 +803,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     }));
 
     // Build wire attachments for the API
-    const wireAtts = attachments.map((a) => ({
+    const wireAtts = activeAttachments.map((a) => ({
       type: a.type,
       name: a.name,
       base64: a.base64,
@@ -410,10 +818,10 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
       content: inferredProject && inferredProject.id !== projectId ? `[Project: ${inferredProject.name}]\n${text}` : text,
       attachments: displayAtts.length ? displayAtts : undefined,
     };
-    const next = [...messages, userMsg];
+    const next = [...(historyOverride ?? messages), userMsg];
     setMessages(next);
     if (!overrideText) setInput('');
-    setAttachments([]);
+    if (!overrideText) setAttachments([]);
     setLoading(true);
     setError(null);
 
@@ -447,14 +855,35 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
           showAIError(rData.error ?? `Error ${rRes.status}`, rRes.status);
         } else {
           if (rData.provider) notifyModelUsed(rData.provider);
+                    let savedArtifactNote = '';
+                    try {
+                      const artifact = await saveGeneratedReportToProject({
+                        projectId: targetProjectId,
+                        format: fmt,
+                        report: rData,
+                        provider: rData.provider ?? null,
+                        dateFrom: fromStr,
+                        dateTo: todayStr,
+                      });
+                      if (artifact) {
+                        rData.artifact = artifact;
+                        savedArtifactNote = ' · saved to project documents';
+                      }
+                    } catch (saveError) {
+                      console.error('Failed to persist generated report artifact:', saveError);
+                    }
           const fmtLabel2 = fmt === 'pptx' ? 'PowerPoint' : fmt === 'pdf' ? 'PDF' : 'Word';
           setMessages((prev) => [
             ...prev.slice(0, -1), // replace the "generating…" message
             {
               role: 'assistant',
-              content: `**${rData.title}** is ready — ${rData.sections?.length ?? 0} sections · ${fmtLabel2}`,
+              content: `**${rData.title}** is ready — ${rData.sections?.length ?? 0} sections · ${fmtLabel2}${savedArtifactNote}`,
               provider: rData.provider,
-              reportReady: { data: rData, format: fmt },
+              reportReady: {
+                data: rData,
+                format: fmt,
+                autoDownloadKey: `project-chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              },
             },
           ]);
         }
@@ -539,12 +968,19 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         showAIError(data.error ?? `Error ${res.status}`, res.status);
       } else {
         if (data.provider) notifyModelUsed(data.provider);
+        const pendingActions: PendingAction[] = Array.isArray(data.pendingActions)
+          ? data.pendingActions
+          : data.pendingAction
+            ? [data.pendingAction]
+            : [];
         setMessages((prev) => [...prev, {
           role: 'assistant',
           content: data.message,
           provider: data.provider,
-          pendingAction: data.pendingAction ?? undefined,
-          actionState: data.pendingAction ? 'pending' : undefined,
+          pendingActions: pendingActions.length ? pendingActions : undefined,
+          actionStates: pendingActions.length
+            ? Object.fromEntries(pendingActions.map((action, index) => [getProposalKey(action, index), 'pending' as const]))
+            : undefined,
         }]);
       }
     } catch {
@@ -559,50 +995,112 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   const executeAction = async (action: PendingAction): Promise<string> => {
     const { type, args } = action;
     if (type === 'create_goal') {
+      const requestedAssignees = Array.isArray(args.assignees)
+        ? args.assignees.map((value) => String(value)).filter(Boolean)
+        : (args.assignedTo ? [String(args.assignedTo)] : []);
+      const { assignees, unresolved, ambiguous } = resolveAssigneeIdentifiers(requestedAssignees, projectMembers);
+      if (unresolved.length > 0 || ambiguous.length > 0) {
+        throw buildAssigneeResolutionError(unresolved, ambiguous);
+      }
       const { data, error: err } = await supabase.from('goals').insert({
-        project_id:  projectId,
+        project_id:  resolvedProjectId ?? projectId,
         title:       args.title as string,
         deadline:    (args.deadline as string) || null,
         category:    (args.category as string) || null,
-        assigned_to: (args.assignedTo as string) || null,
+        loe:         (args.loe as string) || null,
+        assigned_to: assignees[0] ?? null,
+        assignees,
         status:      'not_started',
         progress:    0,
       }).select().single();
       if (err) throw err;
+      setProjectGoals((prev) => [...prev, { id: String(data.id), title: String(data.title ?? args.title ?? '') }]);
       return `Created goal: "${data.title}"`;
     }
     if (type === 'update_goal') {
-      const updates = args.updates as Record<string, unknown>;
-      const { data, error: err } = await supabase.from('goals')
-        .update(updates).eq('id', args.goalId as string).select().single();
+      const updates = normalizeUpdateArgs(args);
+      const hasAssignmentChange = Object.prototype.hasOwnProperty.call(updates, 'assigned_to')
+        || Object.prototype.hasOwnProperty.call(updates, 'assignees');
+      if (hasAssignmentChange) {
+        const requestedAssignees = Array.isArray(updates.assignees)
+          ? updates.assignees
+          : (updates.assigned_to ? [updates.assigned_to] : []);
+        const { assignees, unresolved, ambiguous } = resolveAssigneeIdentifiers(requestedAssignees, projectMembers);
+        if ((requestedAssignees as unknown[]).length > 0 && (unresolved.length > 0 || ambiguous.length > 0)) {
+          throw buildAssigneeResolutionError(unresolved, ambiguous);
+        }
+        updates.assignees = assignees;
+        updates.assigned_to = assignees[0] ?? null;
+      }
+      const goalId = resolveGoalId(action, projectGoals);
+      if (!goalId) throw new Error('Missing task target for update.');
+      if (Object.keys(updates).length === 0) throw new Error('No valid task changes were included in this proposal.');
+      const { error: err } = await supabase.from('goals')
+        .update(updates).eq('id', goalId);
       if (err) throw err;
-      return `Updated goal: "${data.title}"`;
+      if (typeof updates.title === 'string' && updates.title.trim()) {
+        setProjectGoals((prev) => prev.map((goal) => (
+          goal.id === goalId
+            ? { ...goal, title: updates.title as string }
+            : goal
+        )));
+      }
+      return `Updated goal: "${action.title ?? action.description}"`;
+    }
+    if (type === 'extend_deadline' || type === 'contract_deadline') {
+      const goalId = resolveGoalId(action, projectGoals);
+      const deadline = typeof args.suggestedDeadline === 'string' ? args.suggestedDeadline : null;
+      if (!goalId || !deadline) throw new Error('Missing task target or deadline for this proposal.');
+      const { error: err } = await supabase.from('goals')
+        .update({ deadline }).eq('id', goalId);
+      if (err) throw err;
+      return `Updated deadline for "${String(args.goalTitle ?? action.title ?? 'task')}"`;
     }
     if (type === 'delete_goal') {
-      const { error: err } = await supabase.from('goals').delete().eq('id', args.goalId as string);
+      const goalId = resolveGoalId(action, projectGoals);
+      const { error: err } = await supabase.from('goals').delete().eq('id', goalId);
       if (err) throw err;
+      setProjectGoals((prev) => prev.filter((goal) => goal.id !== goalId));
       return `Deleted goal: "${args.goalTitle}"`;
+    }
+    if (type === 'review_redundancy') {
+      const goalTitles = Array.isArray(args.goalTitles) ? args.goalTitles.map((value) => String(value)).filter(Boolean) : [];
+      return `Reviewed redundancy candidate: ${goalTitles.join(', ') || 'task set'}`;
     }
     throw new Error(`Unknown action type: ${type}`);
   };
 
-  const handleApprove = async (msgIdx: number, action: PendingAction) => {
-    setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, actionState: 'approved' } : m));
+  const setProposalState = useCallback((msgIdx: number, action: PendingAction, actionIdx: number, state: 'pending' | 'approved' | 'denied' | 'executing') => {
+    setMessages((prev) => withProposalState(prev, msgIdx, action, actionIdx, state));
+  }, [setMessages]);
+
+  const handleApprove = async (msgIdx: number, action: PendingAction, actionIdx: number) => {
+    setMessages((prev) => withProposalState(prev, msgIdx, action, actionIdx, 'executing'));
     try {
       const result = await executeAction(action);
-      onGoalMutated?.();
-      sendMessage(`Action completed: ${result}`);
+      if (action.type !== 'review_redundancy') onGoalMutated?.();
+      setMessages((prev) => ([
+        ...withProposalState(prev, msgIdx, action, actionIdx, 'approved'),
+        {
+          role: 'assistant',
+          content: action.type === 'review_redundancy'
+            ? `Review noted: ${result}`
+            : `Action completed: ${result}`,
+        },
+      ]));
     } catch (err) {
       console.error('Action failed:', err);
-      setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, actionState: 'pending' } : m));
-      setError(`Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      showAIError(`Action failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setProposalState(msgIdx, action, actionIdx, 'pending');
+      const message = getActionErrorMessage(err);
+      setError(`Action failed: ${message}`);
+      showAIError(`Action failed: ${message}`);
     }
   };
 
-  const handleDeny = (msgIdx: number, action: PendingAction) => {
-    setMessages((prev) => prev.map((m, i) => i === msgIdx ? { ...m, actionState: 'denied' } : m));
-    sendMessage(`User declined: "${action.description}". Please suggest an alternative.`);
+  const handleDeny = (msgIdx: number, action: PendingAction, actionIdx: number) => {
+    const deniedMessages = withProposalState(messagesStateRef.current, msgIdx, action, actionIdx, 'denied');
+    setMessages(deniedMessages);
+    sendMessage(`User declined: "${action.description}". Please suggest an alternative.`, deniedMessages);
   };
 
   // ── Suggested-task actions ────────────────────────────────────────────────
@@ -854,7 +1352,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                           Task Generation from Notes
                         </p>
                         <p className="text-[10px] text-muted mt-0.5">
-                          <MarkdownWithFileLinks block={false} filePaths={[]} onFileClick={() => {}} githubRepo={null} gitlabRepos={[]} onRepoClick={() => {}}>
+                          <MarkdownWithFileLinks block={false} filePaths={new Map<string, FileRef>()} onFileClick={() => {}} githubRepo={null} gitlabRepos={[]} onRepoClick={() => {}}>
                             {msg.content}
                           </MarkdownWithFileLinks>
                         </p>
@@ -991,9 +1489,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                     <button type="button"
                       onClick={async () => {
                         const { data, format: fmt } = msg.reportReady!;
-                        if (fmt === 'docx') await downloadDocx(data);
-                        else if (fmt === 'pptx') await downloadPptx(data);
-                        else await downloadPdf(data);
+                        await handleReportDownload(data, fmt);
                       }}
                       className="flex items-center gap-1.5 px-3 py-1 bg-accent text-[var(--color-accent-fg)] text-[10px] font-medium rounded hover:bg-accent/90 transition-colors">
                       <Download size={10} />
@@ -1048,39 +1544,80 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
               )}
             </div>
 
-            {msg.pendingAction && msg.actionState && (
-              <div className="mr-2 mt-2">
-                <div className={`border rounded p-3 ${ACTION_COLORS[msg.pendingAction.type] ?? 'border-border bg-surface2'}`}>
-                  <div className="flex items-center gap-1.5 mb-1.5 font-medium text-[10px] uppercase tracking-wider">
-                    {ACTION_ICONS[msg.pendingAction.type]}
-                    Proposed Action
-                  </div>
-                  <p className="text-xs text-heading leading-snug mb-2">{msg.pendingAction.description}</p>
-                  {msg.actionState === 'pending' && (
-                    <div className="flex items-center gap-2">
-                      <button type="button" onClick={() => handleApprove(i, msg.pendingAction!)}
-                        className="flex items-center gap-1 px-3 py-1 text-[10px] bg-accent3 text-white rounded hover:bg-accent3/90 transition-colors font-medium">
-                        <Check size={10} /> Approve
-                      </button>
-                      <button type="button" onClick={() => handleDeny(i, msg.pendingAction!)}
-                        className="flex items-center gap-1 px-3 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:bg-surface2 transition-colors">
-                        <Ban size={10} /> Decline
-                      </button>
+            {msg.pendingActions?.length ? (
+              <div className="mr-2 mt-2 space-y-2">
+                {msg.pendingActions.map((action, actionIdx) => {
+                  const actionKey = getProposalKey(action, actionIdx);
+                  const actionState = msg.actionStates?.[actionKey] ?? 'pending';
+                  const summaryLines = formatProposalSummary(action);
+                  const isManualReview = action.type === 'review_redundancy';
+
+                  return (
+                    <div key={actionKey} className={`border rounded p-3 ${ACTION_COLORS[action.type] ?? 'border-border bg-surface2'}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-1.5 mb-1 font-medium text-[10px] uppercase tracking-wider">
+                            {ACTION_ICONS[action.type]}
+                            {ACTION_LABELS[action.type]}
+                          </div>
+                          <p className="text-xs font-semibold text-heading leading-snug">
+                            {action.title ?? action.description}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded border border-current/20 px-2 py-1 text-[9px] font-mono uppercase tracking-[0.18em] opacity-80">
+                          {action.type.replace('_', ' ')}
+                        </span>
+                      </div>
+
+                      {action.title && (
+                        <p className="mt-1 text-xs text-heading">{action.description}</p>
+                      )}
+                      {action.reasoning && (
+                        <p className="mt-2 text-[10px] leading-relaxed text-muted">{action.reasoning}</p>
+                      )}
+
+                      {summaryLines.length > 0 && (
+                        <div className="mt-2 rounded border border-current/15 bg-black/10 px-3 py-2">
+                          {summaryLines.map((line) => (
+                            <p key={line} className="text-[10px] font-mono text-heading/90">
+                              {line}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+
+                      {actionState === 'pending' && (
+                        <div className="mt-3 flex items-center gap-2">
+                          <button type="button" onClick={() => handleApprove(i, action, actionIdx)}
+                            className="flex items-center gap-1 px-3 py-1 text-[10px] bg-accent3 text-white rounded hover:bg-accent3/90 transition-colors font-medium">
+                            <Check size={10} /> {isManualReview ? 'Mark Reviewed' : 'Approve'}
+                          </button>
+                          <button type="button" onClick={() => handleDeny(i, action, actionIdx)}
+                            className="flex items-center gap-1 px-3 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:bg-surface2 transition-colors">
+                            <Ban size={10} /> Decline
+                          </button>
+                        </div>
+                      )}
+                      {actionState === 'executing' && (
+                        <div className="mt-3 flex items-center gap-1 text-[10px] text-muted">
+                          <Loader2 size={10} className="animate-spin" /> Working…
+                        </div>
+                      )}
+                      {actionState === 'approved' && (
+                        <div className="mt-3 flex items-center gap-1 text-[10px] text-accent3">
+                          <Check size={10} /> {isManualReview ? 'Marked reviewed' : 'Approved & executed'}
+                        </div>
+                      )}
+                      {actionState === 'denied' && (
+                        <div className="mt-3 flex items-center gap-1 text-[10px] text-muted">
+                          <Ban size={10} /> Declined
+                        </div>
+                      )}
                     </div>
-                  )}
-                  {msg.actionState === 'approved' && (
-                    <div className="flex items-center gap-1 text-[10px] text-accent3">
-                      <Check size={10} /> Approved &amp; executed
-                    </div>
-                  )}
-                  {msg.actionState === 'denied' && (
-                    <div className="flex items-center gap-1 text-[10px] text-muted">
-                      <Ban size={10} /> Declined
-                    </div>
-                  )}
-                </div>
+                  );
+                })}
               </div>
-            )}
+            ) : null}
           </div>
         ))}
 

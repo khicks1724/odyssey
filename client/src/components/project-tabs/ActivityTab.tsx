@@ -222,7 +222,7 @@ function ActivityTab({
         <ActivityFeed
           events={events}
           loading={eventsLoading}
-          emptyMessage={hasCommitData ? undefined : "No activity yet. Connect a GitHub or GitLab repo to start tracking."}
+          emptyMessage={events.length === 0 ? "No activity yet. Task creation, status changes, and repo commits will appear here." : undefined}
         />
       </section>
     </div>

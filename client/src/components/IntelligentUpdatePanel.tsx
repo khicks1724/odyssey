@@ -59,6 +59,7 @@ function buildDraft(s: Suggestion, goals: Goal[]): Goal {
     id: `DRAFT_${s.id}`,
     project_id: '',
     title: '',
+    description: null,
     deadline: null,
     status: 'not_started',
     risk_score: null,
@@ -68,9 +69,11 @@ function buildDraft(s: Suggestion, goals: Goal[]): Goal {
     assignees: [],
     category: null,
     loe: null,
+    ai_guidance: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     updated_by: null,
+    created_by: null,
   };
 
   if (s.type === 'create_goal') {
@@ -186,8 +189,13 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
     ]);
     setGoals((goalsData as Goal[]) ?? []);
     setMembers(
-      ((membersData ?? []) as { user_id: string; profiles: { display_name: string | null } | null }[])
-        .map((m) => ({ user_id: m.user_id, display_name: m.profiles?.display_name ?? null }))
+      ((membersData ?? []) as Array<{ user_id: string; profiles: { display_name: string | null } | Array<{ display_name: string | null }> | null }>)
+        .map((m) => ({
+          user_id: m.user_id,
+          display_name: Array.isArray(m.profiles)
+            ? (m.profiles[0]?.display_name ?? null)
+            : (m.profiles?.display_name ?? null),
+        })),
     );
   };
 
@@ -259,7 +267,9 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
             headers: guidanceHeaders,
             body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
           }).then((r) => r.ok ? r.json() : null).then((data) => {
-            if (data?.guidance) supabase.from('goals').update({ ai_guidance: data.guidance }).eq('id', newGoal.id).catch(() => {});
+            if (data?.guidance) {
+              void supabase.from('goals').update({ ai_guidance: data.guidance }).eq('id', newGoal.id);
+            }
           }).catch(() => {});
         }
       } else if (type === 'update_goal') {

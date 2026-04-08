@@ -877,6 +877,8 @@ For a cleaner internal deployment, consider placing a reverse proxy in front of 
 - Nginx
 - IIS
 
+If you use Nginx in front of Odyssey, set `client_max_body_size 100m;` on the Odyssey server or location block. Without it, report template uploads and saved report artifacts can be rejected upstream with `413 Request Entity Too Large`.
+
 Benefits:
 
 - one stable URL

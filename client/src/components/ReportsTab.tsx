@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, Bot, FileText, Download, BarChart3, Presentation, X, TableIcon, Upload, Sparkles, Trash2 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
 import { supabase } from '../lib/supabase';
-import { downloadDocx, downloadPptx, downloadPdf, exportGoalsCSV, type ReportContent } from '../lib/report-download';
+import { downloadReport, exportGoalsCSV, type ReportContent } from '../lib/report-download';
+import { saveGeneratedReportToProject } from '../lib/report-storage';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 import RepoTreeModal from './RepoTreeModal';
@@ -13,7 +14,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   provider?: string;
-  reportReady?: { data: ReportContent; format: ReportFormat };
+  reportReady?: { data: ReportContent; format: ReportFormat; autoDownloadKey?: string };
 }
 
 interface ReportsTabProps {
@@ -133,6 +134,22 @@ function parseDateRange(text: string): { from: string | null; to: string | null 
 }
 
 type ReportFormat = 'docx' | 'pptx' | 'pdf';
+type ProjectReportTemplate = {
+  id: string;
+  templateType: ReportFormat;
+  filename: string;
+  sizeBytes: number;
+  storagePath: string;
+  uploadedAt: string;
+  documentId?: string | null;
+  analysis?: {
+    summary?: string;
+    styleHints?: string[];
+    layoutHints?: string[];
+    fonts?: string[];
+    palette?: string[];
+  } | null;
+};
 
 
 export default function ReportsTab({
@@ -166,10 +183,9 @@ export default function ReportsTab({
   const [streamStatus,     setStreamStatus]     = useState('');
   const [error,            setError]            = useState<string | null>(null);
 
-  // Template upload state
-  const [templateName,        setTemplateName]        = useState<string | null>(null);
-  const [templateDescription, setTemplateDescription] = useState<string | null>(null);
-  const [templateLoading,     setTemplateLoading]     = useState(false);
+  const [templates, setTemplates] = useState<ProjectReportTemplate[]>([]);
+  const [templateLoading, setTemplateLoading] = useState<string | null>(null);
+  const [templateError, setTemplateError] = useState<string | null>(null);
   const templateInputRef = useRef<HTMLInputElement>(null);
   const { filePaths } = useProjectFilePaths(projectId, githubRepo, gitlabRepos);
   const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string; projectId?: string | null } | null>(null);
@@ -177,6 +193,7 @@ export default function ReportsTab({
   const bottomRef  = useRef<HTMLDivElement>(null);
   const inputRef   = useRef<HTMLTextAreaElement>(null);
   const abortRef   = useRef<AbortController | null>(null);
+  const autoDownloadedReportKeysRef = useRef<Set<string>>(new Set());
 
   const abort = () => {
     abortRef.current?.abort();
@@ -189,6 +206,45 @@ export default function ReportsTab({
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { setTimeout(() => inputRef.current?.focus(), 100); }, []);
+  useEffect(() => {
+    for (const message of messages) {
+      const autoDownloadKey = message.reportReady?.autoDownloadKey;
+      if (!autoDownloadKey || autoDownloadedReportKeysRef.current.has(autoDownloadKey)) continue;
+      autoDownloadedReportKeysRef.current.add(autoDownloadKey);
+      void (async () => {
+        try {
+          await downloadReport(message.reportReady!.data, message.reportReady!.format);
+        } catch (downloadError) {
+          console.error('Failed to auto-download generated report:', downloadError);
+          setError('Failed to download report.');
+        }
+      })();
+    }
+  }, [messages]);
+  useEffect(() => {
+    void (async () => {
+      setTemplateLoading('fetch');
+      setTemplateError(null);
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const authToken = sessionData.session?.access_token;
+        if (!authToken) return;
+        const res = await fetch(`/api/projects/${projectId}/report-templates`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setTemplateError(data.error ?? 'Unable to load project templates.');
+          return;
+        }
+        setTemplates(data.templates ?? []);
+      } catch {
+        setTemplateError('Unable to load project templates.');
+      } finally {
+        setTemplateLoading(null);
+      }
+    })();
+  }, [projectId]);
 
   const GENERATE_INTENT = /\b(generate|create|make|build|produce|export|download|write|put together|compile)\b.{0,60}\b(report|doc|docx|pptx|pdf|powerpoint|word|presentation|summary|slide\s*deck|slides|deck|brief(?:ing)?|document)\b/i;
 
@@ -216,63 +272,84 @@ export default function ReportsTab({
 
   const buildCombinedPrompt = (userText: string, activeFormat: ReportFormat, from: string, to: string) => {
     const defaultPrompt = buildDefaultPrompt(activeFormat, from, to);
-    const templateSection = templateDescription
-      ? `\n\nTEMPLATE STYLE REQUIREMENTS (follow these precisely — match the structure, tone, sections, and visual style described below):\n${templateDescription}`
-      : '';
     const userSection = userText.trim() ? `\n\nAdditional user instructions:\n${userText.trim()}` : '';
-    return `${defaultPrompt}${templateSection}${userSection}`;
+    return `${defaultPrompt}${userSection}`;
   };
 
   // ── Template upload handler ───────────────────────────────────────────────
   const handleTemplateUpload = async (file: File) => {
-    setTemplateLoading(true);
-    setTemplateName(file.name);
-    setTemplateDescription(null);
+    setTemplateLoading(format);
+    setTemplateError(null);
     try {
-      // Read the file content to send to AI for style extraction
-      let content = '';
-      try {
-        content = await file.text();
-      } catch {
-        content = `[Binary file: ${file.name}]`;
-      }
-
       const { data: sessionData } = await supabase.auth.getSession();
       const authToken = sessionData.session?.access_token;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-
-      const res = await fetch('/api/ai/chat', {
+      if (!authToken) {
+        setTemplateError('Please sign in again and retry.');
+        return;
+      }
+      const form = new FormData();
+      form.append('projectId', projectId);
+      form.append('templateType', format);
+      form.append('filename', file.name);
+      form.append('file', file);
+      const res = await fetch('/api/uploads/report-template', {
         method: 'POST',
-        headers,
-        body: JSON.stringify({
-          agent,
-          projectId,
-          messages: [{
-            role: 'user',
-            content: `Analyze this report template file and provide an extremely detailed style guide that an AI can follow to reproduce a report in the exact same style. Describe:\n` +
-              `1. Overall document structure (sections, ordering, hierarchy)\n` +
-              `2. Tone and writing style (formal/informal, technical level, voice)\n` +
-              `3. Formatting conventions (headers, bullet points, numbering, tables)\n` +
-              `4. Visual layout preferences (charts, figures, callout boxes)\n` +
-              `5. Any specific section names or labels used\n` +
-              `6. Length and depth expectations per section\n\n` +
-              `Template file: ${file.name}\n\n${content.slice(0, 30_000)}`,
-          }],
-        }),
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: form,
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        setTemplateDescription(data.message ?? 'Template analyzed successfully.');
-      } else {
-        setTemplateDescription(`Template "${file.name}" loaded. AI will use this as a style reference.`);
+      const contentType = res.headers.get('content-type') ?? '';
+      const data = contentType.includes('application/json')
+        ? await res.json().catch(() => ({}))
+        : { error: await res.text().catch(() => '') };
+      if (!res.ok) {
+        setTemplateError((data.error || '').trim() || (res.status === 413
+          ? 'Template upload is too large for the current request limit.'
+          : 'Upload failed.'));
+        return;
+      }
+      if (data.template) {
+        setTemplates((prev) => [...prev.filter((template) => template.templateType !== format), data.template]);
       }
     } catch {
-      setTemplateDescription(`Template "${file.name}" loaded. AI will use this as a style reference.`);
+      setTemplateError('Upload failed.');
+    } finally {
+      setTemplateLoading(null);
+      if (templateInputRef.current) templateInputRef.current.value = '';
     }
-    setTemplateLoading(false);
-    if (templateInputRef.current) templateInputRef.current.value = '';
+  };
+
+  const currentTemplate = templates.find((template) => template.templateType === format) ?? null;
+
+  const handleTemplateDelete = async () => {
+    if (!currentTemplate) return;
+    setTemplateLoading(`delete:${format}`);
+    setTemplateError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      if (!authToken) {
+        setTemplateError('Please sign in again and retry.');
+        return;
+      }
+      const res = await fetch('/api/uploads/report-template', {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ projectId, eventId: currentTemplate.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setTemplateError(data.error ?? 'Unable to delete template.');
+        return;
+      }
+      setTemplates((prev) => prev.filter((template) => template.id !== currentTemplate.id));
+    } catch {
+      setTemplateError('Unable to delete template.');
+    } finally {
+      setTemplateLoading(null);
+    }
   };
 
   const phasesByFormat: Record<ReportFormat, string[]> = {
@@ -365,24 +442,35 @@ export default function ReportsTab({
         return;
       }
 
-      supabase.from('saved_reports').insert({
-        project_id:      projectId,
-        title:           data.title,
-        content:         data,
-        format:          activeFormat,
-        date_range_from: effectiveFrom || null,
-        date_range_to:   effectiveTo   || null,
-        generated_at:    new Date().toISOString(),
-        provider:        data.provider ?? null,
-      }).then(() => onReportSaved?.());
+      let savedArtifactNote = '';
+      try {
+        const artifact = await saveGeneratedReportToProject({
+          projectId,
+          format: activeFormat,
+          report: data,
+          provider: data.provider ?? null,
+          dateFrom: effectiveFrom || null,
+          dateTo: effectiveTo || null,
+        });
+        if (artifact) {
+          data.artifact = artifact;
+          savedArtifactNote = ' · saved to project documents';
+        }
+        onReportSaved?.();
+      } catch (saveError) {
+        console.error('Failed to persist generated report artifact:', saveError);
+      }
 
-      // No auto-download — show a download card in the chat instead
       const fmtLabel = activeFormat === 'pptx' ? 'PowerPoint' : activeFormat === 'pdf' ? 'PDF' : 'Word';
       setMessages([...currentMessages, {
         role: 'assistant',
-        content: `✓ **${data.title}** is ready — ${data.sections.length} sections · ${fmtLabel}`,
+        content: `✓ **${data.title}** is ready — ${data.sections.length} sections · ${fmtLabel}${savedArtifactNote}`,
         provider: data.provider,
-        reportReady: { data, format: activeFormat },
+        reportReady: {
+          data,
+          format: activeFormat,
+          autoDownloadKey: `reports-tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        },
       }]);
     } catch (err: any) {
       clearInterval(phaseTimer);
@@ -606,34 +694,34 @@ export default function ReportsTab({
           <button
             type="button"
             onClick={() => templateInputRef.current?.click()}
-            disabled={templateLoading}
+            disabled={templateLoading === format || templateLoading === `delete:${format}`}
             title="Upload a DOCX, PPTX, or PDF template — the AI will extract its style and apply it to generated reports"
             className={`flex-1 flex items-center justify-center gap-1.5 px-3 text-xs border rounded transition-colors ${
-              templateName
+              currentTemplate
                 ? 'border-accent3/40 bg-accent3/10 text-accent3'
                 : 'border-border text-muted hover:text-heading hover:bg-surface2'
             } disabled:opacity-50`}
           >
-            {templateLoading ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
-            {templateLoading ? 'Analyzing…' : templateName ? 'Template ✓' : 'Template'}
+            {templateLoading === format ? <Loader2 size={11} className="animate-spin" /> : <Upload size={11} />}
+            {templateLoading === format ? 'Saving…' : currentTemplate ? 'Template ✓' : 'Template'}
           </button>
-          {templateName && (
+          {currentTemplate && (
             <button
               type="button"
-              onClick={() => { setTemplateName(null); setTemplateDescription(null); }}
-              title="Remove template"
+              onClick={() => void handleTemplateDelete()}
+              title="Remove saved project template"
               className="flex-1 flex items-center justify-center gap-1 text-[10px] border border-border text-muted rounded hover:text-danger hover:border-danger/40 transition-colors"
             >
               <Trash2 size={10} /> Clear
             </button>
           )}
-          {!templateName && <div className="flex-1" />}
+          {!currentTemplate && <div className="flex-1" />}
         </div>
         <input
           ref={templateInputRef}
           type="file"
           title="Upload report template"
-          accept=".docx,.pptx,.pdf,.doc,.txt,.md"
+          accept={format === 'pptx' ? '.pptx,.pdf' : format === 'docx' ? '.docx,.pdf' : '.pdf,.docx'}
           className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) handleTemplateUpload(e.target.files[0]); }}
         />
@@ -647,23 +735,36 @@ export default function ReportsTab({
         </span>
       </div>
 
+      {templateError && (
+        <div className="border border-danger/30 bg-danger/5 rounded px-4 py-2.5 mb-1">
+          <p className="text-[10px] text-danger font-mono">{templateError}</p>
+        </div>
+      )}
+
       {/* Template active banner */}
-      {templateName && templateDescription && !templateLoading && (
+      {currentTemplate && currentTemplate.analysis && templateLoading !== format && (
         <div className="border border-accent3/30 bg-accent3/5 rounded px-4 py-2.5 flex items-start gap-2.5 mb-1">
           <Sparkles size={12} className="text-accent3 shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-semibold text-accent3 font-mono">Template active: {templateName}</p>
-            <p className="text-[10px] text-muted mt-0.5 leading-relaxed line-clamp-2">{templateDescription.slice(0, 200)}…</p>
+            <p className="text-[10px] font-semibold text-accent3 font-mono">Saved project template: {currentTemplate.filename}</p>
+            <p className="text-[10px] text-muted mt-0.5 leading-relaxed line-clamp-2">
+              {currentTemplate.analysis.summary ?? 'Template analysis saved for this format.'}
+            </p>
+            {currentTemplate.analysis.styleHints?.length ? (
+              <p className="text-[10px] text-muted/80 mt-1 leading-relaxed line-clamp-2">
+                {currentTemplate.analysis.styleHints.slice(0, 2).join(' ')}
+              </p>
+            ) : null}
           </div>
-          <button type="button" title="Remove template" onClick={() => { setTemplateName(null); setTemplateDescription(null); }} className="text-muted hover:text-danger transition-colors shrink-0">
+          <button type="button" title="Remove template" onClick={() => void handleTemplateDelete()} className="text-muted hover:text-danger transition-colors shrink-0">
             <X size={11} />
           </button>
         </div>
       )}
-      {templateLoading && (
+      {templateLoading === format && (
         <div className="border border-border bg-surface2 rounded px-4 py-2.5 flex items-center gap-2.5 mb-1">
           <Loader2 size={12} className="text-accent animate-spin shrink-0" />
-          <p className="text-[10px] text-muted font-mono">Analyzing template style and structure…</p>
+          <p className="text-[10px] text-muted font-mono">Saving template to the project and extracting style cues…</p>
         </div>
       )}
 
@@ -717,9 +818,12 @@ export default function ReportsTab({
                       type="button"
                       onClick={async () => {
                         const { data, format: fmt } = msg.reportReady!;
-                        if (fmt === 'docx') await downloadDocx(data);
-                        else if (fmt === 'pptx') await downloadPptx(data);
-                        else await downloadPdf(data);
+                        try {
+                          await downloadReport(data, fmt);
+                        } catch (downloadError) {
+                          console.error('Failed to download generated report:', downloadError);
+                          setError('Failed to download report.');
+                        }
                       }}
                       className="flex items-center gap-1.5 px-3 py-1 bg-accent text-[var(--color-accent-fg)] text-[10px] font-medium rounded hover:bg-accent/90 transition-colors"
                     >

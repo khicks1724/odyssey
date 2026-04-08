@@ -40,6 +40,7 @@ import { useProjectPrompts, type PromptFeature } from '../hooks/useProjectPrompt
 import { deleteImportedEvent } from '../hooks/useMicrosoftIntegration';
 import { useGoals } from '../hooks/useGoals';
 import { useEvents } from '../hooks/useEvents';
+import { useSharedProjectPeople } from '../hooks/useSharedProjectPeople';
 import { useProjectTimeLogs } from '../hooks/useProjectTimeLogs';
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
@@ -47,16 +48,17 @@ import { useChatPanel } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
-import { generateProjectCode, sanitizeProjectCode, PROJECT_CODE_LENGTH } from '../lib/project-code';
 import { getProjectFingerprint } from '../lib/project-fingerprint';
 import { getGitHubRepos, getPrimaryGitHubRepo } from '../lib/github';
 import { useAIErrorDialog } from '../lib/ai-error';
 import { useTabVisibility } from '../hooks/useTabVisibility';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
+import { pickUnusedProjectLabelColor } from '../lib/project-label-colors';
 
 const OverviewTab = lazyWithRetry(() => import('../components/project-tabs/OverviewTab'), 'project-tab-overview');
 const ActivityTab = lazyWithRetry(() => import('../components/project-tabs/ActivityTab'), 'project-tab-activity');
 const GoalsTab = lazyWithRetry(() => import('../components/project-tabs/GoalsTab'), 'project-tab-goals');
+const CoordinationTab = lazyWithRetry(() => import('../components/project-tabs/CoordinationTab'), 'project-tab-coordination');
 const SettingsTab = lazyWithRetry(() => import('../components/project-tabs/SettingsTab'), 'project-tab-settings');
 const GoalMetrics = lazyWithRetry(() => import('../components/GoalMetrics'), 'project-goal-metrics');
 const ReportsTab = lazyWithRetry(() => import('../components/ReportsTab'), 'project-reports');
@@ -77,11 +79,27 @@ function loadReportDownloads() {
   return reportDownloadsPromise;
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('Failed to read file.'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 const tabs = [
   { id: 'overview',      label: 'Overview',      icon: BarChart3 },
   { id: 'timeline',      label: 'Timeline',      icon: Clock },
   { id: 'activity',      label: 'Activity',      icon: Activity },
   { id: 'goals',         label: 'Tasks',         icon: Target },
+  { id: 'coordination',  label: 'Coordination',  icon: GitBranch },
   { id: 'metrics',       label: 'Metrics',       icon: TrendingUp },
   { id: 'financials',    label: 'Financials',    icon: DollarSign },
   { id: 'reports',       label: 'Reports',       icon: ClipboardList },
@@ -109,14 +127,7 @@ interface MemberRow {
   user_id: string;
   role: string;
   joined_at: string;
-  profile?: { display_name: string | null; avatar_url: string | null; email?: string | null };
-}
-
-interface GitHubUser {
-  login: string;
-  avatar_url: string;
-  html_url: string;
-  github_id: number;
+  profile?: { display_name: string | null; avatar_url: string | null; email?: string | null; username?: string | null };
 }
 
 interface ScanResults {
@@ -125,6 +136,23 @@ interface ScanResults {
 }
 
 const API_BASE = '/api';
+const CREATE_NEW_CATEGORY_VALUE = '__create_new_category__';
+const CREATE_NEW_LOE_VALUE = '__create_new_loe__';
+
+function emailLocalPart(email?: string | null): string | null {
+  if (!email) return null;
+  const [localPart] = email.split('@');
+  return localPart?.trim() || null;
+}
+
+function getProjectMemberDisplayName(member: MemberRow): string {
+  return (
+    member.profile?.display_name?.trim()
+    || member.profile?.username?.trim()
+    || emailLocalPart(member.profile?.email)
+    || member.user_id
+  );
+}
 
 function DeleteProjectModal({
   projectName,
@@ -227,18 +255,12 @@ export default function ProjectDetailPage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [leavingProject, setLeavingProject] = useState(false);
   const [inviteRole, setInviteRole] = useState<'member' | 'owner'>('member');
-  const [copySuccess, setCopySuccess] = useState(false);
-  const [inviteTab, setInviteTab] = useState<'github' | 'email' | 'qr'>('github');
+  const [inviteTab, setInviteTab] = useState<'username' | 'nps_email' | 'shared' | 'qr'>('nps_email');
   const [editPromptFeature, setEditPromptFeature] = useState<PromptFeature | null>(null);
   const [editPromptText, setEditPromptText] = useState('');
   const [resetPromptsTyped, setResetPromptsTyped] = useState('');
   const [resetPromptsModalOpen, setResetPromptsModalOpen] = useState(false);
-  const [newLabelName, setNewLabelName] = useState('');
-  const [newLabelColor, setNewLabelColor] = useState('#6a9fd8');
-  const [newLabelType, setNewLabelType] = useState<'category' | 'loe'>('category');
   const [imageUploading, setImageUploading] = useState(false);
-
-  const isOwner = project?.owner_id === user?.id;
 
   const handleDeleteProject = async () => {
     if (!projectId || !project) return;
@@ -270,24 +292,27 @@ export default function ProjectDetailPage() {
     }
   };
 
-  const handleCopyInviteCode = async () => {
-    if (!project?.invite_code) return;
-    await navigator.clipboard.writeText(project.invite_code);
-    setCopySuccess(true);
-    setTimeout(() => setCopySuccess(false), 2000);
-  };
-
   const handleImageUpload = async (file: File, inputEl?: HTMLInputElement | null) => {
     if (!projectId) return;
     setImageUploading(true);
     try {
+      if (!file.type.startsWith('image/')) {
+        throw new Error('Please choose an image file.');
+      }
       const ext = file.name.split('.').pop() ?? 'jpg';
-      const path = `project-images/${projectId}/avatar.${ext}`;
-      const { error: upErr } = await supabase.storage.from('project-assets').upload(path, file, { upsert: true });
-      if (upErr) throw upErr;
-      const { data: urlData } = supabase.storage.from('project-assets').getPublicUrl(path);
-      const newUrl = urlData.publicUrl + `?t=${Date.now()}`;
-      await updateProject({ image_url: newUrl });
+      const version = Date.now();
+      const path = `project-images/${projectId}/avatar-${version}.${ext}`;
+      const { error: upErr } = await supabase.storage.from('project-assets').upload(path, file, {
+        upsert: false,
+        contentType: file.type || 'application/octet-stream',
+      });
+      if (upErr) {
+        const fallbackUrl = await readFileAsDataUrl(file);
+        await updateProject({ image_url: fallbackUrl });
+      } else {
+        const { data: urlData } = supabase.storage.from('project-assets').getPublicUrl(path);
+        await updateProject({ image_url: `${urlData.publicUrl}?v=${version}` });
+      }
       // Clear file input so the same file can be re-uploaded if needed
       if (inputEl) inputEl.value = '';
     } catch (err) {
@@ -324,10 +349,69 @@ export default function ProjectDetailPage() {
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDeadline, setNewGoalDeadline] = useState('');
   const [newGoalCategory, setNewGoalCategory] = useState('');
+  const [newGoalCategoryDraft, setNewGoalCategoryDraft] = useState('');
   const [newGoalLoe, setNewGoalLoe] = useState('');
+  const [newGoalLoeDraft, setNewGoalLoeDraft] = useState('');
+  const [newGoalNotes, setNewGoalNotes] = useState('');
   const [newGoalAssignees, setNewGoalAssignees] = useState<string[]>([]);
   const [goalCreateError, setGoalCreateError] = useState<string | null>(null);
+  const [goalCreateNotice, setGoalCreateNotice] = useState<string | null>(null);
   const [creatingGoal, setCreatingGoal] = useState(false);
+  const [creatingFromNotes, setCreatingFromNotes] = useState(false);
+  const createFromNotesInputRef = useRef<HTMLInputElement>(null);
+  const resetNewGoalForm = useCallback(() => {
+    setNewGoalTitle('');
+    setNewGoalDeadline('');
+    setNewGoalCategory('');
+    setNewGoalCategoryDraft('');
+    setNewGoalLoe('');
+    setNewGoalLoeDraft('');
+    setNewGoalNotes('');
+    setNewGoalAssignees([]);
+    setGoalCreateError(null);
+    setGoalCreateNotice(null);
+  }, []);
+  const closeGoalModal = useCallback(() => {
+    resetNewGoalForm();
+    goalModal.onClose();
+  }, [goalModal, resetNewGoalForm]);
+
+  const createProjectLabelIfNeeded = useCallback(async (
+    type: 'category' | 'loe',
+    rawName: string,
+    reservedColors: string[] = [],
+  ) => {
+    const trimmed = rawName.trim();
+    if (!trimmed) {
+      throw new Error(type === 'category' ? 'Enter a category name.' : 'Enter a line of effort name.');
+    }
+    const existing = (type === 'category' ? projectCategories : projectLoes)
+      .find((label) => label.name.trim().toLowerCase() === trimmed.toLowerCase());
+    if (existing) return existing.name;
+
+    const color = pickUnusedProjectLabelColor([
+      ...projectLabels.map((label) => label.color),
+      ...reservedColors,
+    ]);
+    reservedColors.push(color);
+    const created = await addLabel(type, trimmed, color);
+    return created?.name ?? trimmed;
+  }, [addLabel, projectCategories, projectLabels, projectLoes]);
+
+  const resolveInlineProjectLabel = useCallback(async (
+    type: 'category' | 'loe',
+    selectedValue: string,
+    draftValue: string,
+    reservedColors: string[] = [],
+  ) => {
+    const isCreateNew = type === 'category'
+      ? selectedValue === CREATE_NEW_CATEGORY_VALUE
+      : selectedValue === CREATE_NEW_LOE_VALUE;
+    if (isCreateNew) {
+      return createProjectLabelIfNeeded(type, draftValue, reservedColors);
+    }
+    return selectedValue.trim();
+  }, [createProjectLabelIfNeeded]);
 
   // Inline project name editing
   const [editingName, setEditingName] = useState(false);
@@ -425,6 +509,8 @@ export default function ProjectDetailPage() {
 
   // Members state
   const [members, setMembers] = useState<MemberRow[]>([]);
+  const currentUserMemberRole = members.find((member) => member.user_id === user?.id)?.role ?? null;
+  const isOwner = project?.owner_id === user?.id || currentUserMemberRole === 'owner';
 
   // Goal edit / report modals
   const [editGoal,        setEditGoal]        = useState<import('../types').Goal | null>(null);
@@ -467,9 +553,15 @@ export default function ProjectDetailPage() {
 
   // Intelligent Update panel — now lives in the layout right panel via context
   const [memberSearch, setMemberSearch] = useState('');
-  const [memberResults, setMemberResults] = useState<GitHubUser[]>([]);
   const [memberSearching, setMemberSearching] = useState(false);
-  const [inviting, setInviting] = useState<string | null>(null);
+  const { people: sharedPeopleCandidates, loading: sharedPeopleLoading, refetch: refetchSharedPeople } = useSharedProjectPeople(projectId);
+  const invitableSharedPeople = useMemo(() => {
+    const existingUserIds = new Set<string>([
+      ...(project?.owner_id ? [project.owner_id] : []),
+      ...members.map((member) => member.user_id),
+    ]);
+    return sharedPeopleCandidates.filter((candidate) => !existingUserIds.has(candidate.id));
+  }, [members, project?.owner_id, sharedPeopleCandidates]);
 
   useEffect(() => {
     const navState = location.state as { openTab?: TabId; editGoalId?: string } | null;
@@ -583,7 +675,7 @@ export default function ProjectDetailPage() {
     const { data: profiles, error: profilesError } = uniqueMembers.length
       ? await supabase
         .from('profiles')
-        .select('id, display_name, avatar_url')
+        .select('id, display_name, avatar_url, email, username')
         .in('id', uniqueMembers.map((row) => row.user_id))
       : { data: [], error: null };
 
@@ -601,6 +693,8 @@ export default function ProjectDetailPage() {
         ? {
           display_name: profileMap.get(member.user_id)?.display_name ?? null,
           avatar_url: profileMap.get(member.user_id)?.avatar_url ?? null,
+          email: profileMap.get(member.user_id)?.email ?? null,
+          username: (profileMap.get(member.user_id) as { username?: string | null } | undefined)?.username ?? null,
         }
         : undefined,
     })));
@@ -634,9 +728,12 @@ export default function ProjectDetailPage() {
     if (!projectId) return;
     setRiskAssessing(true);
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
       const res = await fetch(`${API_BASE}/ai/risk-assess`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ projectId, agent }),
       });
       if (res.ok) {
@@ -715,13 +812,20 @@ export default function ProjectDetailPage() {
 
   // AI repo scan
   const handleRepoScan = async () => {
-    if (!primaryGitHubRepo) return;
+    if (!primaryGitHubRepo || !project) return;
     setScanLoading(true);
     setScanResults(null);
     try {
       const [owner, repo] = primaryGitHubRepo.split('/');
+      if (!owner || !repo) throw new Error('GitHub repository must be in owner/repo format');
+      const { data: sessionData } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
       // Fetch recent repo data
-      const recentRes = await fetch(`${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`);
+      const recentRes = await fetch(
+        `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(projectId ?? '')}`,
+        { headers },
+      );
       const recentData = await recentRes.json();
       // Send to AI for analysis
       const scanRes = await fetch(`${API_BASE}/ai/repo-scan`, {
@@ -829,9 +933,13 @@ export default function ProjectDetailPage() {
     setTaskGuidance((prev) => ({ ...prev, [g.id]: { loading: true, text: prev[g.id]?.text ?? null } }));
     setGuidanceVisible((prev) => ({ ...prev, [g.id]: true }));
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      const aiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) aiHeaders['Authorization'] = `Bearer ${authToken}`;
       const res = await fetch(`${API_BASE}/ai/task-guidance`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders,
         body: JSON.stringify({ agent, projectId, taskTitle: g.title, taskStatus: g.status, taskProgress: g.progress, taskCategory: g.category, taskLoe: g.loe }),
       });
       const data = await res.json();
@@ -855,9 +963,13 @@ export default function ProjectDetailPage() {
     setSyncResult(null);
     setSyncError(null);
     try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      const aiHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) aiHeaders['Authorization'] = `Bearer ${authToken}`;
       const res = await fetch(`${API_BASE}/ai/analyze-office-progress`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: aiHeaders,
         body: JSON.stringify({ agent, projectId }),
       });
       const data = await res.json();
@@ -879,69 +991,126 @@ export default function ProjectDetailPage() {
     setSyncingProgress(false);
   };
 
-  // Search GitHub users
-  const handleMemberSearch = async () => {
-    if (memberSearch.trim().length < 2) return;
+  const handleInviteByIdentifier = async () => {
+    if (memberSearch.trim().length < 1) throw new Error('Enter a username or email first.');
+    if (!projectId) throw new Error('No project selected.');
+    if (!isOwner) throw new Error('Only project owners can invite members.');
+    if (inviteTab === 'qr') throw new Error('Use the QR tab to share a join code.');
+    if (inviteTab === 'shared') throw new Error('Use the shared people picker to invite an existing collaborator.');
+
     setMemberSearching(true);
     try {
-      const res = await fetch(`${API_BASE}/github/search/users?q=${encodeURIComponent(memberSearch.trim())}`);
-      const data = await res.json();
-      setMemberResults(data.users || []);
-    } catch {
-      setMemberResults([]);
+      const method = inviteTab === 'nps_email' ? 'nps_email' : 'username';
+      const identifier = memberSearch.trim();
+
+      const { data, error } = await supabase.rpc('invite_project_member_by_identifier', {
+        p_project_id: projectId,
+        p_role: inviteRole,
+        p_method: method,
+        p_identifier: identifier,
+      });
+
+      if (error) {
+        const message = error.message.toLowerCase();
+        const missingRpc =
+          message.includes('could not find the function public.invite_project_member_by_identifier') ||
+          message.includes('schema cache') ||
+          message.includes('function public.invite_project_member_by_identifier');
+
+        if (!missingRpc || method !== 'username') throw error;
+
+        const { data: existingProfiles, error: lookupError } = await supabase
+          .from('profiles')
+          .select('id')
+          .ilike('username', identifier)
+          .limit(1);
+        if (lookupError) throw lookupError;
+
+        const userId = existingProfiles?.[0]?.id;
+        if (!userId) throw new Error('No Odyssey account was found for that username.');
+
+        const { data: existingMember, error: existingMemberError } = await supabase
+          .from('project_members')
+          .select('role')
+          .eq('project_id', projectId)
+          .eq('user_id', userId)
+          .maybeSingle();
+        if (existingMemberError) throw existingMemberError;
+        if (existingMember?.role) throw new Error(`That user is already a ${existingMember.role} on this project.`);
+
+        const { error: insertError } = await supabase
+          .from('project_members')
+          .insert({ project_id: projectId, user_id: userId, role: inviteRole });
+        if (insertError) throw insertError;
+      } else if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' && data.error) {
+        throw new Error(data.error);
+      }
+
+      await fetchMembers();
+    } finally {
+      setMemberSearching(false);
     }
-    setMemberSearching(false);
   };
 
-  // Invite member by GitHub username — look up or create a profile row
-  const handleInviteMember = async (ghUser: GitHubUser) => {
-    if (!projectId) return;
-    setInviting(ghUser.login);
-    try {
-      // Check if a profile already exists with this display_name (GitHub login)
-      const { data: existingProfiles } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('display_name', ghUser.login)
-        .limit(1);
-      let userId = existingProfiles?.[0]?.id;
-      if (!userId) {
-        // No matching profile — we can't create auth users from the client.
-        // Instead, store a pending invite (use github_id as a placeholder).
-        // For now, show a message — full invite flow needs email.
-        setInviting(null);
-        alert(`User "${ghUser.login}" hasn't signed up to Odyssey yet. Ask them to sign in with GitHub first.`);
-        return;
-      }
-      // Check if already a member
-      const { data: existing } = await supabase
-        .from('project_members')
-        .select('user_id')
-        .eq('project_id', projectId)
-        .eq('user_id', userId)
-        .limit(1);
-      if (existing && existing.length > 0) {
-        setInviting(null);
-        return;
-      }
-      await supabase.from('project_members').insert({ project_id: projectId, user_id: userId, role: inviteRole });
-      await fetchMembers();
-    } catch (err) {
-      console.error('Invite failed:', err);
-    }
-    setInviting(null);
+  const handleInviteSharedCollaborator = async (userId: string) => {
+    if (!projectId) throw new Error('No project selected.');
+    if (!isOwner) throw new Error('Only project owners can invite members.');
+    if (!userId) throw new Error('Choose a person first.');
+    if (project?.owner_id === userId) throw new Error('That user is already an owner of this project.');
+
+    const existingMember = members.find((member) => member.user_id === userId);
+    if (existingMember) throw new Error(`That user is already a ${existingMember.role} on this project.`);
+
+    const { error } = await supabase
+      .from('project_members')
+      .insert({ project_id: projectId, user_id: userId, role: inviteRole });
+    if (error) throw error;
+
+    await fetchMembers();
+    await refetchSharedPeople();
   };
 
   // Remove member
   const handleRemoveMember = async (userId: string) => {
     if (!projectId) return;
-    await supabase.from('project_members').delete().eq('project_id', projectId).eq('user_id', userId);
+    if (!isOwner) return;
+    const { error } = await supabase
+      .from('project_members')
+      .delete()
+      .eq('project_id', projectId)
+      .eq('user_id', userId);
+    if (error) throw error;
+    await refetchGoals();
     await fetchMembers();
   };
 
   const handlePromoteMember = async (userId: string) => {
     if (!projectId) return;
-    await supabase.from('project_members').update({ role: 'owner' }).eq('project_id', projectId).eq('user_id', userId);
+    if (!isOwner) return;
+    const { data, error } = await supabase.rpc('promote_project_member_to_owner', {
+      p_project_id: projectId,
+      p_user_id: userId,
+    });
+
+    if (error) {
+      const message = error.message.toLowerCase();
+      const missingRpc =
+        message.includes('could not find the function public.promote_project_member_to_owner') ||
+        message.includes('schema cache') ||
+        message.includes('function public.promote_project_member_to_owner');
+
+      if (!missingRpc) throw error;
+
+      const { error: fallbackError } = await supabase
+        .from('project_members')
+        .update({ role: 'owner' })
+        .eq('project_id', projectId)
+        .eq('user_id', userId);
+      if (fallbackError) throw fallbackError;
+    } else if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' && data.error) {
+      throw new Error(data.error);
+    }
+
     await fetchMembers();
   };
 
@@ -1024,23 +1193,26 @@ export default function ProjectDetailPage() {
 
   const handleCreateGoal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newGoalTitle.trim() || !newGoalDeadline || !newGoalCategory || !newGoalLoe) return;
     setGoalCreateError(null);
+    setGoalCreateNotice(null);
     setCreatingGoal(true);
     try {
+      const reservedColors: string[] = [];
+      const resolvedCategory = await resolveInlineProjectLabel('category', newGoalCategory, newGoalCategoryDraft, reservedColors);
+      const resolvedLoe = await resolveInlineProjectLabel('loe', newGoalLoe, newGoalLoeDraft, reservedColors);
+      if (!newGoalTitle.trim() || !newGoalDeadline || !resolvedCategory || !resolvedLoe) {
+        throw new Error('Title, deadline, category, and line of effort are required.');
+      }
+
       const newGoal = await createGoal({
-        title: newGoalTitle,
+        title: newGoalTitle.trim(),
+        description: newGoalNotes.trim() || undefined,
         deadline: newGoalDeadline,
-        category: newGoalCategory,
-        loe: newGoalLoe,
+        category: resolvedCategory,
+        loe: resolvedLoe,
         assignees: newGoalAssignees,
       });
-      setNewGoalTitle('');
-      setNewGoalDeadline('');
-      setNewGoalCategory('');
-      setNewGoalLoe('');
-      setNewGoalAssignees([]);
-      goalModal.onClose();
+      closeGoalModal();
       // Auto-generate AI guidance in background after creation
       if (newGoal?.id) {
         fetch(`${API_BASE}/ai/task-guidance`, {
@@ -1058,16 +1230,99 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const handleCreateTasksFromNotes = async (file: File | null | undefined) => {
+    if (!file || !projectId) return;
+    setGoalCreateError(null);
+    setGoalCreateNotice(null);
+    setCreatingFromNotes(true);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const authToken = sessionData.session?.access_token;
+      if (!authToken) throw new Error('Please sign in again and retry.');
+
+      const extractForm = new FormData();
+      extractForm.append('projectId', projectId);
+      extractForm.append('filename', file.name);
+      extractForm.append('file', file);
+
+      const extractRes = await fetch(`${API_BASE}/uploads/extract-text`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: extractForm,
+      });
+      const extractData = await extractRes.json() as { text?: string; error?: string };
+      if (!extractRes.ok || !extractData.text?.trim()) {
+        throw new Error(extractData.error ?? 'Could not read the notes file.');
+      }
+
+      const aiRes = await fetch(`${API_BASE}/ai/meeting-notes-tasks`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          agent,
+          projectId,
+          fileContent: extractData.text.slice(0, 50_000),
+          fileName: file.name,
+          existingTaskTitles: goals.map((goal) => goal.title),
+        }),
+      });
+      const aiData = await aiRes.json() as {
+        tasks?: Array<{ title: string; description?: string; category?: string | null; loe?: string | null; deadline?: string | null }>;
+        error?: string;
+      };
+      if (!aiRes.ok) {
+        throw new Error(aiData.error ?? 'Failed to analyze the notes.');
+      }
+
+      const tasks = (aiData.tasks ?? [])
+        .filter((task) => task.title?.trim())
+        .slice(0, 30);
+
+      if (tasks.length === 0) {
+        setGoalCreateNotice('No concrete tasks were found in those notes.');
+        return;
+      }
+
+      for (const task of tasks) {
+        await createGoal({
+          title: task.title.trim(),
+          ...(task.description ? { description: task.description } : {}),
+          ...(task.deadline ? { deadline: task.deadline } : {}),
+          ...(task.category ? { category: task.category } : {}),
+          ...(task.loe ? { loe: task.loe } : {}),
+        });
+      }
+
+      closeGoalModal();
+      setGoalCreateNotice(`Created ${tasks.length} task${tasks.length === 1 ? '' : 's'} from ${file.name}.`);
+    } catch (err) {
+      setGoalCreateError(err instanceof Error ? err.message : 'Unable to create tasks from notes.');
+    } finally {
+      setCreatingFromNotes(false);
+      if (createFromNotesInputRef.current) createFromNotesInputRef.current.value = '';
+    }
+  };
+
+  const currentMemberProfile = members.find((m) => m.user_id === user?.id)?.profile;
+
   // Build assignee lookup from members + current user
   const allMembers = Array.from(new Map(
     [
-      { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You', avatar_url: user?.user_metadata?.avatar_url ?? null },
-      ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? m.user_id, avatar_url: m.profile?.avatar_url ?? null })),
+      {
+        user_id: user?.id ?? '',
+        display_name: currentMemberProfile?.display_name ?? user?.user_metadata?.user_name ?? user?.email ?? 'You',
+        avatar_url: currentMemberProfile?.avatar_url ?? user?.user_metadata?.avatar_url ?? null,
+      },
+      ...members.map((m) => ({ user_id: m.user_id, display_name: getProjectMemberDisplayName(m), avatar_url: m.profile?.avatar_url ?? null })),
     ]
       .filter((member) => member.user_id)
       .map((member) => [member.user_id, member] as const),
   ).values());
-  function getAssignee(userId: string | null) {
+  function getAssignee(userId: string | null | undefined) {
     if (!userId) return null;
     return allMembers.find((m) => m.user_id === userId) ?? null;
   }
@@ -1088,51 +1343,70 @@ export default function ProjectDetailPage() {
 
       {/* Project Header */}
       <div className="mb-8">
-        <div className="flex items-center justify-between gap-3 mb-1">
-          <div className="flex items-center gap-3">
-            {editingName ? (
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  const trimmed = nameInput.trim();
-                  if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
-                  setEditingName(false);
-                }}
-                className="flex items-center gap-2"
-              >
-                <input
-                  autoFocus
-                  value={nameInput}
-                  onChange={(e) => setNameInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Escape') setEditingName(false); }}
-                  onBlur={async () => {
-                    const trimmed = nameInput.trim();
-                    if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
-                    setEditingName(false);
-                  }}
-                  title="Project name"
-                  placeholder="Project name"
-                  className="font-sans text-3xl font-extrabold text-heading tracking-tight bg-transparent border-b-2 border-accent focus:outline-none min-w-[8rem] max-w-xl"
-                />
-              </form>
-            ) : (
-              <h1
-                onClick={() => { setNameInput(project.name); setEditingName(true); }}
-                title="Click to rename"
-                className="font-sans text-3xl font-extrabold text-heading tracking-tight cursor-pointer hover:text-accent transition-colors"
-              >
-                {project.name}
-              </h1>
-            )}
-            <div className="relative group/status">
-              <StatusBadge status={projectStatus} size="md" />
-              <div className="absolute left-0 top-full mt-2 w-64 z-50 pointer-events-none opacity-0 group-hover/status:opacity-100 transition-opacity duration-150">
-                <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-xl p-3">
-                  <p className="text-[10px] tracking-[0.12em] uppercase text-[var(--color-muted)] font-semibold mb-1.5">Schedule Health</p>
-                  {statusInsight.split('\n').map((line, i) => (
-                    <p key={i} className={`text-xs font-mono ${i === 0 ? 'text-[var(--color-heading)]' : 'text-[var(--color-muted)] mt-0.5'}`}>{line}</p>
-                  ))}
+        <div className="flex items-center justify-between gap-5 mb-1">
+          <div className="flex items-center gap-5 min-w-0 flex-1">
+            <div className="w-24 h-24 rounded-2xl border border-border bg-surface overflow-hidden flex items-center justify-center shrink-0">
+              {project.image_url ? (
+                <img src={project.image_url} alt={project.name} className="w-full h-full object-cover" />
+              ) : (
+                <span className="text-3xl font-bold text-muted/40">{project.name[0]?.toUpperCase()}</span>
+              )}
+            </div>
+
+            <div className="min-w-0">
+              <div className="flex items-center gap-3 mb-1 flex-wrap">
+                {editingName ? (
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const trimmed = nameInput.trim();
+                      if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
+                      setEditingName(false);
+                    }}
+                    className="flex items-center gap-2"
+                  >
+                    <input
+                      autoFocus
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Escape') setEditingName(false); }}
+                      onBlur={async () => {
+                        const trimmed = nameInput.trim();
+                        if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
+                        setEditingName(false);
+                      }}
+                      title="Project name"
+                      placeholder="Project name"
+                      className="font-sans text-3xl font-extrabold text-heading tracking-tight bg-transparent border-b-2 border-accent focus:outline-none min-w-[8rem] max-w-xl"
+                    />
+                  </form>
+                ) : (
+                  <h1
+                    onClick={() => { setNameInput(project.name); setEditingName(true); }}
+                    title="Click to rename"
+                    className="font-sans text-3xl font-extrabold text-heading tracking-tight cursor-pointer hover:text-accent transition-colors"
+                  >
+                    {project.name}
+                  </h1>
+                )}
+                <div className="relative group/status">
+                  <StatusBadge status={projectStatus} size="md" />
+                  <div className="absolute left-0 top-full mt-2 w-64 z-50 pointer-events-none opacity-0 group-hover/status:opacity-100 transition-opacity duration-150">
+                    <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-xl p-3">
+                      <p className="text-[10px] tracking-[0.12em] uppercase text-[var(--color-muted)] font-semibold mb-1.5">Schedule Health</p>
+                      {statusInsight.split('\n').map((line, i) => (
+                        <p key={i} className={`text-xs font-mono ${i === 0 ? 'text-[var(--color-heading)]' : 'text-[var(--color-muted)] mt-0.5'}`}>{line}</p>
+                      ))}
+                    </div>
+                  </div>
                 </div>
+              </div>
+              {project.description && (
+                <p className="text-sm text-muted">{project.description}</p>
+              )}
+              <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Project Hash</span>
+                <span className="text-xs font-mono text-heading">{projectFingerprint}</span>
               </div>
             </div>
           </div>
@@ -1149,13 +1423,6 @@ export default function ProjectDetailPage() {
               <p className="text-muted">Analyzes your goals, commits, and activity across all linked repos, then proposes specific changes — new goals, deadline shifts, and priority updates — based on what's actually happening in the project.</p>
             </div>
           </div>
-        </div>
-        {project.description && (
-          <p className="text-sm text-muted">{project.description}</p>
-        )}
-        <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5">
-          <span className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Project Hash</span>
-          <span className="text-xs font-mono text-heading">{projectFingerprint}</span>
         </div>
       </div>
 
@@ -1295,6 +1562,17 @@ export default function ProjectDetailPage() {
         </ErrorBoundary>
       )}
 
+      {activeTab === 'coordination' && (
+        <ErrorBoundary label="Coordination Tab">
+          <Suspense fallback={<SuspenseFallback label="Loading coordination…" />}>
+            <CoordinationTab
+              projectId={project.id}
+              isOwner={isOwner}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      )}
+
       {activeTab === 'metrics' && (
         <Suspense fallback={<SuspenseFallback label="Loading metrics…" />}>
           <GoalMetrics
@@ -1305,8 +1583,8 @@ export default function ProjectDetailPage() {
               avatar_url: m.profile?.avatar_url ?? null,
             }))}
             currentUserId={user?.id ?? ''}
-            currentUserName={user?.user_metadata?.user_name ?? user?.email ?? 'You'}
-            currentUserAvatar={user?.user_metadata?.avatar_url}
+            currentUserName={currentMemberProfile?.display_name ?? user?.user_metadata?.user_name ?? user?.email ?? 'You'}
+            currentUserAvatar={currentMemberProfile?.avatar_url ?? user?.user_metadata?.avatar_url}
             onAssignTask={(goalId, userId) => updateGoal(goalId, { assigned_to: userId })}
             timeLogs={timeLogs}
           />
@@ -1384,10 +1662,9 @@ export default function ProjectDetailPage() {
               setInviteTab={setInviteTab}
               memberSearch={memberSearch}
               setMemberSearch={setMemberSearch}
-              memberResults={memberResults}
               memberSearching={memberSearching}
-              inviting={inviting}
-              copySuccess={copySuccess}
+              sharedInviteCandidates={invitableSharedPeople}
+              sharedInviteLoading={sharedPeopleLoading}
               repoInput={repoInput}
               setRepoInput={setRepoInput}
               repoSaving={repoSaving}
@@ -1405,12 +1682,6 @@ export default function ProjectDetailPage() {
               setAuditPage={setAuditPage}
               AUDIT_PAGE_SIZE={AUDIT_PAGE_SIZE}
               imageUploading={imageUploading}
-              newLabelName={newLabelName}
-              setNewLabelName={setNewLabelName}
-              newLabelColor={newLabelColor}
-              setNewLabelColor={setNewLabelColor}
-              newLabelType={newLabelType}
-              setNewLabelType={setNewLabelType}
               projectLabels={projectLabels}
               editPromptFeature={editPromptFeature}
               setEditPromptFeature={setEditPromptFeature}
@@ -1426,13 +1697,13 @@ export default function ProjectDetailPage() {
               updateProject={updateProject}
               updateGoal={updateGoal}
               createGoal={createGoal}
-              handleCopyInviteCode={handleCopyInviteCode}
               handleSaveRepo={handleSaveRepo}
               handleRepoScan={handleRepoScan}
               scanLoading={scanLoading}
-              handleMemberSearch={handleMemberSearch}
-              handleInviteMember={handleInviteMember}
+              handleInviteByIdentifier={handleInviteByIdentifier}
+              handleInviteSharedCollaborator={handleInviteSharedCollaborator}
               handleRemoveMember={handleRemoveMember}
+              handlePromoteMember={handlePromoteMember}
               handleImageUpload={handleImageUpload}
               handleExportAuditCSV={handleExportAuditCSV}
               addLabel={addLabel}
@@ -1462,11 +1733,16 @@ export default function ProjectDetailPage() {
     )}
 
     {/* Add Task Modal — rendered globally so it works from any tab (timeline, calendar, tasks) */}
-    <Modal open={goalModal.open} onClose={goalModal.onClose} title="Add Task">
+    <Modal open={goalModal.open} onClose={closeGoalModal} title="Add Task">
       <form onSubmit={handleCreateGoal} className="space-y-4">
         {goalCreateError && (
           <div className="rounded-md border border-[#D94F4F]/40 bg-[#D94F4F]/10 px-3 py-2 text-xs font-mono text-[#ffb3b3]">
             {goalCreateError}
+          </div>
+        )}
+        {goalCreateNotice && (
+          <div className="rounded-md border border-accent2/30 bg-accent2/10 px-3 py-2 text-xs font-mono text-heading">
+            {goalCreateNotice}
           </div>
         )}
         <div>
@@ -1478,6 +1754,16 @@ export default function ProjectDetailPage() {
             required
             placeholder="e.g. Complete API integration"
             className="w-full px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Notes</label>
+          <textarea
+            value={newGoalNotes}
+            onChange={(e) => setNewGoalNotes(e.target.value)}
+            rows={3}
+            placeholder="Capture fuller context, dependencies, or pertinent details for this task."
+            className="w-full px-4 py-2.5 bg-surface border border-border text-heading text-sm leading-relaxed placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors resize-y min-h-[92px]"
           />
         </div>
         <div>
@@ -1496,34 +1782,58 @@ export default function ProjectDetailPage() {
             <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Category</label>
             <select
               value={newGoalCategory}
-              onChange={(e) => setNewGoalCategory(e.target.value)}
-              required
+              onChange={(e) => {
+                setNewGoalCategory(e.target.value);
+                if (e.target.value !== CREATE_NEW_CATEGORY_VALUE) setNewGoalCategoryDraft('');
+              }}
               title="Task category"
               className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
             >
               <option value="">— Select —</option>
+              <option value={CREATE_NEW_CATEGORY_VALUE}>+ Add New Category</option>
               {projectCategories.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
             </select>
+            {newGoalCategory === CREATE_NEW_CATEGORY_VALUE && (
+              <input
+                type="text"
+                value={newGoalCategoryDraft}
+                onChange={(e) => setNewGoalCategoryDraft(e.target.value)}
+                placeholder="Enter new category"
+                className="mt-2 w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+              />
+            )}
           </div>
           <div>
             <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">Line of Effort</label>
             <select
               value={newGoalLoe}
-              onChange={(e) => setNewGoalLoe(e.target.value)}
-              required
+              onChange={(e) => {
+                setNewGoalLoe(e.target.value);
+                if (e.target.value !== CREATE_NEW_LOE_VALUE) setNewGoalLoeDraft('');
+              }}
               title="Line of Effort"
               className="w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors"
             >
               <option value="">— Select —</option>
+              <option value={CREATE_NEW_LOE_VALUE}>+ Add New LOE</option>
               {projectLoes.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
             </select>
+            {newGoalLoe === CREATE_NEW_LOE_VALUE && (
+              <input
+                type="text"
+                value={newGoalLoeDraft}
+                onChange={(e) => setNewGoalLoeDraft(e.target.value)}
+                placeholder="Enter new LOE"
+                className="mt-2 w-full px-3 py-2.5 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors"
+              />
+            )}
           </div>
         </div>
         <div>
           <label className="block text-[10px] tracking-[0.2em] uppercase text-muted mb-2">
             Assign To <span className="text-muted/60 normal-case tracking-normal">(select multiple)</span>
           </label>
-          <div className="border border-border divide-y divide-border/50 max-h-32 overflow-y-auto">
+          <div className="border border-border divide-y divide-border/50 max-h-28 overflow-y-auto">
             {allMembers.map((m) => {
               const checked = newGoalAssignees.includes(m.user_id);
               return (
@@ -1551,7 +1861,23 @@ export default function ProjectDetailPage() {
             {creatingGoal ? 'Creating…' : 'Create Task'}
           </button>
 
-          <button type="button" disabled={creatingGoal} onClick={goalModal.onClose} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:cursor-not-allowed disabled:opacity-60">
+          <input
+            ref={createFromNotesInputRef}
+            type="file"
+            accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            className="sr-only"
+            onChange={(event) => void handleCreateTasksFromNotes(event.target.files?.[0])}
+          />
+          <button
+            type="button"
+            disabled={creatingGoal || creatingFromNotes}
+            onClick={() => createFromNotesInputRef.current?.click()}
+            className="px-6 py-2.5 border border-accent2/30 text-accent2 text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent2/10 transition-colors rounded-md disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {creatingFromNotes ? 'Analyzing Notes…' : 'Create From Notes'}
+          </button>
+
+          <button type="button" disabled={creatingGoal || creatingFromNotes} onClick={closeGoalModal} className="px-6 py-2.5 border border-border text-muted text-xs font-sans font-semibold tracking-wider uppercase hover:text-heading hover:bg-surface2 transition-colors rounded-md disabled:cursor-not-allowed disabled:opacity-60">
             Cancel
           </button>
         </div>
@@ -1573,6 +1899,7 @@ export default function ProjectDetailPage() {
           gitlabRepos={gitlabRepos}
           projectCategories={projectCategories.map((c) => c.name)}
           projectLoes={projectLoes.map((l) => l.name)}
+          onCreateProjectLabel={createProjectLabelIfNeeded}
           onFileClick={handleFileClick}
           onRepoClick={handleRepoClick}
           onTaskClick={(id) => {
@@ -1759,7 +2086,7 @@ function DocumentsTab({
     const { url } = await res.json();
     const a = document.createElement('a');
     a.href = url;
-    a.download = meta.filename ?? e.title;
+    a.download = meta.filename ?? e.title ?? 'download';
     a.click();
   };
 
@@ -2015,7 +2342,7 @@ function DocumentsTab({
                     type="button"
                     title="Download report"
                     onClick={async () => {
-                      const rc = r.content as ReportContent;
+                      const rc = r.content as unknown as ReportContent;
                       const { downloadDocx, downloadPptx, downloadPdf } = await loadReportDownloads();
                       if (r.format === 'pptx') await downloadPptx(rc);
                       else if (r.format === 'pdf') await downloadPdf(rc);
@@ -2030,7 +2357,7 @@ function DocumentsTab({
                     title="Export goals as CSV"
                     onClick={async () => {
                       const { exportGoalsCSV } = await loadReportDownloads();
-                      exportGoalsCSV(r.content as ReportContent);
+                      exportGoalsCSV(r.content as unknown as ReportContent);
                     }}
                     className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
                   >
@@ -2526,31 +2853,41 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
     if (!activeGithubRepo) return;
     setGhLoading(true);
     const [owner, repo] = activeGithubRepo.split('/');
-    Promise.all([
-      fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent`).then((r) => r.ok ? r.json() : null),
-      fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree`).then((r) => r.ok ? r.json() : null),
-    ]).then(([recent, tree]) => {
-      if (recent) {
-        setGhCommits(parseCommits(recent.commits ?? []));
-        if (recent.readme) setGhReadme(recent.readme);
-      }
-      if (tree?.files) setGhFiles(tree.files);
-    }).catch(() => {}).finally(() => setGhLoading(false));
+    (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      Promise.all([
+        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : null),
+        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : null),
+      ]).then(([recent, tree]) => {
+        if (recent) {
+          setGhCommits(parseCommits(recent.commits ?? []));
+          if (recent.readme) setGhReadme(recent.readme);
+        }
+        if (tree?.files) setGhFiles(tree.files);
+      }).catch(() => {}).finally(() => setGhLoading(false));
+    })();
   }, [activeGithubRepo]);
 
   useEffect(() => {
     if (!gitlabRepo) return;
     setGlLoading(true);
-    Promise.all([
-      fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
-      fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`).then((r) => r.ok ? r.json() : null),
-    ]).then(([recent, tree]) => {
-      if (recent) {
-        setGlCommits(parseCommits(recent.commits ?? []));
-        if (recent.readme) setGlReadme(recent.readme);
-      }
-      if (tree?.files) setGlFiles(tree.files);
-    }).catch(() => {}).finally(() => setGlLoading(false));
+    (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      Promise.all([
+        fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
+        fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
+      ]).then(([recent, tree]) => {
+        if (recent) {
+          setGlCommits(parseCommits(recent.commits ?? []));
+          if (recent.readme) setGlReadme(recent.readme);
+        }
+        if (tree?.files) setGlFiles(tree.files);
+      }).catch(() => {}).finally(() => setGlLoading(false));
+    })();
   }, [gitlabRepo, _projectId]);
 
   const handleGitLabScan = async () => {
@@ -2558,7 +2895,10 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
     setGlScanLoading(true);
     setGlScanResults(null);
     try {
-      const recentRes = await fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      const recentRes = await fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers });
       const recentData = recentRes.ok ? await recentRes.json() : {};
       const scanRes = await fetch('/api/ai/repo-scan', {
         method: 'POST',
@@ -2702,7 +3042,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
                     <span className="text-[10px] text-muted flex items-center gap-0.5">
                       <Clock size={9} /> {new Date(doc.occurred_at).toLocaleDateString()}
                     </span>
-                    {(doc.metadata as Record<string, unknown>)?.url && (
+                    {typeof (doc.metadata as Record<string, unknown> | null)?.url === 'string' && (
                       <a href={String((doc.metadata as Record<string, unknown>).url)} target="_blank" rel="noopener noreferrer"
                         className="text-[10px] text-accent hover:underline flex items-center gap-0.5">
                         Open <ExternalLink size={9} />

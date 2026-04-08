@@ -51,7 +51,10 @@ const GRAPH_URL = 'https://graph.microsoft.com/v1.0';
 // ── HMAC-signed state parameter (binds OAuth flow to a specific user) ────────
 function buildState(userId: string): string {
   const payload = `${userId}:${Date.now()}`;
-  const hmac = crypto.createHmac('sha256', CLIENT_SECRET || 'dev-fallback');
+  if (!CLIENT_SECRET) {
+    throw new Error('Microsoft client secret is not configured');
+  }
+  const hmac = crypto.createHmac('sha256', CLIENT_SECRET);
   hmac.update(payload);
   return `${payload}:${hmac.digest('hex')}`;
 }
@@ -61,7 +64,8 @@ function verifyState(state: string): string | null {
   if (parts.length < 3) return null;
   const sig = parts.pop()!;
   const payload = parts.join(':');
-  const hmac = crypto.createHmac('sha256', CLIENT_SECRET || 'dev-fallback');
+  if (!CLIENT_SECRET) return null;
+  const hmac = crypto.createHmac('sha256', CLIENT_SECRET);
   hmac.update(payload);
   const expected = hmac.digest('hex');
   // Timing-safe compare
@@ -182,6 +186,16 @@ export async function microsoftRoutes(server: FastifyInstance) {
         error: 'Microsoft integration not configured — set MICROSOFT_CLIENT_ID in server .env',
       });
     }
+    if (!CLIENT_SECRET) {
+      return reply.status(503).send({
+        error: 'Microsoft integration not configured — set MICROSOFT_CLIENT_SECRET in server .env',
+      });
+    }
+    if (!canEncrypt) {
+      return reply.status(503).send({
+        error: 'Microsoft integration not configured securely — set MICROSOFT_TOKEN_ENCRYPT_KEY in server .env',
+      });
+    }
 
     const state = buildState(userId);
     const params = new URLSearchParams({
@@ -206,6 +220,9 @@ export async function microsoftRoutes(server: FastifyInstance) {
 
     if (error || !code || !state) {
       return reply.redirect(`${clientUrl}/settings?ms_error=${encodeURIComponent(error ?? 'missing_params')}`);
+    }
+    if (!CLIENT_SECRET || !canEncrypt) {
+      return reply.redirect(`${clientUrl}/settings?ms_error=server_misconfigured`);
     }
 
     const userId = verifyState(state);
@@ -271,6 +288,16 @@ export async function microsoftRoutes(server: FastifyInstance) {
     if (dbErr) {
       server.log.error(dbErr);
       return reply.redirect(`${clientUrl}/settings?ms_error=db_error`);
+    }
+
+    if (msDisplayName || msEmail) {
+      await supabase
+        .from('profiles')
+        .upsert({
+          id: userId,
+          ...(msDisplayName ? { display_name: msDisplayName } : {}),
+          ...(msEmail ? { email: msEmail } : {}),
+        }, { onConflict: 'id' });
     }
 
     return reply.redirect(`${clientUrl}/settings?ms_connected=true`);

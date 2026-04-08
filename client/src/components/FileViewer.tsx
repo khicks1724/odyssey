@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { X, ExternalLink, Loader2, AlertTriangle, Copy, Check } from 'lucide-react';
 import LazySyntaxCodeBlock from './LazySyntaxCodeBlock';
+import { supabase } from '../lib/supabase';
 
 const API_BASE = '/api';
 
@@ -84,25 +85,43 @@ export default function FileViewer({ source, repo, path, projectId, githubToken,
     setError(null);
     setContent(null);
 
-    let url: string;
-    const headers: Record<string, string> = {};
+    let cancelled = false;
 
-    if (source === 'github') {
-      const [owner, repoName] = repo.split('/');
-      url = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/file?path=${encodeURIComponent(path)}`;
-      if (githubToken) headers['x-github-token'] = githubToken;
-    } else {
-      url = `${API_BASE}/gitlab/file?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
-    }
+    (async () => {
+      let url: string;
+      const headers: Record<string, string> = {};
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.access_token) {
+        headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      }
 
-    fetch(url, { headers })
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? 'Failed to load file');
-        setContent(data.content ?? '');
-      })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+      if (source === 'github') {
+        const [owner, repoName] = repo.split('/');
+        const params = new URLSearchParams({ path });
+        if (projectId) params.set('projectId', projectId);
+        url = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/file?${params.toString()}`;
+        if (githubToken) headers['x-github-token'] = githubToken;
+      } else {
+        url = `${API_BASE}/gitlab/file?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
+      }
+
+      fetch(url, { headers })
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error ?? 'Failed to load file');
+          if (!cancelled) setContent(data.content ?? '');
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [source, repo, path, projectId, githubToken]);
 
   const handleCopy = () => {

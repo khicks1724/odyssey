@@ -354,6 +354,26 @@ export function useChatMessages(threadId: string | null) {
     return messages.filter((msg) => new Date(msg.created_at).getTime() >= cutoff);
   }, [messages]);
 
+  const toggleReaction = async (messageId: string, emoji: string) => {
+    if (!user) return;
+    const message = messages.find((m) => m.id === messageId);
+    if (!message) return;
+    const reactions = ((message.metadata ?? {}) as { reactions?: Record<string, string[]> }).reactions ?? {};
+    const current = reactions[emoji] ?? [];
+    const next = current.includes(user.id)
+      ? current.filter((id) => id !== user.id)
+      : [...current, user.id];
+    const nextReactions = { ...reactions, [emoji]: next };
+    if (nextReactions[emoji].length === 0) delete nextReactions[emoji];
+    const nextMetadata = { ...(message.metadata ?? {}), reactions: nextReactions };
+    const { error } = await supabase
+      .from('chat_messages')
+      .update({ metadata: nextMetadata })
+      .eq('id', messageId);
+    if (error) throw error;
+    setMessages((prev) => prev.map((m) => m.id === messageId ? { ...m, metadata: nextMetadata } : m));
+  };
+
   const sendMessage = async (payload: Omit<ChatMessageRow, 'id' | 'created_at'>) => {
     const { data, error } = await supabase
       .from('chat_messages')
@@ -365,5 +385,5 @@ export function useChatMessages(threadId: string | null) {
     return data as ChatMessageRow;
   };
 
-  return { messages, loading, sendMessage, last24hMessages, refetch: fetchMessages };
+  return { messages, loading, sendMessage, toggleReaction, last24hMessages, refetch: fetchMessages };
 }

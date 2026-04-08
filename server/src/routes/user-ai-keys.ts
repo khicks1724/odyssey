@@ -47,6 +47,8 @@ type StoredKeyRow = {
   credential_type?: 'api_key' | 'oauth';
 };
 
+const TEST_OUTPUT_TOKENS = 16;
+
 // ── Encryption helpers ─────────────────────────────────────────────────────
 
 function getEncryptionKey(): Buffer {
@@ -55,9 +57,13 @@ function getEncryptionKey(): Buffer {
     // Derive a 32-byte key from the secret
     return createHash('sha256').update(secret).digest();
   }
-  // Fall back to a hash of the Supabase service role key
-  const fallback = process.env.SUPABASE_SERVICE_KEY ?? 'odyssey-fallback-key';
-  return createHash('sha256').update(fallback).digest();
+  // Legacy compatibility fallback for existing deployments without AI_KEY_SECRET.
+  // We intentionally do not fall back to a static literal.
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+  if (!serviceKey) {
+    throw new Error('AI_KEY_SECRET or SUPABASE_SERVICE_KEY must be set');
+  }
+  return createHash('sha256').update(serviceKey).digest();
 }
 
 function encryptKey(plaintext: string): { encryptedKey: string; iv: string; authTag: string } {
@@ -224,6 +230,12 @@ function isGenAiMilKey(value: string): boolean {
   return value.startsWith('STARK_') || value.startsWith('STARK-');
 }
 
+function shouldRetryWithMaxCompletionTokens(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unsupported parameter:\s*['"]max_tokens['"]/i.test(message)
+    || (/max_tokens/i.test(message) && /max_completion_tokens/i.test(message));
+}
+
 async function testAnthropicCredential(apiKey: string): Promise<{ message: string; model?: string }> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -234,7 +246,7 @@ async function testAnthropicCredential(apiKey: string): Promise<{ message: strin
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1,
+      max_tokens: TEST_OUTPUT_TOKENS,
       messages: [{ role: 'user', content: 'ping' }],
     }),
   });
@@ -267,9 +279,21 @@ async function testOpenAiCredential(apiKey: string, config: ProviderCredentialCo
       await client.chat.completions.create({
         model: deployment,
         messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
+        max_tokens: TEST_OUTPUT_TOKENS,
       });
     } catch (err: any) {
+      if (shouldRetryWithMaxCompletionTokens(err)) {
+        await client.chat.completions.create({
+          model: deployment,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_completion_tokens: TEST_OUTPUT_TOKENS,
+        });
+        return {
+          message: 'Azure OpenAI credentials and deployment are valid.',
+          model: deployment,
+        };
+      }
+
       const status = err?.status ?? err?.response?.status ?? 0;
       const detail = err?.message ?? String(err);
       if (status === 404 && /deployment/i.test(detail)) {
@@ -331,7 +355,7 @@ async function testGoogleCredential(provider: Provider, credential: string): Pro
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
+        max_tokens: TEST_OUTPUT_TOKENS,
         temperature: 0,
       }),
     });
@@ -368,6 +392,16 @@ async function testStoredCredential(provider: Provider, row: StoredKeyRow): Prom
     return testOpenAiCredential(plaintext, config);
   }
   return testGoogleCredential(provider, plaintext);
+}
+
+async function testPlaintextCredential(provider: Provider, apiKey: string, config: ProviderCredentialConfig): Promise<{ message: string; model?: string }> {
+  if (provider === 'anthropic') {
+    return testAnthropicCredential(apiKey);
+  }
+  if (provider === 'openai') {
+    return testOpenAiCredential(apiKey, config);
+  }
+  return testGoogleCredential(provider, apiKey);
 }
 
 // ── Route plugin ───────────────────────────────────────────────────────────
@@ -494,7 +528,11 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
     },
   );
 
-  // GET /api/user/ai-keys/:provider/reveal — return the decrypted key for display
+  function maskStoredKey(): string {
+    return '••••••••••••••••';
+  }
+
+  // GET /api/user/ai-keys/:provider/reveal — returns a mask only; plaintext keys are never revealed to the browser
   server.get<{ Params: { provider: string } }>(
     '/user/ai-keys/:provider/reveal',
     async (request, reply) => {
@@ -515,16 +553,15 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
 
       if (error || !data) return reply.status(404).send({ error: 'No key stored for this provider' });
 
-      try {
-        const plaintext = decryptUserKey(data.encrypted_key, data.iv, data.auth_tag);
-        return { key: plaintext, config: sanitizeConfig(provider as Provider, data.config) };
-      } catch {
-        return reply.status(500).send({ error: 'Failed to decrypt key' });
-      }
+      return {
+        key: maskStoredKey(),
+        masked: true,
+        config: sanitizeConfig(provider as Provider, data.config),
+      };
     },
   );
 
-  server.post<{ Params: { provider: string } }>(
+  server.post<{ Params: { provider: string }; Body: { apiKey?: string; config?: ProviderCredentialConfig } }>(
     '/user/ai-keys/:provider/test',
     async (request, reply) => {
       const userId = await getUserFromRequest(request.headers.authorization);
@@ -535,19 +572,34 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
         return reply.status(400).send({ error: `provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
       }
 
-      const { data, error } = await supabase
-        .from('user_ai_keys')
-        .select('encrypted_key, iv, auth_tag, config, credential_type')
-        .eq('user_id', userId)
-        .eq('provider', provider)
-        .single();
-
-      if (error || !data) {
-        return reply.status(404).send({ error: 'No key stored for this provider' });
+      const { apiKey, config: rawConfig } = request.body ?? {};
+      const { config, error: configError } = validateConfig(provider as Provider, rawConfig);
+      if (configError) {
+        return reply.status(400).send({ error: configError });
       }
 
       try {
-        const result = await testStoredCredential(provider as Provider, data as StoredKeyRow);
+        if (typeof apiKey === 'string' && apiKey.trim().length > 0) {
+          const result = await testPlaintextCredential(provider as Provider, apiKey.trim(), config);
+          return { ok: true, provider, ...result };
+        }
+
+        const { data, error } = await supabase
+          .from('user_ai_keys')
+          .select('encrypted_key, iv, auth_tag, config, credential_type')
+          .eq('user_id', userId)
+          .eq('provider', provider)
+          .single();
+
+        if (error || !data) {
+          return reply.status(404).send({ error: 'No key stored for this provider' });
+        }
+
+        const storedWithOverride: StoredKeyRow = {
+          ...(data as StoredKeyRow),
+          config: rawConfig ?? data.config,
+        };
+        const result = await testStoredCredential(provider as Provider, storedWithOverride);
         return { ok: true, provider, ...result };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Credential test failed';

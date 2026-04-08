@@ -187,7 +187,8 @@ export async function webhookRoutes(server: FastifyInstance) {
     // Verify webhook signature
     const secret = process.env.GITHUB_WEBHOOK_SECRET;
     if (!secret) {
-      server.log.warn('GITHUB_WEBHOOK_SECRET not set — skipping signature check');
+      server.log.error('GITHUB_WEBHOOK_SECRET not set — rejecting webhook');
+      return reply.code(503).send({ error: 'Webhook verification is not configured' });
     } else {
       if (!signature) {
         return reply.code(401).send({ error: 'Missing signature' });

@@ -21,6 +21,7 @@ import {
 import { useProjects } from '../hooks/useProjects';
 import { useChatMessages, useChatThreads, type ChatParticipant } from '../hooks/useChatThreads';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
+import { useSharedProjectPeople } from '../hooks/useSharedProjectPeople';
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useProfile } from '../hooks/useProfile';
@@ -132,6 +133,19 @@ function initials(label: string) {
     .join('') || 'O';
 }
 
+function contrastColor(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  if (luminance > 0.5) {
+    const darken = (c: number) => Math.max(0, Math.round(c * 0.35));
+    return `rgb(${darken(r)},${darken(g)},${darken(b)})`;
+  }
+  const lighten = (c: number) => Math.min(255, Math.round(c + (255 - c) * 0.75));
+  return `rgb(${lighten(r)},${lighten(g)},${lighten(b)})`;
+}
+
 function Avatar({
   label,
   image,
@@ -143,6 +157,20 @@ function Avatar({
   kind: 'project' | 'direct';
   className?: string;
 }) {
+  if (image?.startsWith('{')) {
+    try {
+      const custom = JSON.parse(image) as { initials?: string; color?: string };
+      return (
+        <div
+          className={`rounded-full flex items-center justify-center text-[11px] font-semibold ${className}`}
+          style={{ backgroundColor: custom.color ?? '#1d4ed8', color: contrastColor(custom.color ?? '#1d4ed8') }}
+        >
+          {custom.initials ?? initials(label)}
+        </div>
+      );
+    } catch { /* fall through */ }
+  }
+
   if (image) {
     return <img src={image} alt="" className={`rounded-full object-cover ${className}`} />;
   }
@@ -180,7 +208,6 @@ export default function ChatPage() {
   const [hasInput, setHasInput] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [creatingDm, setCreatingDm] = useState(false);
-  const [dmCandidates, setDmCandidates] = useState<Array<{ id: string; display_name: string | null; avatar_url: string | null; project_id: string | null }>>([]);
   const [contexts, setContexts] = useState<PendingContext[]>([]);
   const [contextOpen, setContextOpen] = useState(false);
   const [contextView, setContextView] = useState<'main' | 'repos' | 'docs'>('main');
@@ -195,9 +222,11 @@ export default function ChatPage() {
   const [projectDocs, setProjectDocs] = useState<Array<{ id: string; name: string; text: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const contextRef = useRef<HTMLDivElement | null>(null);
+  const creatingDmRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
-  const { messages, loading: messagesLoading, sendMessage, last24hMessages } = useChatMessages(selectedThreadId);
+  const { messages, loading: messagesLoading, sendMessage, toggleReaction, last24hMessages } = useChatMessages(selectedThreadId);
+  const { people: dmCandidates, loading: dmCandidatesLoading } = useSharedProjectPeople();
 
   useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
@@ -236,38 +265,6 @@ export default function ChatPage() {
     setAiQueueLength(0);
     aiProcessingRef.current = false;
   }, [selectedThreadId]);
-
-  useEffect(() => {
-    if (!user) return;
-    (async () => {
-      const { data: memberships } = await supabase
-        .from('project_members')
-        .select('project_id')
-        .eq('user_id', user.id);
-      const projectIds = (memberships ?? []).map((row) => row.project_id);
-      if (projectIds.length === 0) {
-        setDmCandidates([]);
-        return;
-      }
-
-      const { data: memberRows } = await supabase
-        .from('project_members')
-        .select('project_id, user_id')
-        .in('project_id', projectIds)
-        .neq('user_id', user.id);
-      const uniqueUsers = [...new Map((memberRows ?? []).map((row) => [`${row.user_id}:${row.project_id}`, row])).values()];
-      const { data: profiles } = uniqueUsers.length
-        ? await supabase.from('profiles').select('id, display_name, avatar_url').in('id', uniqueUsers.map((row) => row.user_id))
-        : { data: [] as { id: string; display_name: string | null; avatar_url: string | null }[] };
-      const profileMap = new Map((profiles ?? []).map((item) => [item.id, item]));
-      setDmCandidates(uniqueUsers.map((row) => ({
-        id: row.user_id,
-        display_name: profileMap.get(row.user_id)?.display_name ?? null,
-        avatar_url: profileMap.get(row.user_id)?.avatar_url ?? null,
-        project_id: row.project_id,
-      })));
-    })();
-  }, [user]);
 
   const relatedProjectId = selectedThread?.project_id ?? selectedThread?.related_project_id ?? null;
 
@@ -389,6 +386,9 @@ export default function ChatPage() {
       if (contextRef.current && !contextRef.current.contains(e.target as Node)) {
         setContextOpen(false);
         setContextView('main');
+      }
+      if (creatingDmRef.current && !creatingDmRef.current.contains(e.target as Node)) {
+        setCreatingDm(false);
       }
     }
     document.addEventListener('mousedown', onDown);
@@ -873,9 +873,10 @@ export default function ChatPage() {
 
   return (
     <div className="h-full min-h-0 bg-surface">
-      <div className="h-full min-h-0 grid grid-cols-[280px_minmax(0,1fr)]">
+      <div className="h-full min-h-0 grid grid-cols-[280px_minmax(0,1fr)] items-stretch">
         <aside className="border-r border-border bg-surface2/40 flex flex-col min-h-0">
-          <div className="px-5 pt-5 pb-4 border-b border-border/80">
+          <div ref={creatingDmRef} className="shrink-0">
+            <div className="px-5 pt-5 pb-4 border-b border-border/80">
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <p className="text-[11px] tracking-[0.24em] uppercase text-accent2 mb-2 font-mono">Chat</p>
@@ -900,40 +901,43 @@ export default function ChatPage() {
                 className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-border bg-surface text-sm text-heading placeholder:text-muted/60 focus:outline-none focus:border-accent/40"
               />
             </div>
-          </div>
-
-          {creatingDm && (
-            <div className="mx-4 mt-4 border border-border rounded-2xl bg-surface overflow-hidden shrink-0">
-              <div className="px-4 py-3 border-b border-border">
-                <p className="text-[10px] tracking-[0.18em] uppercase text-muted font-semibold">New direct message</p>
-                <p className="text-[11px] text-muted mt-1">Only users who currently share a project with you can be selected.</p>
-              </div>
-              <div className="max-h-56 overflow-y-auto p-2">
-                {dmCandidates.length === 0 ? (
-                  <p className="px-3 py-4 text-xs text-muted">No eligible users yet.</p>
-                ) : dmCandidates.map((candidate) => (
-                  <button
-                    key={`${candidate.id}-${candidate.project_id ?? 'none'}`}
-                    type="button"
-                    onClick={async () => {
-                      const threadId = await createDirectThread(candidate.id, candidate.project_id);
-                      setSelectedThreadId(threadId);
-                      setCreatingDm(false);
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface2 transition-colors text-left"
-                  >
-                    <Avatar label={candidate.display_name ?? candidate.id} image={candidate.avatar_url} kind="direct" className="w-9 h-9" />
-                    <div className="min-w-0">
-                      <p className="text-sm text-heading font-semibold truncate">{candidate.display_name ?? candidate.id}</p>
-                      <p className="text-[11px] text-muted truncate">
-                        {candidate.project_id ? `Shared project: ${projectMap.get(candidate.project_id)?.name ?? 'Project'}` : 'Eligible for DM'}
-                      </p>
-                    </div>
-                  </button>
-                ))}
-              </div>
             </div>
-          )}
+
+            {creatingDm && (
+              <div className="mx-4 mt-4 border border-border rounded-2xl bg-surface overflow-hidden shrink-0">
+                <div className="px-4 py-3 border-b border-border">
+                  <p className="text-[10px] tracking-[0.18em] uppercase text-muted font-semibold">New direct message</p>
+                  <p className="text-[11px] text-muted mt-1">Only users who currently share a project with you can be selected.</p>
+                </div>
+                <div className="max-h-56 overflow-y-auto p-2">
+                  {dmCandidatesLoading ? (
+                    <p className="px-3 py-4 text-xs text-muted">Loading eligible users…</p>
+                  ) : dmCandidates.length === 0 ? (
+                    <p className="px-3 py-4 text-xs text-muted">No eligible users yet.</p>
+                  ) : dmCandidates.map((candidate) => (
+                    <button
+                      key={`${candidate.id}-${candidate.project_id ?? 'none'}`}
+                      type="button"
+                      onClick={async () => {
+                        const threadId = await createDirectThread(candidate.id, candidate.project_id);
+                        setSelectedThreadId(threadId);
+                        setCreatingDm(false);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface2 transition-colors text-left"
+                    >
+                      <Avatar label={candidate.display_name ?? candidate.id} image={candidate.avatar_url} kind="direct" className="w-9 h-9" />
+                      <div className="min-w-0">
+                        <p className="text-sm text-heading font-semibold truncate">{candidate.display_name ?? candidate.id}</p>
+                        <p className="text-[11px] text-muted truncate">
+                          {candidate.project_name ? `Shared project: ${candidate.project_name}` : 'Eligible for DM'}
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
             {threadsLoading ? (
@@ -1056,7 +1060,7 @@ export default function ChatPage() {
           </div>
         </aside>
 
-        <section className="min-h-0 flex flex-col bg-surface">
+        <section className="h-full min-h-0 flex flex-col bg-surface">
           {selectedThread ? (
             <>
               <div className="px-5 py-3 border-b border-border bg-surface">
@@ -1117,57 +1121,110 @@ export default function ChatPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="max-w-4xl mx-auto space-y-3">
-                    {messages.map((message) => {
+                  <div className="max-w-4xl mx-auto">
+                    {messages.map((message, idx) => {
                       const mine = message.sender_id && message.sender_id === user?.id;
                       const sender =
                         message.role === 'assistant' ? { label: 'AI', avatar: null, kind: 'direct' as const } :
                         message.role === 'system' ? { label: 'System', avatar: null, kind: 'project' as const } :
                         mine ? { label: profile?.display_name ?? 'You', avatar: null, kind: 'direct' as const } :
                         { label: getOtherParticipant(selectedThread.id)?.display_name ?? 'Member', avatar: getOtherParticipant(selectedThread.id)?.avatar_url ?? null, kind: 'direct' as const };
-                      const metadata = (message.metadata ?? {}) as { provider?: string };
+                      const metadata = (message.metadata ?? {}) as { provider?: string; reactions?: Record<string, string[]> };
+                      const reactions = metadata.reactions ?? {};
+                      const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '✅', '❗'];
+
+                      const prev = messages[idx - 1];
+                      const GROUP_MS = 2 * 60 * 1000;
+                      const isGrouped = !!prev
+                        && prev.sender_id === message.sender_id
+                        && prev.role === message.role
+                        && new Date(message.created_at).getTime() - new Date(prev.created_at).getTime() < GROUP_MS;
 
                       return (
-                        <div key={message.id} className={`flex gap-2.5 ${mine ? 'justify-end' : 'justify-start'}`}>
+                        <div key={message.id} className={`flex gap-2.5 ${mine ? 'justify-end' : 'justify-start'} ${isGrouped ? 'mt-1' : 'mt-3'}`}>
                           {!mine && (
-                            <Avatar
-                              label={sender.label}
-                              image={sender.avatar}
-                              kind={sender.kind}
-                              className="w-8 h-8 shrink-0 mt-0.5"
-                            />
+                            isGrouped
+                              ? <div className="w-8 h-8 shrink-0" />
+                              : <Avatar
+                                  label={sender.label}
+                                  image={sender.avatar}
+                                  kind={sender.kind}
+                                  className="w-8 h-8 shrink-0 mt-0.5"
+                                />
                           )}
-                          <div className={`max-w-[72%] ${mine ? 'items-end' : 'items-start'} flex flex-col`}>
-                            <div className={`flex items-center gap-2 mb-0.5 ${mine ? 'justify-end' : 'justify-start'} w-full`}>
+                          <div className={`max-w-[72%] ${mine ? 'items-end' : 'items-start'} flex flex-col group/msg`}>
+                            {!isGrouped && <div className={`flex items-center gap-2 mb-0.5 ${mine ? 'justify-end' : 'justify-start'} w-full`}>
                               <span className="text-[11px] text-heading font-semibold">{sender.label}</span>
                               <span className="text-[10px] text-muted font-mono">{new Date(message.created_at).toLocaleString()}</span>
                               {metadata.provider && <span className="text-[10px] text-accent2 font-mono">{metadata.provider}</span>}
-                            </div>
-                            <div
-                              className={`rounded-2xl border px-3.5 py-2.5 shadow-sm ${
-                                mine
-                                  ? 'bg-accent/12 border-accent/25 text-heading'
-                                  : message.role === 'assistant'
-                                    ? 'bg-surface2 border-accent2/25 text-heading'
-                                    : message.role === 'system'
-                                      ? 'bg-surface2/70 border-border text-muted'
-                                      : 'bg-surface2 border-border text-heading'
-                              }`}
-                            >
-                              {message.role === 'assistant' ? (
-                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos} className="text-sm leading-snug break-words cp-prose">
-                                  {message.content}
-                                </MarkdownWithFileLinks>
-                              ) : (
-                                <div className="text-sm leading-snug whitespace-pre-wrap break-words">
-                                  {message.content.split(/(https?:\/\/[^\s]+)/g).map((part, i) =>
-                                    /^https?:\/\//.test(part)
-                                      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80 break-all">{part}</a>
-                                      : part
-                                  )}
+                            </div>}
+                            <div className="relative">
+                              <div
+                                className={`rounded-2xl border px-3.5 py-2.5 shadow-sm ${
+                                  mine
+                                    ? 'bg-accent/12 border-accent/25 text-heading'
+                                    : message.role === 'assistant'
+                                      ? 'bg-surface2 border-accent2/25 text-heading'
+                                      : message.role === 'system'
+                                        ? 'bg-surface2/70 border-border text-muted'
+                                        : 'bg-surface2 border-border text-heading'
+                                }`}
+                              >
+                                {message.role === 'assistant' ? (
+                                  <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos} className="text-sm leading-snug break-words cp-prose">
+                                    {message.content}
+                                  </MarkdownWithFileLinks>
+                                ) : (
+                                  <div className="text-sm leading-snug whitespace-pre-wrap break-words">
+                                    {message.content.split(/(https?:\/\/[^\s]+)/g).map((part, i) =>
+                                      /^https?:\/\//.test(part)
+                                        ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-accent underline underline-offset-2 hover:opacity-80 break-all">{part}</a>
+                                        : part
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              {/* Reaction picker — shown on hover */}
+                              {message.role === 'user' && (
+                                <div className={`absolute ${mine ? 'right-0' : 'left-0'} -bottom-7 opacity-0 group-hover/msg:opacity-100 transition-opacity z-10`}>
+                                  <div className="flex gap-0.5 bg-surface border border-border rounded-full px-1.5 py-1 shadow-md">
+                                    {REACTION_EMOJIS.map((emoji) => (
+                                      <button
+                                        key={emoji}
+                                        type="button"
+                                        onClick={() => toggleReaction(message.id, emoji)}
+                                        className="text-sm leading-none hover:scale-125 transition-transform px-0.5"
+                                        title={emoji}
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
                               )}
                             </div>
+                            {/* Reaction counts */}
+                            {Object.keys(reactions).length > 0 && (
+                              <div className={`flex flex-wrap gap-1 mt-1 ${mine ? 'justify-end' : 'justify-start'}`}>
+                                {Object.entries(reactions).map(([emoji, userIds]) =>
+                                  userIds.length > 0 && (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={() => toggleReaction(message.id, emoji)}
+                                      className={`inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full border transition-colors ${
+                                        user && userIds.includes(user.id)
+                                          ? 'bg-accent/15 border-accent/30 text-accent'
+                                          : 'bg-surface2 border-border text-muted hover:border-accent/30'
+                                      }`}
+                                    >
+                                      <span>{emoji}</span>
+                                      <span className="font-mono text-[10px]">{userIds.length}</span>
+                                    </button>
+                                  )
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -1206,7 +1263,7 @@ export default function ChatPage() {
                   </div>
                 )}
               </div>
-              <div className="border-t border-border bg-surface px-5 py-3">
+              <div className="mt-auto shrink-0 border-t border-border bg-surface px-5 py-3">
                 <div className="max-w-4xl mx-auto space-y-2">
                   {contexts.length > 0 && (
                     <div className="flex flex-wrap gap-2">

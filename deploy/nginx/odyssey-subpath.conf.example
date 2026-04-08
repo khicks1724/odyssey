@@ -17,6 +17,7 @@ server {
     # The trailing slash on proxy_pass is intentional. It strips the
     # /odyssey/ prefix before forwarding to Odyssey on localhost:3000.
 
+    # Required for report-template uploads and generated report artifacts.
     client_max_body_size 100m;
 
     location = /odyssey {

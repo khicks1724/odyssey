@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { List, X, Clock, ShieldAlert } from 'lucide-react';
+import UserAvatar from './UserAvatar';
 import type { Goal, TimeLog } from '../types';
 
 interface MemberInfo {
@@ -170,15 +171,13 @@ function TaskPreviewPopup({ name, tasks, members, onAssignTask, onClose }: TaskP
                         }}
                         className="w-full flex items-center gap-2 px-3 py-2 text-xs text-heading hover:bg-surface2 transition-colors"
                       >
-                        {p.avatar_url ? (
-                          <img src={p.avatar_url} alt="" className="w-5 h-5 rounded-full shrink-0" />
-                        ) : (
-                          <div className="w-5 h-5 rounded-full bg-accent/20 flex items-center justify-center shrink-0">
-                            <span className="text-[8px] text-accent font-bold uppercase">
-                              {(p.display_name ?? '?')[0]}
-                            </span>
-                          </div>
-                        )}
+                        <UserAvatar
+                          label={p.display_name ?? p.user_id}
+                          avatar={p.avatar_url}
+                          className="w-5 h-5 shrink-0"
+                          fallbackClassName="bg-accent/20 text-accent"
+                          textClassName="text-[8px] font-bold uppercase"
+                        />
                         <span className="truncate">{p.display_name ?? p.user_id.slice(0, 8)}</span>
                       </button>
                     ))}
@@ -337,15 +336,13 @@ export default function GoalMetrics({
                     {/* Assignee row */}
                     <div className={`rounded px-2 py-1.5 transition-colors ${isOpen ? 'bg-surface2' : ''}`}>
                       <div className="flex items-center gap-2 mb-1">
-                        {avatar ? (
-                          <img src={avatar} alt="" className="w-5 h-5 rounded-full" />
-                        ) : (
-                          <div className={`w-5 h-5 rounded-full flex items-center justify-center ${uid === null ? 'bg-border' : 'bg-accent/20'}`}>
-                            <span className={`text-[8px] font-bold uppercase ${uid === null ? 'text-muted' : 'text-accent'}`}>
-                              {uid === null ? '?' : name[0]}
-                            </span>
-                          </div>
-                        )}
+                        <UserAvatar
+                          label={name}
+                          avatar={avatar}
+                          className="w-5 h-5"
+                          fallbackClassName={uid === null ? 'bg-border text-muted' : 'bg-accent/20 text-accent'}
+                          textClassName="text-[8px] font-bold uppercase"
+                        />
                         <span className="text-xs font-medium flex-1 text-heading">{name}</span>
                         <span className="text-[10px] font-mono text-muted">
                           {done}/{ag.length}

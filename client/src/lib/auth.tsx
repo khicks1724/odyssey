@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { Provider, User, Session, UserIdentity } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { toAbsoluteAppUrl, withBasePath } from './base-path';
-import { normalizeUsername, usernameToInternalEmail } from './username-auth';
+import { isLegacyUsername, legacyUsernameToInternalEmail, normalizeUsername, usernameToInternalEmail } from './username-auth';
 
 export type OAuthProvider = Extract<Provider, 'github' | 'google' | 'azure'>;
 
@@ -95,8 +95,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signInWithUsernamePassword = async (username: string, password: string) => {
-    const email = usernameToInternalEmail(username);
-    const { error } = await withTimeout(
+    const primaryEmail = usernameToInternalEmail(username);
+    const fallbackEmail = isLegacyUsername(username) ? legacyUsernameToInternalEmail(username) : null;
+
+    const attemptSignIn = async (email: string) => withTimeout(
       supabase.auth.signInWithPassword({
         email,
         password,
@@ -104,7 +106,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       PASSWORD_AUTH_TIMEOUT_MS,
       'Sign-in timed out. Please try again.',
     );
-    if (error) throw new Error('Invalid username or password');
+
+    const primary = await attemptSignIn(primaryEmail);
+    if (!primary.error) return;
+
+    if (fallbackEmail && fallbackEmail !== primaryEmail) {
+      const fallback = await attemptSignIn(fallbackEmail);
+      if (!fallback.error) return;
+    }
+
+    throw new Error('Invalid username or password');
   };
 
   const registerWithUsernamePassword = async ({

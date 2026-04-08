@@ -4,18 +4,17 @@ export interface GitLabIntegrationConfig {
   repo?: string;
   repos?: string[];
   token?: string;
+  tokenEncrypted?: string;
+  tokenIv?: string;
+  tokenAuthTag?: string;
   host?: string;
 }
 
 export function getGitLabRepoPaths(config: GitLabIntegrationConfig | null | undefined): string[] {
-  const repoPath = config?.repoPath?.trim();
-  if (repoPath) return [repoPath];
-
   const repos = (config?.repos ?? []).map((value) => value.trim()).filter(Boolean);
-  if (repos.length > 0) return [...new Set(repos)];
-
+  const repoPath = config?.repoPath?.trim();
   const repo = config?.repo?.trim();
-  return repo ? [repo] : [];
+  return [...new Set([repoPath, ...repos, repo].filter((value): value is string => !!value))];
 }
 
 export function getGitLabRepoUrl(config: GitLabIntegrationConfig | null | undefined): string | null {

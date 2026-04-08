@@ -31,6 +31,7 @@ GOOGLE_OAUTH_CLIENT_SECRET=
 
 MICROSOFT_CLIENT_ID=
 MICROSOFT_CLIENT_SECRET=
+MICROSOFT_TENANT_URL=https://login.microsoftonline.com/common
 ```
 
 ## 2. Start the VM stack
@@ -41,11 +42,15 @@ MICROSOFT_CLIENT_SECRET=
 
 For Microsoft, register both of these redirect URIs in the same Microsoft Entra app:
 
-- `http://YOUR_VM_IP_OR_HOSTNAME:8000/auth/v1/callback`
+- `http://YOUR_VM_IP_OR_HOSTNAME:3000/supabase/auth/v1/callback`
 - `http://YOUR_VM_IP_OR_HOSTNAME:3000/api/microsoft/auth/callback`
 
-Supabase will be exposed on `http://YOUR_VM_IP_OR_HOSTNAME:8000`.
-Odyssey will be exposed on `http://YOUR_VM_IP_OR_HOSTNAME:3000`.
+If you publish Odyssey behind a public origin or sub-path, use that public URL instead of the raw VM port. For example:
+
+- `https://example.mil/odyssey/supabase/auth/v1/callback`
+- `https://example.mil/odyssey/api/microsoft/auth/callback`
+
+Supabase still runs locally on the VM, but its public OAuth callback should follow the same public Odyssey URL and append `/supabase`.
 
 ## 3. Apply Odyssey schema and buckets
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useDeferredValue, useMemo } from 'react';
 import { X, Loader2, Github, GitBranch, Folder, ChevronRight, FileText, Search } from 'lucide-react';
 import LazySyntaxCodeBlock from './LazySyntaxCodeBlock';
+import { supabase } from '../lib/supabase';
 import './RepoTreeModal.css';
 
 const API_BASE = '/api';
@@ -161,25 +162,46 @@ export default function RepoTreeModal({ repo, type, projectId, initialPath, onCl
     setLoading(true);
     setError(null);
 
-    let endpoint: string;
-    if (type === 'github') {
-      const [owner, repoName] = repo.split('/');
-      endpoint = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/tree`;
-    } else {
-      endpoint = `${API_BASE}/gitlab/tree?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}`;
-    }
+    let cancelled = false;
 
-    fetch(endpoint)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: { files?: FileEntry[] } | FileEntry[]) => {
-        const list = Array.isArray(data) ? data : (data.files ?? []);
-        setFiles(list);
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+    (async () => {
+      let endpoint: string;
+      const headers: Record<string, string> = {};
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.access_token) {
+        headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      }
+
+      if (type === 'github') {
+        const [owner, repoName] = repo.split('/');
+        const params = new URLSearchParams();
+        if (projectId) params.set('projectId', projectId);
+        endpoint = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/tree${params.toString() ? `?${params.toString()}` : ''}`;
+      } else {
+        endpoint = `${API_BASE}/gitlab/tree?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}`;
+      }
+
+      fetch(endpoint, { headers })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
+        .then((data: { files?: FileEntry[] } | FileEntry[]) => {
+          if (cancelled) return;
+          const list = Array.isArray(data) ? data : (data.files ?? []);
+          setFiles(list);
+        })
+        .catch((e) => {
+          if (!cancelled) setError(String(e));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [projectId, repo, type]);
 
   useEffect(() => {
@@ -201,14 +223,21 @@ export default function RepoTreeModal({ repo, type, projectId, initialPath, onCl
 
     try {
       let endpoint: string;
+      const headers: Record<string, string> = {};
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.access_token) {
+        headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      }
       if (type === 'github') {
         const [owner, repoName] = repo.split('/');
-        endpoint = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/file?path=${encodeURIComponent(path)}`;
+        const params = new URLSearchParams({ path });
+        if (projectId) params.set('projectId', projectId);
+        endpoint = `${API_BASE}/github/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/file?${params.toString()}`;
       } else {
         endpoint = `${API_BASE}/gitlab/file?projectId=${encodeURIComponent(projectId ?? '')}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
       }
 
-      const r = await fetch(endpoint);
+      const r = await fetch(endpoint, { headers });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
       setPreviewContent(data.content ?? '');

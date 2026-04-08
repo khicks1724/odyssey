@@ -14,7 +14,9 @@ import { gitlabRoutes } from './routes/gitlab.js';
 import { userAiKeysRoutes } from './routes/user-ai-keys.js';
 import { authRoutes } from './routes/auth.js';
 import { supabaseProxyRoutes } from './routes/supabase-proxy.js';
+import { coordinationRoutes } from './routes/coordination.js';
 import { getAvailableProviders } from './ai-providers.js';
+import { startNightlyCoordinationRebuild } from './lib/coordination.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isProd = process.env.NODE_ENV === 'production';
@@ -24,7 +26,7 @@ const server = Fastify({ logger: true });
 // In production serve the built React app from client/dist
 if (isProd) {
   const clientDist = process.env.CLIENT_DIST_PATH ?? path.join(__dirname, '../client');
-  await server.register(staticPlugin, { root: clientDist, prefix: '/' });
+  await server.register(staticPlugin, { root: clientDist, prefix: '/', wildcard: false });
   // SPA fallback — any non-API route serves index.html
   server.setNotFoundHandler((_req, reply) => {
     reply.sendFile('index.html');
@@ -45,6 +47,7 @@ await server.register(uploadRoutes, { prefix: '/api' });
 await server.register(gitlabRoutes, { prefix: '/api' });
 await server.register(userAiKeysRoutes, { prefix: '/api' });
 await server.register(authRoutes, { prefix: '/api' });
+await server.register(coordinationRoutes, { prefix: '/api' });
 await server.register(supabaseProxyRoutes);
 
 const port = Number(process.env.PORT) || 3000;
@@ -53,6 +56,7 @@ const host = process.env.HOST ?? '0.0.0.0';
 try {
   await server.listen({ port, host });
   console.log(`Odyssey API running on ${host}:${port}`);
+  startNightlyCoordinationRebuild(server.log);
 
   const providers = getAvailableProviders();
   const active = providers.filter((p) => p.available).map((p) => p.name);
@@ -61,6 +65,7 @@ try {
   if (inactive.length > 0) console.log(`AI providers inactive (no API key): ${inactive.join(', ')}`);
   if (active.length === 0) console.warn('WARNING: No AI providers configured yet — users need to add provider keys in Settings → AI Providers');
   if (!process.env.GITHUB_WEBHOOK_SECRET) console.warn('WARNING: GITHUB_WEBHOOK_SECRET not set — webhook signature verification disabled');
+  if (!process.env.AI_KEY_SECRET) console.warn('WARNING: AI_KEY_SECRET not set — encrypted user keys fall back to the service key for legacy compatibility');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
   console.log('GitLab integration uses per-project repository URLs and personal access tokens');

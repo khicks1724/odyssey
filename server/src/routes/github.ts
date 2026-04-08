@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { getUserFromAuthHeader, isInternalRequest, userHasProjectAccess } from '../lib/request-auth.js';
 
 interface GitHubCommit {
   sha: string;
@@ -10,12 +11,38 @@ interface GitHubCommit {
   author?: { login: string; avatar_url: string } | null;
 }
 
+async function requireGitHubProjectAccess(
+  authorization: string | undefined,
+  projectId: string | undefined,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  if (!projectId?.trim()) {
+    return { ok: false, status: 400, error: 'projectId is required' };
+  }
+
+  const userId = await getUserFromAuthHeader(authorization);
+  if (!userId) {
+    return { ok: false, status: 401, error: 'Unauthorized' };
+  }
+
+  const allowed = await userHasProjectAccess(projectId, userId);
+  if (!allowed) {
+    return { ok: false, status: 403, error: 'Forbidden' };
+  }
+
+  return { ok: true };
+}
+
 export async function githubRoutes(server: FastifyInstance) {
   // Fetch recent commits for a repo
   server.get<{
     Params: { owner: string; repo: string };
-    Querystring: { per_page?: string };
+    Querystring: { per_page?: string; projectId?: string };
   }>('/github/:owner/:repo/commits', async (request, reply) => {
+    if (!isInternalRequest(request.headers)) {
+      const access = await requireGitHubProjectAccess(request.headers.authorization, request.query.projectId);
+      if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    }
+
     const { owner, repo } = request.params;
     const perPage = Math.min(100, Number(request.query.per_page) || 30);
     const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
@@ -37,8 +64,8 @@ export async function githubRoutes(server: FastifyInstance) {
     );
 
     if (!res.ok) {
-      const body = await res.text();
-      return reply.status(res.status).send({ error: 'GitHub API error', details: body });
+      await res.text().catch(() => undefined);
+      return reply.status(res.status).send({ error: 'GitHub API error' });
     }
 
     const commits: GitHubCommit[] = await res.json();
@@ -65,7 +92,13 @@ export async function githubRoutes(server: FastifyInstance) {
   // Get repo info
   server.get<{
     Params: { owner: string; repo: string };
+    Querystring: { projectId?: string };
   }>('/github/:owner/:repo', async (request, reply) => {
+    if (!isInternalRequest(request.headers)) {
+      const access = await requireGitHubProjectAccess(request.headers.authorization, request.query.projectId);
+      if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    }
+
     const { owner, repo } = request.params;
     const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
 
@@ -85,8 +118,8 @@ export async function githubRoutes(server: FastifyInstance) {
     );
 
     if (!res.ok) {
-      const body = await res.text();
-      return reply.status(res.status).send({ error: 'GitHub API error', details: body });
+      await res.text().catch(() => undefined);
+      return reply.status(res.status).send({ error: 'GitHub API error' });
     }
 
     const data = await res.json();
@@ -105,15 +138,20 @@ export async function githubRoutes(server: FastifyInstance) {
   server.get<{
     Querystring: { q: string };
   }>('/github/search/users', async (request, reply) => {
+    const userId = await getUserFromAuthHeader(request.headers.authorization);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+
     const { q } = request.query;
-    const token = request.headers['x-github-token'] as string;
+    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
 
     if (!q || q.length < 2) {
       return reply.status(400).send({ error: 'Query must be at least 2 characters' });
     }
 
     if (!token) {
-      return reply.status(401).send({ error: 'GitHub token required' });
+      return reply.status(503).send({ error: 'GitHub search is not configured' });
     }
 
     const res = await fetch(
@@ -128,8 +166,8 @@ export async function githubRoutes(server: FastifyInstance) {
     );
 
     if (!res.ok) {
-      const body = await res.text();
-      return reply.status(res.status).send({ error: 'GitHub API error', details: body });
+      await res.text().catch(() => undefined);
+      return reply.status(res.status).send({ error: 'GitHub API error' });
     }
 
     const data = await res.json();
@@ -146,7 +184,13 @@ export async function githubRoutes(server: FastifyInstance) {
   // Get repo file tree
   server.get<{
     Params: { owner: string; repo: string };
+    Querystring: { projectId?: string };
   }>('/github/:owner/:repo/tree', async (request, reply) => {
+    if (!isInternalRequest(request.headers)) {
+      const access = await requireGitHubProjectAccess(request.headers.authorization, request.query.projectId);
+      if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    }
+
     const { owner, repo } = request.params;
     const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
 
@@ -187,8 +231,13 @@ export async function githubRoutes(server: FastifyInstance) {
   // Get recent commits (for AI repo scan)
   server.get<{
     Params: { owner: string; repo: string };
-    Querystring: { per_page?: string };
+    Querystring: { per_page?: string; projectId?: string };
   }>('/github/:owner/:repo/recent', async (request, reply) => {
+    if (!isInternalRequest(request.headers)) {
+      const access = await requireGitHubProjectAccess(request.headers.authorization, request.query.projectId);
+      if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    }
+
     const { owner, repo } = request.params;
     const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
 
@@ -233,8 +282,13 @@ export async function githubRoutes(server: FastifyInstance) {
   // Fetch raw file content
   server.get<{
     Params: { owner: string; repo: string };
-    Querystring: { path: string };
+    Querystring: { path: string; projectId?: string };
   }>('/github/:owner/:repo/file', async (request, reply) => {
+    if (!isInternalRequest(request.headers)) {
+      const access = await requireGitHubProjectAccess(request.headers.authorization, request.query.projectId);
+      if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    }
+
     const { owner, repo } = request.params;
     const { path } = request.query;
     const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
