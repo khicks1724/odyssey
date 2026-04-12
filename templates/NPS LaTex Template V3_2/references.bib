@@ -1,0 +1,619 @@
+This is an example bib file, that flexes most of the capabilities of the .bst file.
+The BibTeX entries in this file are intended to match the examples at:
+https://libguides.nps.edu/citation/
+
+If you do not reference a bibliographic entry in your thesis,
+it will not be put into your references. Thus, you may keep these
+example entries in your file for reference or you may delete everything
+after the "START EXAMPLES" comment to start a fresh bib file.
+
+General notes:
+ - the last line in any entry should NOT have a comma following it
+ - curly brackets are more robust than quotes for grouping text for individual entries, but you can use either
+ - you don't need % for commenting, but it can be helpful as many editors will highlight the text as comments
+
+Tip from a student:
+When working on citations, I noticed the only way to reliably have edits in the citations/bibliography show up was to compile the LaTeX files, then build the bibliography with Bibtex, and finally compile the LaTeX files again.
+
+% A helper command for identifying a page range in a document having page numbers like 1-10, 1-11, 1-12, etc.  Identify the page range as {1\hyphen1--1\hyphen10} for pages 1-1 through 1-10.
+@preamble{{\providecommand*\hyphen{-}}}
+
+% IEEE format only and Mechanical and Aerospace Engineering (MAE) Department only:
+% Cite this as the very first entry in your document, like right after "\begin{document}",
+% with this special cite command:  \bstctlcite{forced-et-al-off}
+@IEEEtranBSTCTL{forced-et-al-off,
+    CTLuse_forced_etal = "no"
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% START %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% EXAMPLES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+These examples are taken from http://libguides.nps.edu/citation/ieee
+
+Blog: Use misc class.
+@misc{locke_2020,
+  author        = "J. Locke",
+  title         = "Effect of weird tails in 35mm {I}nnsmouth sprocket periodicity distributions on re-tiered bicyclical phase shifting using {C}thulhean logic",
+  month         = "Dec. 22,",
+  year          = "2020",
+  howpublished  = "Thing's Credible!, blog", 
+  url           = "https://wrywhisker.pulpfriction.net/wallcrust/linear-colinear-felinear.html"
+}
+
+Book (Chapter in Edited Book): Use incollection class.  For INFORMS, major cities like Los Angeles, Boston, and Seattle do not take states and countries, despite the major city example here for IEEE, which needs the state and country.
+@incollection{haynes_2009,
+  author        = "P. Haynes",
+  editor        = "D. Moran and J. A. Russel",
+  title         = "Al-{Q}aeda, oil dependence, and {U.S.} foreign policy",
+  booktitle     = "Energy Security and Global Politics: The Militarization of Resource Management",
+  publisher     = "Routledge",
+  address       = "New York, NY, USA",
+  year          = "2009",
+  pages         = "62--77"
+}
+
+There is no Cordesman example for "three authors, one editor."  Instead, cross-compare the Haynes entry above and Cordesman entry below.
+
+Book (Electronic Version, with URL or DOI): Use ebook entry.
+@ebook{bonds_2014,
+    address = {New York, NY, USA},
+    author = {M. E. Bonds},
+    doi = {10.1093/acprof:oso/9780199343638.003.0004},
+    publisher = {Oxford University Press},
+    title = {Absolute Music: The History of an Idea},
+    year = {2014}}
+
+Book (Electronic Version, with Book Provider): Normal ebook entry, with book provider name in url field.
+@ebook{krishnan_2008,
+    address = {Aldershot, England},
+    author = {A. Krishnan},
+    publisher = {Ashgate},
+    title = {War as Business: Technological Change and Military Service Contracting},
+    url = {Kindle},
+    year = {2008}}
+
+Electronic Book, from Library Database: Normal of ebook class, with book provider name in url field.
+@ebook{Crabtree:Chaplin:2013,
+  author   = {Crabtree, J and Chaplin, A},
+  title    = {Bolivia: Processes of Change},
+  address  = {London, England},
+  publisher = {Zed Books},
+  year     = {2013},
+  url      = {Proquest}
+}
+
+Book (Print, One Author): Normal use of book class.  For INFORMS, major cities like Los Angeles, Boston, and Seattle do not take states and countries, despite the major city example here for IEEE, which needs the state and country.
+@book{pollan_2006,
+  author        = "M. Pollan",
+  title         = "The Omnivore’s Dilemma: A Natural History of Four Meals",
+  publisher     = "Penguin",
+  address       = "New York, NY, USA",
+  edition       = "2nd",
+  year          = "2006"
+}
+
+Book (Print, Two Authors): Normal use of book class.  For INFORMS, major cities like Los Angeles, Boston, and Seattle do not take states and countries.
+@book{strindberg_warn_2011,
+  author        = "A. Strindberg and M. Wärn",
+  title         = " Islamism: Religion, Radicalization and Resistance",
+  publisher     = "John Wiley and Sons",
+  address       = "Hoboken, NJ, USA",
+  edition       = "2nd",
+  year          = "2011"
+}
+
+Book (print, three authors): Normal use of book class.  For INFORMS, major cities like Los Angeles, Boston, and Seattle do not take states and countries.
+@book{Cordesman:2009,
+  title={Winning in Afghanistan: Creating Effective Afghan Security Forces},
+  author={Cordesman, Anthony H and Mausner, Adam and Kasten, David},
+  year={2009},
+  publisher={Center for Strategic and International Studies},
+  address = {Washington, DC}
+}
+
+Book (Portion): Normal use of inbook.
+@inbook{orend_2013,
+  author        = "B. Orend",
+  title         = "Morality of War",
+  publisher     = "Broadview Press",
+  address       = "Tonawanda, NY, USA",
+  edition       = "2nd",
+  year          = "2013",
+  chapter       = "2, sec.\ 3",
+  pages         = "67--70"
+}
+
+Book (In a Series): Not just a book, but a part of a book portion (since there is page range), so the inbook class is more appropriate. If there were no pages, we could use book.
+@inbook{abramowitz_64,
+  editor        = "M. Abramowitz and I. A. Stegun",
+  title         = "Handbook of Mathematical Functions",
+  series        = "Applied Mathematics Series 55",
+  publisher     = "NBS",
+  address       = "Washington, DC, USA",
+  pages         = "32--33",
+  year          = "1964"
+}
+
+Book (Volume): Normal use of incollection for a chapter in a volume of collected works.
+@incollection{myer_77,
+  author        = "R. L. Myer",
+  editor        = "P. G. Harper and B. S. Wherret",
+  title         = "Parametric oscillators and nonlinear materials",
+  booktitle     = "Nonlinear Optics",
+  publisher     = "Academic Press",
+  address       = "San Francisco, CA, USA",
+  year          = "1977",
+  volume        = "4",
+  pages         = "47--160"
+}
+
+Class Notes / Lecture, published: Use misc class, entering 1) description, 2) course number, and 3) month and day into the howpublished field. In Title field, enclose proper nouns in brackets, as needed, to retain capitalization.
+@misc{Blanche:2017,
+  author        = {Blanche, C},
+  title         ={How to be the cutest cat in the world},
+  howpublished  ={lecture, Meow Studies 402, August 21},
+  organization = {Department of Applied Whiskers, Finishing School for Pets},
+  address = {Monterey, CA},
+  url = {http://wallcrust.com/meows/cats.whiskers},
+  year          ={2017}
+}
+
+Class Notes, unpublished: Use misc class. In title field, enclose proper nouns in brackets, as shown.  Month and day go into the organization field.
+@misc{Houston:2016,
+  author       = {Houston, A},
+  year         = {2016},
+  title        = {Why capitalization matters when visiting the {House of Potato Chips}},
+  howpublished = {class notes, Performance Management and Budgeting},
+  organization = {University of Idaho, September 28},
+  address = {Fort Chip, ID}
+}
+
+Lecture, unpublished: Use misc class.  Note the need to put the month and day into the howpublished field.
+@misc{Norton:2014,
+  author        = {Norton, May Eagerton},
+  year          = {2014},
+  title         = {Optimizing the rotational velocity of lizards through ceiling fan modulation},
+  howpublished  = {lecture, Introduction to Veterinary Studies, May 2},
+  organization = {Department of Dragon Husbandry, Charlatan State University},
+  address = {Monogahela, WV}
+}
+
+Presentation or Workshop: Use misc class. In Title field, enclose proper nouns in brackets, as needed, to retain capitalization.  Take note of the need to precede an _ [underscore] with a \ [backslash].
+@misc{Horse:2017,
+  author        = {Horse, Bay Bee},
+  title         = {Horseshoes and hand grenades in {Texas}: On the joys of approximation},
+  year          = {2007},
+  howpublished  = {presentation, Conference on Improbable Probabilities},
+  address = {Belmont Race Track, Elmont, NY},
+  url = {http://horse.edu/horseshoesandgrenades/perfect\_together}
+}
+
+Computer Program: Normal software entry. Note "and" between multiple authors.
+@software{comprehensive_2005,
+  author        = "M. Borenstein and L. Hedges and J. Higgins and H. Rothstein",
+  address       = "Englewood, NJ, USA",
+  title         = "Comprehensive Meta-Analysis",
+  howpublished  = "ver. 2",
+  year          = "2005",
+  note          = "Accessed May 8, 2015",
+  url           = "http://www.meta-analysis.com"
+}
+
+Conference Paper (Online): Variant of inproceedings class. Note "and" between multiple authors.
+@inproceedings{morentz_2009,
+  author        = "J. W. Morentz and C. Doyle and L. Skelly and N. Adam",
+  title         = "{Unified Incident Command and Decision Support (UICDS) a Department of Homeland Security initiative in information sharing}",
+  booktitle     = "2009 IEEE Conference on Technologies for Homeland Security",
+  year          = "2009",
+  url           = "https://ieeexplore.ieee.org/document/5168032"
+}
+
+Conference Paper (Print): Normal use of inproceedings class.
+@inproceedings{katz_2007,
+  author        = "I. Katz and K. Gabayan and H. Aghajan",
+  title         = "A multi-touch surface using multiple cameras",
+  booktitle     = "Adv. Conc. for Intell. Vis. Sys.: 9th Intl. Conf.",
+  year          = "2007",
+  pages         = "133--203",
+  address       = "Berlin, Germany"
+}
+
+Paper Presented at Conference, unpublished: Use misc class for presentations, use inproceedings class if there is an associated published work.
+@misc{Teplin:EtAl:2005,
+  author        = {Teplin, Linda A and McClelland, Gary M and Abram, Karen M},
+  title         = {Early violent death in delinquent youth: A prospective longitudinal study},
+  howpublished  = {Annual Meeting of the American Psychology-Law Society},
+  address       = {La Jolla, CA},
+  year          = {2005}
+}
+
+Data Set / Database, published: NPS-customized use of misc class. Have "database" in journal field. Portability to other types maintained because journal field is ignored by misc type in most (if not all) other bib styles. Note braces around "Latinos" to preserve capitalization.
+@misc{Suro:2004,
+  author        = {Suro, R},
+  year          = {2004},
+  title         = {Changing channels and crisscrossing culture: A survey of {Latinos} on news media},
+  journal       = {database},
+  organization  = {Pew Research Center},
+  note          = {Accessed April 30, 2012},
+  url           = {http://www.pewhispanic.org/2004/04/19/hanging-channels-and-crisscrossing-cultures/}
+}
+
+Database: NPS-customized use of misc class. Have "database" in journal field. Portability to other types maintained because journal field is ignored by misc type in most (if not all) other bib styles.  INFORMS will need the howpublished duplicated exactly to the key field.
+@misc{nsa_ipac_2012,
+    journal = {database},
+    note = {Accessed Dec. 10, 2012},
+    year = {2004},
+    howpublished = {Object name IRAS F00400+4059},
+    key          = {Object name IRAS F00400+4059},
+    title = {{NASA/IPAC Extragalactic Database}},
+    url = {http://ned.ipac.caltech.edu/}}
+
+Data Set, unpublished: Use misc class. Have "database" in journal field. Portability to other types maintained because journal field is ignored by misc type in most (if not all) other bib styles.
+@misc{Blanche:2006,
+  journal       = {database},
+  author        = {Blanche, C},
+  year          = {2006},
+  howpublished  = {Data provided to the author via email},
+  month         = {August 30,}
+}
+
+Dictionary or Encyclopedia: Use article class. Note that many dictionary and encyclopedia entries will warn that there is no author or, if online vice physical book, year.
+- INFORMS needs the key field for sorting this author-less entry in the references list. Make sure it matches the title exactly.
+- INFORMS needs the year field but IEEE should have no year field if dictionary/encyclopedia entry is not dated (which will throw warning but format correctly)
+@article{merriam_2017,
+    journal = {Merriam-Webster},
+    year = {2017},
+    note = {Accessed July 6, 2017},
+    title = {Metamorphosis},
+    key = {Metamorphosis},
+    url = {https://www.merriam-webster.com/dictionary/metamorphosis}}
+
+Fact Sheet: Use manual class.  If the fact sheet has a serial number, you can include that in the `howpublished` field.
+@manual{FLSA:2008,
+  author    = {{Department of Labor}},
+  title     = {The construction industry under the {Fair Labor Standards Act (FLSA)}},
+  year      = {2008},
+  url       = {http://www.dol.gov/whd/regs/compliance/whdfs1.htm}
+}
+
+Directive / Instruction: Use maunal class. Duplicate the organization to also be the key.
+@manual{DOD.8570.01-M,
+  organization  = {{Department of Defense}},
+  key           = {{Department of Defense}},
+  year          = {2005},
+  title         = {Information Assurance Training, Certification, Workforce Management},
+  howpublished  = {DoD Directive 8570.01-M},
+  address       = {Washington, DC},
+  url           = {http://www.esd.whs.mil/Portals/54/Documents/DD/issuances/dodm/857001m.pdf}
+}
+
+Joint Doctrine: Use manual class. Note backslashes before underscores in URL, to prevent format corruption.
+@manual{JP-3-01,
+  title         = {Countering Air and Missile Threats},
+  organization  = {{Joint Chiefs of Staff}},
+  key           = {{Joint Chiefs of Staff}},
+  year          = {2017},
+  howpublished  = {JP 3-01},
+  address       = {Washington, DC},
+  url           = {http://www.dtic.mil/doctrine/new\_pubs/jp3\_01\_20172104.pdf}
+}
+
+Government/Military (Field Manual or Military Regulation): Follow the manual style. Notice how the % signs in the URL need a \ preceeding them.  With no author, the key field is necessary for sorting in the INFORMS reference list. Make sure it matches the organization exactly.
+@manual{sniper_2011,
+  title         = "Sniper Training",
+  howpublished  = "FM 23-10",
+  organization  = {{Department of the Army}},
+  key           = {{Department of the Army}},
+  address       = "Washington, DC, USA",
+  year          = "1995",
+  url           = "https://www.bits.de/NRANEU/others/amd-us-archive/fm_23-10\%2894\%29.pdf"
+}
+
+Government/Military (CRS or GAO Report): Variant of misc class.
+@misc{erwin_2011,
+  author        = "M. C. Erwin",
+  title         = "Intelligence issues for {C}ongress",
+  address       = "Washington, DC, USA",
+  howpublished  = "CRS Report No. RL33539",
+  year          = "2011",
+  url           = "http://www.fas.org/sgp/crs/intel/RL33539.pdf"
+}
+
+Government/Military (Memorandum): Variant of misc class. Notice escaping (using \ before) for special characters in URL.
+@misc{takai_2013,
+  author        = "T. M. Takai",
+  title         = "Adoption of the national information exchange model within the {D}epartment of {D}efense",
+  address       = "Washington, DC, USA",
+  howpublished  = "official memorandum, {D}epartment of {D}efense",
+  year          = "2013",
+  url           = "https://dodcio.defense.gov/Portals/0/Documents/2013-03-28\%20Adoption\%20of\%20the\%20NIEM\%20within\%20the\%20DoD.pdf"
+}
+
+Handbook (online): Use manual class.
+- NPS customizes this type by using the journal field to indicate that this manual is a handbook. Portability to other types maintained because journal field is ignored by manual type in most (if not all) other bib styles.
+- For INFORMS only:  Use key for author-less entry to enable reference list sorting. Make sure it matches the organization exactly.
+@manual{TSP-168:1972,
+  organization  = {{Western Spud}},
+  key  = {{Western Spud}},
+  title   = {{Transmission Systems for Potatoes}},
+  edition = {168th},
+  address = {Kinston-Slalom, ID},
+  journal = {handbook},
+  year    = {1972},
+  url     = {http://www.spud.org/potato/transmission/grease.html}
+}
+
+Handbook (Print): Follows the manual style.
+- NPS customizes this type by using the journal field to indicate that this manual is a handbook. Portability to other types maintained because journal field is ignored by manual type in most (if not all) other bib styles.
+- For INFORMS only: Use key for author-less entry to enable reference list sorting. Make sure it matches the organization exactly.
+@manual{transmission_comm_85,
+  title         = "Transmission Systems for Communications",
+  edition       = "3rd",
+  organization  = "Western Elect. Co.",
+  key  = "Western Elect. Co.",
+  journal = "handbook",
+  address       = "Winston-Salem, NC, USA",
+  year          = "1985",
+  pages         = "44--60"
+}
+
+Journal Article (Online): Normal article entry.
+@article{sanico_2018,
+    author = {G. Sanico and M. Kakinaka},
+    doi = {10.1080/10242690701505419},
+    journal = {Def. \& Peace Econ.},
+    month = Apr,
+    number = {2},
+    title = {Terrorism and deterrence policy with transnational support},
+    volume = {19},
+    year = {2018}}
+
+Journal Article (print): Normal use of article class. Note the need to precede the & with a \.
+@article{Griffin:2009,
+    author   = {Griffin, G},
+    title    = {Managing peacekeeping communications},
+    journal  = {Journal of Business Continuity \& Emergency Planning},
+    year     = {2009},
+    volume   = {3},
+    number   = {2},
+    pages    = {317--327}
+}
+
+Legal (Legislative Document): Variant of electronic with strange authors, use \emph{} to put title in italics.
+@electronic{congress_1991,
+    author = {{U.S. House, 102nd Congress, 1st Session}},
+    month = {Jan. 11},
+    title = {H. Con. Res. 1, \emph{Sense of the Congress on Approval of Military Action}},
+    url = {http://thomas.loc.gov/cgi-bin/query/z?c102:H.CON.RES.1.IH},
+    year = {1991}}
+
+Legal (Public Law, U.S. Code): NPS-customized use of misc class.  For laws, be sure to use the "journal" field to write the word "law". Portability to other types maintained because journal field is ignored by misc type in most (if not all) other bib styles.
+@misc{americans_1991,
+    howpublished = {42 U.S.C. {\S} 12101},
+    journal = {law},
+    key = {42 U.S.C. {\S} 12101},
+    title = {Americans with Disabilities Act of 1990},
+    year = {1991}}
+
+Google Map: NPS-customized use of misc class. Take note of {} to keep first letters of proper nouns in the title capitalized and use "map" in the journal field. Portability to other types maintained because journal field is ignored by misc type in most (if not all) other bib styles.
+@misc{Google_2017,
+    author = {Google},
+    journal = {map},
+    year = {2017},
+    note = {Accessed Jul. 6, 2017},
+    title = {Monterey {B}ay},
+    url = {https://www.google.com/maps/place/Monterey+Bay/@36.7896106,-122.0843052,11z/data= !3m1!4b1!4m5!3m4!1s0x808e0ccfc5859dfd:0x124654a608855d43!8m2!3d36.8007413!4d-121.947311}}
+
+Multimedia/Video: Use video type. Author or organization are acceptable as video creator. For a video's location, add the address field, which is not applicable for this particular video. Note special LaTeX quotation marks in title field.
+@video{youtube_2014,
+    howpublished = {{CNN}},
+    key = {{CNN}},
+    month = {August 31,},
+    note = {Accessed Jan. 19, 2022},
+    title = {{US} Military Sends Warships, Aircraft to {T}exas},
+    url = {https://www.cnn.com/2017/08/30/politics/texas-harvey-flooding-military-response/},
+    year = {2017}}
+
+Newspaper Article (Online): Use article. Note period and comma in month.
+@article{linguine_2016,
+    author = {L. Linguine},
+    journal = {Knife and Spork Semi-Weekly},
+    month = {Jul. 15,},
+    title = {Animal fat shampoos for achieving angel hair},
+    url = {http://www.chickenyodeling.com/dfjgp98y4t34_pherg899h.html/},
+    year = {2016}}
+
+Magazine Article (print), author given: Normal use of article class.
+@article{Beforebad:2014,
+    author   = {Beforebad, Sarah},
+    title    = {Cold spaghetti: To eat or not to eat?},
+    journal  = {Pasta Dynamics},
+    year     = {2014},
+    month    = {January 1,}
+}
+
+Patent: Normal use of patent class.
+@patent{bell_1876,
+  author        = "A. G. Bell",
+  title         = "Improvement in telegraphy",
+  nationality   = "United States",
+  number        = "174465",
+  day           = "7",
+  month         = Mar,
+  year          = "1876",
+  address       = "U.S. Patent and Trademark Office, Washington, DC",
+  url           = "https://www.google.com/patents/US174465"
+}
+
+Personal Communication / Email: Use misc class. Enter description of communication and month and day in Note field, in the order shown.
+@misc{Wunkerbunk:2002,
+    author    = {Wunkerbunk, Ted Telly},
+    year      = {2002},
+    howpublished      = {moss-growing statistics provided to the author via personal communication},
+    month     = {June 11,}
+}
+
+Interview: Use misc class. Enter description in Note field, in order shown.
+@misc{Monster:1985,
+    author    = {Monster, Chad},
+    year      = {2002},
+    howpublished      = {Interview by Ernest J. Keebler. Betamax},
+    month     = {November 20,},
+    note      = {Keebler Company}
+}
+
+Report (Research Report/Think Tank Report/White Paper): Use techreport class.
+@techreport{dixon_2017,
+    address = {Santa Monica, CA, USA},
+    author = {Lloyd Dixon and Noreen Clancy and Benjamin M. Miller and Sue Hoegberg and Michael M. Lewis and Bruce Bender and Samara Ebinger and Mel Hodges and Gayle M. Syck and Caroline Nagy and Scott R. Choquette},
+    institution = {RAND Corp.},
+    number = {RR-1776-NYCEDC},
+    type = {Report},
+    title = {The cost and affordability of flood insurance in {N}ew {Y}ork {C}ity},
+    url = {https://www.rand.org/content/dam/rand/pubs/research_reports/RR1700/RR1776/RAND_RR1776.pdf},
+    year = {2017}}
+
+Report, Technical Report: Use techreport class. Use BRACES to retain capitalization of proper noun and acronyms in title.  To change the type of report from your style's default, use the `type` field.
+@techreport{Wonka:1972,
+    author        = {Wonka, W and Loompa, O and Bucket, C},
+    title         = {Stochastic error-correction in a hyperbaric ethereal pulley system for vitreous personal vertical displacement apparatuses {(PVDA)}},
+    number        = {VK-1916},
+    institution   = {Gloop Corporation},
+    address       = {Great Missenden, UK},
+    year          = {1876},
+    url           = {https://www.beanfeast.org/badegg/wahwah.pdf}
+}
+
+Secondary Source: Use class of appropriate source type. In this case, it's a book. Note format of author name in Author field to express his three first initials.
+@book{Nicholson:2003,
+     author     = {Nicholson, Ian A M},
+     title      = {Inventing Personality: Gordon Allport and the Science of Selfhood},
+     year       = {2003},
+     publisher  = {American Psychological Association},
+     address    = {Washington, DC}
+}
+
+Standard: Standards fit well with manual class.
+@manual{standard_1968,
+  title         = "Letter Symbols for Quantities",
+  howpublished  = "ANSI Standard Y10.5",
+  key           = "ANSI",
+  year          = "1968",
+  url           = "https://standards.globalspec.com/std/1713423/asme-ansi-y10-5"
+}
+
+Thesis, from commercial database. Use mastersthesis class. Note double braces in note field to force capitalization of "ProQuest."
+- For IEEE:  Type field is optional if "M.S. thesis"; otherwise, enter the appropriate degree, Master of Arts ("M.A. thesis") this case.
+@mastersthesis{Nekeip:2008,
+     author     = {Nekeip, Ray},
+     title      = {Pescatarians and daisies: A match made in sushi heaven},
+     school     = {Garden of Sushi School of Sushi},
+     address    = {Maui, HI},
+     year       = {2008},
+     note       = {{P}roQuest Dissertations and Theses database (AAT 3300426)}
+}
+
+Dissertation, from  institutional archive such as the NPS archive Calhoun: Use phdthesis class. Enter department in School field.
+@phdthesis{Yoshi:1988,
+     author     = {Yoshi, Helen},
+     title      = {Effects of pizza consumption on katana-wielding dexterity in terrapinoids},
+     school     = {Department of Reptile Bellicosity, Eastman \& Laird University},
+     address    = {New York, NY},
+     year       = {1988},
+     url        = {https://hdl.handle.net/6576565753/splinter.html}
+}
+
+Unpublished Work Accepted for Publication: BECAUSE this is a journal article, the journal class was a better choice than the unpublished class. ENTER word "Forthcoming" in Note field.
+A separate note:  When an author's name has a suffix (e.g., Jr., Sr., III), you need to list the name parts, separated by commas:  Last, Suffix, First M
+@article{Horse:1996,
+      author       = {Horse, Sr., Bob Brewster},
+      title        = {Back in the saddle 2: Back in the saddle},
+      journal      = {Gaucho Marx: A Journal of Cowpoke Consciousness},
+      year         = {1996},
+      note         = {Forthcoming},
+      url          = {http://blahblahblahhorse.com/bits2bits}
+}
+
+Unpublished Work (print): Use unpublished class.
+@unpublished{Horse:1995,
+       author     = {Horse, Bob Brewster},
+       title      = {Back in the saddle},
+       year       = {1995},
+       note       = {unpublished memoir, Leaping H Ranch, Peoria, IL}
+}
+
+Unpublished Work (arXiv): Use unpublished class.
+@unpublished{simonyan-vgg16-2015,
+  title={Very deep convolutional networks for large-scale image recognition},
+  author={Simonyan, K. and Zisserman, A.},
+  note={{arXiv}},
+  year={2014},
+  doi={10.48550/arXiv.1409.1556}
+}
+
+Webpage, author and publication date given: Use misc class. Provide access date only if no publication date is available and the info is likely to change, as in dynamic content, or the link is now broken.
+@misc{Sushi:1995,
+      author       = {Sushi, Ursella Quest},
+      year         = {1995},
+      title        = {Absorption of cats in sushi},
+      howpublished = {Sushi Lab},
+      note         = {Accessed November 9, 1999},
+      url          = {http://www.wallcrust.com/hgtehrwOIASD.html}
+}
+
+Website (Organization as Author): Use misc class. Use double brackets around organization as author to avoid "F. B. of Investigation" as the author.
+@misc{FBI_2017,
+  author        = {{Federal Bureau of Investigation}},
+  title         = {Forging papers to sell fake art},
+  month         = "Apr. 6,", 
+  year          = "2017",
+  url           = "https://www.fbi.gov/news/stories/forging-papers-to-sell-fake-art"
+}
+
+Webpage, No date given. See notes in above entry, entering YEAR ACCESSED in Year field for INFORMS; IEEE does not require year field for undated material.
+@misc{Python:2017,
+      author     = {Python, Mary},
+      year       = {2017},
+      title      = {Finding a dead parrot on a silly walk},
+      howpublished = {Ministry of Silly Walks},
+      note       = {Accessed August 6, 2017},
+      url        = {https://www.omgitsadeadparrot.com/feathers}
+}
+
+Website (Jane's Example): Use misc class.  Because there is no author, INFORMS needs the key field to match the howpublished field exactly.
+@misc{Janes_2017,
+    howpublished = {Jane's},
+    key = {Jane's},
+    month = {May 31,},
+    title = {Mali: Executive summary},
+    url = {https://customer.janes.com/},
+    year = {2017}}
+
+Wikipedia: Just like Dictionary or Encyclopedia above. Use article class. Note that many dictionary and encyclopedia entries will in IEEE warn that there is no author or year.  INFORMS reqires a year for all entries and a key (matching the title field exactly) for author-less entries.
+@article{wiki_2016,
+    journal = {Wikipedia},
+    note = {Accessed May 17, 2016},
+    year = {2016},
+    title = {Psychology},
+    key = {Psychology},
+    url = {https://en.wikipedia.org/wiki/Psychology}}
+
+Working paper/occassional paper: Misc works well. Note the need to escape (put backslash \ before) % sign, like \%, in URL.
+@misc{sushi_2021,
+    address = {Pierre, SD, USA},
+    author = {U. Q. Sushi},
+    howpublished = {working paper},
+    organization = {Donburi Inst. of Int. Gastron.},
+    title = {Three-handed {F}ibonacci model for optimizing surface-to-volume ratio of temaki in {H}ilbert space},
+    url = {https://www.wallcrust.com/403t3-9j/340txf\%oii\%/gonzoponzu.html},
+    year = {2021}}
+
+Ref only in exec sum
+@unpublished{Unicorn:1995,
+       author     = {Unicorn, Bob Brewster},
+       title      = {In the saddle},
+       year       = {1995},
+       note       = {Unpublished memoir, Leaping H Ranch, Peoria, IL}
+}

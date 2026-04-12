@@ -4,12 +4,19 @@
  * Falls back to IP-based limiting for unauthenticated requests.
  */
 
-const MAX_REQUESTS = 30;         // per window
-const WINDOW_MS    = 60_000;     // 1 minute
+const MAX_REQUESTS = 30;
+const WINDOW_MS = 60_000;
+
+export interface RateLimitOptions {
+  maxRequests?: number;
+  windowMs?: number;
+}
 
 interface Bucket {
   count: number;
   resetAt: number;
+  maxRequests: number;
+  windowMs: number;
 }
 
 const buckets = new Map<string, Bucket>();
@@ -26,18 +33,27 @@ setInterval(() => {
  * Returns true if the request should be blocked (rate limit exceeded).
  * @param key - user ID or IP address
  */
-export function isRateLimited(key: string): boolean {
+export function checkRateLimit(key: string, options: RateLimitOptions = {}): { limited: boolean; retryAfterSeconds: number } {
   const now = Date.now();
+  const maxRequests = options.maxRequests ?? MAX_REQUESTS;
+  const windowMs = options.windowMs ?? WINDOW_MS;
   let bucket = buckets.get(key);
 
-  if (!bucket || bucket.resetAt <= now) {
-    bucket = { count: 1, resetAt: now + WINDOW_MS };
+  if (!bucket || bucket.resetAt <= now || bucket.maxRequests !== maxRequests || bucket.windowMs !== windowMs) {
+    bucket = { count: 1, resetAt: now + windowMs, maxRequests, windowMs };
     buckets.set(key, bucket);
-    return false;
+    return { limited: false, retryAfterSeconds: 0 };
   }
 
   bucket.count += 1;
-  return bucket.count > MAX_REQUESTS;
+  return {
+    limited: bucket.count > maxRequests,
+    retryAfterSeconds: Math.max(0, Math.ceil((bucket.resetAt - now) / 1000)),
+  };
+}
+
+export function isRateLimited(key: string, options: RateLimitOptions = {}): boolean {
+  return checkRateLimit(key, options).limited;
 }
 
 /**

@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import crypto from 'node:crypto';
 import { supabase } from '../lib/supabase.js';
+import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
+import { checkRateLimit } from '../lib/rate-limit.js';
 
 // Map GitHub event types + actions to Odyssey event_type
 type OdysseyEventType = 'commit' | 'message' | 'file_edit' | 'note' | 'meeting';
@@ -31,7 +33,9 @@ function normalizeGitHubEvent(
         url?: string;
       }[]) ?? [];
       const pusher = (payload.pusher as { name?: string })?.name ?? 'unknown';
-      return commits.map((c) => ({
+      return commits
+        .filter((commit) => !isGeneratedThesisLatexCommitMessage(commit.message))
+        .map((c) => ({
         source: 'github',
         event_type: 'commit',
         title: c.message.split('\n')[0].slice(0, 255),
@@ -181,6 +185,11 @@ function normalizeGitHubEvent(
 
 export async function webhookRoutes(server: FastifyInstance) {
   server.post('/github', async (request: FastifyRequest, reply) => {
+    const webhookLimit = checkRateLimit(`github-webhook:${request.ip}`, { maxRequests: 120, windowMs: 60_000 });
+    if (webhookLimit.limited) {
+      return reply.code(429).send({ error: 'Webhook rate limit exceeded' });
+    }
+
     const signature = request.headers['x-hub-signature-256'] as string | undefined;
     const githubEvent = request.headers['x-github-event'] as string | undefined;
 

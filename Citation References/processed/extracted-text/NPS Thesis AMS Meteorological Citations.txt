@@ -1,0 +1,253 @@
+AMS Resources and Response to the Federal Science Crisis›
+Availability Statement
+Examples
+AMS Style for Geography
+and Oceanography Terms
+AMS Style for Common
+Meteorological Terms
+Mathematical Formulas,
+Units, and Time and Date
+References
+Dataset and Software
+References and
+Citation Examples
+List of Acronyms and
+Abbreviations
+Home›Publications›Information for Authors
+›Formatting and Manuscript Components
+›References
+References
+(updated 28 July 2022)
+A few of the most common reference types are
+shown here. Each in-text citation must have a
+corresponding reference, and each reference
+listed must be cited in the text. References
+should be arranged alphabetically without
+numbering.
+Journal article
+Last name and initials of author(s) (if nine or more,
+the first author is followed by "and
+Coauthors"), year of publication, title of paper,
+title of journal (italicized),* volume of journal
+(bolded), issue or citation number (only if
+required for identification), page range, and
+DOI (if available).
+Collins, W. D., and Coauthors, 2006: The
+formulation and atmospheric simulation of
+the Community Atmosphere Model Version 3
+(CAM3). J. Climate, 19, 2144–2161,
+https://doi.org/10.1175/JCLI3760.1.
+Kanamitsu, M., W. Ebisuzaki, J. Woollen, S.-K. Yang, J.
+J. Hnilo, M. Fiorino, and G. L. Potter, 2002:
+NCEP–DOE AMIP-II Reanalysis (R-2). Bull.
+Amer. Meteor. Soc., 83, 1631–1643,
+https://doi.org/10.1175/BAMS-83-11-1631.
+Rayner, N. A., D. E. Parker, E. B. Horton, C. K. Folland,
+L. V. Alexander, D. P. Rowell, E. C. Kent, and A.
+Kaplan, 2003: Global analyses of sea surface
+temperature, sea ice, and night marine air
+
+temperature since the late nineteenth
+century. J. Geophys. Res., 108, 4407,
+https://doi.org/10.1029/2002JD002670.
+AMS journals are abbreviated as follows:
+Artificial Intelligence for the Earth Systems: Artif.
+Intell. Earth Syst.
+Bulletin of the American Meteorological Society:
+Bull. Amer. Meteor. Soc.
+Earth Interactions: Earth Interact.
+Journal of Applied Meteorology and Climatology: J.
+Appl. Meteor. Climatol.
+Journal of Atmospheric and Oceanic Technology: J.
+Atmos. Oceanic Technol.
+Journal of Climate: J. Climate
+Journal of Hydrometeorology: J. Hydrometeor.
+Journal of Physical Oceanography: J. Phys.
+Oceanogr.
+Journal of the Atmospheric Sciences: J. Atmos. Sci.
+Monthly Weather Review: Mon. Wea. Rev.
+Weather and Forecasting: Wea. Forecasting
+Weather, Climate, and Society: Wea. Climate Soc.
+The Chemical Abstracts Service has a handy online tool,
+the CAS Source Index (CASSI) Search Tool, that you can
+use to find journal abbreviations. Searching for only one
+word at a time (for example, “dynamics”) seems to work
+best.
+AMS style deviates from CASSI’s on several words, as
+shown in the following table:
+Where AMS differs from CASSI
+WordCASSIAMS
+AmericanAm.Amer.
+ClimateClim.Climate
+MeteorologicalMeteorol.Meteor.
+JapanJpn.Japan
+QuarterlyQ.Quart.
+RoyalR.Roy.
+WeatherWeatherWea.
+Book
+
+Last name and initials of author(s), year of
+publication of book, title of book (italicized),
+publisher’s name, and total pages.
+Wallace, J. M., and P. V. Hobbs, 1977: Atmospheric
+Science: An Introductory Survey. Academic
+Press, 350 pp.
+Chapter in a book
+Last name and initials of author(s) of the chapter,
+year of publication of book, title of the
+chapter, title of book (italicized), name of
+editor(s), publisher’s name, and page range.
+Anthes, R. A., 1986: The general question of
+predictability. Mesoscale Meteorology and
+Forecasting, P. S. Ray, Ed., Amer. Meteor. Soc.,
+636–656.
+For a chapter in a book that is part of a monograph
+series, the format is similar but includes the volume and
+number of the monograph.
+Arakawa, A., 1993: Closure assumption in the
+cumulus parameterization problem. The
+Representation of Cumulus Convection in
+Numerical Models, Meteor. Monogr., No. 46,
+Amer. Meteor. Soc., 1–16.
+Dataset
+Whenever possible, datasets should be cited directly via
+a listing in the references and in-text citations in the
+following style. Please refer to the Dataset References
+page for more examples and guidelines on referencing
+data in AMS style and the Data Citation and Archiving
+page for AMS policy on handling data:
+Dataset authors/producers, data release year:
+Dataset title, version. Data archive/distributor,
+access date (DD Month YYYY), data
+locator/identifier (doi or URL).
+Knutti, R., 2014: IPCC Working Group I AR5
+snapshot: The rcp85 experiment. DKRZ World
+Data Center for Climate, accessed 14 October
+2014, https://doi.org/10.1594/WDCC/ETHR8.
+Other
+References should be to peer-reviewed literature
+whenever possible. Technical reports, conference
+proceedings, and other “gray literature” should be
+referenced only when no other source of the material is
+
+available, and an “available at” address or URL should be
+provided for reports and dissertations. Here are some
+examples:
+Conference proceedings, preprints, and extended
+abstracts
+Last name and initials of author(s); year of
+publication; title of paper; indication of the
+publication as a preprints, proceedings, or
+extended abstracts volume (as of 2002, all
+AMS conference preprints are online only, so
+we omit this for newer AMS conference
+papers); name of conference volume
+(italicized); city and state/country where
+conference was held; conference sponsor’s
+name; page range or paper number; and URL
+or DOI, if available.
+Idowu, A. O., 2007: The impact of an earthquake-
+generated tsunami on the earth-atmosphere
+system: Year 2004 Indian Ocean case history
+example. 21st Conf. on Hydrology, San Antonio,
+TX, Amer. Meteor. Soc., JP1.1,
+https://ams.confex.com/ams/87ANNUAL/techprogram/paper_117648.ht
+Liu, Y., V. Bringi, and M. Maki, 2006: Improved rain
+attenuation correction algorithms for radar
+reflectivity and differential reflectivity with
+adaptation to drop shape model variation.
+Proc. IEEE Int. Conf. on Geoscience and Remote
+Sensing Symp. 2006, Denver, CO, Institute of
+Electrical and Electronics Engineers, 1910–
+1913,
+https://doi.org/10.1109/IGARSS.2006.493.
+Dissertation/thesis
+Author(s), publication year: Dissertation/thesis
+title. Dissertation/thesis, Thesis Department
+(needed only if M.S. thesis), University, total
+pages, and URL, if available.
+Hirschberg, P., 1988: The saline flow into the
+Atlantic. M.S. thesis, Dept. of Oceanographic
+Studies, The Pennsylvania State University,
+207 pp.
+Report/note/memo
+Author(s), publication year: Report/note/memo
+title. Report/Note/Memo Name and number,
+total pages, and URL or DOI, if available.
+
+Skamarock, W. C., and Coauthors, 2008: A
+description of the Advanced Research WRF
+version 3. NCAR Tech. Note NCAR/TN-
+475+STR, 113 pp,
+https://doi.org/10.5065/D68S4MVH.
+Web page
+Author(s)/Authoring Organization, year: Document
+name. Organization/publisher (if different
+from author), date accessed, DOI/URL.
+NOAA, 2015: Elusive El Niño arrives. Accessed 12
+March 2015,
+http://www.noaanews.noaa.gov/stories2015/20150305-
+noaa-advisory-elnino-arrives.html.
+Personal communications and other unpublished
+material
+Unpublished materials (e.g., personal communications or
+unpublished manuscripts) are not included in the
+references but may be cited in the text. These citations
+should include the authors’ first initial(s) along with
+their surnames and the year:
+J.-P. Li (2022, personal communication)
+M. Huang and Z. Liou (2021, unpublished
+manuscript)
+Institution or sponsor information may be included:
+(A. L. Berg, NOAA, 2022, personal communication)
+In-text citations
+The in-text citation should consist of the author's name
+and year of publication [e.g., “according to Rossby
+(1945),” or “as shown by an earlier study (Rossby 1945)”].
+When there are two or more papers by the same author
+in the same year, the distinguishing suffix (a,b, etc.)
+should be added.
+If the citation is for a reference with two authors, use
+both author names [e.g., Fritsch and Heideman (1989)].
+References with three or more authors are always cited
+as the first author's name followed by "et al." [e.g., Kalnay
+et al. (1996)].
+Search the Site
+
+
+Explore
+About AMS
+AMS Headlines
+AMS Journals
+Archived
+Meeting
+Presentations
+AMS Glossary
+AMS Store
+Get Involved
+Join AMS
+Renew
+Membership
+Attend an AMS
+Meeting
+Donate Now
+Volunteer
+Resources
+For the Media
+Career
+Resources
+Federal Crisis
+Response
+Job Board
+Stay
+Connected
+      
+
+Contact AMS
+Soundings
+Newsletter
+AMS
+Community
+Headquarters: 45 Beacon Street, Boston, MA 02108-3693
+DC Office: 1200 New York Ave NW, Suite 450, Washington, DC 20005-3928
+© Copyright 2026 American Meteorological Society  |  Privacy Policy and Disclaimer

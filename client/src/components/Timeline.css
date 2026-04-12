@@ -13,9 +13,12 @@
                    display: flex; align-items: center; gap: 8px;
                    padding: 0 12px; border-right: 1px solid var(--color-border);
                    background: var(--color-surface); }
+.tlo-label[type="button"] { appearance: none; border: 0; margin: 0; }
 
 /* Chart area — today line and bars live here only */
 .tlo-chart       { flex: 1; position: relative; height: 40px; }
+.tlo-chart[type="button"] { appearance: none; border: 0; margin: 0; background: transparent; padding: 0; width: 100%; }
+.tlo-bar-wrap    { position: absolute; inset: 0 auto 0 0; width: var(--tlo-deadline, 0%); }
 
 /* Today column shade */
 .tlo-today-col   { position: absolute; top: 0; bottom: 0;
@@ -102,12 +105,18 @@
 /* Label hover state */
 .tlo-label-hover { cursor: default; }
 .tlo-label-hover:hover .tlo-cat-text { opacity: 0.85; }
+.tlo-label-hover[role="button"]:focus-visible,
+.tlo-bar-wrap[role="button"]:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  outline-offset: -1px;
+}
 
-/* Goal hover tooltip — anchored to tlo-row (position: relative) */
+/* Goal hover tooltip */
 .tlo-tooltip     { position: absolute; left: 164px; top: 50%; transform: translateY(-50%);
                    z-index: 200; min-width: 230px; max-width: 300px;
                    background: var(--color-surface); border: 1px solid var(--color-border);
                    box-shadow: 0 8px 24px rgba(0,0,0,0.22); border-radius: 6px;
                    overflow: hidden; pointer-events: none; }
+.tlo-tooltip-fixed { position: fixed; left: 0; top: 0; }
 .tlo-tooltip-bar { height: 3px; background: var(--tlo-color, var(--color-accent2)); }
 .tlo-tooltip-body { padding: 10px 12px; }

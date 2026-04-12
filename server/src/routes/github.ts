@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { getUserFromAuthHeader, isInternalRequest, userHasProjectAccess } from '../lib/request-auth.js';
+import { getUserFromAuthHeader, isInternalRequest, requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
+import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
 
 interface GitHubCommit {
   sha: string;
@@ -15,21 +16,10 @@ async function requireGitHubProjectAccess(
   authorization: string | undefined,
   projectId: string | undefined,
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
-  if (!projectId?.trim()) {
-    return { ok: false, status: 400, error: 'projectId is required' };
-  }
-
-  const userId = await getUserFromAuthHeader(authorization);
-  if (!userId) {
-    return { ok: false, status: 401, error: 'Unauthorized' };
-  }
-
-  const allowed = await userHasProjectAccess(projectId, userId);
-  if (!allowed) {
-    return { ok: false, status: 403, error: 'Forbidden' };
-  }
-
-  return { ok: true };
+  const access = await requireProjectAccessFromAuthHeader(projectId, authorization);
+  return access.ok
+    ? { ok: true }
+    : { ok: false, status: access.status, error: access.error };
 }
 
 export async function githubRoutes(server: FastifyInstance) {
@@ -71,7 +61,9 @@ export async function githubRoutes(server: FastifyInstance) {
     const commits: GitHubCommit[] = await res.json();
 
     // Normalize to Odyssey event format
-    const events = commits.map((c) => ({
+    const events = commits
+      .filter((c) => !isGeneratedThesisLatexCommitMessage(c.commit.message))
+      .map((c) => ({
       source: 'github' as const,
       event_type: 'commit' as const,
       title: c.commit.message.split('\n')[0],
@@ -272,9 +264,10 @@ export async function githubRoutes(server: FastifyInstance) {
       }
     }
 
-    const commitSummaries = (commits as GitHubCommit[]).slice(0, 30).map((c) =>
-      `[${c.commit.author.date}] ${c.commit.message.split('\n')[0]}`
-    );
+    const commitSummaries = (commits as GitHubCommit[])
+      .filter((c) => !isGeneratedThesisLatexCommitMessage(c.commit.message))
+      .slice(0, 30)
+      .map((c) => `[${c.commit.author.date}] ${c.commit.message.split('\n')[0]}`);
 
     return { commits: commitSummaries, readme };
   });

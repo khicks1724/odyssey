@@ -8,7 +8,20 @@ export interface ReportSection {
   body: string;
   bullets?: string[];
   table?: { headers: string[]; rows: string[][] };
+  figure?: { type: 'bar' | 'pie' | 'progress' | 'timeline'; title: string; data: Array<{ label: string; value: number }> };
+  callout?: string;
+  subSections?: Array<{ heading: string; text: string }>;
 }
+
+type ReportKeyMetrics = {
+  tasksComplete?: number;
+  tasksInProgress?: number;
+  tasksNotStarted?: number;
+  overallProgress?: number;
+  tasksOverdue?: number;
+  tasksDueSoon?: number;
+  categoriesCount?: number;
+};
 
 type TemplateRenderHints = {
   backgroundColor?: string;
@@ -30,9 +43,13 @@ type TemplateRenderHints = {
 };
 
 type ReportTemplateAnalysis = {
+  targetTemplateType?: 'docx' | 'pptx' | 'pdf';
+  sourceFormat?: 'docx' | 'pptx' | 'pdf';
+  sourceMimeType?: string;
   summary?: string;
   palette?: string[];
   fonts?: string[];
+  analysisConfidence?: 'low' | 'medium' | 'high';
   renderHints?: TemplateRenderHints | null;
 };
 
@@ -41,6 +58,14 @@ export interface ReportContent {
   subtitle: string;
   projectName: string;
   generatedAt: string;
+  reportingPeriod?: string;
+  overallHealthScore?: number;
+  overallHealthLabel?: string;
+  keyMetrics?: ReportKeyMetrics;
+  accomplishments?: string[];
+  blockers?: string[];
+  upcomingMilestones?: string[];
+  recommendations?: string[];
   dateRange?: { from: string; to: string };
   executiveSummary: string;
   sections: ReportSection[];
@@ -54,8 +79,26 @@ export interface ReportContent {
     goals: { title: string; status: string; progress: number; category: string; deadline: string | null }[];
     statusCounts: Record<string, number>;
     categoryAvg: Record<string, number>;
+    loeAvg?: Record<string, number>;
     memberCount: number;
     totalGoals: number;
+    deadlineStats?: { overdue: number; dueSoon: number };
+    planning?: {
+      plannedHours: number;
+      actualHours: number;
+      remainingHours: number;
+      varianceHours: number;
+      overdueOpen: number;
+      dueSoon: number;
+      blockedTasks: number;
+      people: Array<{
+        name: string;
+        remainingLoad: number;
+        loggedHours: number;
+        blockedOrLate: number;
+        activeTasks: number;
+      }>;
+    };
   };
 }
 
@@ -75,16 +118,16 @@ type RenderedReportFile = {
 
 const FALLBACK = {
   background: 'FFFFFF',
-  surface: 'F7F7F7',
-  border: 'D4D4D8',
-  heading: '18181B',
-  accent: '374151',
-  accent2: '6B7280',
-  muted: '71717A',
-  text: '27272A',
-  headingFont: 'Aptos',
-  bodyFont: 'Aptos',
-  monoFont: 'Aptos Mono',
+  surface: 'F5F8FC',
+  border: 'D6E0EA',
+  heading: '003366',
+  accent: '003366',
+  accent2: '365F91',
+  muted: '5F6B7A',
+  text: '000000',
+  headingFont: 'Calibri',
+  bodyFont: 'Arial',
+  monoFont: 'Consolas',
 };
 
 type ResolvedTheme = {
@@ -178,6 +221,22 @@ function categoryColorMap(categories: string[], theme: ResolvedTheme): Record<st
   return Object.fromEntries(categories.map((category, index) => [category, colors[index % colors.length]]));
 }
 
+function safeFileStem(value: string): string {
+  const normalized = value
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized || 'odyssey_report';
+}
+
+function splitParagraphs(text: string | null | undefined): string[] {
+  return `${text ?? ''}`
+    .split(/\n\s*\n|\r\n\s*\r\n/)
+    .map((value) => value.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
 function triggerBrowserDownload(url: string, fileName: string, revokeAfter = false) {
   const a = document.createElement('a');
   a.href = url;
@@ -243,35 +302,98 @@ async function renderDocxFile(report: ReportContent): Promise<RenderedReportFile
     AlignmentType,
   } = await import('docx');
 
-  const rule = (color = theme.border) => ({
-    top: { style: BorderStyle.SINGLE, size: 1, color },
-    bottom: { style: BorderStyle.SINGLE, size: 1, color },
-    left: { style: BorderStyle.SINGLE, size: 1, color },
-    right: { style: BorderStyle.SINGLE, size: 1, color },
+  const rule = (color = theme.border, size = 1) => ({
+    top: { style: BorderStyle.SINGLE, size, color },
+    bottom: { style: BorderStyle.SINGLE, size, color },
+    left: { style: BorderStyle.SINGLE, size, color },
+    right: { style: BorderStyle.SINGLE, size, color },
   });
+
+  const accentRule = {
+    top: { style: BorderStyle.SINGLE, size: 16, color: theme.accent },
+    bottom: { style: BorderStyle.SINGLE, size: 16, color: theme.accent },
+    left: { style: BorderStyle.SINGLE, size: 16, color: theme.accent },
+    right: { style: BorderStyle.SINGLE, size: 16, color: theme.accent },
+  };
 
   const titleAlignment = theme.titleAlignment === 'center' ? AlignmentType.CENTER : AlignmentType.LEFT;
   const titleSize = scaleByDensity(theme.density, 58, 52, 46);
   const headingSize = scaleByDensity(theme.density, 32, 30, 26);
+  const sectionHeadingSize = headingSize - 2;
+  const subHeadingSize = scaleByDensity(theme.density, 26, 24, 22);
   const bodySize = scaleByDensity(theme.density, 24, 22, 20);
   const metaSize = scaleByDensity(theme.density, 20, 18, 16);
+  const smallSize = scaleByDensity(theme.density, 18, 16, 14);
+  const lineSpacing = 360;
 
-  const makeCell = (text: string, bold = false, isHeader = false) =>
+  const makeParagraph = (text: string, options?: {
+    bold?: boolean;
+    color?: string;
+    font?: string;
+    size?: number;
+    spacingBefore?: number;
+    spacingAfter?: number;
+    alignment?: typeof titleAlignment;
+    bullet?: boolean;
+  }) => new Paragraph({
+    alignment: options?.alignment,
+    bullet: options?.bullet ? { level: 0 } : undefined,
+    spacing: {
+      before: options?.spacingBefore ?? 0,
+      after: options?.spacingAfter ?? 90,
+      line: lineSpacing,
+    },
+    children: [new TextRun({
+      text,
+      bold: options?.bold ?? false,
+      color: options?.color ?? theme.text,
+      font: options?.font ?? theme.bodyFont,
+      size: options?.size ?? bodySize,
+    })],
+  });
+
+  const makeCell = (text: string, options?: {
+    bold?: boolean;
+    isHeader?: boolean;
+    fill?: string;
+    color?: string;
+  }) =>
     new TableCell({
-      shading: isHeader
-        ? { type: ShadingType.SOLID, fill: theme.border, color: theme.border }
-        : { type: ShadingType.SOLID, fill: theme.background, color: theme.background },
-      borders: rule(theme.border),
+      shading: {
+        type: ShadingType.SOLID,
+        fill: options?.fill ?? (options?.isHeader ? theme.surface : theme.background),
+        color: options?.fill ?? (options?.isHeader ? theme.surface : theme.background),
+      },
+      borders: rule(options?.isHeader ? theme.border : theme.border),
+      margins: { top: 80, bottom: 80, left: 120, right: 120 },
       children: [new Paragraph({
+        spacing: { line: lineSpacing, after: 0 },
         children: [new TextRun({
           text,
-          bold,
-          color: isHeader ? theme.heading : theme.text,
-          font: isHeader ? theme.headingFont : theme.bodyFont,
-          size: 20,
+          bold: options?.bold ?? false,
+          color: options?.color ?? (options?.isHeader ? theme.heading : theme.text),
+          font: options?.isHeader ? theme.headingFont : theme.bodyFont,
+          size: smallSize,
         })],
       })],
     });
+
+  const metricRows = [
+    report.overallHealthLabel ? ['Overall Health', report.overallHealthScore != null ? `${report.overallHealthLabel} (${report.overallHealthScore})` : report.overallHealthLabel] : null,
+    report.reportingPeriod ? ['Reporting Period', report.reportingPeriod] : null,
+    report.keyMetrics?.overallProgress != null ? ['Overall Progress', `${report.keyMetrics.overallProgress}%`] : null,
+    report.keyMetrics?.tasksComplete != null ? ['Tasks Complete', String(report.keyMetrics.tasksComplete)] : null,
+    report.keyMetrics?.tasksInProgress != null ? ['Tasks In Progress', String(report.keyMetrics.tasksInProgress)] : null,
+    report.keyMetrics?.tasksOverdue != null ? ['Overdue Tasks', String(report.keyMetrics.tasksOverdue)] : null,
+    report.keyMetrics?.tasksDueSoon != null ? ['Due Soon', String(report.keyMetrics.tasksDueSoon)] : null,
+    report.keyMetrics?.categoriesCount != null ? ['Categories', String(report.keyMetrics.categoriesCount)] : null,
+    report.rawData?.planning ? ['Planned Hours', report.rawData.planning.plannedHours.toFixed(1)] : null,
+    report.rawData?.planning ? ['Actual Hours', report.rawData.planning.actualHours.toFixed(1)] : null,
+    report.rawData?.planning ? ['Variance', `${report.rawData.planning.varianceHours >= 0 ? '+' : ''}${report.rawData.planning.varianceHours.toFixed(1)}h`] : null,
+    report.rawData?.planning ? ['Remaining Load', `${report.rawData.planning.remainingHours.toFixed(1)}h`] : null,
+    report.rawData?.memberCount != null ? ['Team Members', String(report.rawData.memberCount)] : null,
+    report.rawData?.totalGoals != null ? ['Total Tasks', String(report.rawData.totalGoals)] : null,
+  ].filter((row): row is [string, string] => Boolean(row));
 
   const children: unknown[] = [];
 
@@ -285,72 +407,189 @@ async function renderDocxFile(report: ReportContent): Promise<RenderedReportFile
 
   children.push(new Paragraph({
     alignment: titleAlignment,
+    spacing: { before: 0, after: 100 },
+    children: [new TextRun({ text: report.projectName || report.title, color: theme.muted, font: theme.headingFont, size: subHeadingSize })],
+  }));
+  children.push(new Paragraph({
+    alignment: titleAlignment,
     spacing: { before: 0, after: 120 },
     children: [new TextRun({ text: report.title, bold: true, color: theme.heading, font: theme.headingFont, size: titleSize })],
   }));
   if (report.subtitle) {
     children.push(new Paragraph({
       alignment: titleAlignment,
-      spacing: { after: 80 },
-      children: [new TextRun({ text: report.subtitle, color: theme.muted, font: theme.headingFont, size: scaleByDensity(theme.density, 28, 26, 22) })],
+      spacing: { after: 90 },
+      children: [new TextRun({ text: report.subtitle, color: theme.accent, font: theme.headingFont, size: scaleByDensity(theme.density, 28, 26, 22) })],
     }));
   }
+
+  const metadataParts = [
+    report.reportingPeriod ? `Reporting Period: ${report.reportingPeriod}` : null,
+    report.dateRange ? `${report.dateRange.from} to ${report.dateRange.to}` : null,
+    `Generated: ${new Date(report.generatedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`,
+  ].filter(Boolean);
   children.push(new Paragraph({
     alignment: titleAlignment,
-    spacing: { after: 280 },
-    children: [new TextRun({ text: `Generated: ${new Date(report.generatedAt).toLocaleDateString()}`, color: theme.muted, font: theme.monoFont, size: metaSize })],
+    spacing: { after: 220 },
+    children: [new TextRun({ text: metadataParts.join('  •  '), color: theme.muted, font: theme.bodyFont, size: metaSize })],
   }));
   children.push(new Paragraph({
-    border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: theme.accent } },
-    spacing: { after: 220 },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: theme.accent } },
+    spacing: { after: 180 },
     children: [],
   }));
+
+  if (metricRows.length > 0) {
+    children.push(new Paragraph({
+      spacing: { after: 90 },
+      children: [new TextRun({ text: 'Report Snapshot', bold: true, color: theme.accent, font: theme.headingFont, size: headingSize })],
+    }));
+    children.push(new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({
+          children: [
+            makeCell('Metric', { bold: true, isHeader: true, fill: theme.surface }),
+            makeCell('Value', { bold: true, isHeader: true, fill: theme.surface }),
+          ],
+        }),
+        ...metricRows.map(([label, value]) => new TableRow({
+          children: [
+            makeCell(label),
+            makeCell(value),
+          ],
+        })),
+      ],
+    }));
+    children.push(new Paragraph({ spacing: { after: 140 }, children: [] }));
+  }
+
   children.push(new Paragraph({
     spacing: { after: 100 },
     children: [new TextRun({ text: 'Executive Summary', bold: true, color: theme.accent, font: theme.headingFont, size: headingSize })],
   }));
+  for (const paragraph of splitParagraphs(report.executiveSummary)) {
+    children.push(makeParagraph(paragraph, { spacingAfter: 120 }));
+  }
+
+  const snapshotLists = [
+    { title: 'Key Accomplishments', items: report.accomplishments ?? [] },
+    { title: 'Current Blockers', items: report.blockers ?? [] },
+    { title: 'Upcoming Milestones', items: report.upcomingMilestones ?? [] },
+    { title: 'Recommendations', items: report.recommendations ?? [] },
+  ].filter((group) => group.items.length > 0);
+
+  if (snapshotLists.length > 0) {
+    children.push(new Paragraph({
+      spacing: { before: 160, after: 100 },
+      children: [new TextRun({ text: 'Action Snapshot', bold: true, color: theme.accent, font: theme.headingFont, size: headingSize })],
+    }));
+
+    for (const group of snapshotLists) {
+      children.push(new Paragraph({
+        spacing: { before: 60, after: 50 },
+        children: [new TextRun({ text: group.title, bold: true, color: theme.heading, font: theme.headingFont, size: subHeadingSize })],
+      }));
+      for (const item of group.items.slice(0, 6)) {
+        children.push(makeParagraph(item, { bullet: true, spacingAfter: 70 }));
+      }
+    }
+  }
+
   children.push(new Paragraph({
-    spacing: { after: 240 },
-    children: [new TextRun({ text: report.executiveSummary, color: theme.text, font: theme.bodyFont, size: bodySize })],
+    pageBreakBefore: true,
+    spacing: { after: 0 },
+    children: [],
   }));
 
   for (const section of report.sections) {
     children.push(new Paragraph({
-      spacing: { before: 200, after: 100 },
-      children: [new TextRun({ text: section.title, bold: true, color: theme.accent2, font: theme.headingFont, size: headingSize - 2 })],
+      spacing: { before: 220, after: 100 },
+      children: [new TextRun({ text: section.title, bold: true, color: theme.accent2, font: theme.headingFont, size: sectionHeadingSize })],
     }));
-    if (section.body) {
-      children.push(new Paragraph({
-        spacing: { after: 120 },
-        children: [new TextRun({ text: section.body, color: theme.text, font: theme.bodyFont, size: bodySize })],
+
+    if (section.callout) {
+      children.push(new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [new TableRow({
+          children: [new TableCell({
+            shading: { type: ShadingType.SOLID, fill: theme.surface, color: theme.surface },
+            borders: accentRule,
+            margins: { top: 120, bottom: 120, left: 150, right: 150 },
+            children: [makeParagraph(section.callout, {
+              bold: true,
+              color: theme.heading,
+              font: theme.headingFont,
+              size: bodySize,
+              spacingAfter: 0,
+            })],
+          })],
+        })],
       }));
+      children.push(new Paragraph({ spacing: { after: 120 }, children: [] }));
     }
-    if (section.bullets) {
-      for (const bullet of section.bullets) {
+
+    for (const paragraph of splitParagraphs(section.body)) {
+      children.push(makeParagraph(paragraph, { spacingAfter: 110 }));
+    }
+
+    if (section.subSections?.length) {
+      for (const subSection of section.subSections) {
         children.push(new Paragraph({
-          spacing: { after: 60 },
-          indent: { left: 360 },
-          children: [
-            new TextRun({ text: '▸  ', color: theme.accent2, font: theme.monoFont, size: bodySize }),
-            new TextRun({ text: bullet, color: theme.text, font: theme.bodyFont, size: bodySize }),
-          ],
+          spacing: { before: 80, after: 60 },
+          children: [new TextRun({ text: subSection.heading, bold: true, color: theme.heading, font: theme.headingFont, size: subHeadingSize })],
         }));
+        for (const paragraph of splitParagraphs(subSection.text)) {
+          children.push(makeParagraph(paragraph, { spacingAfter: 100 }));
+        }
       }
     }
+
+    if (section.bullets?.length) {
+      for (const bullet of section.bullets) {
+        children.push(makeParagraph(bullet, { bullet: true, spacingAfter: 80 }));
+      }
+    }
+
+    if (section.figure?.data?.length) {
+      children.push(new Paragraph({
+        spacing: { before: 80, after: 60 },
+        children: [new TextRun({ text: section.figure.title, bold: true, color: theme.heading, font: theme.headingFont, size: subHeadingSize })],
+      }));
+      children.push(new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          new TableRow({
+            children: [
+              makeCell('Label', { bold: true, isHeader: true, fill: theme.surface }),
+              makeCell('Value', { bold: true, isHeader: true, fill: theme.surface }),
+            ],
+          }),
+          ...section.figure.data.slice(0, 8).map((item) => new TableRow({
+            children: [
+              makeCell(item.label),
+              makeCell(String(item.value)),
+            ],
+          })),
+        ],
+      }));
+      children.push(new Paragraph({ spacing: { after: 120 }, children: [] }));
+    }
+
     if (section.table) {
       const rows = [
-        new TableRow({ children: section.table.headers.map((header) => makeCell(header, true, true)) }),
+        new TableRow({ children: section.table.headers.map((header) => makeCell(header, { bold: true, isHeader: true, fill: theme.surface })) }),
         ...section.table.rows.map((row) => new TableRow({ children: row.map((cell) => makeCell(cell)) })),
       ];
       children.push(new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      children.push(new Paragraph({ spacing: { after: 120 }, children: [] }));
     }
-    children.push(new Paragraph({ children: [] }));
   }
 
   const doc = new Document({
     background: { color: theme.background },
     sections: [{
-      properties: { page: { margin: { top: 900, bottom: 900, left: 900, right: 900 } } },
+      properties: { page: { margin: { top: 1440, bottom: 1440, left: 1440, right: 1440 } } },
       children: children as any,
     }],
   });
@@ -358,13 +597,13 @@ async function renderDocxFile(report: ReportContent): Promise<RenderedReportFile
   const blob = await Packer.toBlob(doc);
   return {
     blob,
-    fileName: `${report.title.replace(/\s+/g, '_')}.docx`,
+    fileName: `${safeFileStem(report.title)}.docx`,
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   };
 }
 
 export async function downloadDocx(report: ReportContent) {
-  const fallbackFileName = `${report.title.replace(/\s+/g, '_')}.docx`;
+  const fallbackFileName = `${safeFileStem(report.title)}.docx`;
   if (await tryDownloadStoredArtifact(report, fallbackFileName)) return;
   downloadRenderedFile(await renderDocxFile(report));
 }
@@ -442,7 +681,9 @@ async function renderPptxFile(report: ReportContent): Promise<RenderedReportFile
       { label: 'Total Goals', value: String(report.rawData.totalGoals) },
       { label: 'Complete', value: String(report.rawData.statusCounts.complete ?? 0) },
       { label: 'In Progress', value: String(report.rawData.statusCounts.in_progress ?? 0) },
-      { label: 'Team Members', value: String(report.rawData.memberCount) },
+      report.rawData.planning
+        ? { label: 'Variance', value: `${report.rawData.planning.varianceHours >= 0 ? '+' : ''}${report.rawData.planning.varianceHours.toFixed(1)}h` }
+        : { label: 'Team Members', value: String(report.rawData.memberCount) },
     ];
     stats.forEach((stat, index) => {
       const x = 0.5 + index * 3.05;
@@ -475,6 +716,14 @@ async function renderPptxFile(report: ReportContent): Promise<RenderedReportFile
       const pct = total > 0 ? Math.round((complete / total) * 100) : 0;
       summarySlide.addText(`${pct}%`, { x: 9.5, y: 4.9, w: 2.2, h: 0.8, fontSize: 32, bold: true, color: theme.accent2, fontFace: theme.headingFont, align: 'center' });
       summarySlide.addText('Complete', { x: 9.5, y: 5.65, w: 2.2, h: 0.3, fontSize: smallFontSize, color: theme.muted, fontFace: theme.bodyFont, align: 'center' });
+    }
+    if (report.rawData.planning) {
+      const planning = report.rawData.planning;
+      summarySlide.addText(
+        `Planning: ${planning.plannedHours.toFixed(1)}h planned, ${planning.actualHours.toFixed(1)}h actual, ${planning.remainingHours.toFixed(1)}h remaining. ` +
+        `${planning.overdueOpen} overdue, ${planning.dueSoon} due soon, ${planning.blockedTasks} blocked/at-risk.`,
+        { x: 8.15, y: 6.15, w: 4.75, h: 0.7, fontSize: smallFontSize, color: theme.muted, fontFace: theme.bodyFont, valign: 'top', fit: 'shrink' as any }
+      );
     }
   }
 
@@ -572,13 +821,13 @@ async function renderPptxFile(report: ReportContent): Promise<RenderedReportFile
   const blob = await prs.write({ outputType: 'blob' }) as Blob;
   return {
     blob,
-    fileName: `${report.title.replace(/\s+/g, '_')}.pptx`,
+    fileName: `${safeFileStem(report.title)}.pptx`,
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   };
 }
 
 export async function downloadPptx(report: ReportContent) {
-  const fallbackFileName = `${report.title.replace(/\s+/g, '_')}.pptx`;
+  const fallbackFileName = `${safeFileStem(report.title)}.pptx`;
   if (await tryDownloadStoredArtifact(report, fallbackFileName)) return;
   downloadRenderedFile(await renderPptxFile(report));
 }
@@ -761,13 +1010,13 @@ async function renderPdfFile(report: ReportContent): Promise<RenderedReportFile>
 
   return {
     blob: doc.output('blob'),
-    fileName: `${report.title.replace(/\s+/g, '_')}.pdf`,
+    fileName: `${safeFileStem(report.title)}.pdf`,
     mimeType: 'application/pdf',
   };
 }
 
 export async function downloadPdf(report: ReportContent) {
-  const fallbackFileName = `${report.title.replace(/\s+/g, '_')}.pdf`;
+  const fallbackFileName = `${safeFileStem(report.title)}.pdf`;
   if (await tryDownloadStoredArtifact(report, fallbackFileName)) return;
   downloadRenderedFile(await renderPdfFile(report));
 }
@@ -803,5 +1052,5 @@ export function exportGoalsCSV(report: ReportContent) {
   const csv = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
-  triggerBrowserDownload(url, `${report.title.replace(/\s+/g, '_')}_goals.csv`, true);
+  triggerBrowserDownload(url, `${safeFileStem(report.title)}_goals.csv`, true);
 }

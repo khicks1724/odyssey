@@ -15,6 +15,10 @@ import { userAiKeysRoutes } from './routes/user-ai-keys.js';
 import { authRoutes } from './routes/auth.js';
 import { supabaseProxyRoutes } from './routes/supabase-proxy.js';
 import { coordinationRoutes } from './routes/coordination.js';
+import { goalActivityRoutes } from './routes/goal-activity.js';
+import { financialRoutes } from './routes/financials.js';
+import { thesisRoutes } from './routes/thesis.js';
+import { tokenUsageRoutes } from './routes/token-usage.js';
 import { getAvailableProviders } from './ai-providers.js';
 import { startNightlyCoordinationRebuild } from './lib/coordination.js';
 
@@ -26,9 +30,28 @@ const server = Fastify({ logger: true });
 // In production serve the built React app from client/dist
 if (isProd) {
   const clientDist = process.env.CLIENT_DIST_PATH ?? path.join(__dirname, '../client');
-  await server.register(staticPlugin, { root: clientDist, prefix: '/', wildcard: false });
+  await server.register(staticPlugin, {
+    root: clientDist,
+    prefix: '/',
+    wildcard: false,
+    setHeaders(res, filePath) {
+      if (path.basename(filePath) === 'index.html') {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        return;
+      }
+
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  });
   // SPA fallback — any non-API route serves index.html
   server.setNotFoundHandler((_req, reply) => {
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    reply.header('Pragma', 'no-cache');
+    reply.header('Expires', '0');
     reply.sendFile('index.html');
   });
 } else {
@@ -48,6 +71,10 @@ await server.register(gitlabRoutes, { prefix: '/api' });
 await server.register(userAiKeysRoutes, { prefix: '/api' });
 await server.register(authRoutes, { prefix: '/api' });
 await server.register(coordinationRoutes, { prefix: '/api' });
+await server.register(goalActivityRoutes, { prefix: '/api' });
+await server.register(financialRoutes, { prefix: '/api' });
+await server.register(thesisRoutes, { prefix: '/api' });
+await server.register(tokenUsageRoutes, { prefix: '/api' });
 await server.register(supabaseProxyRoutes);
 
 const port = Number(process.env.PORT) || 3000;
@@ -65,7 +92,7 @@ try {
   if (inactive.length > 0) console.log(`AI providers inactive (no API key): ${inactive.join(', ')}`);
   if (active.length === 0) console.warn('WARNING: No AI providers configured yet — users need to add provider keys in Settings → AI Providers');
   if (!process.env.GITHUB_WEBHOOK_SECRET) console.warn('WARNING: GITHUB_WEBHOOK_SECRET not set — webhook signature verification disabled');
-  if (!process.env.AI_KEY_SECRET) console.warn('WARNING: AI_KEY_SECRET not set — encrypted user keys fall back to the service key for legacy compatibility');
+  if (!process.env.AI_KEY_SECRET) console.warn('WARNING: AI_KEY_SECRET not set — encrypted provider credentials and GitLab tokens will be unavailable');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
   console.log('GitLab integration uses per-project repository URLs and personal access tokens');

@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 // Root font-size steps. Browser default is 16px.
 // Step 0 = 16px → body becomes 0.8125 * 16 = 13px (app default).
 // All Tailwind rem-based classes (text-xs, text-sm, etc.) scale proportionally.
-const STEPS = [-3, -2, -1, 0, 1, 2, 3] as const;
+const STEPS = [-3, -2, -1, 0, 1, 2, 3, 4, 5] as const;
 type Step = typeof STEPS[number];
 const ROOT_BASE = 16;
 const LS_KEY = 'odyssey-font-size-step';
@@ -25,7 +25,7 @@ export default function FontSizeControl() {
 
   const change = (delta: number) => {
     setStep((prev) => {
-      const next = Math.max(-3, Math.min(3, prev + delta)) as Step;
+      const next = Math.max(-3, Math.min(5, prev + delta)) as Step;
       window.localStorage.setItem(LS_KEY, String(next));
       return next;
     });
@@ -64,7 +64,7 @@ export default function FontSizeControl() {
       <button
         type="button"
         onClick={() => change(1)}
-        disabled={step >= 3}
+        disabled={step >= 5}
         title="Increase font size"
         className="flex items-center justify-center w-7 h-7 rounded-lg border border-[var(--color-border)]
                    bg-[var(--color-surface)] text-[var(--color-muted)] hover:text-[var(--color-heading)]

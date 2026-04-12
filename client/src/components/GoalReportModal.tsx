@@ -3,6 +3,7 @@ import { X, FileText, Paperclip, Send, Trash2, Download, Loader2, MessageSquare 
 import type { Goal, GoalComment } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
+import { pushUndoAction } from '../lib/undo-manager';
 
 interface GoalReport {
   id: string;
@@ -15,6 +16,7 @@ interface GoalReport {
 
 interface GoalAttachment {
   id: string;
+  comment_id: string | null;
   file_name: string;
   file_path: string;
   file_size: number | null;
@@ -51,12 +53,21 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
   const [loading,     setLoading]     = useState(true);
   const [content,     setContent]     = useState('');
   const [commentText, setCommentText] = useState('');
-  const [file,        setFile]        = useState<File | null>(null);
+  const [commentFiles, setCommentFiles] = useState<File[]>([]);
   const [submitting,  setSubmitting]  = useState(false);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [attachmentBusyId, setAttachmentBusyId] = useState<string | null>(null);
   const commentsEndRef = useRef<HTMLDivElement>(null);
+  const commentAttachmentsById = attachments.reduce<Record<string, GoalAttachment[]>>((acc, attachment) => {
+    const key = attachment.comment_id ?? '';
+    if (!key) return acc;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(attachment);
+    return acc;
+  }, {});
 
   const loadData = async () => {
+    setLoading(true);
     const [{ data: reps }, { data: atts }, { data: cmts }] = await Promise.all([
       supabase.from('goal_reports').select('*').eq('goal_id', goal.id).order('created_at', { ascending: false }),
       supabase.from('goal_attachments').select('*').eq('goal_id', goal.id).order('created_at', { ascending: false }),
@@ -114,22 +125,8 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
   }, [comments.length]);
 
   const handleSubmit = async () => {
-    if (!content.trim() && !file) return;
+    if (!content.trim()) return;
     setSubmitting(true);
-
-    if (file) {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const path = `${goal.id}/${Date.now()}-${safeName}`;
-      const { data: up, error: upErr } = await supabase.storage
-        .from('goal-attachments')
-        .upload(path, file, { contentType: file.type });
-      if (!upErr && up) {
-        await supabase.from('goal_attachments').insert({
-          goal_id: goal.id, project_id: projectId, author_id: user?.id,
-          file_name: file.name, file_path: up.path, file_size: file.size, mime_type: file.type,
-        });
-      }
-    }
 
     if (content.trim()) {
       await supabase.from('goal_reports').insert({
@@ -139,61 +136,116 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
     }
 
     setContent('');
-    setFile(null);
     await loadData();
     setSubmitting(false);
   };
 
   const handleSubmitComment = async () => {
-    if (!commentText.trim() || !user) return;
+    if ((!commentText.trim() && commentFiles.length === 0) || !user) return;
     setCommentSubmitting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('You are not signed in.');
 
-    const { data: inserted } = await supabase.from('goal_comments').insert({
-      goal_id: goal.id,
-      project_id: projectId,
-      author_id: user.id,
-      content: commentText.trim(),
-    }).select().single();
+      const form = new FormData();
+      form.append('content', commentText.trim());
+      for (const file of commentFiles) {
+        form.append('file', file);
+      }
 
-    // Log event
-    await supabase.from('events').insert({
-      project_id: projectId,
-      source: 'manual',
-      event_type: 'comment_added',
-      title: `Comment on "${goal.title}"`,
-      summary: commentText.trim().slice(0, 200),
-      occurred_at: new Date().toISOString(),
-    });
+      const res = await fetch(`/api/projects/${projectId}/goals/${goal.id}/comments`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: form,
+      });
 
-    if (inserted) {
-      // Get current user display name
-      const { data: profile } = await supabase.from('profiles').select('display_name').eq('id', user.id).single();
-      const authorName = profile?.display_name ?? 'You';
-      // Optimistically add to state (realtime will deduplicate)
-      setComments(prev => [...prev, { ...(inserted as GoalComment), author_name: authorName }]);
+      const payload = await res.json().catch(() => ({ error: 'Unable to save task note.' })) as { error?: string };
+      if (!res.ok) {
+        throw new Error(payload.error ?? 'Unable to save task note.');
+      }
+
+      setCommentText('');
+      setCommentFiles([]);
+      await loadData();
+    } finally {
+      setCommentSubmitting(false);
     }
-
-    setCommentText('');
-    setCommentSubmitting(false);
   };
 
   const deleteComment = async (id: string) => {
-    await supabase.from('goal_comments').delete().eq('id', id);
-    setComments(prev => prev.filter(c => c.id !== id));
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    await fetch(`/api/projects/${projectId}/goals/${goal.id}/comments/${id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+    await loadData();
   };
 
-  const getPublicUrl = (path: string) =>
-    supabase.storage.from('goal-attachments').getPublicUrl(path).data.publicUrl;
-
   const deleteReport = async (id: string) => {
+    const reportIndex = reports.findIndex((report) => report.id === id);
+    const deletedReport = reportIndex >= 0 ? reports[reportIndex] ?? null : null;
     await supabase.from('goal_reports').delete().eq('id', id);
     setReports((prev) => prev.filter((r) => r.id !== id));
+    if (!deletedReport) return;
+    pushUndoAction({
+      label: 'Deleted task report',
+      undo: async () => {
+        const { data, error } = await supabase
+          .from('goal_reports')
+          .insert({
+            ...deletedReport,
+            goal_id: goal.id,
+            project_id: projectId,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        setReports((prev) => {
+          if (prev.some((report) => report.id === deletedReport.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(reportIndex, next.length), 0, data as GoalReport);
+          return next;
+        });
+      },
+    });
+  };
+
+  const openAttachment = async (attachment: GoalAttachment) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    setAttachmentBusyId(attachment.id);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/goals/${goal.id}/attachments/${attachment.id}/sign`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      const payload = await res.json().catch(() => ({ error: 'Unable to open attachment.' })) as { url?: string; error?: string };
+      if (!res.ok || !payload.url) {
+        throw new Error(payload.error ?? 'Unable to open attachment.');
+      }
+      window.open(payload.url, '_blank', 'noopener,noreferrer');
+    } finally {
+      setAttachmentBusyId(null);
+    }
   };
 
   const deleteAttachment = async (att: GoalAttachment) => {
-    await supabase.storage.from('goal-attachments').remove([att.file_path]);
-    await supabase.from('goal_attachments').delete().eq('id', att.id);
-    setAttachments((prev) => prev.filter((a) => a.id !== att.id));
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    await fetch(`/api/projects/${projectId}/goals/${goal.id}/attachments/${att.id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+    await loadData();
   };
 
   return (
@@ -237,6 +289,37 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
                           <span className="text-[9px] text-[var(--color-muted)] font-mono">{fmtDateTime(c.created_at)}</span>
                         </div>
                         <p className="text-xs text-[var(--color-muted)] leading-relaxed whitespace-pre-wrap">{c.content}</p>
+                        {commentAttachmentsById[c.id]?.length ? (
+                          <div className="mt-2 space-y-1.5">
+                            {commentAttachmentsById[c.id].map((attachment) => (
+                              <div key={attachment.id} className="flex items-center justify-between rounded border border-[var(--color-border)]/70 bg-[var(--color-surface)]/40 px-2 py-1.5">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <Paperclip size={10} className="text-[var(--color-muted)] shrink-0" />
+                                  <span className="text-[11px] text-[var(--color-heading)] font-mono truncate">{attachment.file_name}</span>
+                                  {attachment.file_size ? <span className="text-[9px] text-[var(--color-muted)] shrink-0">{fmtSize(attachment.file_size)}</span> : null}
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => { void openAttachment(attachment); }}
+                                    className="text-[var(--color-muted)] hover:text-[var(--color-accent)] transition-colors"
+                                  >
+                                    {attachmentBusyId === attachment.id ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                                  </button>
+                                  {(attachment.author_id === user?.id || c.author_id === user?.id) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => { void deleteAttachment(attachment); }}
+                                      className="text-[var(--color-muted)] hover:text-[var(--color-danger)] transition-colors"
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                         {c.author_id === user?.id && (
                           <button
                             onClick={() => deleteComment(c.id)}
@@ -300,12 +383,12 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
                           )}
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          <a href={getPublicUrl(a.file_path)} target="_blank" rel="noreferrer"
+                          <button type="button" onClick={() => { void openAttachment(a); }}
                             className="text-[var(--color-muted)] hover:text-[var(--color-accent)] transition-colors">
-                            <Download size={11} />
-                          </a>
+                            {attachmentBusyId === a.id ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                          </button>
                           {a.author_id === user?.id && (
-                            <button onClick={() => deleteAttachment(a)}
+                            <button type="button" onClick={() => { void deleteAttachment(a); }}
                               className="text-[var(--color-muted)] hover:text-[var(--color-danger)] transition-colors opacity-0 group-hover:opacity-100">
                               <Trash2 size={11} />
                             </button>
@@ -336,23 +419,54 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitComment(); }}}
-              placeholder="Leave a comment… (Enter to send, Shift+Enter for newline)"
+              placeholder="Leave a task note… (Enter to send, Shift+Enter for newline)"
               rows={2}
               className="flex-1 bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono placeholder:text-[var(--color-muted)]/50 px-3 py-2 focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors resize-none rounded"
             />
             <button
               onClick={handleSubmitComment}
-              disabled={commentSubmitting || !commentText.trim()}
-              className="flex items-center gap-1 px-3 py-2 bg-[var(--color-accent)] text-white text-xs rounded hover:opacity-90 transition-opacity disabled:opacity-40 shrink-0"
+              disabled={commentSubmitting || (!commentText.trim() && commentFiles.length === 0)}
+              className="odyssey-fill-accent flex items-center gap-1 px-3 py-2 text-xs rounded transition-opacity hover:opacity-90 disabled:opacity-40 shrink-0"
             >
               {commentSubmitting ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
             </button>
           </div>
+          <div className="flex items-center justify-between gap-3">
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
+              <Paperclip size={12} />
+              <span>{commentFiles.length > 0 ? `${commentFiles.length} attachment${commentFiles.length === 1 ? '' : 's'} selected` : 'Attach files'}</span>
+              <input
+                type="file"
+                className="hidden"
+                multiple
+                onChange={(e) => setCommentFiles(Array.from(e.target.files ?? []))}
+                accept="image/*,.pdf,.docx,.pptx,.xlsx,.txt,.md,.csv,.json"
+              />
+            </label>
+            {commentFiles.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setCommentFiles([])}
+                className="text-[10px] font-mono text-[var(--color-muted)] hover:text-[var(--color-heading)]"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {commentFiles.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {commentFiles.map((selectedFile) => (
+                <span key={`${selectedFile.name}-${selectedFile.size}`} className="rounded border border-[var(--color-border)] px-2 py-1 text-[10px] font-mono text-[var(--color-heading)]">
+                  {selectedFile.name}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Report / Attachment Form */}
         <div className="shrink-0 border-t border-[var(--color-border)] p-5 space-y-3 bg-[var(--color-surface)]">
-          <h4 className="text-[10px] uppercase tracking-widest font-mono text-[var(--color-muted)]">Add Report / Attachment</h4>
+          <h4 className="text-[10px] uppercase tracking-widest font-mono text-[var(--color-muted)]">Add Progress Report</h4>
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
@@ -361,23 +475,11 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
             className="w-full bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono placeholder:text-[var(--color-muted)]/50 px-3 py-2 focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors resize-none rounded"
           />
           <div className="flex items-center justify-between gap-3">
-            <label className="flex items-center gap-2 cursor-pointer text-xs text-[var(--color-muted)] hover:text-[var(--color-heading)] transition-colors">
-              <Paperclip size={12} />
-              {file
-                ? <span className="text-[var(--color-accent)] font-mono truncate max-w-[180px]">{file.name}</span>
-                : <span>Attach file</span>
-              }
-              <input
-                type="file"
-                className="hidden"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip"
-              />
-            </label>
+            <p className="text-[10px] text-[var(--color-muted)]">Use task notes above for files, screenshots, and supporting artifacts.</p>
             <button
               onClick={handleSubmit}
-              disabled={submitting || (!content.trim() && !file)}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-[var(--color-accent)] text-white text-xs rounded hover:opacity-90 transition-opacity disabled:opacity-40"
+              disabled={submitting || !content.trim()}
+              className="odyssey-fill-accent flex items-center gap-1.5 px-4 py-1.5 text-xs rounded transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {submitting ? <Loader2 size={11} className="animate-spin" /> : <Send size={11} />}
               Submit

@@ -227,6 +227,46 @@ export default function ChatPage() {
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const { messages, loading: messagesLoading, sendMessage, toggleReaction, last24hMessages } = useChatMessages(selectedThreadId);
   const { people: dmCandidates, loading: dmCandidatesLoading } = useSharedProjectPeople();
+  const groupedDmCandidates = useMemo(() => {
+    const grouped = new Map<string, {
+      id: string;
+      displayName: string;
+      avatarUrl: string | null;
+      projectNames: string[];
+      representativeProjectId: string | null;
+    }>();
+
+    for (const candidate of dmCandidates) {
+      const existing = grouped.get(candidate.id);
+      const displayName = candidate.display_name ?? candidate.id;
+      if (!existing) {
+        grouped.set(candidate.id, {
+          id: candidate.id,
+          displayName,
+          avatarUrl: candidate.avatar_url,
+          projectNames: candidate.project_name ? [candidate.project_name] : [],
+          representativeProjectId: candidate.project_id ?? null,
+        });
+        continue;
+      }
+      if (candidate.project_name && !existing.projectNames.includes(candidate.project_name)) {
+        existing.projectNames.push(candidate.project_name);
+      }
+      if (!existing.avatarUrl && candidate.avatar_url) {
+        existing.avatarUrl = candidate.avatar_url;
+      }
+      if (!existing.representativeProjectId && candidate.project_id) {
+        existing.representativeProjectId = candidate.project_id;
+      }
+    }
+
+    return [...grouped.values()]
+      .map((candidate) => ({
+        ...candidate,
+        projectNames: [...candidate.projectNames].sort((left, right) => left.localeCompare(right)),
+      }))
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  }, [dmCandidates]);
 
   useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
@@ -872,7 +912,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="h-full min-h-0 bg-surface">
+    <div className="app-chat-page h-full min-h-0 bg-surface">
       <div className="h-full min-h-0 grid grid-cols-[280px_minmax(0,1fr)] items-stretch">
         <aside className="border-r border-border bg-surface2/40 flex flex-col min-h-0">
           <div ref={creatingDmRef} className="shrink-0">
@@ -907,29 +947,28 @@ export default function ChatPage() {
               <div className="mx-4 mt-4 border border-border rounded-2xl bg-surface overflow-hidden shrink-0">
                 <div className="px-4 py-3 border-b border-border">
                   <p className="text-[10px] tracking-[0.18em] uppercase text-muted font-semibold">New direct message</p>
-                  <p className="text-[11px] text-muted mt-1">Only users who currently share a project with you can be selected.</p>
                 </div>
                 <div className="max-h-56 overflow-y-auto p-2">
                   {dmCandidatesLoading ? (
                     <p className="px-3 py-4 text-xs text-muted">Loading eligible users…</p>
-                  ) : dmCandidates.length === 0 ? (
+                  ) : groupedDmCandidates.length === 0 ? (
                     <p className="px-3 py-4 text-xs text-muted">No eligible users yet.</p>
-                  ) : dmCandidates.map((candidate) => (
+                  ) : groupedDmCandidates.map((candidate) => (
                     <button
-                      key={`${candidate.id}-${candidate.project_id ?? 'none'}`}
+                      key={candidate.id}
                       type="button"
                       onClick={async () => {
-                        const threadId = await createDirectThread(candidate.id, candidate.project_id);
+                        const threadId = await createDirectThread(candidate.id, candidate.representativeProjectId);
                         setSelectedThreadId(threadId);
                         setCreatingDm(false);
                       }}
                       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface2 transition-colors text-left"
                     >
-                      <Avatar label={candidate.display_name ?? candidate.id} image={candidate.avatar_url} kind="direct" className="w-9 h-9" />
+                      <Avatar label={candidate.displayName} image={candidate.avatarUrl} kind="direct" className="w-9 h-9" />
                       <div className="min-w-0">
-                        <p className="text-sm text-heading font-semibold truncate">{candidate.display_name ?? candidate.id}</p>
+                        <p className="text-sm text-heading font-semibold truncate">{candidate.displayName}</p>
                         <p className="text-[11px] text-muted truncate">
-                          {candidate.project_name ? `Shared project: ${candidate.project_name}` : 'Eligible for DM'}
+                          {candidate.projectNames.length > 0 ? candidate.projectNames.join(', ') : 'Eligible for DM'}
                         </p>
                       </div>
                     </button>
@@ -972,7 +1011,7 @@ export default function ChatPage() {
                               <p className="text-sm font-semibold text-heading truncate">{title}</p>
                               <div className="flex items-center gap-2 shrink-0">
                                 {unreadCount > 0 && (
-                                  <span className="min-w-5 h-5 px-1.5 rounded-full bg-accent text-[10px] font-mono font-semibold text-white flex items-center justify-center">
+                                  <span className="odyssey-text-on-accent min-w-5 h-5 px-1.5 rounded-full bg-accent text-[10px] font-mono font-semibold flex items-center justify-center">
                                     {unreadCount > 9 ? '9+' : unreadCount}
                                   </span>
                                 )}
@@ -1023,7 +1062,7 @@ export default function ChatPage() {
                               <p className="text-sm font-semibold text-heading truncate">{title}</p>
                               <div className="flex items-center gap-2 shrink-0">
                                 {unreadCount > 0 && (
-                                  <span className="min-w-5 h-5 px-1.5 rounded-full bg-accent2 text-[10px] font-mono font-semibold text-white flex items-center justify-center">
+                                  <span className="odyssey-text-on-accent2 min-w-5 h-5 px-1.5 rounded-full bg-accent2 text-[10px] font-mono font-semibold flex items-center justify-center">
                                     {unreadCount > 9 ? '9+' : unreadCount}
                                   </span>
                                 )}
@@ -1121,7 +1160,7 @@ export default function ChatPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="max-w-4xl mx-auto">
+                  <div className="app-chat-thread-width max-w-4xl mx-auto">
                     {messages.map((message, idx) => {
                       const mine = message.sender_id && message.sender_id === user?.id;
                       const sender =
@@ -1264,7 +1303,7 @@ export default function ChatPage() {
                 )}
               </div>
               <div className="mt-auto shrink-0 border-t border-border bg-surface px-5 py-3">
-                <div className="max-w-4xl mx-auto space-y-2">
+                <div className="app-chat-thread-width max-w-4xl mx-auto space-y-2">
                   {contexts.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {contexts.map((ctx) => (

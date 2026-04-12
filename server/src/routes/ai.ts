@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import OpenAI from 'openai';
-import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProvider, type AIProviderSelection, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models.js';
 import { decryptUserKey } from './user-ai-keys.js';
@@ -8,6 +8,8 @@ import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
 import { getGitHubRepos } from '../lib/github.js';
 import { getInternalRequestHeaders, getUserFromAuthHeader, userHasProjectAccess } from '../lib/request-auth.js';
 import { getGitLabToken } from '../lib/gitlab-token.js';
+import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
+import { logAiTokenUsage } from './token-usage.js';
 
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
@@ -500,6 +502,63 @@ async function ensureProjectAccess(
   return userId;
 }
 
+async function chatWithAudit(
+  authHeader: string | undefined,
+  provider: AIProviderSelection,
+  msg: Parameters<typeof chat>[1],
+  apiKey: ProviderCredentialOverride | undefined,
+  options: {
+    feature: string;
+    routePath: string;
+    projectId?: string | null;
+    userId?: string | null;
+  },
+): Promise<ChatResult> {
+  const result = await chat(provider, msg, apiKey);
+  try {
+    await logAiTokenUsage({
+      authHeader,
+      result,
+      feature: options.feature,
+      routePath: options.routePath,
+      projectId: options.projectId,
+      knownUserId: options.userId,
+    });
+  } catch {
+    // Usage auditing must never break the primary AI flow.
+  }
+  return result;
+}
+
+async function streamChatWithAudit(
+  authHeader: string | undefined,
+  provider: AIProviderSelection,
+  msg: Parameters<typeof streamChat>[1],
+  onToken: Parameters<typeof streamChat>[2],
+  apiKey: ProviderCredentialOverride | undefined,
+  options: {
+    feature: string;
+    routePath: string;
+    projectId?: string | null;
+    userId?: string | null;
+  },
+): Promise<ChatResult> {
+  const result = await streamChat(provider, msg, onToken, apiKey);
+  try {
+    await logAiTokenUsage({
+      authHeader,
+      result,
+      feature: options.feature,
+      routePath: options.routePath,
+      projectId: options.projectId,
+      knownUserId: options.userId,
+    });
+  } catch {
+    // Usage auditing must never break the primary AI flow.
+  }
+  return result;
+}
+
 export async function aiRoutes(server: FastifyInstance) {
   // ── Available providers endpoint ──
   // Returns user-key availability enriched with per-user key detection.
@@ -713,6 +772,7 @@ export async function aiRoutes(server: FastifyInstance) {
           const commits: { sha: string; commit: { author: { name: string; date: string }; message: string } }[] = await r.json();
           if (!commits.length) break;
           for (const c of commits) {
+            if (isGeneratedThesisLatexCommitMessage(c.commit.message)) continue;
             const date = c.commit.author.date.slice(0, 10);
             addCommit(repoKey, date);
             if (page === 1) {
@@ -746,6 +806,7 @@ export async function aiRoutes(server: FastifyInstance) {
           const commits: { id: string; created_at: string; author_name: string; title: string }[] = await r.json();
           if (!commits.length) break;
           for (const c of commits) {
+            if (isGeneratedThesisLatexCommitMessage(c.title)) continue;
             addCommit(repoKey, c.created_at.slice(0, 10));
             if (page === 1) {
               recentCommits.push({
@@ -781,7 +842,12 @@ export async function aiRoutes(server: FastifyInstance) {
     recentCommits.sort((a, b) => b.date.localeCompare(a.date));
     const topRecent = recentCommits.slice(0, 25);
 
-    return reply.send({ commits, byRepo, recentCommits: topRecent });
+    const linkedRepos = [
+      ...githubRepos.map((repo) => ({ source: 'github' as const, repo })),
+      ...gitlabRepos.map((repo) => ({ source: 'gitlab' as const, repo })),
+    ];
+
+    return reply.send({ commits, byRepo, recentCommits: topRecent, linkedRepos });
   });
 
   server.post<{ Body: AISummarizeBody }>('/ai/summarize', async (request, reply) => {
@@ -827,11 +893,11 @@ ${goalsSummary}${docsSection}
 ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.replace('_', ' ')} analysis.`}`;
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: systemPrompts[queryType] || systemPrompts.activity_summary,
         user: userContent,
         maxTokens: 1024,
-      });
+      }, undefined, { feature: 'summary', routePath: '/api/ai/summarize' });
 
       return {
         summary: result.text,
@@ -863,12 +929,12 @@ ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.repla
     const goalsList = goals.map((g) => `- ID: ${g.id} | Title: "${g.title}" | Status: ${g.status}`).join('\n');
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You categorize project goals into topic categories. Respond ONLY with valid JSON — no markdown, no explanation. The JSON should be an object mapping goal IDs to category names.`,
         user: `Project: ${projectName}\n\nGoals:\n${goalsList}\n\nAvailable categories: ${categories.join(', ')}\n\nAssign each goal to the single most relevant category. Return JSON like: {"goal-id-1": "Category", "goal-id-2": "Category"}`,
         maxTokens: 512,
         jsonMode: true,
-      });
+      }, undefined, { feature: 'categorize', routePath: '/api/ai/categorize' });
 
       const parsed = JSON.parse(extractJson(result.text));
       return { categories: parsed, provider: result.provider };
@@ -902,7 +968,7 @@ ${userQuestion ? `User Question: ${userQuestion}` : `Provide a ${queryType.repla
     const commitsList = (commits || []).slice(0, 30).join('\n');
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You analyze GitHub repositories to evaluate project goals. Respond ONLY with valid JSON — no markdown, no explanation.
 
 Return an object with two keys:
@@ -925,7 +991,7 @@ ${readme || 'No README found'}
 Analyze which goals are completed and suggest new goals.`,
         maxTokens: 1200,
         jsonMode: true,
-      });
+      }, undefined, { feature: 'repo-scan', routePath: '/api/ai/repo-scan' });
 
       const parsed = JSON.parse(extractJson(result.text));
       return {
@@ -961,37 +1027,24 @@ Analyze which goals are completed and suggest new goals.`,
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId, userId);
 
-    const codeBlock = [
-      ctx.githubContext ? `GITHUB (commits + diffs + source):\n${ctx.githubContext.slice(0, 35_000)}` : '',
-      ctx.gitlabContext ? `GITLAB (commits + diffs + source):\n${ctx.gitlabContext.slice(0, 35_000)}` : '',
-    ].filter(Boolean).join('\n\n');
-
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are Odyssey's deep project intelligence engine. You have access to ACTUAL SOURCE CODE FILES and REAL COMMIT DIFFS — not just commit messages. Use them to give a technically grounded analysis.
 
-Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
+Analyze the project as a whole, not just the single loudest repository or diff. Synthesize across ALL available context: project tasks, planning signals, recent activity, uploaded documents, and every linked GitHub and GitLab repository. When multiple repos are present, intentionally diversify your observations and recommendations across the repo portfolio and the project's goals/tasks unless the evidence clearly shows the work is concentrated in one place. If the evidence is uneven, say that explicitly, but still account for the broader project context instead of collapsing the analysis onto one repo.
 
-Return an object with exactly four keys:
-Use backtick markdown formatting for all file paths, function names, module names, variable names, and code identifiers (e.g. \`server/src/routes/ai.ts\`, \`resolveProvider()\`, \`GITHUB_TOKEN\`). When referencing repository files, prefer full repo-qualified paths such as \`repo-name/src/components/File.tsx\` instead of ambiguous relative-only paths like \`src/components/File.tsx\`. Use **bold** for emphasis on key terms.
-
-Return an object with exactly four keys:
-- "status": 3-4 sentences on the project's current health. Reference specific files, modules, or components you can see actively changing in the diffs. Note velocity trends.
-- "nextSteps": Array of 4-6 strings. Each must be a specific, actionable task grounded in what you see in the code — reference actual file names, function names, or modules using backtick formatting. No generic advice.
+	Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
+	
+	Return an object with exactly four keys:
+	Use backtick markdown formatting for all file paths, function names, module names, variable names, and code identifiers (e.g. \`server/src/routes/ai.ts\`, \`resolveProvider()\`, \`GITHUB_TOKEN\`). When referencing repository files, prefer full repo-qualified paths such as \`repo-name/src/components/File.tsx\` instead of ambiguous relative-only paths like \`src/components/File.tsx\`. Use **bold** for emphasis on key terms.
+	- "status": 3-4 sentences on the project's current health. Cover overall project health across the active repos, the planning/task layer, and recent delivery signals. Reference specific files, modules, or components you can see actively changing in the diffs. Note velocity trends.
+- "nextSteps": Array of 4-6 strings. Each must be a specific, actionable task grounded in what you see in the code and the planning data — reference actual file names, function names, planning hotspots, or modules using backtick formatting. No generic advice. The set of next steps should reflect the most important spread of work across the project rather than clustering on one repo unless that is clearly justified by the evidence.
 - "futureFeatures": Array of 3-5 strings. Suggest concrete features based on gaps you can identify in the current codebase structure and what the README/tasks describe but the code doesn't yet implement.
-- "codeInsights": Array of 4-6 strings. Deep technical observations: which modules are most actively developed (from diffs), code patterns you notice, potential technical debt, architectural observations, areas that look incomplete or missing tests, etc. Be specific — name files and patterns using backtick formatting.`,
-        user: `Project: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}
-
-TASKS (${ctx.goals.length} total):
-${ctx.tasksText}
-
-RECENT ACTIVITY:
-${ctx.eventsText.slice(0, 2000)}
-
-${codeBlock}`,
+- "codeInsights": Array of 4-6 strings. Deep technical observations spanning the repo portfolio where possible: which modules are most actively developed (from diffs), cross-repo patterns you notice, potential technical debt, architectural observations, areas that look incomplete or missing tests, and any planning depth gaps visible in task estimates/logged hours. Be specific — name files and patterns using backtick formatting.`,
+        user: buildProjectInsightsEvidence(ctx),
         maxTokens: 3000,
         jsonMode: true,
-      }, userApiKey);
+      }, userApiKey, { feature: 'project-insights', routePath: '/api/ai/project-insights', projectId, userId });
 
       let raw = extractJson(result.text);
       // If the response was truncated mid-JSON, attempt to close it gracefully
@@ -1040,7 +1093,7 @@ ${codeBlock}`,
     const truncated = content.slice(0, 8000);
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are Odyssey's document intelligence engine. Analyze documents and extract structured insights for a project management context. Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
 
 Return an object with exactly four keys:
@@ -1056,7 +1109,7 @@ ${truncated}
 Analyze this document and extract structured insights.`,
         maxTokens: 1024,
         jsonMode: true,
-      });
+      }, undefined, { feature: 'analyze-document', routePath: '/api/ai/analyze-document' });
 
       const parsed = JSON.parse(extractJson(result.text));
       return {
@@ -1118,7 +1171,7 @@ Analyze this document and extract structured insights.`,
     ).join('\n\n');
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are an AI progress tracker for a project management platform. Analyze imported documents (from OneNote and OneDrive) to determine which project goals they represent progress on, estimate completion percentages, and identify who did the work based on document metadata.
 
 Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
@@ -1151,7 +1204,7 @@ ${docsContext}
 Analyze which goals these documents show progress on, who did the work, and when.`,
         maxTokens: 2000,
         jsonMode: true,
-      });
+      }, undefined, { feature: 'analyze-office-progress', routePath: '/api/ai/analyze-office-progress', projectId, userId });
 
       const parsed = JSON.parse(extractJson(result.text));
       const updates = parsed.updates ?? [];
@@ -1214,13 +1267,17 @@ Analyze which goals these documents show progress on, who did the work, and when
       { data: members },
       { data: gitlabInteg },
       { data: structuredDocuments },
+      { data: timeLogs },
+      { data: noteAttachments },
     ] = await Promise.all([
       supabase.from('projects').select('name, description, github_repo, github_repos, created_at, owner_id').eq('id', projectId).single(),
-      supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to').eq('project_id', projectId),
+      supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to, assignees, estimated_hours').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(50),
       supabase.from('project_members').select('user_id, role').eq('project_id', projectId),
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
       supabase.from('project_documents').select('filename, extracted_text, summary, keywords, created_at').eq('project_id', projectId).order('created_at', { ascending: false }).limit(25),
+      supabase.from('time_logs').select('goal_id, user_id, logged_hours, logged_at').eq('project_id', projectId),
+      supabase.from('goal_attachments').select('file_name, content_preview, document_summary, extracted_char_count, created_at').eq('project_id', projectId).not('content_preview', 'is', null).order('created_at', { ascending: false }).limit(20),
     ]);
 
     const memberRows = (members ?? []) as Array<{ user_id: string; role: string | null }>;
@@ -1282,6 +1339,57 @@ Analyze which goals these documents show progress on, who did the work, and when
     const tasksText = (goals ?? []).map((g) =>
       `- [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [${g.category}]` : ''}`
     ).join('\n') || 'No tasks';
+
+    const actualHoursByGoal = new Map<string, number>();
+    const actualHoursByUser = new Map<string, number>();
+    for (const log of (timeLogs ?? []) as Array<{ goal_id: string | null; user_id: string | null; logged_hours: number }>) {
+      if (log.goal_id) {
+        actualHoursByGoal.set(log.goal_id, (actualHoursByGoal.get(log.goal_id) ?? 0) + (log.logged_hours ?? 0));
+      }
+      if (log.user_id) {
+        actualHoursByUser.set(log.user_id, (actualHoursByUser.get(log.user_id) ?? 0) + (log.logged_hours ?? 0));
+      }
+    }
+    const today = new Date();
+    const twoWeeksFromNow = new Date(today);
+    twoWeeksFromNow.setDate(twoWeeksFromNow.getDate() + 14);
+    const plannedGoals = (goals ?? []).filter((goal) => (goal.estimated_hours ?? 0) > 0 || (actualHoursByGoal.get(goal.id) ?? 0) > 0);
+    const plannedHours = plannedGoals.reduce((sum, goal) => sum + (goal.estimated_hours ?? 0), 0);
+    const actualHours = plannedGoals.reduce((sum, goal) => sum + (actualHoursByGoal.get(goal.id) ?? 0), 0);
+    const remainingHours = plannedGoals
+      .filter((goal) => goal.status !== 'complete')
+      .reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
+    const overdueOpen = (goals ?? []).filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) < today).length;
+    const dueSoon = (goals ?? []).filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) >= today && new Date(goal.deadline) <= twoWeeksFromNow && goal.progress < 80).length;
+    const blockedTasks = (goals ?? []).filter((goal) => goal.status === 'at_risk' || goal.status === 'missed').length;
+    const planningPeople = [...teamMembers.values()].map((member) => {
+      const assignedGoals = (goals ?? []).filter((goal) => {
+        const assigneeIds = Array.isArray(goal.assignees) && goal.assignees.length > 0
+          ? goal.assignees
+          : goal.assigned_to ? [goal.assigned_to] : [];
+        return assigneeIds.includes(member.userId);
+      });
+      const remainingLoad = assignedGoals
+        .filter((goal) => goal.status !== 'complete')
+        .reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
+      const loggedHours = actualHoursByUser.get(member.userId) ?? 0;
+      const blockedOrLate = assignedGoals.filter((goal) => goal.status === 'at_risk' || goal.status === 'missed' || (goal.deadline && new Date(goal.deadline) < today)).length;
+      return {
+        name: member.displayName,
+        remainingLoad,
+        loggedHours,
+        blockedOrLate,
+        activeTasks: assignedGoals.filter((goal) => goal.status !== 'complete').length,
+      };
+    }).filter((member) => member.activeTasks > 0 || member.remainingLoad > 0 || member.loggedHours > 0);
+    const planningSummaryText = [
+      `Planning: ${plannedGoals.length} tasks have estimate or actual-hour coverage.`,
+      `Planned hours ${plannedHours.toFixed(1)}, actual hours ${actualHours.toFixed(1)}, variance ${(actualHours - plannedHours) >= 0 ? '+' : ''}${(actualHours - plannedHours).toFixed(1)}h, remaining estimated load ${remainingHours.toFixed(1)}h.`,
+      `Schedule pressure: ${overdueOpen} overdue open tasks, ${dueSoon} due within 14 days, ${blockedTasks} blocked or missed.`,
+      planningPeople.length
+        ? `Capacity signals: ${planningPeople.slice(0, 5).map((person) => `${person.name} ${person.remainingLoad.toFixed(1)}h remaining/${person.loggedHours.toFixed(1)}h logged/${person.blockedOrLate} late-risk`).join('; ')}.`
+        : 'Capacity signals: no member-level estimate or time-log data yet.',
+    ].join('\n');
 
     const membersText = [...teamMembers.values()].map((member) => {
       const aliases = uniqueNonEmptyStrings([
@@ -1347,6 +1455,21 @@ Analyze which goals these documents show progress on, who did the work, and when
       return `[${date}] FILE: ${document.name}\n${summary}${keywords}${text}${document.extractedText.length > alloc ? '\n[...truncated]' : ''}`;
     }).join('\n\n---\n\n') || '';
 
+    const noteAttachmentContext = ((noteAttachments ?? []) as Array<{
+      file_name: string | null;
+      content_preview: string | null;
+      document_summary: string | null;
+      extracted_char_count: number | null;
+      created_at: string;
+    }>).map((attachment) => {
+      const name = attachment.file_name ?? 'Note attachment';
+      const summary = attachment.document_summary ? `Summary: ${attachment.document_summary}\n` : '';
+      const preview = attachment.content_preview?.trim() ?? '';
+      if (!preview) return '';
+      return `[${new Date(attachment.created_at).toLocaleDateString()}] TASK NOTE ATTACHMENT: ${name}\n${summary}${preview}${(attachment.extracted_char_count ?? 0) > preview.length ? '\n[...truncated]' : ''}`;
+    }).filter(Boolean).join('\n\n---\n\n');
+    const combinedDocumentsContext = [documentsContext, noteAttachmentContext].filter(Boolean).join('\n\n---\n\n');
+
     // GitHub data — commits, README, code files, and recent commit diffs
     const internalHeaders = getInternalRequestHeaders(userId);
     let githubContext = '';
@@ -1365,7 +1488,8 @@ Analyze which goals these documents show progress on, who did the work, and when
         );
         if (r.ok) {
           const rd = await r.json() as { commits?: string[]; readme?: string };
-          if (rd.commits?.length) githubContext += `${githubContext ? '\n\n' : ''}GitHub repo: ${githubRepo}\nCommits:\n${rd.commits.slice(0, 20).join('\n')}`;
+          const filteredCommits = (rd.commits ?? []).filter((commit) => !isGeneratedThesisLatexCommitMessage(commit));
+          if (filteredCommits.length) githubContext += `${githubContext ? '\n\n' : ''}GitHub repo: ${githubRepo}\nCommits:\n${filteredCommits.slice(0, 20).join('\n')}`;
           if (rd.readme) githubContext += `\n\nREADME:\n${rd.readme.slice(0, 3000)}`;
         }
       } catch { /* best-effort */ }
@@ -1379,7 +1503,7 @@ Analyze which goals these documents show progress on, who did the work, and when
         if (commitsRes.ok) {
           const commits: { sha: string; commit: { message: string } }[] = await commitsRes.json();
           const diffParts: string[] = [];
-          for (const c of commits.slice(0, 6)) {
+          for (const c of commits.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit.commit.message)).slice(0, 6)) {
             try {
               const detailRes = await fetch(
                 `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${c.sha}`,
@@ -1499,7 +1623,8 @@ Analyze which goals these documents show progress on, who did the work, and when
             );
             if (r.ok) {
               const rd = await r.json() as { commits?: string[]; readme?: string };
-              if (rd.commits?.length) repoCtx += `GitLab${repoLabel} commits:\n${rd.commits.slice(0, 10).join('\n')}\n`;
+              const filteredCommits = (rd.commits ?? []).filter((commit) => !isGeneratedThesisLatexCommitMessage(commit));
+              if (filteredCommits.length) repoCtx += `GitLab${repoLabel} commits:\n${filteredCommits.slice(0, 10).join('\n')}\n`;
               if (rd.readme) repoCtx += `\nREADME${repoLabel}:\n${rd.readme.slice(0, 4000)}\n`;
             }
           } catch { /* best-effort */ }
@@ -1512,7 +1637,7 @@ Analyze which goals these documents show progress on, who did the work, and when
             );
             if (commitsRes.ok) {
               const commitsData = await commitsRes.json() as { commits?: { id: string; title: string }[] };
-              const commits = commitsData.commits ?? [];
+              const commits = (commitsData.commits ?? []).filter((commit) => !isGeneratedThesisLatexCommitMessage(commit.title));
               const diffParts: string[] = [];
               for (const c of commits.slice(0, 6)) {
                 try {
@@ -1617,7 +1742,30 @@ Analyze which goals these documents show progress on, who did the work, and when
       }
     }
 
-    return { project, goals: goals ?? [], members: [...teamMembers.values()], goalsText, tasksText, membersText, eventsText, documentsContext, githubContext, gitlabContext };
+    return {
+      project,
+      goals: goals ?? [],
+      members: [...teamMembers.values()],
+      timeLogs: timeLogs ?? [],
+      goalsText,
+      tasksText,
+      membersText,
+      eventsText,
+      documentsContext: combinedDocumentsContext,
+      githubContext,
+      gitlabContext,
+      planningSummaryText,
+      planningRaw: {
+        plannedHours,
+        actualHours,
+        remainingHours,
+        varianceHours: actualHours - plannedHours,
+        overdueOpen,
+        dueSoon,
+        blockedTasks,
+        people: planningPeople,
+      },
+    };
   }
 
   // Light context: DB-only (no GitHub/GitLab API calls) — used for haiku/simple chat messages
@@ -1650,6 +1798,8 @@ Analyze which goals these documents show progress on, who did the work, and when
     projectId: string;
     messages: { role: 'user' | 'assistant'; content: string }[];
     reportMode?: boolean;
+    workspaceMode?: 'project' | 'thesis';
+    workspaceContext?: string;
     attachments?: ChatAttachment[];
   }
 
@@ -1674,6 +1824,88 @@ Analyze which goals these documents show progress on, who did the work, and when
   const CHAT_STYLE = `\n\nRESPONSE STYLE: Do not use emojis. Use rich markdown formatting throughout your responses — the UI renders it fully. Specifically: use \`backticks\` for ALL file names, function names, variable names, repo names, and code identifiers; use **bold** for key terms, task names, and important values; use *italics* for emphasis; use headers (##, ###) to organize longer responses; use bullet lists and numbered lists wherever structure aids clarity; use > blockquotes for notes or caveats; use fenced code blocks (\`\`\`) for any code snippets. Never output raw special characters as literal formatting — always apply the appropriate markdown element so the rendered output is visually clear and scannable.`;
 
   const CHAT_STYLE_WITH_REPO_PATHS = `${CHAT_STYLE} When referencing a file from a linked repository, prefer the most specific repo-qualified path you can infer such as \`repo-name/src/components/File.tsx\` or \`org/repo/src/components/File.tsx\`, not just \`src/components/File.tsx\`.`;
+
+  const THESIS_WORKSPACE_CONTEXT_CAP = 20_000;
+  const ATTACHMENT_TEXT_TOTAL_CAP = 12_000;
+  const ATTACHMENT_TEXT_PER_ITEM_CAP = 6_000;
+
+  function truncatePromptText(text: string | null | undefined, maxChars: number): string {
+    const normalized = text?.trim() ?? '';
+    if (!normalized) return '';
+    if (normalized.length <= maxChars) return normalized;
+    return `${normalized.slice(0, maxChars)}\n[...truncated to fit prompt budget]`;
+  }
+
+  function buildThesisWorkspaceSection(workspaceContext: string | undefined): string {
+    const trimmed = truncatePromptText(workspaceContext, THESIS_WORKSPACE_CONTEXT_CAP);
+    return trimmed ? `\n\nTHESIS WORKSPACE CONTEXT:\n${trimmed}` : '';
+  }
+
+  function buildAttachmentContext(
+    attachments: ChatAttachment[] | undefined,
+  ): { attachmentPrefix: string; imageAttachments: { base64: string; mimeType: string }[] } {
+    let attachmentPrefix = '';
+    let remainingTextBudget = ATTACHMENT_TEXT_TOTAL_CAP;
+    const imageAttachments: { base64: string; mimeType: string }[] = [];
+
+    for (const att of attachments ?? []) {
+      if (att.type === 'image' && att.base64 && att.mimeType) {
+        imageAttachments.push({ base64: att.base64, mimeType: att.mimeType });
+        continue;
+      }
+      if ((att.type === 'text-file' || att.type === 'document') && att.textContent) {
+        if (remainingTextBudget <= 0) {
+          attachmentPrefix += `[Attached: ${att.name}]\n[...truncated to fit attachment prompt budget]\n---\n\n`;
+          continue;
+        }
+        const alloc = Math.min(ATTACHMENT_TEXT_PER_ITEM_CAP, remainingTextBudget);
+        const text = att.textContent.slice(0, alloc);
+        remainingTextBudget -= text.length;
+        attachmentPrefix += `[Attached: ${att.name}]\n${text}${att.textContent.length > alloc ? '\n[...truncated to fit attachment prompt budget]' : ''}\n---\n\n`;
+        continue;
+      }
+      if (att.type === 'document') {
+        attachmentPrefix += `[Attached document: ${att.name}${att.mimeType ? ` (${att.mimeType})` : ''}]\n`;
+        continue;
+      }
+      if (att.type === 'repo' && att.repo) {
+        attachmentPrefix += `[Repository context: ${att.repo} (${att.repoType ?? 'git'})]\n`;
+      }
+    }
+
+    return { attachmentPrefix, imageAttachments };
+  }
+
+  function shouldIncludeActionScaffolding(
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+    workspaceMode: ChatBody['workspaceMode'],
+  ): boolean {
+    const recentUserText = messages
+      .filter((message) => message.role === 'user')
+      .slice(-3)
+      .map((message) => message.content.toLowerCase())
+      .join('\n');
+
+    if (!recentUserText.trim()) return false;
+
+    if (workspaceMode === 'thesis') {
+      return (
+        (
+          /(edit|revise|rewrite|update|change|replace|insert|delete|remove|fix|patch|modify)\b/.test(recentUserText)
+          && /(paper|draft|latex|section|chapter|paragraph|task|goal)\b/.test(recentUserText)
+        )
+        || (
+          /(add|save|ingest|import|queue|parse|extract)\b/.test(recentUserText)
+          && /(source|citation|bibliograph|paper|pdf|url|link|article|journal|documentation)\b/.test(recentUserText)
+        )
+      );
+    }
+
+    return (
+      /(create|add|update|edit|change|modify|delete|remove|rename|assign|unassign|merge|split|move|reorder|extend|shorten|contract|dedup|de-dup|duplicate|redundan|deadline|schedule|task|goal)\b/.test(recentUserText)
+      || /(do it|go ahead|apply it|make the change|make those changes|implement that)\b/.test(recentUserText)
+    );
+  }
 
   function parseTaskProposals(text: string): { message: string; pendingActions: object[] | null } {
     const actionsMatch = text.match(/<actions>([\s\S]*?)<\/actions>/);
@@ -1708,7 +1940,7 @@ Analyze which goals these documents show progress on, who did the work, and when
   }
 
   server.post<{ Body: ChatBody }>('/ai/chat', async (request, reply) => {
-    const { projectId, messages, reportMode, attachments } = request.body;
+    const { projectId, messages, reportMode, attachments, workspaceMode, workspaceContext } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
 
     if (!projectId || !messages?.length) {
@@ -1746,12 +1978,94 @@ Analyze which goals these documents show progress on, who did the work, and when
       ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext}`
       : '';
 
+    const history = messages.slice(-20);
+    const lastMsg = history[history.length - 1]?.content ?? '';
+    const transcript = history.slice(0, -1).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
+    const thesisWorkspaceSection = buildThesisWorkspaceSection(workspaceContext);
+    const includeActionScaffolding = shouldIncludeActionScaffolding(history, workspaceMode);
+
     const systemPrompt = reportMode
       ? `You are Odyssey's report advisor. Help the user plan a project report. Discuss what data to include, suggest insights, and help structure the report. Be concise and specific. Reference actual tasks by their title, code files, and activity from the project data below. Never show task IDs to the user.${CHAT_STYLE_WITH_REPO_PATHS}
 
 PROJECT: ${ctx.project?.name ?? 'Unknown'}
 TASKS:\n${ctx.tasksText}
 ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
+      : workspaceMode === 'thesis'
+        ? `You are Thesis AI inside Odyssey. Your job is to help the user do thesis work grounded in both the thesis workspace and the linked project context. Prioritize literature synthesis, argument structure, methodology framing, evidence mapping, chapter planning, revision strategy, and defense preparation. Translate project execution details into thesis-relevant implications instead of defaulting to generic project management advice.${CHAT_STYLE_WITH_REPO_PATHS}
+
+IMPORTANT: The thesis workspace context and all linked project data are already provided below. Never claim you cannot access that context. Never ask the user to repeat the thesis brief, linked project summary, recent activity, uploaded document text, or repository source that is already present. When you reference linked project tasks, use their task titles and never reveal internal IDs.
+
+THESIS AI BEHAVIOR:
+- Be thesis-first. Center your answers on research quality, claim support, structure, evidence, writing, and defense readiness.
+- Use the current thesis tab and workspace notes to infer what kind of help is most useful right now.
+- When the linked project exposes tasks, deadlines, repo code, or recent activity, explain how they affect the thesis argument, research scope, supporting evidence, or delivery plan.
+- When the thesis workspace context includes Odyssey links for saved sources or documents, use standard markdown links to those internal \`/thesis?...\` paths when pointing the user to a specific resource.
+- Suggest concrete thesis next steps such as claim rewrites, evidence gaps, outline improvements, chapter priorities, advisor questions, or defense drills.
+- The thesis paper source is provided with explicit line numbers. When the user asks to revise the LaTeX draft, use those line numbers precisely.
+- The live browser preview has parser limitations and may not fully support some valid LaTeX constructs such as tables or bibliography helpers. Never delete or rewrite valid thesis structure solely to satisfy preview limitations. Preserve document meaning and prefer the smallest local edit that fixes a real LaTeX mistake.
+- Do not emit action proposals unless the user explicitly asks you to edit the thesis paper, add a source to the thesis library, or create, update, delete, or otherwise change linked project tasks.
+
+PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}${thesisWorkspaceSection}
+
+LINKED PROJECT TASKS (${ctx.goals.length} total):
+${ctx.tasksText}
+
+${includeActionScaffolding ? `TASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):
+${ctx.goalsText}
+
+` : ''}TEAM MEMBERS:
+${ctx.membersText}
+
+RECENT ACTIVITY:
+${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}
+
+${includeActionScaffolding ? `If and only if the user explicitly asks to edit the thesis paper, add a thesis source, or modify linked project tasks, you may put proposals at the very end using:
+<actions>[
+  {
+    "id":"short-stable-id",
+    "type":"update_paper_draft" | "add_thesis_source" | "create_goal" | "update_goal" | "delete_goal" | "review_redundancy",
+    "title":"Short card title",
+    "description":"Human-readable description of the proposed action",
+    "reasoning":"1-2 sentences explaining why this specific task action is warranted",
+    "args": { ... }
+  }
+]</actions>
+
+For thesis paper edits, use:
+{
+  "type":"update_paper_draft",
+  "args":{
+    "lineStart":12,
+    "lineEnd":18,
+    "replacement":"raw LaTeX replacement text only"
+  }
+}
+
+Paper-edit rules:
+- Use exact line numbers from \`THESIS PAPER SOURCE WITH LINE NUMBERS\`.
+- \`replacement\` must be raw LaTeX only, with no markdown fences.
+- To insert after line \`N\`, set \`lineStart\` to \`N + 1\` and \`lineEnd\` to \`N\`.
+- To delete lines, set \`replacement\` to an empty string.
+- Keep visible prose separate from the machine-readable action block.
+
+For thesis source adds, use exactly one of:
+{
+  "type":"add_thesis_source",
+  "args":{"url":"https://example.com/source"}
+}
+or
+{
+  "type":"add_thesis_source",
+  "args":{"attachmentName":"paper.pdf"}
+}
+
+Source-action rules:
+- Only use \`add_thesis_source\` when the user explicitly asks to add, ingest, import, save, or queue a source.
+- Use \`url\` when the user pasted a URL in the chat message.
+- Use \`attachmentName\` when the user attached a PDF and refers to that document.
+- Do not invent bibliography fields in the action args. Odyssey will parse the source after approval.
+
+For any action that targets an existing task, copy the exact task_id from TASK ACTION TARGETS. Never reveal internal IDs in visible prose.` : 'Do not emit action proposals unless the user is explicitly asking you to edit the thesis paper, add a thesis source, or modify linked project tasks.'}`
       : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks. You have access to the full text of all uploaded documents and the source code of all linked repositories — use them when answering questions.${CHAT_STYLE_WITH_REPO_PATHS}
 
 IMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.
@@ -1761,16 +2075,16 @@ PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescri
 TASKS (${ctx.goals.length} total):
 ${ctx.tasksText}
 
-TASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):
+${includeActionScaffolding ? `TASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):
 ${ctx.goalsText}
 
-TEAM MEMBERS:
+` : ''}TEAM MEMBERS:
 ${ctx.membersText}
 
 RECENT ACTIVITY:
 ${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}
 
-CAPABILITIES: When appropriate, you may propose MULTIPLE task actions in a single response. Put them at the very end of your message using this exact wrapper:
+${includeActionScaffolding ? `CAPABILITIES: When appropriate, you may propose MULTIPLE task actions in a single response. Put them at the very end of your message using this exact wrapper:
 <actions>[
   {
     "id":"short-stable-id",
@@ -1798,24 +2112,10 @@ Rules:
 - If exactly one team member matches the requested person, use that member's user_id in the action payload.
 - If there are multiple plausible matches or no confident match, ask a short follow-up question that lists the closest candidate team members and wait for clarification instead of claiming the person is unavailable.
 - Only say a person cannot be assigned if there is truly no plausible team-member match in the TEAM MEMBERS list.
-- User approval is always required before any automated task mutation executes.`;
-
-    const history = messages.slice(-20);
-    const lastMsg = history[history.length - 1]?.content ?? '';
-    const transcript = history.slice(0, -1).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
+- User approval is always required before any automated task mutation executes.` : 'Do not emit task action proposals unless the user is explicitly asking to change project tasks.'}`;
 
     // Build enriched user content from attachments
-    let attachmentPrefix = '';
-    const imageAttachments: { base64: string; mimeType: string }[] = [];
-    for (const att of attachments ?? []) {
-      if (att.type === 'image' && att.base64 && att.mimeType) {
-        imageAttachments.push({ base64: att.base64, mimeType: att.mimeType });
-      } else if ((att.type === 'text-file' || att.type === 'document') && att.textContent) {
-        attachmentPrefix += `[Attached: ${att.name}]\n${att.textContent.slice(0, 20_000)}\n---\n\n`;
-      } else if (att.type === 'repo' && att.repo) {
-        attachmentPrefix += `[Repository context: ${att.repo} (${att.repoType ?? 'git'})]\n`;
-      }
-    }
+    const { attachmentPrefix, imageAttachments } = buildAttachmentContext(attachments);
 
     const userContent = attachmentPrefix
       ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
@@ -1827,13 +2127,13 @@ Rules:
     const finalSystem = usingGenAiMil ? systemPrompt : capPromptSections(systemPrompt, githubSection, gitlabSection).sys;
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: finalSystem,
         user: userContent,
         maxTokens: 4096,
         images: imageAttachments.length ? imageAttachments : undefined,
         webSearch: !usingGenAiMil,
-      }, userApiKey);
+      }, userApiKey, { feature: 'chat', routePath: '/api/ai/chat', projectId, userId });
 
       const { message: displayMessage, pendingActions } = parseTaskProposals(result.text);
       return { message: displayMessage, pendingActions, provider: result.provider };
@@ -1848,7 +2148,7 @@ Rules:
 
   // ── Chat with real token streaming (SSE) ─────────────────────────────────
   server.post<{ Body: ChatBody }>('/ai/chat-stream', async (request, reply) => {
-    const { projectId, messages, reportMode, attachments } = request.body;
+    const { projectId, messages, reportMode, attachments, workspaceMode, workspaceContext } = request.body;
     const lastMessage = messages?.[messages.length - 1]?.content ?? '';
 
     if (!projectId || !messages?.length) {
@@ -1889,26 +2189,70 @@ Rules:
       const githubSection = ctx.githubContext ? `\n\nGITHUB (commits + full source code):\n${ctx.githubContext}` : '';
       const gitlabSection = ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + full source code):\n${ctx.gitlabContext}` : '';
 
-      const systemPrompt = reportMode
-        ? `You are Odyssey's report advisor. Help the user plan a project report. Be concise and specific. Always refer to tasks by their title, never by ID.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}\nTASKS:\n${ctx.tasksText}\nACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
-        : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\nTASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):\n${ctx.goalsText}\n\nTEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\nCAPABILITIES: When appropriate, you may propose multiple task actions at the end using:\n<actions>[{"id":"short-stable-id","type":"create_goal"|"update_goal"|"delete_goal"|"review_redundancy","title":"Short card title","description":"...","reasoning":"...","args":{...}}]</actions>\n\nASSIGNMENT RULES:\n- Resolve people using the TEAM MEMBERS aliases above.\n- Match by display name, username, full email, or email local-part.\n- If exactly one team member matches, use that member's user_id.\n- If multiple candidates could match, or no confident match exists, ask a short clarification question listing the closest candidates instead of claiming the person is unavailable.\n- Only say someone cannot be assigned if the TEAM MEMBERS list truly has no plausible match.\n- For any action that targets an existing task, copy the exact task_id from TASK ACTION TARGETS. Never emit placeholders such as \"exact-id\".\n\nUse one array entry per task mutation or redundancy finding. User approval is always required before automated changes execute.`;
-
       const history = messages.slice(-20);
       const lastMsg = history[history.length - 1]?.content ?? '';
       const transcript = history.slice(0, -1).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
+      const thesisWorkspaceSection = buildThesisWorkspaceSection(workspaceContext);
+      const includeActionScaffolding = shouldIncludeActionScaffolding(history, workspaceMode);
+
+      const systemPrompt = reportMode
+        ? `You are Odyssey's report advisor. Help the user plan a project report. Be concise and specific. Always refer to tasks by their title, never by ID.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}\nTASKS:\n${ctx.tasksText}\nACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}`
+        : workspaceMode === 'thesis'
+          ? `You are Thesis AI inside Odyssey. Your job is to help the user do thesis work grounded in both the thesis workspace and the linked project context. Prioritize literature synthesis, argument structure, methodology framing, evidence mapping, chapter planning, revision strategy, and defense preparation. Translate project execution details into thesis-relevant implications instead of defaulting to generic project management advice.${CHAT_STYLE_WITH_REPO_PATHS}
+
+IMPORTANT: The thesis workspace context and all linked project data are already provided below. Never claim you cannot access that context. Never ask the user to repeat the thesis brief, linked project summary, recent activity, uploaded document text, or repository source that is already present. When you reference linked project tasks, use their task titles and never reveal internal IDs.
+
+THESIS AI BEHAVIOR:
+- Be thesis-first. Center your answers on research quality, claim support, structure, evidence, writing, and defense readiness.
+- Use the current thesis tab and workspace notes to infer what kind of help is most useful right now.
+- When the linked project exposes tasks, deadlines, repo code, or recent activity, explain how they affect the thesis argument, research scope, supporting evidence, or delivery plan.
+- Suggest concrete thesis next steps such as claim rewrites, evidence gaps, outline improvements, chapter priorities, advisor questions, or defense drills.
+- The thesis paper source is provided with explicit line numbers. When the user asks to revise the LaTeX draft, use those line numbers precisely.
+- The live browser preview has parser limitations and may not fully support some valid LaTeX constructs such as tables or bibliography helpers. Never delete or rewrite valid thesis structure solely to satisfy preview limitations. Preserve document meaning and prefer the smallest local edit that fixes a real LaTeX mistake.
+- Do not emit action proposals unless the user explicitly asks you to edit the thesis paper, add a source to the thesis library, or create, update, delete, or otherwise change linked project tasks.
+
+PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}${thesisWorkspaceSection}
+
+LINKED PROJECT TASKS (${ctx.goals.length} total):
+${ctx.tasksText}
+
+${includeActionScaffolding ? `TASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):
+${ctx.goalsText}
+
+` : ''}TEAM MEMBERS:
+${ctx.membersText}
+
+RECENT ACTIVITY:
+${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}
+
+${includeActionScaffolding ? `If and only if the user explicitly asks to edit the thesis paper, add a thesis source, or modify linked project tasks, you may put proposals at the very end using:
+<actions>[{"id":"short-stable-id","type":"update_paper_draft"|"add_thesis_source"|"create_goal"|"update_goal"|"delete_goal"|"review_redundancy","title":"Short card title","description":"...","reasoning":"...","args":{...}}]</actions>
+
+For thesis paper edits, use:
+{"type":"update_paper_draft","args":{"lineStart":12,"lineEnd":18,"replacement":"raw LaTeX replacement text only"}}
+
+Paper-edit rules:
+- Use exact line numbers from \`THESIS PAPER SOURCE WITH LINE NUMBERS\`.
+- \`replacement\` must be raw LaTeX only, with no markdown fences.
+- To insert after line \`N\`, set \`lineStart\` to \`N + 1\` and \`lineEnd\` to \`N\`.
+- To delete lines, set \`replacement\` to an empty string.
+- Keep visible prose separate from the machine-readable action block.
+
+For thesis source adds, use one of:
+{"type":"add_thesis_source","args":{"url":"https://example.com/source"}}
+{"type":"add_thesis_source","args":{"attachmentName":"paper.pdf"}}
+
+Source-action rules:
+- Only use \`add_thesis_source\` when the user explicitly asks to add, ingest, import, save, or queue a source.
+- Use \`url\` when the user pasted a URL in the chat.
+- Use \`attachmentName\` when the user attached a PDF and refers to that document.
+- Do not invent bibliography fields in the action args. Odyssey will parse the source after approval.
+
+For any action that targets an existing task, copy the exact task_id from TASK ACTION TARGETS. Never reveal internal IDs in visible prose.` : 'Do not emit action proposals unless the user is explicitly asking you to edit the thesis paper, add a thesis source, or modify linked project tasks.'}`
+          : `You are an AI assistant embedded in Odyssey with full read and write access to this project. You can answer questions, analyze progress, and propose actions on tasks.\n\nIMPORTANT: All project data — tasks, members, activity, repository source code, and documents — is provided directly in this prompt. You already have complete access to everything. Never claim you cannot access URLs, webpages, or external resources. Never ask the user to provide data that is already below. Always refer to tasks by their title (e.g. "Fix IR Intrinsic Calibration"), never by their ID. Task IDs are internal and must never appear in your responses.${CHAT_STYLE_WITH_REPO_PATHS}\n\nPROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}\n\nTASKS (${ctx.goals.length} total):\n${ctx.tasksText}\n\n${includeActionScaffolding ? `TASK ACTION TARGETS (for action payloads only; never show these IDs in visible prose):\n${ctx.goalsText}\n\n` : ''}TEAM MEMBERS:\n${ctx.membersText}\n\nRECENT ACTIVITY:\n${ctx.eventsText.slice(0, 3000)}${docsSection}${githubSection}${gitlabSection}\n\n${includeActionScaffolding ? `CAPABILITIES: When appropriate, you may propose multiple task actions at the end using:\n<actions>[{"id":"short-stable-id","type":"create_goal"|"update_goal"|"delete_goal"|"review_redundancy","title":"Short card title","description":"...","reasoning":"...","args":{...}}]</actions>\n\nASSIGNMENT RULES:\n- Resolve people using the TEAM MEMBERS aliases above.\n- Match by display name, username, full email, or email local-part.\n- If exactly one team member matches, use that member's user_id.\n- If multiple candidates could match, or no confident match exists, ask a short clarification question listing the closest candidates instead of claiming the person is unavailable.\n- Only say someone cannot be assigned if the TEAM MEMBERS list truly has no plausible match.\n- For any action that targets an existing task, copy the exact task_id from TASK ACTION TARGETS. Never emit placeholders such as "exact-id".\n\nUse one array entry per task mutation or redundancy finding. User approval is always required before automated changes execute.` : 'Do not emit task action proposals unless the user is explicitly asking to change project tasks.'}`;
 
       // Build attachment prefix (same as non-stream endpoint)
-      let attachmentPrefix = '';
-      const imageAttachments: { base64: string; mimeType: string }[] = [];
-      for (const att of attachments ?? []) {
-        if (att.type === 'image' && att.base64 && att.mimeType) {
-          imageAttachments.push({ base64: att.base64, mimeType: att.mimeType });
-        } else if ((att.type === 'text-file' || att.type === 'document') && att.textContent) {
-          attachmentPrefix += `[Attached: ${att.name}]\n${att.textContent.slice(0, 20_000)}\n---\n\n`;
-        } else if (att.type === 'repo' && att.repo) {
-          attachmentPrefix += `[Repository context: ${att.repo} (${att.repoType ?? 'git'})]\n`;
-        }
-      }
+      const { attachmentPrefix, imageAttachments } = buildAttachmentContext(attachments);
       const userContent = attachmentPrefix
         ? `${attachmentPrefix}${transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg}`
         : transcript ? `${transcript}\n\nUser: ${lastMsg}` : lastMsg;
@@ -1917,7 +2261,8 @@ Rules:
       const finalSystemStream = usingGenAiMilStream ? systemPrompt : capPromptSections(systemPrompt, githubSection, gitlabSection).sys;
 
       let fullText = '';
-      const result = await streamChat(
+      const result = await streamChatWithAudit(
+        request.headers.authorization,
         provider,
         { system: finalSystemStream, user: userContent, maxTokens: 4096, images: imageAttachments.length ? imageAttachments : undefined, webSearch: !usingGenAiMilStream },
         (chunk) => {
@@ -1925,6 +2270,7 @@ Rules:
           send({ type: 'token', text: chunk });
         },
         userApiKey,
+        { feature: 'chat-stream', routePath: '/api/ai/chat-stream', projectId, userId },
       );
 
       const { message: displayMessage, pendingActions } = parseTaskProposals(result.text || fullText);
@@ -1951,13 +2297,16 @@ Rules:
 
   type StoredTemplateAnalysis = {
     version?: number;
+    targetTemplateType?: 'docx' | 'pptx' | 'pdf';
     sourceFormat?: 'docx' | 'pptx' | 'pdf';
+    sourceMimeType?: string;
     summary?: string;
     sectionHeadings?: string[];
     layoutHints?: string[];
     styleHints?: string[];
     palette?: string[];
     fonts?: string[];
+    analysisConfidence?: 'low' | 'medium' | 'high';
     sampleExcerpt?: string;
     renderHints?: Record<string, unknown>;
   };
@@ -1971,6 +2320,9 @@ Rules:
 
     const analysis = template.analysis;
     const lines: string[] = [];
+    if (analysis?.targetTemplateType) lines.push(`Target report slot: ${analysis.targetTemplateType.toUpperCase()}`);
+    if (analysis?.sourceFormat) lines.push(`Uploaded source format: ${analysis.sourceFormat.toUpperCase()}`);
+    if (analysis?.analysisConfidence) lines.push(`Analysis confidence: ${analysis.analysisConfidence}`);
     if (analysis?.summary) lines.push(`Summary: ${analysis.summary}`);
     if (analysis?.sectionHeadings?.length) {
       lines.push(`Section headings to mirror when the data supports them: ${analysis.sectionHeadings.slice(0, 10).join(' | ')}`);
@@ -1988,7 +2340,7 @@ Rules:
       lines.push(`Font hints: ${analysis.fonts.slice(0, 4).join(', ')}`);
     }
     if (analysis?.renderHints && Object.keys(analysis.renderHints).length > 0) {
-      lines.push(`Render hints: ${JSON.stringify(analysis.renderHints)}`);
+      lines.push(`Render hints for the generated deliverable: ${JSON.stringify(analysis.renderHints)}`);
     }
     if (analysis?.sampleExcerpt) {
       lines.push(`Representative excerpt: ${analysis.sampleExcerpt.slice(0, 1000)}`);
@@ -1998,7 +2350,293 @@ Rules:
 
     if (!lines.length) return '';
 
-    return `\n\nREPORT TEMPLATE (match the uploaded template as closely as the data and output format allow. Preserve its section cadence, document density, heading behavior, and visual tone rather than defaulting to a generic report layout):\nTemplate file: ${template.filename ?? 'uploaded template'}\n${lines.join('\n')}`;
+    return `\n\nREPORT TEMPLATE (match the uploaded template as closely as the data and output format allow. Preserve its section cadence, heading behavior, colors, typography cues, density, and visual tone rather than defaulting to a generic report layout. If the uploaded source format differs from the requested output format, adapt the same design language and structure into the target format instead of copying impossible layout mechanics literally):\nTemplate file: ${template.filename ?? 'uploaded template'}\n${lines.join('\n')}`;
+  }
+
+  function normalizeReportText(value: unknown, maxLength: number, fallback = ''): string {
+    const normalized = `${typeof value === 'string' ? value : ''}`.replace(/\s+/g, ' ').trim();
+    if (!normalized) return fallback;
+    return normalized.length > maxLength ? normalized.slice(0, maxLength).trim() : normalized;
+  }
+
+  function normalizeReportStringArray(value: unknown, maxItems: number, maxLength: number): string[] {
+    if (!Array.isArray(value)) return [];
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const item of value) {
+      const normalized = normalizeReportText(item, maxLength);
+      if (!normalized) continue;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(normalized);
+      if (deduped.length >= maxItems) break;
+    }
+    return deduped;
+  }
+
+  function normalizeSectionTitles(value: unknown): string[] {
+    return normalizeReportStringArray(value, 8, 70);
+  }
+
+  function normalizeReportTable(value: unknown): { headers: string[]; rows: string[][] } | null {
+    if (!value || typeof value !== 'object') return null;
+    const maybeTable = value as { headers?: unknown; rows?: unknown };
+    const headers = normalizeReportStringArray(maybeTable.headers, 5, 24);
+    if (!headers.length || !Array.isArray(maybeTable.rows)) return null;
+
+    const rows: string[][] = [];
+    for (const row of maybeTable.rows) {
+      if (!Array.isArray(row)) continue;
+      const normalizedRow = row
+        .slice(0, headers.length)
+        .map((cell) => normalizeReportText(cell, 40));
+      if (normalizedRow.some(Boolean)) rows.push(normalizedRow);
+      if (rows.length >= 12) break;
+    }
+    return rows.length > 0 ? { headers, rows } : null;
+  }
+
+  function normalizeReportFigure(value: unknown): {
+    type: 'bar' | 'pie' | 'progress' | 'timeline';
+    title: string;
+    data: Array<{ label: string; value: number }>;
+  } | null {
+    if (!value || typeof value !== 'object') return null;
+    const maybeFigure = value as { type?: unknown; title?: unknown; data?: unknown };
+    const type = maybeFigure.type === 'bar' || maybeFigure.type === 'pie' || maybeFigure.type === 'progress' || maybeFigure.type === 'timeline'
+      ? maybeFigure.type
+      : null;
+    if (!type || !Array.isArray(maybeFigure.data)) return null;
+    const title = normalizeReportText(maybeFigure.title, 80, 'Figure');
+    const data = maybeFigure.data
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const label = normalizeReportText((item as { label?: unknown }).label, 30);
+        const value = Number((item as { value?: unknown }).value);
+        if (!label || !Number.isFinite(value)) return null;
+        return { label, value: Math.max(0, Math.round(value * 100) / 100) };
+      })
+      .filter((item): item is { label: string; value: number } => Boolean(item))
+      .slice(0, 8);
+    return data.length > 0 ? { type, title, data } : null;
+  }
+
+  function normalizeReportSubSections(value: unknown): Array<{ heading: string; text: string }> {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const heading = normalizeReportText((item as { heading?: unknown }).heading, 60);
+        const text = normalizeReportText((item as { text?: unknown }).text, 800);
+        if (!heading || !text) return null;
+        return { heading, text };
+      })
+      .filter((item): item is { heading: string; text: string } => Boolean(item))
+      .slice(0, 3);
+  }
+
+  function normalizeReportSection(value: unknown, fallbackTitle: string) {
+    if (!value || typeof value !== 'object') {
+      return { title: fallbackTitle, body: 'Data unavailable for this section.', bullets: [] as string[] };
+    }
+
+    const section = value as {
+      title?: unknown;
+      body?: unknown;
+      bullets?: unknown;
+      table?: unknown;
+      figure?: unknown;
+      callout?: unknown;
+      subSections?: unknown;
+    };
+
+    return {
+      title: normalizeReportText(section.title, 70, fallbackTitle),
+      body: normalizeReportText(section.body, 1600, 'Data unavailable for this section.'),
+      bullets: normalizeReportStringArray(section.bullets, 8, 150),
+      table: normalizeReportTable(section.table),
+      figure: normalizeReportFigure(section.figure),
+      callout: normalizeReportText(section.callout, 120) || undefined,
+      subSections: normalizeReportSubSections(section.subSections),
+    };
+  }
+
+  function parseIsoDate(value: string | null | undefined): Date | null {
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const date = new Date(`${value}T00:00:00Z`);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function formatMonthYear(date: Date): string {
+    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  }
+
+  function formatLongDate(date: Date): string {
+    return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  }
+
+  function getQuarter(date: Date): number {
+    return Math.floor(date.getUTCMonth() / 3) + 1;
+  }
+
+  function isQuarterRange(start: Date, end: Date): boolean {
+    return (
+      start.getUTCFullYear() === end.getUTCFullYear()
+      && getQuarter(start) === getQuarter(end)
+      && start.getUTCDate() === 1
+      && start.getUTCMonth() % 3 === 0
+      && end.getUTCMonth() === start.getUTCMonth() + 2
+      && end.getUTCDate() === new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0)).getUTCDate()
+    );
+  }
+
+  function buildReportCoverageLabel(dateFrom: string | undefined, dateTo: string | undefined, todayIso: string): string {
+    const today = parseIsoDate(todayIso) ?? new Date();
+    const start = parseIsoDate(dateFrom);
+    const end = parseIsoDate(dateTo) ?? today;
+
+    if (start && end) {
+      if (start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()) {
+        return formatMonthYear(start);
+      }
+      if (isQuarterRange(start, end)) {
+        return `Q${getQuarter(start)} ${start.getUTCFullYear()}`;
+      }
+      return `${formatLongDate(start)} to ${formatLongDate(end)}`;
+    }
+
+    if (start) return `${formatLongDate(start)} to ${formatLongDate(today)}`;
+    if (dateTo && parseIsoDate(dateTo)) return `Through ${formatLongDate(end)}`;
+    return formatMonthYear(today);
+  }
+
+  function buildPromptSection(label: string, text: string | null | undefined, maxChars: number): string {
+    const clipped = truncatePromptText(text, maxChars);
+    return clipped ? `${label}:\n${clipped}` : '';
+  }
+
+  function buildReportSectionEvidence(input: {
+    sectionTitle: string;
+    projectName: string;
+    coverageLabel: string;
+    userPrompt: string;
+    pass1Summary: string;
+    goalsText: string;
+    membersText: string;
+    planningSummaryText: string;
+    eventsText: string;
+    documentsText: string;
+    githubText: string;
+    gitlabText: string;
+  }): string {
+    const title = input.sectionTitle.toLowerCase();
+    const blocks = [
+      `PROJECT: ${input.projectName}`,
+      `REPORT COVERAGE PERIOD: ${input.coverageLabel}`,
+      `USER REQUEST: ${input.userPrompt}`,
+      `SECTION TITLE: ${input.sectionTitle}`,
+      `REPORT METADATA:\n${input.pass1Summary}`,
+    ];
+
+    if (/(executive|overview|summary|health)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 2200),
+        buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1600),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
+        buildPromptSection('SUPPORTING DOCUMENTS', input.documentsText, 1200),
+      );
+    } else if (/(task|progress|status|timeline|milestone|next step|upcoming)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 4200),
+        buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1800),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
+      );
+    } else if (/(risk|blocker|issue|constraint|dependency)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 3800),
+        buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 2000),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
+        buildPromptSection('SUPPORTING DOCUMENTS', input.documentsText, 1200),
+      );
+    } else if (/(accomplishment|achievement|completed|delivery)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 2600),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 2200),
+        buildPromptSection('GITHUB', input.githubText, 2200),
+        buildPromptSection('GITLAB', input.gitlabText, 2200),
+      );
+    } else if (/(team|member|contributor|staffing|ownership)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TEAM', input.membersText, 1600),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 2200),
+        buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1200),
+      );
+    } else if (/(code|repo|repository|engineering|implementation|commit)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 1800),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 1200),
+        buildPromptSection('GITHUB', input.githubText, 4200),
+        buildPromptSection('GITLAB', input.gitlabText, 4200),
+      );
+    } else if (/(category|loe|line of effort|workstream)/.test(title)) {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 4200),
+        buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1500),
+      );
+    } else {
+      blocks.push(
+        buildPromptSection('TASKS', input.goalsText, 2600),
+        buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
+        buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1200),
+        buildPromptSection('SUPPORTING DOCUMENTS', input.documentsText, 1200),
+        buildPromptSection('GITHUB', input.githubText, 1600),
+        buildPromptSection('GITLAB', input.gitlabText, 1600),
+      );
+    }
+
+    return blocks.filter(Boolean).join('\n\n');
+  }
+
+  function buildProjectInsightsEvidence(ctx: {
+    project?: { name?: string | null; description?: string | null } | null;
+    goals: Array<unknown>;
+    tasksText: string;
+    planningSummaryText: string;
+    eventsText: string;
+    documentsContext: string;
+    githubContext: string;
+    gitlabContext: string;
+  }): string {
+    return [
+      `Project: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}`,
+      buildPromptSection(`TASKS (${ctx.goals.length} total)`, ctx.tasksText, 2600),
+      buildPromptSection('PLANNING', ctx.planningSummaryText, 1800),
+      buildPromptSection('RECENT ACTIVITY', ctx.eventsText, 1500),
+      buildPromptSection('DOCUMENT SIGNALS', ctx.documentsContext, 1200),
+      buildPromptSection('GITHUB (commits + diffs + source)', ctx.githubContext, 8000),
+      buildPromptSection('GITLAB (commits + diffs + source)', ctx.gitlabContext, 8000),
+    ].filter(Boolean).join('\n\n');
+  }
+
+  function buildIntelligentUpdateEvidence(ctx: {
+    project?: { name?: string | null } | null;
+    goalsText: string;
+    membersText: string;
+    eventsText: string;
+    documentsContext: string;
+    githubContext: string;
+    gitlabContext: string;
+  }, goalCount: number): string {
+    return [
+      `PROJECT: ${ctx.project?.name ?? 'Unknown'}`,
+      buildPromptSection(`TASKS (${goalCount} total)`, ctx.goalsText || 'None — project has no tasks yet.', 7000),
+      buildPromptSection('TEAM', ctx.membersText, 1200),
+      buildPromptSection('RECENT ACTIVITY', ctx.eventsText, 1800),
+      buildPromptSection('DOCUMENT SIGNALS', ctx.documentsContext, 1800),
+      buildPromptSection('GITHUB', ctx.githubContext, 3000),
+      buildPromptSection('GITLAB REPOS (commits + source code)', ctx.gitlabContext, 8000),
+    ].filter(Boolean).join('\n\n');
   }
 
   server.post<{ Body: GenerateReportBody }>('/ai/generate-report', async (request, reply) => {
@@ -2052,28 +2690,59 @@ Rules:
     const dateFilter = dateFrom || dateTo
       ? `\nDate range filter: ${dateFrom ?? 'beginning'} → ${dateTo ?? 'today'}`
       : '';
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const coverageLabel = buildReportCoverageLabel(dateFrom, dateTo, todayIso);
+
+    const formatLabel = format === 'docx' ? 'Word document report' : format === 'pptx' ? 'PowerPoint presentation' : 'PDF report';
+    const formatSpecificGuidance = format === 'docx'
+      ? 'Target output is a formal DOCX report. Optimize for a clean title page, professional heading hierarchy, compact tables, executive-report tone, and sections that read well in Word.'
+      : format === 'pptx'
+        ? 'Target output is a slide deck. Favor concise section framing, visual summaries, and presentation-friendly structure.'
+        : 'Target output is a PDF report. Balance narrative readability with concise section structure and export-friendly tables.';
 
     // Compute raw stats for chart data (returned alongside AI text)
     const statusCounts = { not_started: 0, in_progress: 0, in_review: 0, complete: 0 } as Record<string, number>;
     const categoryProgress: Record<string, number[]> = {};
+    const loeProgress: Record<string, number[]> = {};
+    let overdueCount = 0;
+    let dueSoonCount = 0;
     for (const g of ctx.goals) {
       statusCounts[g.status] = (statusCounts[g.status] ?? 0) + 1;
       const cat = g.category ?? 'Uncategorized';
       if (!categoryProgress[cat]) categoryProgress[cat] = [];
       categoryProgress[cat].push(g.progress);
+      const loe = (g as { loe?: string | null }).loe ?? 'Unassigned LOE';
+      if (!loeProgress[loe]) loeProgress[loe] = [];
+      loeProgress[loe].push(g.progress);
+      if (g.status !== 'complete' && g.deadline) {
+        if (g.deadline < todayIso) overdueCount += 1;
+        else {
+          const deadline = new Date(`${g.deadline}T00:00:00Z`);
+          const msUntilDeadline = deadline.getTime() - Date.now();
+          if (msUntilDeadline >= 0 && msUntilDeadline <= 14 * 24 * 60 * 60 * 1000) dueSoonCount += 1;
+        }
+      }
     }
     const categoryAvg: Record<string, number> = {};
     for (const [cat, vals] of Object.entries(categoryProgress)) {
       categoryAvg[cat] = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
     }
+    const loeAvg: Record<string, number> = {};
+    for (const [loe, vals] of Object.entries(loeProgress)) {
+      loeAvg[loe] = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    }
 
     // Trim context to stay within model input limits
-    const trimmedEvents  = ctx.eventsText.slice(0, 4000);
-    const trimmedGithub  = ctx.githubContext.slice(0, 2000);
-    const trimmedGitlab  = ctx.gitlabContext.slice(0, 30_000);
+    const trimmedEvents = ctx.eventsText.slice(0, 6000);
+    const trimmedDocuments = ctx.documentsContext.slice(0, 10_000);
+    const trimmedGithub = ctx.githubContext.slice(0, 4000);
+    const trimmedGitlab = ctx.gitlabContext.slice(0, 15_000);
 
     const contextBlock = `PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}
 ${dateFilter}
+TARGET OUTPUT FORMAT: ${formatLabel}
+FORMAT GUIDANCE: ${formatSpecificGuidance}
+REPORT COVERAGE PERIOD: ${coverageLabel}
 USER REQUEST: ${prompt}
 
 TASKS (${ctx.goals.length} total):
@@ -2082,8 +2751,14 @@ ${ctx.goalsText}
 TEAM (${ctx.members.length} members):
 ${ctx.membersText}
 
-RECENT ACTIVITY & DOCUMENTS:
-${trimmedEvents}${trimmedGithub ? `\n\nGITHUB:\n${trimmedGithub}` : ''}${trimmedGitlab ? `\n\nGITLAB:\n${trimmedGitlab}` : ''}`;
+RECENT ACTIVITY:
+${trimmedEvents}
+
+PLANNING SUMMARY:
+${ctx.planningSummaryText}
+
+UPLOADED DOCUMENTS:
+${trimmedDocuments || 'No uploaded document text available.'}${trimmedGithub ? `\n\nGITHUB:\n${trimmedGithub}` : ''}${trimmedGitlab ? `\n\nGITLAB:\n${trimmedGitlab}` : ''}`;
 
     // ── Pass 1: generate metadata + section outlines — haiku is sufficient here ─
     // Pass 1 requires structured JSON with many fields — use the main provider for reliability
@@ -2092,17 +2767,19 @@ ${trimmedEvents}${trimmedGithub ? `\n\nGITHUB:\n${trimmedGithub}` : ''}${trimmed
     let pass1: Record<string, unknown>;
     try {
       const now = new Date();
-      const monthYear = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-      const r1 = await chat(pass1Provider, {
-        system: `You are a senior project analyst and report planner. Return ONLY valid JSON — no markdown, no explanation.
-Today's date is ${now.toISOString().slice(0, 10)} (${monthYear}).
+      const generatedAtIso = now.toISOString();
+      const r1 = await chatWithAudit(request.headers.authorization, pass1Provider, {
+        system: `You are a senior project analyst and technical report planner producing the blueprint for a ${formatLabel}. Return ONLY valid JSON — no markdown, no explanation.
+Today's date is ${generatedAtIso.slice(0, 10)}.
+The report coverage period is "${coverageLabel}". If the title, subtitle, or reporting period references a time window, it must reflect the coverage period rather than defaulting to today's month.
+${formatSpecificGuidance}
 
 Return an object with:
 - "title": string (report title, max 70 chars — specific to this project and period)
-- "subtitle": string — must use the CURRENT month and year: "${monthYear}" (e.g. "Project Status Report — ${monthYear}")
+- "subtitle": string — concise and stakeholder-facing, aligned to the report coverage period "${coverageLabel}" (e.g. "Project Status Report — ${coverageLabel}")
 - "projectName": string
-- "generatedAt": ISO date string (today: "${now.toISOString()}")
-- "reportingPeriod": string (e.g. "Q2 2026" or "April 2026" based on today's date)
+- "generatedAt": ISO date string (today: "${generatedAtIso}")
+- "reportingPeriod": string (e.g. "${coverageLabel}")
 - "overallHealthScore": number 0-100 (weighted: completion rate 40%, on-time delivery 30%, recent activity 30%)
 - "overallHealthLabel": string — one of "On Track", "At Risk", "Behind Schedule", "Ahead of Schedule"
 - "executiveSummary": string (4-5 sentences covering: overall health score rationale, most significant accomplishments this period, top 2 risks or blockers, forward-looking outlook with specific milestones on the horizon)
@@ -2114,6 +2791,11 @@ Return an object with:
   - "tasksOverdue": number (deadline passed, not complete)
   - "tasksDueSoon": number (deadline within 14 days, not complete)
   - "categoriesCount": number
+  - "plannedHours": number
+  - "actualHours": number
+  - "varianceHours": number
+  - "remainingHours": number
+  - "blockedTasks": number
 - "accomplishments": array of 4-6 specific strings — concrete things completed or meaningfully advanced this period (cite task names, percentages, dates where possible)
 - "blockers": array of 2-4 specific strings — tasks or areas that are stalled, overdue, or at risk, with specifics
 - "upcomingMilestones": array of 3-5 strings — near-term deadlines and tasks to watch, with dates
@@ -2125,11 +2807,17 @@ Return an object with:
   * An accomplishments section
   * A risks & blockers section
   * An upcoming work / next steps section
-  * Optionally: team contributions, code/commit activity (if git data exists), timeline analysis`,
-        user: contextBlock + templateSection + '\n\nAnalyze the project data thoroughly and plan the full report structure as JSON.',
-        maxTokens: 2500,
+  * Optionally: team contributions, code/commit activity (if git data exists), timeline analysis
+
+QUALITY BAR:
+- Optimize for a clean, credible stakeholder-facing report rather than a generic AI summary.
+- Prefer section titles that read naturally in a professional document.
+- Make the executive summary specific and decision-useful.
+- Use real evidence from tasks, activity, repositories, and documents whenever available.`,
+        user: contextBlock + templateSection + '\n\nAnalyze the project data thoroughly and plan the full report structure as JSON. Follow the user request unless it conflicts with the JSON contract or the available data.',
+        maxTokens: 3000,
         jsonMode: true,
-      }, userApiKey);
+      }, userApiKey, { feature: 'generate-report-plan', routePath: '/api/ai/generate-report', projectId, userId });
       const t1 = extractJson(r1.text);
       pass1 = JSON.parse(t1);
     } catch (err) {
@@ -2137,18 +2825,20 @@ Return an object with:
       return reply.status(500).send({ error: `Failed to plan report structure: ${err instanceof Error ? err.message : String(err)}` });
     }
 
-    const sectionTitles: string[] = Array.isArray(pass1.sectionTitles)
-      ? (pass1.sectionTitles as string[])
-      : ['Project Status Overview', 'Goal Progress', 'Team Contributions', 'Code & Commits', 'Risks & Recommendations'];
+    const normalizedSectionTitles = normalizeSectionTitles(pass1.sectionTitles);
+    const sectionTitles = normalizedSectionTitles.length > 0
+      ? normalizedSectionTitles
+      : ['Project Status Overview', 'Task Status and Progress', 'Accomplishments', 'Risks and Blockers', 'Upcoming Work and Next Steps'];
 
     // ── Pass 2: all sections in parallel — major speedup ───────────────────────
-    const SECTION_SYSTEM = `You write one section of a comprehensive project report as JSON. Return ONLY valid JSON — no markdown, no explanation.
+    const SECTION_SYSTEM = `You write one section of a comprehensive ${formatLabel} as JSON. Return ONLY valid JSON — no markdown, no explanation.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
+${formatSpecificGuidance}
 
 Return an object with:
 - "title": string (the section title)
-- "body": string (3-5 sentences of deep, specific analysis — cite real task names, categories, percentages, team members, dates, and commit activity from the data. Do not write generic filler. Every sentence should contain a specific data point.)
-- "bullets": array of 5-8 specific, data-driven bullet strings. Each bullet must reference real data (task names, numbers, percentages, dates). Mix positive accomplishments with gaps/risks where relevant.
+- "body": string (4-6 sentences of deep, specific analysis — cite real task names, categories, percentages, team members, dates, and commit activity from the data. Do not write generic filler. Most sentences should contain a specific data point.)
+- "bullets": array of 4-7 specific, data-driven bullet strings. Each bullet must reference real data (task names, numbers, percentages, dates). Mix positive accomplishments with gaps/risks where relevant.
 - "table": optional — include when this section has structured data that benefits from tabular comparison. Object with "headers": string[] and "rows": string[][] (max 12 rows, max 5 columns). Rules: cell text max 35 chars, headers max 18 chars, abbreviate if needed.
 - "figure": optional — include when real numeric data supports a visualization. Object with "type": "bar"|"pie"|"progress"|"timeline", "title": string, and "data": array of {label: string, value: number} objects. Only use actual numbers from the project data — never fabricate.
 - "callout": optional — a single highlighted insight string (the most important takeaway for this section, max 100 chars). Use for executive/overview and risk sections.
@@ -2156,9 +2846,10 @@ Return an object with:
 
 QUALITY REQUIREMENTS:
 - Every bullet must be specific and data-driven — under 130 characters, no vague filler like "the team is making progress".
-- Body must be 3-5 sentences, not one long run-on. Start with the most important insight.
+- Body must be 4-6 sentences, not one long run-on. Start with the most important insight.
 - Tables: consistent columns, no overflow, abbreviate long values.
 - Figures: only real data, meaningful labels, no dummy values.
+- For DOCX-style readability, favor clear subsection hierarchy, compact tables, and high-signal prose.
 - For risk/blocker sections: be direct and specific about what is at risk and why.
 - For accomplishments sections: cite specific completed tasks, progress jumps, and dates.`;
 
@@ -2176,16 +2867,30 @@ QUALITY REQUIREMENTS:
     const sectionResults = await Promise.all(
       sectionTitles.map(async (sectionTitle) => {
         try {
-          const r2 = await chat(provider, {
+          const sectionEvidence = buildReportSectionEvidence({
+            sectionTitle,
+            projectName: ctx.project?.name ?? 'Unknown',
+            coverageLabel,
+            userPrompt: prompt,
+            pass1Summary,
+            goalsText: ctx.goalsText,
+            membersText: ctx.membersText,
+            planningSummaryText: ctx.planningSummaryText,
+            eventsText: trimmedEvents,
+            documentsText: trimmedDocuments,
+            githubText: trimmedGithub,
+            gitlabText: trimmedGitlab,
+          });
+          const r2 = await chatWithAudit(request.headers.authorization, provider, {
             system: SECTION_SYSTEM,
-            user: `${contextBlock}${templateSection}\n\nREPORT METADATA (use this context):\n${pass1Summary}\n\nWrite the section titled: "${sectionTitle}"`,
-            maxTokens: 1800,
+            user: `${sectionEvidence}${templateSection}\n\nWrite the section titled: "${sectionTitle}". Make it cleanly renderable inside the target output format.`,
+            maxTokens: 2200,
             jsonMode: true,
-          }, userApiKey);
+          }, userApiKey, { feature: 'generate-report-section', routePath: '/api/ai/generate-report', projectId, userId });
           const sec = JSON.parse(extractJson(r2.text));
-          if (sec && typeof sec.title === 'string') return sec;
+          return normalizeReportSection(sec, sectionTitle);
         } catch { /* fall through to placeholder */ }
-        return { title: sectionTitle, body: 'Data unavailable for this section.', bullets: [] };
+        return normalizeReportSection(null, sectionTitle);
       })
     );
     const sections = sectionResults;
@@ -2194,7 +2899,14 @@ QUALITY REQUIREMENTS:
       ...pass1,
       sections,
       generatedAt: (pass1.generatedAt as string) || new Date().toISOString(),
-      subtitle: (pass1.subtitle as string) || `Project Status Report — ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`,
+      subtitle: (pass1.subtitle as string) || `Project Status Report — ${coverageLabel}`,
+      reportingPeriod: (pass1.reportingPeriod as string) || coverageLabel,
+      dateRange: dateFrom || dateTo
+        ? {
+            from: dateFrom ?? 'beginning',
+            to: dateTo ?? todayIso,
+          }
+        : undefined,
       provider,
       template: templateMeta ? {
         id: templateEvent?.id ?? null,
@@ -2214,8 +2926,11 @@ QUALITY REQUIREMENTS:
       })),
       statusCounts,
       categoryAvg,
+      loeAvg,
       memberCount: ctx.members.length,
       totalGoals:  ctx.goals.length,
+      deadlineStats: { overdue: overdueCount, dueSoon: dueSoonCount },
+      planning: ctx.planningRaw,
     };
 
     return parsed;
@@ -2277,7 +2992,11 @@ QUALITY REQUIREMENTS:
           if (!r.ok) break;
           const commits: { commit: { message: string } }[] = await r.json();
           if (!commits.length) break;
-          for (const c of commits) msgs.push(c.commit.message.split('\n')[0].trim());
+          for (const c of commits) {
+            const message = c.commit.message.split('\n')[0].trim();
+            if (isGeneratedThesisLatexCommitMessage(message)) continue;
+            msgs.push(message);
+          }
           if (commits.length < 100) break;
         }
       } catch { /* best-effort */ }
@@ -2296,7 +3015,11 @@ QUALITY REQUIREMENTS:
           if (!r.ok) break;
           const commits: { title: string }[] = await r.json();
           if (!commits.length) break;
-          for (const c of commits) msgs.push(c.title.trim());
+          for (const c of commits) {
+            const message = c.title.trim();
+            if (isGeneratedThesisLatexCommitMessage(message)) continue;
+            msgs.push(message);
+          }
           if (commits.length < 100) break;
         }
       } catch { /* best-effort */ }
@@ -2319,7 +3042,7 @@ QUALITY REQUIREMENTS:
     }).join('\n\n') || 'No commits in this period';
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are Odyssey's standup generator. Based on the project's commit activity, tasks, and logged events from the past 14 days, produce a concise team standup summary.
 
 Respond ONLY with valid JSON — no markdown, no explanation outside the JSON.
@@ -2347,11 +3070,12 @@ ${eventsText}
 Generate the standup summary.`,
         maxTokens: 800,
         jsonMode: true,
-      }, userApiKey);
+      }, userApiKey, { feature: 'standup', routePath: '/api/ai/standup', projectId, userId });
 
       const raw = extractJson(result.text);
       const parsed = JSON.parse(raw);
 
+      const generatedAt = new Date().toISOString();
       const standupResult = {
         highlights: parsed.highlights ?? '',
         accomplished: parsed.accomplished ?? [],
@@ -2361,6 +3085,7 @@ Generate the standup summary.`,
         commitSummary: commitsByRepo.map((r) => ({ source: r.source, repo: r.repo, count: r.count })),
         totalCommits,
         provider: result.provider,
+        generatedAt,
       };
 
       // Persist (best-effort, non-blocking)
@@ -2374,7 +3099,7 @@ Generate the standup summary.`,
         commit_summary: standupResult.commitSummary,
         total_commits: standupResult.totalCommits,
         provider:      standupResult.provider,
-        generated_at:  new Date().toISOString(),
+        generated_at:  generatedAt,
       }, { onConflict: 'project_id' }).then(({ error: e }) => {
         if (e) server.log.warn({ err: e }, 'Failed to persist standup');
       });
@@ -2461,8 +3186,10 @@ Generate the standup summary.`,
       creationBias = 'Balance create_goal with updates. Create tasks for any work visible in the context that has no corresponding task.';
     }
 
+    const intelligentUpdateEvidence = buildIntelligentUpdateEvidence(ctx, goalCount);
+
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are Odyssey's intelligent project advisor. Analyze ALL available project data — tasks, documents, commits, team activity — and produce a JSON list of specific, actionable suggestions to improve the project's task structure and deadlines.
 
 Respond ONLY with valid JSON — no markdown, no code fences, no comments, no trailing commas, no explanation outside the JSON.
@@ -2498,24 +3225,15 @@ CONTEXT SIGNALS (use to calibrate):
 - Existing tasks: ${goalCount}
 - Repo context available: ${hasRepos ? 'yes (' + Math.round(repoContextLen / 1000) + 'k chars)' : 'no'}
 - Document context available: ${hasDocs ? 'yes (' + Math.round(docContextLen / 1000) + 'k chars)' : 'no'}
-- Project age: ${projectAgeDays <= 1 ? 'brand new (today)' : projectAgeDays + ' days old'}
-
-Be specific and reference actual task IDs, names, dates, file names, and commit messages from the context.`,
-        user: `PROJECT: ${ctx.project?.name ?? 'Unknown'}
-
-TASKS (${goalCount} total):
-${ctx.goalsText || 'None — project has no tasks yet.'}
-
-TEAM:
-${ctx.membersText}
-
-RECENT ACTIVITY & DOCUMENTS:
-${ctx.eventsText.slice(0, 3000)}${ctx.githubContext ? `\n\nGITHUB:\n${ctx.githubContext.slice(0, 2000)}` : ''}${ctx.gitlabContext ? `\n\nGITLAB REPOS (commits + source code):\n${ctx.gitlabContext.slice(0, 60_000)}` : ''}
+	- Project age: ${projectAgeDays <= 1 ? 'brand new (today)' : projectAgeDays + ' days old'}
+	
+	Be specific and reference actual task IDs, names, dates, file names, and commit messages from the context.`,
+        user: `${intelligentUpdateEvidence}
 
 Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list from scratch based on all available context.' : 'Suggest specific improvements to the task structure, deadlines, and coverage.'} Remember: every create_goal MUST have deadline, category, and loe filled in.`,
         maxTokens: 4000,
         jsonMode: true,
-      }, userApiKey);
+      }, userApiKey, { feature: 'intelligent-update', routePath: '/api/ai/intelligent-update', projectId, userId });
 
       let raw = extractJson(result.text);
       let parsed: any;
@@ -2626,7 +3344,7 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
     ].filter(Boolean).join('\n\n');
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are a technical advisor giving specific, actionable guidance on how to make the most progress on a single project task. Be concrete. Reference repo files, commits, or related tasks where visible. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms, bullet lists for steps (4-6 bullets max). When you reference repository files, prefer full repo-qualified paths such as \`repo-name/src/module/file.ts\` over ambiguous relative-only paths.`,
         user: `TASK: "${taskTitle}"
 Status: ${taskStatus} (${taskProgress}% complete)
@@ -2640,7 +3358,7 @@ ${repoCtx}
 
 Give me the 4-6 most impactful next steps to make concrete progress on this task right now.`,
         maxTokens: 500,
-      }, userApiKey);
+      }, userApiKey, { feature: 'task-guidance', routePath: '/api/ai/task-guidance', projectId, userId });
       return { guidance: result.text, provider: result.provider };
     } catch (err: any) {
       server.log.error(err);
@@ -2685,7 +3403,7 @@ Give me the 4-6 most impactful next steps to make concrete progress on this task
     let interpretation: string | null = null;
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are Odyssey's search engine. Given a natural language query about a project, identify which goals and events best match. Consider semantic meaning — the user might ask things like "tasks assigned to John", "what happened last week", or "at-risk items in Testing".
 Respond ONLY with valid JSON: { "goalIds": ["id1",...], "eventIds": ["id1",...], "interpretation": "plain English explanation of what was searched for" }
 Return up to 10 goalIds and 10 eventIds ordered by relevance.`,
@@ -2697,7 +3415,7 @@ ${goalsText || 'none'}
 RECENT EVENTS:
 ${eventsText || 'none'}`,
         maxTokens: 600,
-      });
+      }, undefined, { feature: 'search', routePath: '/api/ai/search', projectId });
 
       const parsed = JSON.parse(extractJson(result.text));
       aiGoalIds = Array.isArray(parsed.goalIds) ? parsed.goalIds : [];
@@ -2760,14 +3478,14 @@ ${eventsText || 'none'}`,
     const provider = resolveProvider({ agent }, 'claude-sonnet');
 
     try {
-      const result = await chat(provider, {
+      const result = await chatWithAudit(request.headers.authorization, provider, {
         system: `You are Odyssey's risk analyst. Evaluate each goal's risk based on: progress vs deadline proximity, staleness (days since last update), whether it depends on incomplete goals, and current status.
 Risk levels: low(0-25), medium(26-50), high(51-75), critical(76-100).
 Respond ONLY with a valid JSON array: [{ "goalId": "...", "score": 45, "level": "medium", "factors": ["3 days until deadline", "no updates in 10 days"] }]
 Assess every goal listed.`,
         user: `PROJECT GOALS:\n${goalsText}`,
         maxTokens: 1500,
-      });
+      }, undefined, { feature: 'risk-assess', routePath: '/api/ai/risk-assess', projectId, userId });
 
       const assessments: { goalId: string; score: number; level: string; factors: string[] }[] = JSON.parse(extractJson(result.text));
 
@@ -2835,7 +3553,13 @@ Return only the JSON array, no other text.`;
     const userPrompt = `File: ${fileName}\n\n${fileContent.slice(0, 20_000)}`;
 
     try {
-      const result = await chat(provider, { system: systemPrompt, user: userPrompt, maxTokens: 2000, jsonMode: true }, userApiKey);
+      const result = await chatWithAudit(
+        request.headers.authorization,
+        provider,
+        { system: systemPrompt, user: userPrompt, maxTokens: 2000, jsonMode: true },
+        userApiKey,
+        { feature: 'meeting-notes-tasks', routePath: '/api/ai/meeting-notes-tasks', projectId, userId },
+      );
       const parsed = JSON.parse(extractJson(result.text));
       const tasks = Array.isArray(parsed) ? parsed : (parsed.tasks ?? []);
       return { tasks, provider: result.provider };
@@ -2870,8 +3594,8 @@ Return only the JSON array, no other text.`;
       return { summary: 'You are not a member of any projects yet.', provider };
     }
 
-    // Fetch project names + assigned tasks + recent events
-    const [projectsRes, tasksRes, eventsRes] = await Promise.all([
+    // Fetch project names + assigned tasks + recent events + planning data
+    const [projectsRes, tasksRes, eventsRes, allGoalsRes, timeLogsRes] = await Promise.all([
       supabase.from('projects').select('id, name, description').in('id', projectIds),
       supabase.from('goals')
         .select('title, status, progress, deadline, category, project_id')
@@ -2885,12 +3609,54 @@ Return only the JSON array, no other text.`;
         .in('project_id', projectIds)
         .order('occurred_at', { ascending: false })
         .limit(20),
+      supabase.from('goals')
+        .select('id, title, status, progress, deadline, estimated_hours, project_id, assigned_to, assignees')
+        .in('project_id', projectIds),
+      supabase.from('time_logs')
+        .select('goal_id, user_id, logged_hours')
+        .in('project_id', projectIds),
     ]);
 
     const projects = (projectsRes.data ?? []) as { id: string; name: string; description: string | null }[];
     const tasks = (tasksRes.data ?? []) as { title: string; status: string; progress: number; deadline: string | null; category: string | null; project_id: string }[];
     const events = (eventsRes.data ?? []) as { title: string; event_type: string; occurred_at: string; project_id: string }[];
+    const allGoals = (allGoalsRes.data ?? []) as Array<{
+      id: string;
+      title: string;
+      status: string;
+      progress: number;
+      deadline: string | null;
+      estimated_hours: number | null;
+      project_id: string;
+      assigned_to: string | null;
+      assignees: string[] | null;
+    }>;
+    const timeLogs = (timeLogsRes.data ?? []) as Array<{ goal_id: string | null; user_id: string | null; logged_hours: number }>;
     const projectNameMap = Object.fromEntries(projects.map((p) => [p.id, p.name]));
+
+    const actualHoursByGoal = new Map<string, number>();
+    for (const log of timeLogs) {
+      if (log.goal_id) {
+        actualHoursByGoal.set(log.goal_id, (actualHoursByGoal.get(log.goal_id) ?? 0) + (log.logged_hours ?? 0));
+      }
+    }
+    const plannedGoals = allGoals.filter((goal) => (goal.estimated_hours ?? 0) > 0 || (actualHoursByGoal.get(goal.id) ?? 0) > 0);
+    const plannedHours = plannedGoals.reduce((sum, goal) => sum + (goal.estimated_hours ?? 0), 0);
+    const actualHours = plannedGoals.reduce((sum, goal) => sum + (actualHoursByGoal.get(goal.id) ?? 0), 0);
+    const today = new Date();
+    const twoWeeksFromNow = new Date(today);
+    twoWeeksFromNow.setDate(twoWeeksFromNow.getDate() + 14);
+    const overdueOpen = allGoals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) < today).length;
+    const dueSoon = allGoals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) >= today && new Date(goal.deadline) <= twoWeeksFromNow && goal.progress < 80).length;
+    const blockedTasks = allGoals.filter((goal) => goal.status === 'at_risk' || goal.status === 'missed').length;
+    const myRemainingLoad = allGoals
+      .filter((goal) => {
+        const assigneeIds = Array.isArray(goal.assignees) && goal.assignees.length > 0
+          ? goal.assignees
+          : goal.assigned_to ? [goal.assigned_to] : [];
+        return assigneeIds.includes(userId) && goal.status !== 'complete';
+      })
+      .reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
 
     const projectsContext = projects.map((p) =>
       `Project: ${p.name}${p.description ? ` — ${p.description}` : ''}`
@@ -2904,13 +3670,25 @@ Return only the JSON array, no other text.`;
       ? events.slice(0, 10).map((e) => `[${projectNameMap[e.project_id] ?? 'Unknown'}] ${e.title || e.event_type} (${e.occurred_at.slice(0, 10)})`).join('\n')
       : 'No recent activity.';
 
-    const systemPrompt = `You are a project intelligence assistant. Write a concise, personal dashboard summary for a specific team member. 2-4 sentences. Focus on: what they should prioritize today, any upcoming deadlines, and notable recent activity. Be direct and actionable. No bullet points, no headers — just plain prose.`;
+    const planningContext = [
+      `Portfolio planning: ${plannedHours.toFixed(1)}h planned vs ${actualHours.toFixed(1)}h actual (${actualHours - plannedHours >= 0 ? '+' : ''}${(actualHours - plannedHours).toFixed(1)}h variance).`,
+      `${overdueOpen} overdue open tasks, ${dueSoon} tasks due within 14 days, ${blockedTasks} blocked or missed.`,
+      `Your current remaining estimated load is ${myRemainingLoad.toFixed(1)}h.`,
+    ].join('\n');
 
-    const userPrompt = `My projects:\n${projectsContext}\n\nMy assigned tasks:\n${tasksContext}\n\nRecent activity:\n${eventsContext}`;
+    const systemPrompt = `You are a project intelligence assistant. Write a concise, personal dashboard summary for a specific team member. 2-4 sentences. Focus on: what they should prioritize today, upcoming deadlines, meaningful planning pressure (planned vs actual, overdue risk, blocked work), and notable recent activity. Be direct and actionable. No bullet points, no headers — just plain prose.`;
+
+    const userPrompt = `My projects:\n${projectsContext}\n\nMy assigned tasks:\n${tasksContext}\n\nPlanning:\n${planningContext}\n\nRecent activity:\n${eventsContext}`;
 
     try {
-      const result = await chat(provider, { system: systemPrompt, user: userPrompt, maxTokens: 300 }, userApiKey);
-      return { summary: result.text, provider: result.provider };
+      const result = await chatWithAudit(
+        request.headers.authorization,
+        provider,
+        { system: systemPrompt, user: userPrompt, maxTokens: 300 },
+        userApiKey,
+        { feature: 'dashboard-summary', routePath: '/api/ai/dashboard-summary', userId },
+      );
+      return { summary: result.text, provider: result.provider, model: result.model };
     } catch (err: any) {
       server.log.error(err);
       return reply.status(500).send({ error: err?.message ?? 'Failed to generate summary' });

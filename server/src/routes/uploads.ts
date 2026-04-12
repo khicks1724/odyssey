@@ -9,6 +9,8 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'fs/promises';
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
+import { checkRateLimit } from '../lib/rate-limit.js';
+import { requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
 
 const BUCKET = 'project-documents';
 
@@ -31,6 +33,20 @@ const MAX_SUMMARY_CHARS = 320;
 const CHUNK_TARGET_CHARS = 3_500;
 const REPORT_TEMPLATE_CHUNK_BYTES = 256 * 1024;
 const REPORT_TEMPLATE_UPLOAD_DIR = path.join(tmpdir(), 'odyssey-report-template-uploads');
+const MAX_LOCAL_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_EXTRACT_UPLOAD_BYTES = 12 * 1024 * 1024;
+const MAX_TEMPLATE_UPLOAD_BYTES = 24 * 1024 * 1024;
+const MAX_TEXT_BUFFER_BYTES = 5 * 1024 * 1024;
+const ZIP_ENTRY_LIMIT = 250;
+const ZIP_UNCOMPRESSED_LIMIT_BYTES = 80 * 1024 * 1024;
+const ZIP_SUSPICIOUS_RATIO = 120;
+const EXTRACTION_TIMEOUT_MS = 12_000;
+const SIGN_URL_TTL_SECONDS = 3600;
+const UPLOAD_RATE_LIMIT = { maxRequests: 20, windowMs: 60_000 };
+const EXTRACTION_RATE_LIMIT = { maxRequests: 12, windowMs: 60_000 };
+const SIGN_RATE_LIMIT = { maxRequests: 50, windowMs: 60_000 };
+const TEMPLATE_RATE_LIMIT = { maxRequests: 12, windowMs: 60_000 };
+const TEMPLATE_DELETE_RATE_LIMIT = { maxRequests: 10, windowMs: 60_000 };
 
 type ReportTemplateType = 'docx' | 'pptx' | 'pdf';
 
@@ -62,14 +78,17 @@ type TemplateRenderHints = {
 };
 
 type TemplateAnalysis = {
-  version: 1;
+  version: 2;
+  targetTemplateType: ReportTemplateType;
   sourceFormat: 'docx' | 'pptx' | 'pdf';
+  sourceMimeType: string;
   summary: string;
   sectionHeadings: string[];
   layoutHints: string[];
   styleHints: string[];
   palette: string[];
   fonts: string[];
+  analysisConfidence?: 'low' | 'medium' | 'high';
   pageCount?: number;
   slideCount?: number;
   hasCoverPage?: boolean;
@@ -161,6 +180,18 @@ function extractPaletteFromThemeXml(themeXml: string): string[] {
   ).filter((value): value is string => Boolean(value));
 }
 
+function extractPaletteFromXmlFragments(fragments: Array<string | null | undefined>, limit = 12): string[] {
+  const colors = fragments.flatMap((fragment) => {
+    if (!fragment) return [];
+    return [
+      ...[...fragment.matchAll(/(?:lastClr|val|fill|color|rgb)="([0-9A-Fa-f]{6})"/g)].map((match) => normalizeHexColor(match[1])),
+      ...[...fragment.matchAll(/#[0-9A-Fa-f]{6}/g)].map((match) => normalizeHexColor(match[0])),
+      ...[...fragment.matchAll(/\b([0-9A-Fa-f]{6})\b/g)].map((match) => normalizeHexColor(match[1])),
+    ];
+  });
+  return uniqueStrings(colors, limit).filter((value): value is string => Boolean(value));
+}
+
 function extractFontsFromThemeXml(themeXml: string): string[] {
   return uniqueStrings(
     [...themeXml.matchAll(/typeface="([^"]+)"/g)].map((match) => match[1]),
@@ -182,6 +213,31 @@ function inferHeadingCase(headings: string[]): 'upper' | 'title' | 'sentence' {
   if (uppercaseCount >= Math.ceil(sample.length / 2)) return 'upper';
   if (titleCount >= Math.ceil(sample.length / 2)) return 'title';
   return 'sentence';
+}
+
+function detectTemplateSourceFormat(filename: string, mimeType: string): ReportTemplateType | null {
+  const lower = filename.toLowerCase();
+  if (mimeType === 'application/pdf' || lower.endsWith('.pdf')) return 'pdf';
+  if (mimeType.includes('wordprocessingml') || lower.endsWith('.docx')) return 'docx';
+  if (mimeType.includes('presentationml') || lower.endsWith('.pptx')) return 'pptx';
+  return null;
+}
+
+function inferTitleAlignment(values: Array<'left' | 'center' | 'right' | null | undefined>, fallback: 'left' | 'center' = 'left'): 'left' | 'center' {
+  const counts = { left: 0, center: 0, right: 0 };
+  for (const value of values) {
+    if (!value) continue;
+    counts[value] += 1;
+  }
+  if (counts.center > counts.left && counts.center >= counts.right) return 'center';
+  if (counts.left > 0 || counts.right > 0) return 'left';
+  return fallback;
+}
+
+function inferAnalysisConfidence(score: number): 'low' | 'medium' | 'high' {
+  if (score >= 5) return 'high';
+  if (score >= 3) return 'medium';
+  return 'low';
 }
 
 function extractLikelyHeadings(text: string, limit = 10): string[] {
@@ -236,7 +292,12 @@ function buildRenderHints(
   };
 }
 
-async function analyzeDocxTemplate(buffer: Buffer, extractedText: string | null): Promise<TemplateAnalysis | null> {
+async function analyzeDocxTemplate(
+  buffer: Buffer,
+  extractedText: string | null,
+  targetTemplateType: ReportTemplateType,
+  sourceMimeType: string,
+): Promise<TemplateAnalysis | null> {
   try {
     const zip = await JSZip.loadAsync(buffer);
     const documentXml = await zip.file('word/document.xml')?.async('string');
@@ -249,14 +310,16 @@ async function analyzeDocxTemplate(buffer: Buffer, extractedText: string | null)
       const textRuns = [...block.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((run) => decodeXmlEntities(run[1]));
       const text = compactWhitespace(textRuns.join(' '));
       const style = block.match(/<w:pStyle[^>]*w:val="([^"]+)"/)?.[1] ?? null;
+      const alignment = block.match(/<w:jc[^>]*w:val="([^"]+)"/)?.[1] ?? null;
       return {
         text,
         style,
+        alignment: (alignment === 'center' ? 'center' : alignment === 'right' ? 'right' : 'left') as 'left' | 'center' | 'right',
         isBullet: /<w:numPr\b/.test(block),
       };
     }).filter((paragraph) => paragraph.text.length > 0);
 
-    const themePalette = themeXml ? extractPaletteFromThemeXml(themeXml) : [];
+    const themePalette = extractPaletteFromXmlFragments([themeXml, stylesXml, documentXml]);
     const themeFonts = themeXml ? extractFontsFromThemeXml(themeXml) : [];
     const styleFonts = stylesXml
       ? uniqueStrings([...stylesXml.matchAll(/w:(?:ascii|hAnsi|cs)="([^"]+)"/g)].map((match) => match[1]), 6)
@@ -271,43 +334,66 @@ async function analyzeDocxTemplate(buffer: Buffer, extractedText: string | null)
     const pageBreakCount = (documentXml.match(/<w:br[^>]*w:type="page"/g) ?? []).length;
     const tableCount = (documentXml.match(/<w:tbl\b/g) ?? []).length;
     const hasBullets = paragraphs.some((paragraph) => paragraph.isBullet);
+    const orientation = /<w:pgSz[^>]*w:orient="landscape"/.test(documentXml) ? 'landscape' : 'portrait';
     const pageEstimate = Math.max(1, pageBreakCount + 1, Math.round((extractedText?.length ?? 0) / 3_000) || 1);
     const density = inferDensity(extractedText?.length ?? paragraphs.length * 80, headings.length || 1);
     const headingCase = inferHeadingCase(headings);
-    const hasCoverPage = pageEstimate > 1 && paragraphs.slice(0, 6).some((paragraph) => paragraph.text.length > 24);
+    const firstParagraphs = paragraphs.slice(0, 8);
+    const titleAlignment = inferTitleAlignment(firstParagraphs.map((paragraph) => paragraph.alignment), 'left');
+    const hasCoverPage = pageEstimate > 1 && firstParagraphs.some((paragraph) => paragraph.text.length > 24 && paragraph.alignment === 'center');
     const fonts = uniqueStrings([...themeFonts, ...styleFonts]);
     const sampleExcerpt = compactWhitespace((extractedText ?? paragraphs.map((paragraph) => paragraph.text).join(' ')).slice(0, MAX_TEMPLATE_EXCERPT_CHARS));
+    const confidence = inferAnalysisConfidence(
+      (themePalette.length > 0 ? 2 : 0)
+      + (fonts.length > 0 ? 2 : 0)
+      + (headings.length > 0 ? 1 : 0)
+      + (tableCount > 0 || hasBullets ? 1 : 0),
+    );
 
     return {
-      version: 1,
+      version: 2,
+      targetTemplateType,
       sourceFormat: 'docx',
+      sourceMimeType,
       summary: `DOCX template with approximately ${pageEstimate} page${pageEstimate === 1 ? '' : 's'}, ${headings.length || 1} recognizable section heading${headings.length === 1 ? '' : 's'}, and ${tableCount} table${tableCount === 1 ? '' : 's'}.`,
       sectionHeadings: headings,
       layoutHints: uniqueStrings([
         hasCoverPage ? 'Starts with a dedicated cover or title page.' : 'Begins directly with report content.',
         tableCount ? `Uses ${tableCount} structured table${tableCount === 1 ? '' : 's'} in the body.` : 'Relies more on prose than tables.',
         hasBullets ? 'Uses bullet lists for supporting detail.' : 'Uses paragraph-driven sections with limited bullets.',
+        orientation === 'landscape' ? 'Document is configured for landscape pages.' : 'Document is configured for portrait pages.',
       ]),
       styleHints: uniqueStrings([
         headingCase === 'upper' ? 'Headings are typically uppercase.' : headingCase === 'title' ? 'Headings are title case.' : 'Headings are sentence case.',
         fonts[0] ? `Primary typeface appears to be ${fonts[0]}.` : 'No dominant typeface could be inferred from the theme.',
         themePalette[0] ? `Visual identity includes a restrained palette anchored by ${themePalette.slice(0, 3).join(', ')}.` : 'No explicit theme palette was embedded in the DOCX theme.',
+        titleAlignment === 'center' ? 'Opening/title content is visually centered.' : 'Opening/title content is left-aligned.',
       ]),
       palette: themePalette,
       fonts,
+      analysisConfidence: confidence,
       pageCount: pageEstimate,
       hasCoverPage,
       hasTables: tableCount > 0,
       hasBullets,
       sampleExcerpt: sampleExcerpt || undefined,
-      renderHints: buildRenderHints(themePalette, fonts, 'docx', density, 'left'),
+      renderHints: {
+        ...buildRenderHints(themePalette, fonts, 'docx', density, titleAlignment),
+        orientation,
+        titleAlignment,
+      },
     };
   } catch {
     return null;
   }
 }
 
-async function analyzePptxTemplate(buffer: Buffer, extractedText: string | null): Promise<TemplateAnalysis | null> {
+async function analyzePptxTemplate(
+  buffer: Buffer,
+  extractedText: string | null,
+  targetTemplateType: ReportTemplateType,
+  sourceMimeType: string,
+): Promise<TemplateAnalysis | null> {
   try {
     const zip = await JSZip.loadAsync(buffer);
     const presentationXml = await zip.file('ppt/presentation.xml')?.async('string');
@@ -327,11 +413,15 @@ async function analyzePptxTemplate(buffer: Buffer, extractedText: string | null)
       if (!xml) return null;
       const lines = extractPptxParagraphs(xml, 80);
       const title = lines.find((line) => line.length >= 4 && line.length <= 70) ?? null;
+      const alignments: Array<'left' | 'center' | 'right'> = [...xml.matchAll(/<a:pPr[^>]*algn="([^"]+)"/g)]
+        .map((match) => (match[1] === 'ctr' ? 'center' : match[1] === 'r' ? 'right' : 'left'));
       return {
         title,
         text: lines.join(' '),
+        alignment: inferTitleAlignment(alignments, 'center'),
         hasBullets: /<a:buChar|<a:pPr[^>]*lvl=/.test(xml),
         hasTables: /table|tbl/i.test(xml),
+        colors: extractPaletteFromXmlFragments([xml], 8),
       };
     }));
 
@@ -344,13 +434,22 @@ async function analyzePptxTemplate(buffer: Buffer, extractedText: string | null)
     const height = slideSize ? parseInt(slideSize[2], 10) : 7;
     const aspectRatio = width > height * 1.45 ? 'wide' : 'standard';
     const density = inferDensity(extractedText?.length ?? slideCount * 300, headings.length || 1);
-    const themePalette = themeXml ? extractPaletteFromThemeXml(themeXml) : [];
+    const themePalette = extractPaletteFromXmlFragments([themeXml, ...slideDetails.map((slide) => slide?.colors?.join(' '))]);
     const fonts = themeXml ? extractFontsFromThemeXml(themeXml) : [];
     const sampleExcerpt = compactWhitespace((extractedText ?? slideDetails.map((slide) => slide?.text ?? '').join(' ')).slice(0, MAX_TEMPLATE_EXCERPT_CHARS));
+    const titleAlignment = inferTitleAlignment(slideDetails.map((slide) => slide?.alignment), 'center');
+    const confidence = inferAnalysisConfidence(
+      (themePalette.length > 0 ? 2 : 0)
+      + (fonts.length > 0 ? 2 : 0)
+      + (headings.length > 0 ? 1 : 0)
+      + (slideCount > 1 ? 1 : 0),
+    );
 
     return {
-      version: 1,
+      version: 2,
+      targetTemplateType,
       sourceFormat: 'pptx',
+      sourceMimeType,
       summary: `PPTX template with ${slideCount} slide${slideCount === 1 ? '' : 's'} in a ${aspectRatio} layout and ${headings.length || 1} identifiable slide heading${headings.length === 1 ? '' : 's'}.`,
       sectionHeadings: headings,
       layoutHints: uniqueStrings([
@@ -362,21 +461,23 @@ async function analyzePptxTemplate(buffer: Buffer, extractedText: string | null)
         aspectRatio === 'wide' ? 'Designed for a widescreen presentation canvas.' : 'Designed for a standard presentation canvas.',
         fonts[0] ? `Primary presentation font appears to be ${fonts[0]}.` : 'No dominant presentation font could be inferred from the slide theme.',
         themePalette[0] ? `Presentation palette includes ${themePalette.slice(0, 4).join(', ')}.` : 'No embedded palette was detected in the slide theme.',
+        titleAlignment === 'center' ? 'Slide titles and cover content skew centered.' : 'Slide titles skew left-aligned.',
       ]),
       palette: themePalette,
       fonts,
+      analysisConfidence: confidence,
       slideCount,
       hasCoverPage: slideCount > 1,
       hasTables,
       hasBullets,
       sampleExcerpt: sampleExcerpt || undefined,
       renderHints: {
-        ...buildRenderHints(themePalette, fonts, 'pptx', density, 'center'),
+        ...buildRenderHints(themePalette, fonts, 'pptx', density, titleAlignment),
         aspectRatio,
         orientation: 'landscape',
-        titleAlignment: 'center',
-        headerBand: true,
-        sidebarAccent: true,
+        titleAlignment,
+        headerBand: slideCount > 1,
+        sidebarAccent: slideCount > 2,
       },
     };
   } catch {
@@ -384,7 +485,12 @@ async function analyzePptxTemplate(buffer: Buffer, extractedText: string | null)
   }
 }
 
-async function analyzePdfTemplate(buffer: Buffer, extractedText: string | null): Promise<TemplateAnalysis | null> {
+async function analyzePdfTemplate(
+  buffer: Buffer,
+  extractedText: string | null,
+  targetTemplateType: ReportTemplateType,
+  sourceMimeType: string,
+): Promise<TemplateAnalysis | null> {
   try {
     const pdfData = await pdfParse(buffer);
     const text = extractedText ?? pdfData.text?.trim() ?? '';
@@ -394,10 +500,17 @@ async function analyzePdfTemplate(buffer: Buffer, extractedText: string | null):
     const hasTables = /\|.+\||\btable\b/i.test(text);
     const pageCount = pdfData.numpages || Math.max(1, Math.round(text.length / 3_200));
     const sampleExcerpt = compactWhitespace(text.slice(0, MAX_TEMPLATE_EXCERPT_CHARS));
+    const confidence = inferAnalysisConfidence(
+      (headings.length > 0 ? 2 : 0)
+      + (pageCount > 1 ? 1 : 0)
+      + (hasBullets || hasTables ? 1 : 0),
+    );
 
     return {
-      version: 1,
+      version: 2,
+      targetTemplateType,
       sourceFormat: 'pdf',
+      sourceMimeType,
       summary: `PDF template with ${pageCount} page${pageCount === 1 ? '' : 's'} and ${headings.length || 1} likely section heading${headings.length === 1 ? '' : 's'} inferred from text layout.`,
       sectionHeadings: headings,
       layoutHints: uniqueStrings([
@@ -411,6 +524,7 @@ async function analyzePdfTemplate(buffer: Buffer, extractedText: string | null):
       ]),
       palette: [],
       fonts: [],
+      analysisConfidence: confidence,
       pageCount,
       hasCoverPage: pageCount > 1,
       hasTables,
@@ -432,11 +546,13 @@ async function analyzePdfTemplate(buffer: Buffer, extractedText: string | null):
 async function analyzeReportTemplate(
   buffer: Buffer,
   extractedText: string | null,
-  templateType: 'docx' | 'pptx' | 'pdf',
+  sourceFormat: 'docx' | 'pptx' | 'pdf',
+  targetTemplateType: ReportTemplateType,
+  sourceMimeType: string,
 ): Promise<TemplateAnalysis | null> {
-  if (templateType === 'docx') return analyzeDocxTemplate(buffer, extractedText);
-  if (templateType === 'pptx') return analyzePptxTemplate(buffer, extractedText);
-  return analyzePdfTemplate(buffer, extractedText);
+  if (sourceFormat === 'docx') return analyzeDocxTemplate(buffer, extractedText, targetTemplateType, sourceMimeType);
+  if (sourceFormat === 'pptx') return analyzePptxTemplate(buffer, extractedText, targetTemplateType, sourceMimeType);
+  return analyzePdfTemplate(buffer, extractedText, targetTemplateType, sourceMimeType);
 }
 
 function isTextFile(name: string, mimeType: string) {
@@ -453,13 +569,180 @@ function isAllowedFileType(name: string, mimeType: string): boolean {
   return ALLOWED_MIME.has(mimeType) || TEXT_EXTS.has(getExtension(name));
 }
 
+function sanitizeStorageName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function isDangerousPathSegment(value: string): boolean {
+  return value.includes('..') || value.startsWith('/') || value.startsWith('\\');
+}
+
+function detectBufferMimeType(buffer: Buffer, fallback: string, filename: string): string {
+  if (buffer.length >= 5 && buffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+    return 'application/pdf';
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    if (lower.endsWith('.pptx')) return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    if (lower.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
+  return fallback || 'application/octet-stream';
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+async function validateArchiveSafety(buffer: Buffer, filename: string): Promise<void> {
+  const lower = filename.toLowerCase();
+  if (!lower.endsWith('.docx') && !lower.endsWith('.pptx') && !lower.endsWith('.xlsx')) {
+    return;
+  }
+
+  const zip = await withTimeout(JSZip.loadAsync(buffer), EXTRACTION_TIMEOUT_MS, 'Archive inspection');
+  const entries = Object.values(zip.files);
+  if (entries.length > ZIP_ENTRY_LIMIT) {
+    throw new Error('Archive contains too many embedded files.');
+  }
+
+  let totalUncompressedBytes = 0;
+  for (const entry of entries) {
+    if (isDangerousPathSegment(entry.name)) {
+      throw new Error('Archive contains an invalid embedded path.');
+    }
+    if (entry.dir) continue;
+    totalUncompressedBytes += (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0;
+    if (totalUncompressedBytes > ZIP_UNCOMPRESSED_LIMIT_BYTES) {
+      throw new Error('Archive expands beyond the allowed extraction limit.');
+    }
+  }
+
+  if (buffer.byteLength > 0 && totalUncompressedBytes > buffer.byteLength * ZIP_SUSPICIOUS_RATIO) {
+    throw new Error('Archive compression ratio is too high.');
+  }
+}
+
+function validateFileShape(filename: string, mimeType: string, buffer: Buffer, maxBytes: number): string {
+  const trimmedFilename = filename.trim();
+  if (!trimmedFilename) throw new Error('filename is required');
+  if (isDangerousPathSegment(trimmedFilename)) throw new Error('Invalid filename');
+  if (buffer.byteLength === 0) throw new Error('Uploaded file is empty');
+  if (buffer.byteLength > maxBytes) throw new Error(`"${trimmedFilename}" exceeds the ${(maxBytes / (1024 * 1024)).toFixed(0)} MB limit.`);
+
+  const normalizedMime = detectBufferMimeType(buffer, mimeType, trimmedFilename);
+  if (!isAllowedFileType(trimmedFilename, normalizedMime)) {
+    throw new Error('Unsupported file type. Use PDF, DOCX, PPTX, TXT, Markdown, CSV, JSON, or similar text files.');
+  }
+  if (normalizedMime === 'application/json') {
+    try {
+      JSON.parse(buffer.toString('utf8'));
+    } catch {
+      throw new Error('JSON upload is malformed.');
+    }
+  }
+  if (normalizedMime.startsWith('text/') || TEXT_EXTS.has(getExtension(trimmedFilename))) {
+    const sample = buffer.subarray(0, Math.min(buffer.byteLength, 2048));
+    if (sample.includes(0)) {
+      throw new Error('Text upload appears to be binary.');
+    }
+  }
+
+  return normalizedMime;
+}
+
+type MultipartPayload = {
+  fields: Record<string, string>;
+  file: {
+    filename: string;
+    mimeType: string;
+    buffer: Buffer;
+  } | null;
+};
+
+async function readMultipartPayload(
+  request: any,
+  options: {
+    fileFieldName?: string;
+    maxFileBytes: number;
+    maxFieldChars?: number;
+  },
+): Promise<MultipartPayload> {
+  const parts = request.parts();
+  const fields: Record<string, string> = {};
+  let file: MultipartPayload['file'] = null;
+
+  for await (const part of parts) {
+    if (part.type === 'field') {
+      const value = `${part.value ?? ''}`;
+      if (value.length > (options.maxFieldChars ?? 20_000)) {
+        throw new Error(`Field "${part.fieldname}" exceeds the allowed size.`);
+      }
+      fields[part.fieldname] = value;
+      continue;
+    }
+
+    if (options.fileFieldName && part.fieldname !== options.fileFieldName) {
+      continue;
+    }
+    if (file) {
+      throw new Error('Only one file can be uploaded at a time.');
+    }
+
+    const chunks: Buffer[] = [];
+    let fileBytes = 0;
+    for await (const chunk of part.file) {
+      const piece = chunk as Buffer;
+      fileBytes += piece.byteLength;
+      if (fileBytes > options.maxFileBytes) {
+        throw new Error(`"${part.filename || 'upload'}" exceeds the ${(options.maxFileBytes / (1024 * 1024)).toFixed(0)} MB limit.`);
+      }
+      chunks.push(piece);
+    }
+
+    file = {
+      filename: part.filename || 'upload',
+      mimeType: part.mimetype || 'application/octet-stream',
+      buffer: Buffer.concat(chunks),
+    };
+  }
+
+  return { fields, file };
+}
+
+function getProjectIdFromStoragePath(storagePath: string): string | null {
+  const normalized = storagePath.trim();
+  if (!normalized || isDangerousPathSegment(normalized)) return null;
+  const projectId = normalized.split('/')[0]?.trim();
+  return projectId || null;
+}
+
+async function requireProjectMemberAccess(projectId: string, authorization: string | undefined) {
+  return requireProjectAccessFromAuthHeader(projectId, authorization);
+}
+
+function limitKey(prefix: string, userId: string, projectId?: string | null): string {
+  return `${prefix}:${userId}:${projectId ?? 'global'}`;
+}
+
 async function extractText(buffer: Buffer, filename: string, mimeType: string): Promise<string | null> {
   const lower = filename.toLowerCase();
 
   // PDF
   if (mimeType === 'application/pdf' || lower.endsWith('.pdf')) {
     try {
-      const data = await pdfParse(buffer);
+      const data = await withTimeout(pdfParse(buffer), EXTRACTION_TIMEOUT_MS, 'PDF extraction');
       return data.text?.trim().slice(0, MAX_EXTRACTED_CHARS) || null;
     } catch {
       return null;
@@ -469,7 +752,8 @@ async function extractText(buffer: Buffer, filename: string, mimeType: string): 
   // DOCX
   if (mimeType.includes('wordprocessingml') || lower.endsWith('.docx')) {
     try {
-      const result = await mammoth.extractRawText({ buffer });
+      await validateArchiveSafety(buffer, filename);
+      const result = await withTimeout(mammoth.extractRawText({ buffer }), EXTRACTION_TIMEOUT_MS, 'DOCX extraction');
       return result.value?.trim().slice(0, MAX_EXTRACTED_CHARS) || null;
     } catch {
       return null;
@@ -479,7 +763,8 @@ async function extractText(buffer: Buffer, filename: string, mimeType: string): 
   // PPTX — extract all slide text via JSZip + XML tag stripping
   if (mimeType.includes('presentationml') || lower.endsWith('.pptx')) {
     try {
-      const zip = await JSZip.loadAsync(buffer);
+      await validateArchiveSafety(buffer, filename);
+      const zip = await withTimeout(JSZip.loadAsync(buffer), EXTRACTION_TIMEOUT_MS, 'PPTX extraction');
       const slideFiles = Object.keys(zip.files)
         .filter((f) => /^ppt\/slides\/slide\d+\.xml$/.test(f))
         .sort((a, b) => {
@@ -501,7 +786,7 @@ async function extractText(buffer: Buffer, filename: string, mimeType: string): 
 
   // Plain text formats
   if (isTextFile(filename, mimeType)) {
-    return buffer.toString('utf8').slice(0, MAX_EXTRACTED_CHARS);
+    return buffer.subarray(0, MAX_TEXT_BUFFER_BYTES).toString('utf8').slice(0, MAX_EXTRACTED_CHARS);
   }
 
   return null;
@@ -654,14 +939,6 @@ function isValidTemplateType(value: string): value is ReportTemplateType {
   return value === 'docx' || value === 'pptx' || value === 'pdf';
 }
 
-async function userCanAccessProject(projectId: string, userId: string): Promise<boolean> {
-  const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-  const { data: membership } = await supabase
-    .from('project_members').select('user_id')
-    .eq('project_id', projectId).eq('user_id', userId).single();
-  return proj?.owner_id === userId || !!membership;
-}
-
 async function ensureReportTemplateUploadDir(): Promise<void> {
   await mkdir(REPORT_TEMPLATE_UPLOAD_DIR, { recursive: true });
 }
@@ -721,6 +998,12 @@ async function storeReportTemplate(input: {
   logger: FastifyInstance['log'];
 }) {
   const { projectId, templateType, filename, mimeType, fileBuffer, userId, logger } = input;
+  const inferredMime = validateFileShape(filename, mimeType || 'application/octet-stream', fileBuffer, MAX_TEMPLATE_UPLOAD_BYTES);
+  const sourceFormat = detectTemplateSourceFormat(filename, inferredMime);
+  if (!sourceFormat) {
+    throw new Error('Template file must be DOCX, PPTX, or PDF.');
+  }
+  await validateArchiveSafety(fileBuffer, filename);
 
   const { data: existing } = await supabase
     .from('events')
@@ -737,8 +1020,7 @@ async function storeReportTemplate(input: {
     await supabase.from('events').delete().eq('id', old.id);
   }
 
-  const storagePath = `${projectId}/templates/${templateType}-${randomUUID()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-  const inferredMime = mimeType || 'application/octet-stream';
+  const storagePath = `${projectId}/templates/${templateType}-${randomUUID()}-${sanitizeStorageName(filename)}`;
   const { error: storageErr } = await supabase.storage
     .from(BUCKET)
     .upload(storagePath, fileBuffer, { contentType: inferredMime, upsert: false });
@@ -749,7 +1031,7 @@ async function storeReportTemplate(input: {
   }
 
   const extractedText = await extractText(fileBuffer, filename, inferredMime);
-  const templateAnalysis = await analyzeReportTemplate(fileBuffer, extractedText, templateType);
+  const templateAnalysis = await analyzeReportTemplate(fileBuffer, extractedText, sourceFormat, templateType, inferredMime);
   const processing = buildDocumentProcessingResult(filename, extractedText);
 
   const { data, error: dbErr } = await supabase.from('events').insert({
@@ -763,6 +1045,7 @@ async function storeReportTemplate(input: {
       template_type: templateType,
       filename,
       mime_type: inferredMime,
+      source_format: sourceFormat,
       size_bytes: fileBuffer.byteLength,
       storage_path: storagePath,
       storage_bucket: BUCKET,
@@ -819,11 +1102,13 @@ async function storeReportTemplate(input: {
     storage_path?: string;
     template_analysis?: TemplateAnalysis | null;
     document_id?: string | null;
+    source_format?: ReportTemplateType;
   };
   return {
     template: {
       id: data.id,
       templateType: meta.template_type ?? templateType,
+      sourceFormat: meta.source_format ?? sourceFormat,
       filename: meta.filename ?? filename,
       sizeBytes: meta.size_bytes ?? 0,
       storagePath: meta.storage_path ?? storagePath,
@@ -836,63 +1121,49 @@ async function storeReportTemplate(input: {
 
 export async function uploadRoutes(server: FastifyInstance) {
   await server.register(multipart, {
-    limits: { fileSize: 157_286_400 }, // 150 MB
+    limits: { fileSize: 32 * 1024 * 1024 },
   });
 
   // ── Upload a file (PDF, DOCX, TXT, etc.) ──────────────────────────────────
   server.post('/uploads/local', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const parts = request.parts();
-    let projectId = '';
-    let filename = '';
-    let mimeType = '';
-    let fileBuffer: Buffer | null = null;
-    let explicitTitle = '';
-    let explicitSummary = '';
-    let metadataJson = '';
-
-    for await (const part of parts) {
-      if (part.type === 'field') {
-        if (part.fieldname === 'projectId') projectId = part.value as string;
-        if (part.fieldname === 'filename') filename = part.value as string;
-        if (part.fieldname === 'title') explicitTitle = part.value as string;
-        if (part.fieldname === 'summary') explicitSummary = part.value as string;
-        if (part.fieldname === 'metadataJson') metadataJson = part.value as string;
-      } else if (part.type === 'file') {
-        filename = filename || part.filename;
-        mimeType = part.mimetype;
-        const chunks: Buffer[] = [];
-        for await (const chunk of part.file) chunks.push(chunk as Buffer);
-        fileBuffer = Buffer.concat(chunks);
-      }
+    let payload: MultipartPayload;
+    try {
+      payload = await readMultipartPayload(request, { maxFileBytes: MAX_LOCAL_UPLOAD_BYTES });
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Invalid upload payload.' });
     }
 
-    if (!projectId || !filename || !fileBuffer) {
+    const projectId = `${payload.fields.projectId ?? ''}`.trim();
+    const filename = `${payload.fields.filename ?? payload.file?.filename ?? ''}`.trim();
+    const explicitTitle = `${payload.fields.title ?? ''}`.trim();
+    const explicitSummary = `${payload.fields.summary ?? ''}`.trim();
+    const metadataJson = `${payload.fields.metadataJson ?? ''}`.trim();
+    const fileBuffer = payload.file?.buffer ?? null;
+    if (!projectId || !filename || !fileBuffer || !payload.file) {
       return reply.status(400).send({ error: 'projectId, filename, and file are required' });
     }
 
-    // Membership check
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase
-      .from('project_members').select('user_id')
-      .eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) {
-      return reply.status(403).send({ error: 'Not a member of this project' });
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+
+    const uploadLimit = checkRateLimit(limitKey('upload-local', access.userId, projectId), UPLOAD_RATE_LIMIT);
+    if (uploadLimit.limited) {
+      return reply.status(429).send({
+        error: 'Upload rate limit exceeded. Please wait before sending more files.',
+        retryAfterSeconds: uploadLimit.retryAfterSeconds,
+      });
     }
 
-    // Validate MIME type (be lenient — browsers sometimes report wrong types)
-    const inferredMime = mimeType || 'application/octet-stream';
-    if (!isAllowedFileType(filename, inferredMime)) {
-      return reply.status(415).send({ error: 'Unsupported file type. Use PDF, DOCX, PPTX, TXT, Markdown, CSV, JSON, or similar text files.' });
+    let inferredMime: string;
+    try {
+      inferredMime = validateFileShape(filename, payload.file.mimeType, fileBuffer, MAX_LOCAL_UPLOAD_BYTES);
+      await validateArchiveSafety(fileBuffer, filename);
+    } catch (error) {
+      return reply.status(415).send({ error: error instanceof Error ? error.message : 'Unsupported upload.' });
     }
 
     // Upload to Supabase Storage: project-documents/{projectId}/{uuid}-{filename}
-    const storagePath = `${projectId}/${randomUUID()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const storagePath = `${projectId}/${randomUUID()}-${sanitizeStorageName(filename)}`;
     const { error: storageErr } = await supabase.storage
       .from(BUCKET)
       .upload(storagePath, fileBuffer, { contentType: inferredMime, upsert: false });
@@ -921,7 +1192,7 @@ export async function uploadRoutes(server: FastifyInstance) {
 
     const { data, error: dbErr } = await supabase.from('events').insert({
       project_id: projectId,
-      actor_id: user.id,
+      actor_id: access.userId,
       source: 'local',
       event_type: 'file_upload',
       title: explicitTitle || filename,
@@ -953,7 +1224,7 @@ export async function uploadRoutes(server: FastifyInstance) {
     const documentId = await persistStructuredDocument({
       projectId,
       eventId: data.id,
-      actorId: user.id,
+      actorId: access.userId,
       filename,
       mimeType: inferredMime,
       storagePath,
@@ -981,46 +1252,37 @@ export async function uploadRoutes(server: FastifyInstance) {
 
   // ── Extract text from TXT/DOCX/PDF/etc. without storing the file ─────────
   server.post('/uploads/extract-text', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const parts = request.parts();
-    let projectId = '';
-    let filename = '';
-    let mimeType = '';
-    let fileBuffer: Buffer | null = null;
-
-    for await (const part of parts) {
-      if (part.type === 'field') {
-        if (part.fieldname === 'projectId') projectId = part.value as string;
-        if (part.fieldname === 'filename') filename = part.value as string;
-      } else if (part.type === 'file') {
-        filename = filename || part.filename;
-        mimeType = part.mimetype;
-        const chunks: Buffer[] = [];
-        for await (const chunk of part.file) chunks.push(chunk as Buffer);
-        fileBuffer = Buffer.concat(chunks);
-      }
+    let payload: MultipartPayload;
+    try {
+      payload = await readMultipartPayload(request, { maxFileBytes: MAX_EXTRACT_UPLOAD_BYTES });
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Invalid extraction payload.' });
     }
 
-    if (!projectId || !filename || !fileBuffer) {
+    const projectId = `${payload.fields.projectId ?? ''}`.trim();
+    const filename = `${payload.fields.filename ?? payload.file?.filename ?? ''}`.trim();
+    const fileBuffer = payload.file?.buffer ?? null;
+    if (!projectId || !filename || !fileBuffer || !payload.file) {
       return reply.status(400).send({ error: 'projectId, filename, and file are required' });
     }
 
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase
-      .from('project_members').select('user_id')
-      .eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) {
-      return reply.status(403).send({ error: 'Not a member of this project' });
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+
+    const extractionLimit = checkRateLimit(limitKey('upload-extract', access.userId, projectId), EXTRACTION_RATE_LIMIT);
+    if (extractionLimit.limited) {
+      return reply.status(429).send({
+        error: 'Document extraction rate limit exceeded. Please wait before retrying.',
+        retryAfterSeconds: extractionLimit.retryAfterSeconds,
+      });
     }
 
-    const inferredMime = mimeType || 'application/octet-stream';
-    if (!isAllowedFileType(filename, inferredMime)) {
-      return reply.status(415).send({ error: 'Unsupported file type.' });
+    let inferredMime: string;
+    try {
+      inferredMime = validateFileShape(filename, payload.file.mimeType, fileBuffer, MAX_EXTRACT_UPLOAD_BYTES);
+      await validateArchiveSafety(fileBuffer, filename);
+    } catch (error) {
+      return reply.status(415).send({ error: error instanceof Error ? error.message : 'Unsupported file type.' });
     }
 
     const extractedText = await extractText(fileBuffer, filename, inferredMime);
@@ -1037,28 +1299,26 @@ export async function uploadRoutes(server: FastifyInstance) {
 
   // ── Generate a signed download URL ─────────────────────────────────────────
   server.post<{ Body: { storagePath: string } }>('/uploads/sign', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { storagePath } = request.body;
     if (!storagePath) return reply.status(400).send({ error: 'storagePath required' });
 
-    // Verify membership: project ID is the first path segment
-    const projectId = storagePath.split('/')[0];
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase
-      .from('project_members').select('user_id')
-      .eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) {
-      return reply.status(403).send({ error: 'Forbidden' });
+    const projectId = getProjectIdFromStoragePath(storagePath);
+    if (!projectId) return reply.status(400).send({ error: 'Invalid storagePath' });
+
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+
+    const signLimit = checkRateLimit(limitKey('upload-sign', access.userId, projectId), SIGN_RATE_LIMIT);
+    if (signLimit.limited) {
+      return reply.status(429).send({
+        error: 'Too many file signing requests. Please wait before retrying.',
+        retryAfterSeconds: signLimit.retryAfterSeconds,
+      });
     }
 
     const { data, error } = await supabase.storage
       .from(BUCKET)
-      .createSignedUrl(storagePath, 3600); // 1-hour expiry
+      .createSignedUrl(storagePath, SIGN_URL_TTL_SECONDS);
 
     if (error || !data) return reply.status(500).send({ error: error?.message ?? 'Could not sign URL' });
     return { url: data.signedUrl };
@@ -1066,20 +1326,9 @@ export async function uploadRoutes(server: FastifyInstance) {
 
   // ── List report templates for a project ───────────────────────────────────
   server.get<{ Params: { projectId: string } }>('/projects/:projectId/report-templates', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { projectId } = request.params;
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase
-      .from('project_members').select('user_id')
-      .eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) {
-      return reply.status(403).send({ error: 'Forbidden' });
-    }
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
 
     const { data, error } = await supabase
       .from('events')
@@ -1093,6 +1342,7 @@ export async function uploadRoutes(server: FastifyInstance) {
     const templates = (data ?? []).map((e) => {
       const meta = e.metadata as {
         template_type?: string;
+        source_format?: ReportTemplateType;
         filename?: string;
         size_bytes?: number;
         storage_path?: string;
@@ -1102,6 +1352,7 @@ export async function uploadRoutes(server: FastifyInstance) {
       return {
         id: e.id,
         templateType: meta.template_type ?? 'docx',
+        sourceFormat: meta.source_format ?? meta.template_analysis?.sourceFormat ?? 'pdf',
         filename: meta.filename ?? e.title,
         sizeBytes: meta.size_bytes ?? 0,
         storagePath: meta.storage_path ?? '',
@@ -1116,12 +1367,6 @@ export async function uploadRoutes(server: FastifyInstance) {
 
   // ── Upload a report template ───────────────────────────────────────────────
   server.post<{ Body: { projectId?: string; templateType?: string; filename?: string; mimeType?: string; totalChunks?: number } }>('/uploads/report-template/init', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const projectId = `${request.body?.projectId ?? ''}`.trim();
     const templateType = `${request.body?.templateType ?? ''}`.trim();
     const filename = `${request.body?.filename ?? ''}`.trim();
@@ -1131,9 +1376,23 @@ export async function uploadRoutes(server: FastifyInstance) {
     if (!projectId || !filename || !isValidTemplateType(templateType) || !Number.isInteger(totalChunks) || totalChunks <= 0) {
       return reply.status(400).send({ error: 'projectId, templateType, filename, and totalChunks are required' });
     }
+    if (!detectTemplateSourceFormat(filename, mimeType)) {
+      return reply.status(415).send({ error: 'Template file must be DOCX, PPTX, or PDF.' });
+    }
 
-    if (!(await userCanAccessProject(projectId, user.id))) {
-      return reply.status(403).send({ error: 'Only project members can manage templates' });
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+
+    const templateLimit = checkRateLimit(limitKey('template-init', access.userId, projectId), TEMPLATE_RATE_LIMIT);
+    if (templateLimit.limited) {
+      return reply.status(429).send({
+        error: 'Template upload rate limit exceeded. Please wait before retrying.',
+        retryAfterSeconds: templateLimit.retryAfterSeconds,
+      });
+    }
+
+    if (totalChunks * REPORT_TEMPLATE_CHUNK_BYTES > MAX_TEMPLATE_UPLOAD_BYTES) {
+      return reply.status(413).send({ error: 'Template exceeds the maximum allowed size.' });
     }
 
     const uploadId = randomUUID();
@@ -1144,7 +1403,7 @@ export async function uploadRoutes(server: FastifyInstance) {
       filename,
       mimeType,
       totalChunks,
-      userId: user.id,
+      userId: access.userId,
       createdAt: new Date().toISOString(),
     });
 
@@ -1152,28 +1411,16 @@ export async function uploadRoutes(server: FastifyInstance) {
   });
 
   server.post('/uploads/report-template/chunk', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const parts = request.parts();
-    let uploadId = '';
-    let chunkIndex = -1;
-    let fileBuffer: Buffer | null = null;
-
-    for await (const part of parts) {
-      if (part.type === 'field') {
-        if (part.fieldname === 'uploadId') uploadId = `${part.value ?? ''}`;
-        if (part.fieldname === 'chunkIndex') chunkIndex = Number(part.value ?? -1);
-      } else if (part.type === 'file') {
-        const chunks: Buffer[] = [];
-        for await (const chunk of part.file) chunks.push(chunk as Buffer);
-        fileBuffer = Buffer.concat(chunks);
-      }
+    let payload: MultipartPayload;
+    try {
+      payload = await readMultipartPayload(request, { maxFileBytes: REPORT_TEMPLATE_CHUNK_BYTES, maxFieldChars: 512 });
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Invalid template chunk payload.' });
     }
 
+    const uploadId = `${payload.fields.uploadId ?? ''}`.trim();
+    const chunkIndex = Number(payload.fields.chunkIndex ?? -1);
+    const fileBuffer = payload.file?.buffer ?? null;
     if (!uploadId || !Number.isInteger(chunkIndex) || chunkIndex < 0 || !fileBuffer) {
       return reply.status(400).send({ error: 'uploadId, chunkIndex, and chunk file are required' });
     }
@@ -1183,7 +1430,9 @@ export async function uploadRoutes(server: FastifyInstance) {
 
     const session = await readReportTemplateUploadSession(uploadId);
     if (!session) return reply.status(404).send({ error: 'Upload session not found or expired' });
-    if (session.userId !== user.id) return reply.status(403).send({ error: 'Forbidden' });
+    const access = await requireProjectMemberAccess(session.projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    if (session.userId !== access.userId) return reply.status(403).send({ error: 'Forbidden' });
     if (chunkIndex >= session.totalChunks) return reply.status(400).send({ error: 'chunkIndex is out of range' });
 
     const paths = getReportTemplateUploadPaths(uploadId);
@@ -1194,21 +1443,14 @@ export async function uploadRoutes(server: FastifyInstance) {
   });
 
   server.post<{ Body: { uploadId?: string } }>('/uploads/report-template/complete', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const uploadId = `${request.body?.uploadId ?? ''}`.trim();
     if (!uploadId) return reply.status(400).send({ error: 'uploadId is required' });
 
     const session = await readReportTemplateUploadSession(uploadId);
     if (!session) return reply.status(404).send({ error: 'Upload session not found or expired' });
-    if (session.userId !== user.id) return reply.status(403).send({ error: 'Forbidden' });
-    if (!(await userCanAccessProject(session.projectId, user.id))) {
-      return reply.status(403).send({ error: 'Only project members can manage templates' });
-    }
+    const access = await requireProjectMemberAccess(session.projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    if (session.userId !== access.userId) return reply.status(403).send({ error: 'Forbidden' });
 
     try {
       const paths = getReportTemplateUploadPaths(uploadId);
@@ -1238,7 +1480,7 @@ export async function uploadRoutes(server: FastifyInstance) {
         filename: session.filename,
         mimeType: session.mimeType,
         fileBuffer: Buffer.concat(buffers),
-        userId: user.id,
+        userId: access.userId,
         logger: request.log,
       });
 
@@ -1251,32 +1493,18 @@ export async function uploadRoutes(server: FastifyInstance) {
   });
 
   server.post('/uploads/report-template', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const parts = request.parts();
-    let projectId = '';
-    let templateType = '';   // 'docx' | 'pptx' | 'pdf'
-    let filename = '';
-    let mimeType = '';
-    let fileBuffer: Buffer | null = null;
-
-    for await (const part of parts) {
-      if (part.type === 'field') {
-        if (part.fieldname === 'projectId') projectId = part.value as string;
-        if (part.fieldname === 'templateType') templateType = part.value as string;
-        if (part.fieldname === 'filename') filename = part.value as string;
-      } else if (part.type === 'file') {
-        filename = filename || part.filename;
-        mimeType = part.mimetype;
-        const chunks: Buffer[] = [];
-        for await (const chunk of part.file) chunks.push(chunk as Buffer);
-        fileBuffer = Buffer.concat(chunks);
-      }
+    let payload: MultipartPayload;
+    try {
+      payload = await readMultipartPayload(request, { maxFileBytes: MAX_TEMPLATE_UPLOAD_BYTES });
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Invalid template upload payload.' });
     }
+
+    const projectId = `${payload.fields.projectId ?? ''}`.trim();
+    const templateType = `${payload.fields.templateType ?? ''}`.trim();
+    const filename = `${payload.fields.filename ?? payload.file?.filename ?? ''}`.trim();
+    const fileBuffer = payload.file?.buffer ?? null;
+    const mimeType = payload.file?.mimeType ?? 'application/octet-stream';
 
     if (!projectId || !templateType || !filename || !fileBuffer) {
       return reply.status(400).send({ error: 'projectId, templateType, filename, and file are required' });
@@ -1285,17 +1513,24 @@ export async function uploadRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'templateType must be docx, pptx, or pdf' });
     }
 
-    if (!(await userCanAccessProject(projectId, user.id))) {
-      return reply.status(403).send({ error: 'Only project members can manage templates' });
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+
+    const templateLimit = checkRateLimit(limitKey('template-direct', access.userId, projectId), TEMPLATE_RATE_LIMIT);
+    if (templateLimit.limited) {
+      return reply.status(429).send({
+        error: 'Template upload rate limit exceeded. Please wait before retrying.',
+        retryAfterSeconds: templateLimit.retryAfterSeconds,
+      });
     }
     try {
       return await storeReportTemplate({
         projectId,
         templateType,
         filename,
-        mimeType: mimeType || 'application/octet-stream',
+        mimeType,
         fileBuffer,
-        userId: user.id,
+        userId: access.userId,
         logger: request.log,
       });
     } catch (err: unknown) {
@@ -1305,21 +1540,18 @@ export async function uploadRoutes(server: FastifyInstance) {
 
   // ── Delete a report template ───────────────────────────────────────────────
   server.delete<{ Body: { projectId: string; eventId: string } }>('/uploads/report-template', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { projectId, eventId } = request.body;
     if (!projectId || !eventId) return reply.status(400).send({ error: 'projectId and eventId are required' });
 
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase
-      .from('project_members').select('user_id')
-      .eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) {
-      return reply.status(403).send({ error: 'Only project members can manage templates' });
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
+
+    const deleteLimit = checkRateLimit(limitKey('template-delete', access.userId, projectId), TEMPLATE_DELETE_RATE_LIMIT);
+    if (deleteLimit.limited) {
+      return reply.status(429).send({
+        error: 'Too many template delete requests. Please wait before retrying.',
+        retryAfterSeconds: deleteLimit.retryAfterSeconds,
+      });
     }
 
     const { data: evt } = await supabase
@@ -1338,23 +1570,14 @@ export async function uploadRoutes(server: FastifyInstance) {
 
   // ── Delete a file from storage (called when event is deleted) ──────────────
   server.delete<{ Body: { storagePath: string } }>('/uploads/file', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const token = authHeader.slice(7);
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { storagePath } = request.body;
     if (!storagePath) return reply.status(400).send({ error: 'storagePath required' });
 
-    const projectId = storagePath.split('/')[0];
-    const { data: proj } = await supabase.from('projects').select('owner_id').eq('id', projectId).single();
-    const { data: membership } = await supabase
-      .from('project_members').select('user_id')
-      .eq('project_id', projectId).eq('user_id', user.id).single();
-    if (proj?.owner_id !== user.id && !membership) {
-      return reply.status(403).send({ error: 'Forbidden' });
-    }
+    const projectId = getProjectIdFromStoragePath(storagePath);
+    if (!projectId) return reply.status(400).send({ error: 'Invalid storagePath' });
+
+    const access = await requireProjectMemberAccess(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
 
     const { error } = await supabase.storage.from(BUCKET).remove([storagePath]);
     if (error) return reply.status(500).send({ error: error.message });

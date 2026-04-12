@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { isGeneratedThesisLatexCommitEvent, isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters';
 import { useAuth } from '../lib/auth';
 
 async function fetchAccessibleProjectIds(): Promise<string[]> {
@@ -27,6 +28,40 @@ interface DashboardStats {
   goalsTracked: number;
   eventsThisWeek: number;
   onTrackRate: number | null;
+}
+
+export interface DashboardPlanningPerson {
+  userId: string;
+  displayName: string;
+  activeTasks: number;
+  remainingHours: number;
+  loggedHours: number;
+  blockedOrLate: number;
+  status: 'overcommitted' | 'balanced' | 'underloaded';
+}
+
+export interface DashboardPlanningProject {
+  projectId: string;
+  projectName: string;
+  overdueOpen: number;
+  dueSoon: number;
+  blocked: number;
+  varianceHours: number;
+}
+
+export interface DashboardPlanningSnapshot {
+  plannedHours: number;
+  actualHours: number;
+  remainingHours: number;
+  varianceHours: number;
+  overdueOpen: number;
+  dueSoon: number;
+  blockedTasks: number;
+  overcommittedPeople: number;
+  underloadedPeople: number;
+  activeEstimates: number;
+  people: DashboardPlanningPerson[];
+  riskyProjects: DashboardPlanningProject[];
 }
 
 export interface DashboardHoverTask {
@@ -126,7 +161,7 @@ export function useDashboardHoverDetails() {
       ]);
 
       const goalRows = (goalsRes.data ?? []) as any[];
-      const eventRows = (eventsRes.data ?? []) as any[];
+      const eventRows = ((eventsRes.data ?? []) as any[]).filter((event) => !isGeneratedThesisLatexCommitEvent(event));
 
       const assigneeIds = Array.from(
         new Set(
@@ -233,7 +268,7 @@ export function useDashboardStats() {
         supabase.from('goals').select('id, status', { count: 'exact' }),
         supabase
           .from('events')
-          .select('id', { count: 'exact', head: true })
+          .select('id, event_type, title, summary')
           .gte('occurred_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
       ]);
 
@@ -241,10 +276,12 @@ export function useDashboardStats() {
       const totalGoals = goalData.length;
       const onTrack = goalData.filter((g) => g.status === 'active' || g.status === 'complete').length;
 
+      const visibleEventsThisWeek = (eventsRes.data ?? []).filter((event: any) => !isGeneratedThesisLatexCommitEvent(event)).length;
+
       setStats({
         activeProjects: projectsRes.count ?? 0,
         goalsTracked: totalGoals,
-        eventsThisWeek: eventsRes.count ?? 0,
+        eventsThisWeek: visibleEventsThisWeek,
         onTrackRate: totalGoals > 0 ? Math.round((onTrack / totalGoals) * 100) : null,
       });
       setLoading(false);
@@ -254,6 +291,187 @@ export function useDashboardStats() {
   }, [user]);
 
   return { stats, loading };
+}
+
+export function useDashboardPlanning() {
+  const { user } = useAuth();
+  const [snapshot, setSnapshot] = useState<DashboardPlanningSnapshot>({
+    plannedHours: 0,
+    actualHours: 0,
+    remainingHours: 0,
+    varianceHours: 0,
+    overdueOpen: 0,
+    dueSoon: 0,
+    blockedTasks: 0,
+    overcommittedPeople: 0,
+    underloadedPeople: 0,
+    activeEstimates: 0,
+    people: [],
+    riskyProjects: [],
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+
+    async function load() {
+      setLoading(true);
+      const projectIds = await fetchAccessibleProjectIds();
+      if (projectIds.length === 0) {
+        setSnapshot({
+          plannedHours: 0,
+          actualHours: 0,
+          remainingHours: 0,
+          varianceHours: 0,
+          overdueOpen: 0,
+          dueSoon: 0,
+          blockedTasks: 0,
+          overcommittedPeople: 0,
+          underloadedPeople: 0,
+          activeEstimates: 0,
+          people: [],
+          riskyProjects: [],
+        });
+        setLoading(false);
+        return;
+      }
+
+      const [goalsRes, timeLogsRes] = await Promise.all([
+        supabase
+          .from('goals')
+          .select('id, title, project_id, status, progress, deadline, estimated_hours, assigned_to, assignees, projects(name)')
+          .in('project_id', projectIds),
+        supabase
+          .from('time_logs')
+          .select('goal_id, project_id, user_id, logged_hours, logged_at')
+          .in('project_id', projectIds),
+      ]);
+
+      const goals = (goalsRes.data ?? []) as Array<{
+        id: string;
+        title: string;
+        project_id: string;
+        status: string;
+        progress: number | null;
+        deadline: string | null;
+        estimated_hours: number | null;
+        assigned_to: string | null;
+        assignees: string[] | null;
+        projects?: { name?: string } | null;
+      }>;
+      const timeLogs = (timeLogsRes.data ?? []) as Array<{
+        goal_id: string | null;
+        project_id: string;
+        user_id: string | null;
+        logged_hours: number;
+        logged_at: string;
+      }>;
+
+      const actualHoursByGoal = new Map<string, number>();
+      const loggedHoursByUser = new Map<string, number>();
+      for (const log of timeLogs) {
+        if (log.goal_id) {
+          actualHoursByGoal.set(log.goal_id, (actualHoursByGoal.get(log.goal_id) ?? 0) + (log.logged_hours ?? 0));
+        }
+        if (log.user_id) {
+          loggedHoursByUser.set(log.user_id, (loggedHoursByUser.get(log.user_id) ?? 0) + (log.logged_hours ?? 0));
+        }
+      }
+
+      const today = new Date();
+      const twoWeeksFromNow = new Date(today);
+      twoWeeksFromNow.setDate(twoWeeksFromNow.getDate() + 14);
+
+      const plannedGoals = goals.filter((goal) => (goal.estimated_hours ?? 0) > 0 || (actualHoursByGoal.get(goal.id) ?? 0) > 0);
+      const plannedHours = plannedGoals.reduce((sum, goal) => sum + (goal.estimated_hours ?? 0), 0);
+      const actualHours = plannedGoals.reduce((sum, goal) => sum + (actualHoursByGoal.get(goal.id) ?? 0), 0);
+      const remainingHours = plannedGoals
+        .filter((goal) => goal.status !== 'complete')
+        .reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
+      const overdueOpen = goals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) < today).length;
+      const dueSoon = goals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) >= today && new Date(goal.deadline) <= twoWeeksFromNow && (goal.progress ?? 0) < 80).length;
+      const blockedTasks = goals.filter((goal) => goal.status === 'at_risk' || goal.status === 'missed').length;
+
+      const personIds = Array.from(new Set(goals.flatMap((goal) => {
+        if (Array.isArray(goal.assignees) && goal.assignees.length > 0) return goal.assignees.filter(Boolean);
+        return goal.assigned_to ? [goal.assigned_to] : [];
+      }).filter((value): value is string => Boolean(value))));
+
+      let profileNameMap: Record<string, string> = {};
+      if (personIds.length > 0) {
+        const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', personIds);
+        profileNameMap = Object.fromEntries((profiles ?? []).map((profile: { id: string; display_name: string | null }) => [profile.id, profile.display_name ?? profile.id]));
+      }
+
+      const people = personIds.map((personId) => {
+        const assignedGoals = goals.filter((goal) => {
+          const assigneeIds = Array.isArray(goal.assignees) && goal.assignees.length > 0
+            ? goal.assignees
+            : goal.assigned_to ? [goal.assigned_to] : [];
+          return assigneeIds.includes(personId);
+        });
+        const remainingLoad = assignedGoals
+          .filter((goal) => goal.status !== 'complete')
+          .reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
+        const loggedHours = loggedHoursByUser.get(personId) ?? 0;
+        const blockedOrLate = assignedGoals.filter((goal) => goal.status === 'at_risk' || goal.status === 'missed' || (goal.deadline && new Date(goal.deadline) < today)).length;
+        const status = remainingLoad > Math.max(loggedHours * 1.5, 12)
+          ? 'overcommitted'
+          : remainingLoad <= Math.max(loggedHours * 0.4, 4)
+            ? 'underloaded'
+            : 'balanced';
+        return {
+          userId: personId,
+          displayName: profileNameMap[personId] ?? personId,
+          activeTasks: assignedGoals.filter((goal) => goal.status !== 'complete').length,
+          remainingHours: remainingLoad,
+          loggedHours,
+          blockedOrLate,
+          status,
+        } satisfies DashboardPlanningPerson;
+      }).filter((person) => person.activeTasks > 0 || person.remainingHours > 0 || person.loggedHours > 0);
+
+      const riskyProjects = Array.from(new Set(goals.map((goal) => goal.project_id))).map((projectId) => {
+        const projectGoals = goals.filter((goal) => goal.project_id === projectId);
+        const overdue = projectGoals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) < today).length;
+        const upcoming = projectGoals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) >= today && new Date(goal.deadline) <= twoWeeksFromNow && (goal.progress ?? 0) < 80).length;
+        const blocked = projectGoals.filter((goal) => goal.status === 'at_risk' || goal.status === 'missed').length;
+        const planned = projectGoals.reduce((sum, goal) => sum + (goal.estimated_hours ?? 0), 0);
+        const actual = projectGoals.reduce((sum, goal) => sum + (actualHoursByGoal.get(goal.id) ?? 0), 0);
+        return {
+          projectId,
+          projectName: projectGoals[0]?.projects?.name ?? 'Unknown project',
+          overdueOpen: overdue,
+          dueSoon: upcoming,
+          blocked,
+          varianceHours: actual - planned,
+        } satisfies DashboardPlanningProject;
+      })
+        .filter((project) => project.overdueOpen > 0 || project.dueSoon > 0 || project.blocked > 0 || project.varianceHours > 0)
+        .sort((left, right) => (right.overdueOpen * 3 + right.blocked * 2 + right.dueSoon) - (left.overdueOpen * 3 + left.blocked * 2 + left.dueSoon))
+        .slice(0, 5);
+
+      setSnapshot({
+        plannedHours,
+        actualHours,
+        remainingHours,
+        varianceHours: actualHours - plannedHours,
+        overdueOpen,
+        dueSoon,
+        blockedTasks,
+        overcommittedPeople: people.filter((person) => person.status === 'overcommitted').length,
+        underloadedPeople: people.filter((person) => person.status === 'underloaded').length,
+        activeEstimates: plannedGoals.length,
+        people: people.sort((left, right) => right.remainingHours - left.remainingHours || right.blockedOrLate - left.blockedOrLate),
+        riskyProjects,
+      });
+      setLoading(false);
+    }
+
+    void load();
+  }, [user]);
+
+  return { snapshot, loading };
 }
 
 export interface UpcomingDeadline {
@@ -394,7 +612,7 @@ export function useRecentCommits() {
       );
 
       all.sort((a, b) => b.date.localeCompare(a.date));
-      setCommits(all.slice(0, 20));
+      setCommits(all.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit.message)).slice(0, 20));
       setLoading(false);
     }
 
@@ -461,6 +679,7 @@ export interface DashboardAISummary {
   summary: string;
   generatedAt: string;
   provider?: string | null;
+  model?: string | null;
 }
 
 export function useDashboardAISummary() {
@@ -481,12 +700,13 @@ export function useDashboardAISummary() {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({}),
       });
-      const json = await res.json().catch(() => null) as { summary?: string; provider?: string; error?: string } | null;
+      const json = await res.json().catch(() => null) as { summary?: string; provider?: string; model?: string; error?: string } | null;
       if (!res.ok || !json?.summary) throw new Error(json?.error ?? `Failed to generate summary (${res.status})`);
       const result = {
         summary: json.summary,
         generatedAt: new Date().toISOString(),
         provider: json.provider ?? null,
+        model: json.model ?? null,
       };
       setSummary(result);
       const { error: saveError } = await supabase
@@ -495,6 +715,7 @@ export function useDashboardAISummary() {
           user_id: user.id,
           summary: result.summary,
           provider: result.provider,
+          model: result.model,
           generated_at: result.generatedAt,
           updated_at: new Date().toISOString(),
         });
@@ -517,7 +738,7 @@ export function useDashboardAISummary() {
     async function loadStoredSummary() {
       const { data, error } = await supabase
         .from('user_dashboard_summaries')
-        .select('summary, provider, generated_at')
+        .select('summary, provider, model, generated_at')
         .eq('user_id', userId)
         .maybeSingle();
 
@@ -525,6 +746,7 @@ export function useDashboardAISummary() {
         const stored = {
           summary: data.summary,
           provider: data.provider ?? null,
+          model: data.model ?? null,
           generatedAt: data.generated_at,
         } satisfies DashboardAISummary;
         setSummary(stored);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import type { Goal } from '../types';
 import './Timeline.css';
 import FilterDropdown from './FilterDropdown';
@@ -31,6 +31,14 @@ interface MemberInfo { user_id: string; display_name: string | null; }
 interface TimelineProps {
   goals: Goal[];
   members?: MemberInfo[];
+  onGoalClick?: (goal: Goal) => void;
+  header?: ReactNode;
+}
+
+interface HoverState {
+  id: string;
+  x: number;
+  y: number;
 }
 
 function resolveMemberDisplayName(members: MemberInfo[], userId: string): string | null {
@@ -43,7 +51,19 @@ function resolveMemberDisplayName(members: MemberInfo[], userId: string): string
   return null;
 }
 
-function GoalTooltip({ goal, members, color }: { goal: Goal; members: MemberInfo[]; color: string }) {
+function GoalTooltip({
+  goal,
+  members,
+  color,
+  x,
+  y,
+}: {
+  goal: Goal;
+  members: MemberInfo[];
+  color: string;
+  x: number;
+  y: number;
+}) {
   const assigneeIds: string[] = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
   const assigneeNames = assigneeIds.map((id) => resolveMemberDisplayName(members, id) ?? 'Unknown');
 
@@ -54,8 +74,18 @@ function GoalTooltip({ goal, members, color }: { goal: Goal; members: MemberInfo
     complete: 'Complete',
   };
 
+  const tooltipWidth = 300;
+  const gutter = 16;
+  const maxLeft = Math.max(gutter, window.innerWidth - tooltipWidth - gutter);
+  const style = cv({
+    '--tlo-color': color,
+    top: `${y}px`,
+    left: `${Math.min(Math.max(gutter, x), maxLeft)}px`,
+    transform: 'translateY(-50%)',
+  });
+
   return (
-    <div className="tlo-tooltip">
+    <div className="tlo-tooltip tlo-tooltip-fixed" {...({ style } as any)}>
       <div className="tlo-tooltip-bar" {...({ style: cv({ '--tlo-color': color }) } as any)} />
       <div className="tlo-tooltip-body">
         <p className="text-xs font-mono font-semibold text-heading leading-snug mb-2">{goal.title}</p>
@@ -142,11 +172,34 @@ type GroupBy = 'category' | 'loe' | 'none';
 
 // ── Main export ──────────────────────────────────────────────────────────────
 
-export default function Timeline({ goals, members = [] }: TimelineProps) {
-  const [hovered, setHovered]   = useState<string | null>(null);
+export default function Timeline({ goals, members = [], onGoalClick, header }: TimelineProps) {
+  const [hovered, setHovered]   = useState<HoverState | null>(null);
   const [filterCats, setFilterCats] = useState<string[]>([]);
   const [filterLoes, setFilterLoes] = useState<string[]>([]);
   const [groupBy, setGroupBy]   = useState<GroupBy>('category');
+
+  const setHoverFromRect = useCallback((goalId: string, rect: DOMRect) => {
+    const tooltipGap = 12;
+    const preferredX = rect.right + tooltipGap;
+    setHovered({
+      id: goalId,
+      x: preferredX,
+      y: rect.top + rect.height / 2,
+    });
+  }, []);
+
+  const openGoal = useCallback((goal: Goal) => {
+    setHovered(null);
+    onGoalClick?.(goal);
+  }, [onGoalClick]);
+
+  const handleGoalKeyDown = useCallback((event: React.KeyboardEvent<HTMLElement>, goal: Goal) => {
+    if (!onGoalClick) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openGoal(goal);
+    }
+  }, [onGoalClick, openGoal]);
 
   if (goals.length === 0) {
     return (
@@ -181,7 +234,7 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
   });
 
   const filterBar = (
-    <div className="flex items-center gap-2 mb-3 flex-wrap">
+    <div className="flex items-center gap-2 flex-wrap">
       {(allCategories.length > 1 || allLoes.length > 1) && (
         <FilterDropdown
           placeholder="Filters"
@@ -222,7 +275,14 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
   if (filtered.length === 0) {
     return (
       <div>
-        {filterBar}
+        {header ? (
+          <div className="mb-3 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">{header}</div>
+            <div className="min-w-0 flex-1">{filterBar}</div>
+          </div>
+        ) : (
+          <div className="mb-3">{filterBar}</div>
+        )}
         <div className="py-8 text-center">
           <p className="text-xs text-muted tracking-wide">No goals match the current filters</p>
         </div>
@@ -279,7 +339,14 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
 
   return (
     <div>
-      {filterBar}
+      {header ? (
+        <div className="mb-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">{header}</div>
+          <div className="min-w-0 flex-1">{filterBar}</div>
+        </div>
+      ) : (
+        <div className="mb-3">{filterBar}</div>
+      )}
 
       {/* Track */}
       <div className="tlo-track-outer border border-border rounded bg-surface">
@@ -317,45 +384,108 @@ export default function Timeline({ goals, members = [] }: TimelineProps) {
               const deadlineMs  = new Date(goal.deadline!).getTime();
               const deadlinePct = toPct(deadlineMs);
               const progressPct = `${((goal.progress / 100) * parseFloat(deadlinePct)).toFixed(3)}%`;
-              const isHovered   = hovered === goal.id;
-              const isFirst     = gi === 0 && idxInGroup === 0;
+              const isHovered   = hovered?.id === goal.id;
+              const isClickable = !!onGoalClick;
 
               return (
                 <div
                   key={goal.id}
                   className={`tlo-row${idxInGroup < groupGoals.length - 1 ? ' tlo-row-border' : ''}`}
                   {...({ style: cv({ '--tlo-color': c.color }) } as any)}
-                  onMouseEnter={() => setHovered(goal.id)}
                   onMouseLeave={() => setHovered(null)}
                 >
-                  <div className="tlo-label tlo-label-hover">
-                    <span className="tlo-cat-dot" />
-                    <span className="text-[10px] font-mono truncate tlo-cat-text">
-                      {goal.title}
-                    </span>
-                  </div>
-
-                  {isHovered && (
-                    <GoalTooltip goal={goal} members={members} color={c.color} />
+                  {isClickable ? (
+                    <div
+                      className="tlo-label tlo-label-hover cursor-pointer text-left"
+                      onMouseEnter={(event) => setHoverFromRect(goal.id, event.currentTarget.getBoundingClientRect())}
+                      onClick={() => openGoal(goal)}
+                      onKeyDown={(event) => handleGoalKeyDown(event, goal)}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Edit task ${goal.title}`}
+                    >
+                      <span className="tlo-cat-dot" />
+                      <span className="text-[10px] font-mono truncate tlo-cat-text">
+                        {goal.title}
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className="tlo-label tlo-label-hover"
+                      onMouseEnter={(event) => setHoverFromRect(goal.id, event.currentTarget.getBoundingClientRect())}
+                    >
+                      <span className="tlo-cat-dot" />
+                      <span className="text-[10px] font-mono truncate tlo-cat-text">
+                        {goal.title}
+                      </span>
+                    </div>
                   )}
 
-                  <div className="tlo-chart">
-                    {/* Tick grid lines behind bars */}
-                    {ticks.map((t) => (
-                      <div
-                        key={t.pct}
-                        className={`tlo-tick-line ${t.isMajor ? 'tlo-tick-line--major' : ''}`}
-                        style={{ left: t.pct }}
-                      />
-                    ))}
+                  {isHovered && (
+                    <GoalTooltip goal={goal} members={members} color={c.color} x={hovered.x} y={hovered.y} />
+                  )}
 
-                    {/* Today column shade */}
-                    <div className="tlo-today-col" {...({ style: cv({ '--tlo-now-start': nowDayStartPct, '--tlo-day-w': dayWidthPct }) } as any)} />
-                    <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
-                    <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
-                    <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />
-                    <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
-                  </div>
+                  {isClickable ? (
+                    <div
+                      className="tlo-chart"
+                      aria-hidden="true"
+                    >
+                      {/* Tick grid lines behind bars */}
+                      {ticks.map((t) => (
+                        <div
+                          key={t.pct}
+                          className={`tlo-tick-line ${t.isMajor ? 'tlo-tick-line--major' : ''}`}
+                          style={{ left: t.pct }}
+                        />
+                      ))}
+
+                      {/* Today column shade */}
+                      <div className="tlo-today-col" {...({ style: cv({ '--tlo-now-start': nowDayStartPct, '--tlo-day-w': dayWidthPct }) } as any)} />
+                      <div
+                        className="tlo-bar-wrap cursor-pointer"
+                        onMouseEnter={(event) => setHoverFromRect(goal.id, event.currentTarget.getBoundingClientRect())}
+                        onMouseLeave={() => setHovered(null)}
+                        onClick={() => openGoal(goal)}
+                        onKeyDown={(event) => handleGoalKeyDown(event, goal)}
+                        tabIndex={0}
+                        role="button"
+                        aria-label={`Edit task ${goal.title}`}
+                        {...({ style: cv({ '--tlo-deadline': deadlinePct }) } as any)}
+                      >
+                        <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
+                        <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
+                        <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />
+                        <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className="tlo-chart"
+                    >
+                      {/* Tick grid lines behind bars */}
+                      {ticks.map((t) => (
+                        <div
+                          key={t.pct}
+                          className={`tlo-tick-line ${t.isMajor ? 'tlo-tick-line--major' : ''}`}
+                          style={{ left: t.pct }}
+                        />
+                      ))}
+
+                      {/* Today column shade */}
+                      <div className="tlo-today-col" {...({ style: cv({ '--tlo-now-start': nowDayStartPct, '--tlo-day-w': dayWidthPct }) } as any)} />
+                      <div
+                        className="tlo-bar-wrap"
+                        onMouseEnter={(event) => setHoverFromRect(goal.id, event.currentTarget.getBoundingClientRect())}
+                        onMouseLeave={() => setHovered(null)}
+                        {...({ style: cv({ '--tlo-deadline': deadlinePct }) } as any)}
+                      >
+                        <div className="tlo-track" {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-track': c.track }) } as any)} />
+                        <div className="tlo-fill"  {...({ style: cv({ '--tlo-progress': progressPct, '--tlo-color': c.color }) } as any)} />
+                        <div className="tlo-dot"   {...({ style: cv({ '--tlo-deadline': deadlinePct, '--tlo-color': c.color }) } as any)} />
+                        <span className="tlo-pct text-[10px] font-mono text-heading">{goal.progress}%</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

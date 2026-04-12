@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useProjectCommitHistory, type ProjectCommitHistoryRepo } from '../hooks/useProjectCommitHistory';
 import './CommitActivityCharts.css';
-
-interface RepoBreakdown {
-  source: 'github' | 'gitlab';
-  repo: string;
-  dateMap: Record<string, number>;
-}
 
 interface Props {
   projectId: string;
@@ -53,7 +48,7 @@ interface TooltipState {
 interface HeatmapProps {
   countByDate: Map<string, number>;
   totalCommits: number;
-  byRepo: RepoBreakdown[];
+  byRepo: ProjectCommitHistoryRepo[];
 }
 
 function CommitHeatmap({ countByDate, totalCommits, byRepo }: HeatmapProps) {
@@ -310,31 +305,24 @@ function CommitBarChart({ countByDate, firstDate }: BarChartProps) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function CommitActivityCharts({ projectId, onHasData }: Props) {
-  const [countByDate, setCountByDate] = useState<Map<string, number>>(new Map());
-  const [byRepo, setByRepo]           = useState<RepoBreakdown[]>([]);
-  const [firstDate, setFirstDate]     = useState<string | null>(null);
-  const [loading, setLoading]         = useState(true);
+  const { loading, commits, byRepo, hasData } = useProjectCommitHistory(projectId);
 
   useEffect(() => {
-    setLoading(true);
-    fetch(`/api/projects/${projectId}/commit-history`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((data: { commits: { date: string; count: number }[]; byRepo?: RepoBreakdown[] } | null) => {
-        if (!data?.commits?.length) { setLoading(false); onHasData?.(false); return; }
-        const counts = new Map<string, number>();
-        let earliest = data.commits[0].date;
-        for (const c of data.commits) {
-          counts.set(c.date, c.count);
-          if (c.date < earliest) earliest = c.date;
-        }
-        setCountByDate(counts);
-        setByRepo(data.byRepo ?? []);
-        setFirstDate(earliest);
-        setLoading(false);
-        onHasData?.(true);
-      })
-      .catch(() => { setLoading(false); onHasData?.(false); });
-  }, [projectId, onHasData]);
+    onHasData?.(hasData);
+  }, [hasData, onHasData]);
+
+  const countByDate = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const commit of commits) {
+      counts.set(commit.date, commit.count);
+    }
+    return counts;
+  }, [commits]);
+
+  const firstDate = useMemo(() => {
+    if (commits.length === 0) return null;
+    return commits.reduce((earliest, commit) => (commit.date < earliest ? commit.date : earliest), commits[0].date);
+  }, [commits]);
 
   if (loading) {
     return (

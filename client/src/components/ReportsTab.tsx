@@ -21,6 +21,7 @@ interface ReportsTabProps {
   projectId: string;
   projectName: string;
   projectStartDate: string | null;
+  projectReportPrompt?: string | null;
   githubRepo?: string | string[] | null;
   gitlabRepos?: string[];
   messages: Message[];
@@ -137,6 +138,7 @@ type ReportFormat = 'docx' | 'pptx' | 'pdf';
 type ProjectReportTemplate = {
   id: string;
   templateType: ReportFormat;
+  sourceFormat?: ReportFormat;
   filename: string;
   sizeBytes: number;
   storagePath: string;
@@ -148,6 +150,8 @@ type ProjectReportTemplate = {
     layoutHints?: string[];
     fonts?: string[];
     palette?: string[];
+    analysisConfidence?: 'low' | 'medium' | 'high';
+    sourceFormat?: ReportFormat;
   } | null;
 };
 
@@ -156,6 +160,7 @@ export default function ReportsTab({
   projectId,
   projectName,
   projectStartDate,
+  projectReportPrompt = null,
   githubRepo = null,
   gitlabRepos = [],
   messages,
@@ -258,22 +263,46 @@ export default function ReportsTab({
 
   const defaultFrom = projectStartDate ?? today;
 
-  const buildDefaultPrompt = (activeFormat: ReportFormat, from: string, to: string) => {
+  const buildScopedReportPrompt = (baseInstructions: string, activeFormat: ReportFormat, from: string, to: string) => {
     const fmtLabel = activeFormat === 'pptx' ? 'PowerPoint presentation' : activeFormat === 'pdf' ? 'PDF report' : 'Word document';
-    return `Generate a comprehensive ${fmtLabel} for the project "${projectName}" covering the period from ${from} to ${to}. ` +
-      `Please review and include: all tasks and their completion status, deadlines and whether they were met or are at risk, ` +
+    return [
+      `Generate a ${fmtLabel} for the project "${projectName}" covering ${from} through ${to}.`,
+      `Use all relevant Odyssey project context available to the report generator, including tasks, members, activity, documents, and linked repositories.`,
+      baseInstructions.trim(),
+    ].join(' ');
+  };
+
+  const buildDefaultPrompt = (activeFormat: ReportFormat, from: string, to: string) => {
+    if (activeFormat === 'docx') {
+      return buildScopedReportPrompt([
+        `Treat this as a formal technical/project status document for leadership and stakeholders, not a casual summary.`,
+        `Use all available Odyssey context: task status and progress, deadlines, overdue work, dependencies, categories, LOE, member activity, recent events, uploaded documents, and all linked GitHub and GitLab repository activity.`,
+        `Prioritize concrete evidence over general statements. Ground the report in real task names, percentages, dates, milestones, activity patterns, and repo momentum wherever the data supports it.`,
+        `The report should read like a polished DOCX deliverable with a strong narrative arc: title page quality metadata, executive summary, project overview, progress analysis, accomplishments, risks/blockers, upcoming milestones, and recommendations.`,
+        `Specifically analyze and include: overall project health and schedule confidence; completion and in-progress status across tasks; progress by category or LOE when useful; deadline pressure and overdue work; noteworthy team or contributor activity; and code/repository signals from all linked repos when present.`,
+        `When numeric data exists, include figures or tables that would materially improve readability, such as task status breakdown, progress by category or LOE, timeline pressure, contributor activity, or commit momentum. Only use visuals when supported by actual project data.`,
+        `Write in a formal, analytical, concise tone. Avoid marketing language, hype, and generic filler.`,
+        `For recommendations, be specific and action-oriented. Focus on what the team should do next to improve delivery, reduce risk, or maintain momentum.`,
+        `For Word-style presentation, prefer a clean professional document tone: strong section headings, concise paragraphs, high signal density, and bullets where they improve clarity. If no uploaded report template overrides the look, assume a professional DOCX style with Calibri-like headings, Arial-like body text, dark blue heading emphasis, black body text, and restrained executive-report formatting.`,
+        `Ensure the generated content is suitable for export: headings should be clear, tables compact, figure titles specific, and no section should rely on vague placeholders unless a chart or figure is clearly warranted by the available data.`,
+      ].join(' '), activeFormat, from, to);
+    }
+
+    return buildScopedReportPrompt(`Please review and include: all tasks and their completion status, deadlines and whether they were met or are at risk, ` +
       `overall project progress and schedule health, key contributions by team member, ` +
       `insights from all linked GitHub and GitLab repositories (commits, activity, file changes), ` +
       `and any relevant content from all uploaded documents. ` +
       `Provide an executive summary, highlight accomplishments, flag risks or delays, and recommend next steps. ` +
       `Include figures (bar charts, pie charts, progress charts, or timelines) wherever the data supports them to make the report easier to understand. ` +
-      `Ensure all text, tables, and figures are properly sized and do not overlap or overrun any boundaries.`;
+      `Ensure all text, tables, and figures are properly sized and do not overlap or overrun any boundaries.`, activeFormat, from, to);
   };
 
   const buildCombinedPrompt = (userText: string, activeFormat: ReportFormat, from: string, to: string) => {
-    const defaultPrompt = buildDefaultPrompt(activeFormat, from, to);
+    const basePrompt = projectReportPrompt?.trim()
+      ? buildScopedReportPrompt(projectReportPrompt, activeFormat, from, to)
+      : buildDefaultPrompt(activeFormat, from, to);
     const userSection = userText.trim() ? `\n\nAdditional user instructions:\n${userText.trim()}` : '';
-    return `${defaultPrompt}${userSection}`;
+    return `${basePrompt}${userSection}`;
   };
 
   // ── Template upload handler ───────────────────────────────────────────────
@@ -385,7 +414,9 @@ export default function ReportsTab({
     const rawPrompt = promptOverride ?? '';
     const prompt = rawPrompt
       ? buildCombinedPrompt(rawPrompt, activeFormat, effectiveFrom, effectiveTo)
-      : buildDefaultPrompt(activeFormat, effectiveFrom, effectiveTo);
+      : projectReportPrompt?.trim()
+        ? buildScopedReportPrompt(projectReportPrompt, activeFormat, effectiveFrom, effectiveTo)
+        : buildDefaultPrompt(activeFormat, effectiveFrom, effectiveTo);
 
     // Use provided snapshot or current messages; inject user message if button-triggered
     let currentMessages = baseMessages ?? messages;
@@ -632,7 +663,7 @@ export default function ReportsTab({
                   }}
                   className={`px-2 text-xs border rounded transition-colors font-mono flex items-center justify-center ${
                     activePreset === activeKey
-                      ? 'bg-accent text-[var(--color-accent-fg)] border-accent'
+                      ? 'odyssey-fill-accent'
                       : 'border-border text-muted hover:text-heading hover:bg-surface2'
                   }`}
                 >
@@ -652,7 +683,7 @@ export default function ReportsTab({
             <button key={f.id} type="button" onClick={() => setFormat(f.id)}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 text-xs border rounded transition-colors ${
                 format === f.id
-                  ? 'bg-accent text-[var(--color-accent-fg)] border-accent'
+                  ? 'odyssey-fill-accent'
                   : 'border-border text-muted hover:text-heading hover:bg-surface2'
               }`}>
               {f.icon}{f.label}
@@ -669,7 +700,7 @@ export default function ReportsTab({
             type="button"
             onClick={() => handleGenerate()}
             disabled={generating || loading}
-            className="flex-1 flex items-center justify-center gap-1.5 px-5 bg-accent text-[var(--color-accent-fg)] text-xs font-medium rounded hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="odyssey-fill-accent flex-1 flex items-center justify-center gap-1.5 px-5 text-xs font-medium rounded transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Generate
           </button>
@@ -695,7 +726,7 @@ export default function ReportsTab({
             type="button"
             onClick={() => templateInputRef.current?.click()}
             disabled={templateLoading === format || templateLoading === `delete:${format}`}
-            title="Upload a DOCX, PPTX, or PDF template — the AI will extract its style and apply it to generated reports"
+            title="Upload a DOCX, PPTX, or PDF template — Odyssey will extract its structure, theme, and formatting cues and adapt them into generated reports"
             className={`flex-1 flex items-center justify-center gap-1.5 px-3 text-xs border rounded transition-colors ${
               currentTemplate
                 ? 'border-accent3/40 bg-accent3/10 text-accent3'
@@ -721,7 +752,7 @@ export default function ReportsTab({
           ref={templateInputRef}
           type="file"
           title="Upload report template"
-          accept={format === 'pptx' ? '.pptx,.pdf' : format === 'docx' ? '.docx,.pdf' : '.pdf,.docx'}
+          accept=".docx,.pptx,.pdf"
           className="hidden"
           onChange={(e) => { if (e.target.files?.[0]) handleTemplateUpload(e.target.files[0]); }}
         />
@@ -749,6 +780,10 @@ export default function ReportsTab({
             <p className="text-[10px] font-semibold text-accent3 font-mono">Saved project template: {currentTemplate.filename}</p>
             <p className="text-[10px] text-muted mt-0.5 leading-relaxed line-clamp-2">
               {currentTemplate.analysis.summary ?? 'Template analysis saved for this format.'}
+            </p>
+            <p className="text-[10px] text-muted/80 mt-1 leading-relaxed line-clamp-1">
+              Source {String(currentTemplate.sourceFormat ?? currentTemplate.analysis?.sourceFormat ?? format).toUpperCase()}
+              {currentTemplate.analysis?.analysisConfidence ? ` · ${currentTemplate.analysis.analysisConfidence} confidence` : ''}
             </p>
             {currentTemplate.analysis.styleHints?.length ? (
               <p className="text-[10px] text-muted/80 mt-1 leading-relaxed line-clamp-2">

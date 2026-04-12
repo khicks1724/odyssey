@@ -136,7 +136,7 @@ Important database areas:
 | AI providers | Anthropic, OpenAI, Google Gemini, Azure OpenAI |
 | Repo integrations | GitHub, GitLab |
 | Microsoft integration | Microsoft Graph |
-| Document tooling | `pdf-parse`, `mammoth`, `docx`, `jspdf`, `pptxgenjs`, `xlsx` |
+| Document tooling | `pdf-parse`, `mammoth`, `docx`, `jspdf`, `pptxgenjs`, `exceljs` |
 
 ## Deployment Modes
 
@@ -219,6 +219,19 @@ MICROSOFT_TOKEN_ENCRYPT_KEY=
 
 AI_KEY_SECRET=
 ```
+
+## Operator Hardening Checklist
+
+Before exposing Odyssey to real users, verify these deployment controls:
+
+- set `AI_KEY_SECRET` and `MICROSOFT_TOKEN_ENCRYPT_KEY`; do not rely on `SUPABASE_SERVICE_KEY` for token encryption
+- set `GITHUB_WEBHOOK_SECRET` and reject unsigned webhook traffic
+- set `CLIENT_URL` to the exact trusted browser origin and avoid wildcard origins in reverse proxies or storage gateways
+- keep the `goal-attachments` bucket private and review Supabase Storage policies before importing production data
+- keep service-role credentials server-only; never expose `SUPABASE_SERVICE_KEY` outside the Fastify container or admin scripts
+- set reverse-proxy body limits to match Odyssey’s stricter server limits rather than allowing arbitrary uploads
+- restrict `/supabase/*` exposure to the browser-facing auth, rest, realtime, and storage paths only
+- rotate provider, webhook, and storage credentials if they were ever used with older insecure defaults
 
 Commands:
 

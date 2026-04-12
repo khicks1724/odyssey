@@ -1,0 +1,64 @@
+\begin{bibunit}[\NPSbibStyle]
+%
+% Put Executive summary here.
+% New paragraphs start after an empty line.
+% For the sake of this template, we use either the \citep{} or \citet{} commands but need to change all of them here to the \cite{} command for IEEE.  See the References section Chapter 1 for more information.
+\ifinforms
+\else
+\let\citep\cite
+\let\citet\cite
+\fi
+%
+
+This is an example of how to create an executive summary with its own references 
+section using the \texttt{bibunit} package.
+The build process needs to change to accomodate this. 
+The \texttt{bibunit} package builds separate unit files
+\texttt{bu1.aux}, \texttt{bu2.aux}, etc. 
+These needs to be run through \BibTeX{} separately.
+In this example, the executive summary is the first (and only) bibunit, 
+so we need to do the commands:
+\begin{itemize}
+	\item[] \texttt{pdflatex report}
+	\item[] \texttt{bibtex report}
+	\item[] \texttt{bibtex bu1}
+	\item[] \texttt{pdflatex report}
+	\item[] \texttt{pdflatex report}
+\end{itemize}
+The \texttt{Makefile} demonstrates how to script this.
+
+\section*{Executive Summary Section} % Use the stared section/subsection/etc. commands here so they do not create TOC entries
+The references~\citet{americans_1991,haynes_2009}
+are in both the executive summary
+and in the main thesis; they are numbered separately.
+Some references~\citep{Unicorn:1995} appear only in the executive summary,
+and are not part of the final List of References of the thesis.
+
+Note, you cannot use numbered sections in the executive summary,
+since the summary has no number itself.
+
+This sentence demonstrates that acronyms, like \ac{US} and \ac{TCP}, work in the
+executive summary; the \ac{US} is the short version. The counter will be re-set
+in the main body, where its first use will be long again.
+
+\subsection*{An Exec Summary Subsection}
+\lipsum[2-3] % example text; remove me
+
+%
+% this makes references appear here at the subsubsection-level instead of chapter-level
+%
+\begingroup
+ \let\stdthebibliography\thebibliography
+ \renewcommand{\thebibliography}{%
+ \let\chapter\subsubsection
+ \titlespacing*{\subsubsection}{0pt}{5ex plus 2ex}{-1ex plus .2ex}
+ \stdthebibliography}
+ \raggedright     % don't automatically full justify bibliographic references
+ \singlespacing   % reduce extra line breaks between entries
+ \normalsize
+ \putbib[references]  % use references.bib and place the bibliography here
+\endgroup
+%
+% This is the end of special macros that tweak the appearance of the references
+%
+\end{bibunit}

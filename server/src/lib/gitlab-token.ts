@@ -8,9 +8,9 @@ export interface GitLabTokenConfigFields {
 }
 
 function getGitLabTokenKey(): Buffer {
-  const secret = process.env.AI_KEY_SECRET || process.env.SUPABASE_SERVICE_KEY;
+  const secret = process.env.AI_KEY_SECRET;
   if (!secret) {
-    throw new Error('AI_KEY_SECRET or SUPABASE_SERVICE_KEY must be set');
+    throw new Error('AI_KEY_SECRET must be set to encrypt GitLab tokens');
   }
   return createHash('sha256').update(secret).digest();
 }

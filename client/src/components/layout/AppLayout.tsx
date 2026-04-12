@@ -5,6 +5,7 @@ import Sidebar from './Sidebar';
 import ThemeSwitcher from '../ThemeSwitcher';
 import FontSwitcher from '../FontSwitcher';
 import FontSizeControl from '../FontSizeControl';
+import ViewModeToggle from '../ViewModeToggle';
 import AIAgentDropdown from '../AIAgentDropdown';
 import DateTime from '../DateTime';
 import ProjectChat from '../ProjectChat';
@@ -22,16 +23,26 @@ const MAIN_MIN = 500;
 export default function AppLayout() {
   const location = useLocation();
   const isChatRoute = location.pathname.startsWith('/chat');
-  const { open, setOpen, iuOpen, setIuOpen, projectId, projectName, onGoalMutated } = useChatPanel();
+  const { open, setOpen, iuOpen, setIuOpen, projectId, projectName, onGoalMutated, mode, panelTitle } = useChatPanel();
   const { projects } = useProjects();
   const anyPanelOpen = open || iuOpen;
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT);
+  const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
 
   // Sync panel width to CSS variable so the chat-panel class can read it
   useEffect(() => {
     document.documentElement.style.setProperty('--chat-panel-w', `${panelWidth}px`);
   }, [panelWidth]);
+
+  useEffect(() => {
+    document.body.style.userSelect = isDragging ? 'none' : '';
+    document.body.style.cursor = isDragging ? 'col-resize' : '';
+    return () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+  }, [isDragging]);
 
   const onDividerMove = useCallback((e: MouseEvent) => {
     if (!dragRef.current) return;
@@ -43,20 +54,24 @@ export default function AppLayout() {
 
   const onDividerUp = useCallback(() => {
     dragRef.current = null;
-    document.body.style.userSelect = '';
-    document.body.style.cursor = '';
-    window.removeEventListener('mousemove', onDividerMove);
-    window.removeEventListener('mouseup', onDividerUp);
-  }, [onDividerMove]);
+    setIsDragging(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    window.addEventListener('mousemove', onDividerMove);
+    window.addEventListener('mouseup', onDividerUp);
+    return () => {
+      window.removeEventListener('mousemove', onDividerMove);
+      window.removeEventListener('mouseup', onDividerUp);
+    };
+  }, [isDragging, onDividerMove, onDividerUp]);
 
   const onDividerDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     dragRef.current = { startX: e.clientX, startW: panelWidth };
-    document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'col-resize';
-    window.addEventListener('mousemove', onDividerMove);
-    window.addEventListener('mouseup', onDividerUp);
-  }, [panelWidth, onDividerMove, onDividerUp]);
+    setIsDragging(true);
+  }, [panelWidth]);
 
   return (
     <div className="flex h-screen overflow-hidden app-scalable">
@@ -71,6 +86,7 @@ export default function AppLayout() {
           </div>
           <div className="flex items-center gap-2">
             <AIAgentDropdown />
+            <ViewModeToggle />
             <FontSizeControl />
             <FontSwitcher />
             <ThemeSwitcher />
@@ -78,7 +94,7 @@ export default function AppLayout() {
             <button
               type="button"
               onClick={() => setOpen(!open)}
-              title={open ? 'Close AI Chat' : 'Open AI Chat'}
+              title={open ? `Close ${panelTitle}` : `Open ${panelTitle}`}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors cursor-pointer
                 ${open
                   ? 'bg-[var(--color-surface2)] border-[var(--color-accent)]/40 text-[var(--color-accent)]'
@@ -86,7 +102,7 @@ export default function AppLayout() {
                 }`}
             >
               {open ? <X size={13} /> : <MessageCircle size={13} />}
-              <span className="text-xs font-medium">AI Chat</span>
+              <span className="text-xs font-medium">{mode === 'thesis' ? 'Thesis AI' : 'AI Chat'}</span>
             </button>
           </div>
         </header>
@@ -94,7 +110,10 @@ export default function AppLayout() {
         {/* Content row: main + optional chat panel */}
         <div className="flex-1 flex overflow-hidden min-h-0">
           <main className={`flex-1 min-w-0 ${isChatRoute ? 'flex flex-col overflow-hidden bg-surface' : 'overflow-y-auto'}`}>
-            <div key={location.pathname} className={isChatRoute ? 'flex-1 min-h-0' : ''}>
+            <div
+              key={location.pathname}
+              className={`app-route-shell ${isChatRoute ? 'app-route-shell--chat flex-1 min-h-0' : 'app-route-shell--page'}`}
+            >
               <Outlet />
             </div>
           </main>

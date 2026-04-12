@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../lib/auth';
+import { withBasePath } from '../lib/base-path';
 import DateTime from '../components/DateTime';
 import LoginWaveBackground from '../components/LoginWaveBackground';
 import { normalizeUsername, validatePassword, validateUsername } from '../lib/username-auth';
@@ -68,6 +69,8 @@ export default function LoginPage() {
       : null;
 
   const currentError = formError ?? authError;
+  const nextParam = new URLSearchParams(location.search).get('next');
+  const postLoginPath = nextParam && nextParam.startsWith('/') ? nextParam : '/';
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -106,6 +109,8 @@ export default function LoginPage() {
         setFormNotice(`Account created for ${result.username}. Sign in with your username and password.`);
       } else {
         await signInWithUsernamePassword(normalizedUsername, password);
+        window.location.replace(withBasePath(postLoginPath));
+        return;
       }
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Authentication failed');
@@ -182,7 +187,7 @@ export default function LoginPage() {
                     autoComplete={mode === 'signup' ? 'username' : 'username'}
                     value={username}
                     onChange={(event) => setUsername(event.target.value)}
-                    placeholder="team_operator"
+                    placeholder="odyssey_user"
                     className="w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition focus:border-accent"
                     disabled={submitting}
                   />
@@ -242,7 +247,8 @@ export default function LoginPage() {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-full rounded-2xl bg-heading px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-bg transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-70"
+                  className="w-full rounded-2xl border border-accent bg-accent px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-accent-fg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+                  style={{ color: '#f8f4ec', WebkitTextFillColor: '#f8f4ec' }}
                 >
                   {submitting
                     ? mode === 'signup' ? 'Creating account…' : 'Signing in…'

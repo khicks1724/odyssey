@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Flag, X, Calendar, Loader2 } from 'lucide-react';
 import type { Goal } from '../types';
 import { supabase } from '../lib/supabase';
+import { pushUndoAction } from '../lib/undo-manager';
 import './TimelinePage.css';
 
 interface TimePeriod {
@@ -163,8 +164,43 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
   };
 
   const deleteMilestone = async (id: string) => {
+    const milestoneIndex = milestones.findIndex((milestone) => milestone.id === id);
+    const deletedMilestone = milestoneIndex >= 0 ? milestones[milestoneIndex] ?? null : null;
     await supabase.from('events').delete().eq('id', id);
     setMilestones(prev => prev.filter(m => m.id !== id));
+    if (!deletedMilestone) return;
+    pushUndoAction({
+      label: `Deleted milestone ${deletedMilestone.title}`,
+      undo: async () => {
+        const occurredAt = deletedMilestone.date.includes('T')
+          ? deletedMilestone.date
+          : `${deletedMilestone.date}T12:00:00Z`;
+        const { data, error } = await supabase
+          .from('events')
+          .insert({
+            id: deletedMilestone.id,
+            project_id: projectId,
+            source: 'manual',
+            event_type: 'milestone',
+            title: deletedMilestone.title,
+            occurred_at: occurredAt,
+          })
+          .select('id, title, occurred_at')
+          .single();
+        if (error) throw error;
+        setMilestones((prev) => {
+          if (prev.some((milestone) => milestone.id === deletedMilestone.id)) return prev;
+          const restoredMilestone = {
+            id: data.id,
+            title: data.title ?? deletedMilestone.title,
+            date: data.occurred_at.slice(0, 10),
+          };
+          const next = [...prev];
+          next.splice(Math.min(milestoneIndex, next.length), 0, restoredMilestone);
+          return next;
+        });
+      },
+    });
   };
 
   return (
@@ -273,7 +309,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                   {/* Day number + add button */}
                   <div className="flex items-center justify-between px-1.5 pt-1 pb-0.5 shrink-0">
                     <span className={`inline-flex items-center justify-center w-5 h-5 text-[11px] font-mono rounded-full ${
-                      isToday ? 'bg-[var(--color-accent)] text-white font-bold' : 'text-[var(--color-muted)]'
+                      isToday ? 'bg-[var(--color-accent)] odyssey-text-on-accent font-bold' : 'text-[var(--color-muted)]'
                     }`}>
                       {dayNum}
                     </span>
@@ -329,7 +365,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                     >
                       <div className="flex items-center justify-between px-2 py-1 border-b border-[var(--color-border)] shrink-0">
                         <span className={`inline-flex items-center justify-center w-5 h-5 text-[11px] font-mono rounded-full ${
-                          isToday ? 'bg-[var(--color-accent)] text-white font-bold' : 'text-[var(--color-muted)]'
+                          isToday ? 'bg-[var(--color-accent)] odyssey-text-on-accent font-bold' : 'text-[var(--color-muted)]'
                         }`}>{dayNum}</span>
                         <span className="text-[9px] font-mono text-[var(--color-muted)]">{allItems.length} items</span>
                         <button type="button" title="Close" onClick={() => setExpandedDay(null)}
@@ -400,7 +436,7 @@ export default function CalendarView({ goals, members: _members, projectId, onGo
                       <div className="flex gap-1">
                         <button type="button" onClick={saveMilestone}
                           disabled={milestoneLoading || !milestoneInput.title.trim()}
-                          className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-[var(--color-accent)] text-white text-[9px] font-mono rounded hover:opacity-90 disabled:opacity-40 transition-opacity"
+                          className="odyssey-fill-accent flex-1 flex items-center justify-center gap-1 px-2 py-1 text-[9px] font-mono rounded transition-opacity hover:opacity-90 disabled:opacity-40"
                         >
                           {milestoneLoading ? <Loader2 size={8} className="animate-spin" /> : <Flag size={8} />}
                           Save

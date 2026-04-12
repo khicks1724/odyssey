@@ -22,6 +22,7 @@ services:
       SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       PUBLIC_SUPABASE_URL: /supabase
       PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+      AI_KEY_SECRET: ${AI_KEY_SECRET:-odyssey-local-ai-key-secret}
       ANTHROPIC_API_KEY: ""
       OPENAI_API_KEY: ""
       GOOGLE_AI_API_KEY: ""

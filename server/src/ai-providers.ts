@@ -26,9 +26,18 @@ interface ChatMessage {
   webSearch?: boolean;
 }
 
-interface ChatResult {
+export interface ChatTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface ChatResult {
   text: string;
   provider: AIProviderSelection;
+  model: string;
+  usage?: ChatTokenUsage;
+  keySource?: 'user' | 'server';
 }
 
 export interface OpenAiCredentialOverride {
@@ -150,7 +159,16 @@ async function callAnthropicModel(msg: ChatMessage, model: string, provider: AIP
     ?.filter((b) => b.type === 'text')
     .map((b) => b.text ?? '')
     .join('') || '';
-  return { text, provider };
+  const promptTokens = Number(result?.usage?.input_tokens ?? 0);
+  const completionTokens = Number(result?.usage?.output_tokens ?? 0);
+  const totalTokens = promptTokens + completionTokens;
+  return {
+    text,
+    provider,
+    model,
+    usage: totalTokens > 0 ? { promptTokens, completionTokens, totalTokens } : undefined,
+    keySource: 'user',
+  };
 }
 
 function callClaude(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
@@ -200,6 +218,8 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
   async function executeWithCredential(credential: OpenAiCredentialOverride): Promise<ChatResult> {
     const apiKey = credential.apiKey;
     if (!apiKey) throw new Error('No OpenAI API key configured. Add your key in Settings → AI Providers.');
+    const serverCredential = getServerOpenAiCredential();
+    const keySource: 'user' | 'server' = serverCredential && isSameOpenAiCredential(credential, serverCredential) ? 'server' : 'user';
 
     const openai = new OpenAI({
       apiKey,
@@ -236,17 +256,51 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
     try {
       const completion = await openai.chat.completions.create({ ...completionParams, stream: false }) as Awaited<ReturnType<typeof openai.chat.completions.create>> & {
         choices?: Array<{ message?: { content?: string | null } }>;
+        usage?: {
+          prompt_tokens?: number | null;
+          completion_tokens?: number | null;
+          total_tokens?: number | null;
+        };
       };
       clearProviderError('gpt-4o', credential);
-      return { text: completion.choices?.[0]?.message?.content || '', provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}` };
+      return {
+        text: completion.choices?.[0]?.message?.content || '',
+        provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}`,
+        model: effectiveModel,
+        usage: completion.usage
+          ? {
+              promptTokens: completion.usage.prompt_tokens ?? 0,
+              completionTokens: completion.usage.completion_tokens ?? 0,
+              totalTokens: completion.usage.total_tokens ?? 0,
+            }
+          : undefined,
+        keySource,
+      };
     } catch (err: any) {
       if (!msg.webSearch && shouldRetryWithMaxCompletionTokens(err)) {
         const retryParams = { ...baseCompletionParams, max_completion_tokens: tokenLimit, stream: false } as Parameters<typeof openai.chat.completions.create>[0];
         const completion = await openai.chat.completions.create(retryParams) as Awaited<ReturnType<typeof openai.chat.completions.create>> & {
           choices?: Array<{ message?: { content?: string | null } }>;
+          usage?: {
+            prompt_tokens?: number | null;
+            completion_tokens?: number | null;
+            total_tokens?: number | null;
+          };
         };
         clearProviderError('gpt-4o', credential);
-        return { text: completion.choices?.[0]?.message?.content || '', provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}` };
+        return {
+          text: completion.choices?.[0]?.message?.content || '',
+          provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}`,
+          model: effectiveModel,
+          usage: completion.usage
+            ? {
+                promptTokens: completion.usage.prompt_tokens ?? 0,
+                completionTokens: completion.usage.completion_tokens ?? 0,
+                totalTokens: completion.usage.total_tokens ?? 0,
+              }
+            : undefined,
+          keySource,
+        };
       }
 
       const status = err?.status ?? err?.response?.status ?? 0;
@@ -454,7 +508,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
     const jsonText = await rawCall(step2, msg.maxTokens ?? 2048, 0);
     console.log(`[GenAI.mil] step2_response_preview=${jsonText.slice(0, 120)}`);
 
-    return { text: jsonText, provider: 'gemini-pro' };
+    return { text: jsonText, provider: 'gemini-pro', model };
   }
 
   // ── Chat mode: question-last structure ───────────────────────────────────
@@ -483,7 +537,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
   const text = await rawCall(chatPrompt, msg.maxTokens ?? 2048, 0.7);
   console.log(`[GenAI.mil] chat_response_preview=${text.slice(0, 120)}`);
   clearProviderError('genai-mil');
-  return { text, provider: 'genai-mil' };
+  return { text, provider: 'genai-mil', model };
 }
 
 /** Public wrapper for GenAI.mil called via the 'genai-mil' provider route */
@@ -526,9 +580,25 @@ async function callGeminiWithBearer(msg: ChatMessage, accessToken: string): Prom
   }
 
   clearProviderError('gemini-pro', accessToken);
-  const data = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+  const data = await res.json() as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    usageMetadata?: {
+      promptTokenCount?: number | null;
+      candidatesTokenCount?: number | null;
+      totalTokenCount?: number | null;
+    };
+  };
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  return { text, provider: 'gemini-pro' };
+  const promptTokens = Number(data.usageMetadata?.promptTokenCount ?? 0);
+  const completionTokens = Number(data.usageMetadata?.candidatesTokenCount ?? 0);
+  const totalTokens = Number(data.usageMetadata?.totalTokenCount ?? promptTokens + completionTokens);
+  return {
+    text,
+    provider: 'gemini-pro',
+    model: 'gemini-2.0-flash',
+    usage: totalTokens > 0 ? { promptTokens, completionTokens, totalTokens } : undefined,
+    keySource: 'user',
+  };
 }
 
 async function callGemini(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
@@ -562,7 +632,23 @@ async function callGemini(msg: ChatMessage, apiKeyOverride?: ProviderCredentialO
   });
 
   clearProviderError('gemini-pro', credential);
-  return { text: result.response.text(), provider: 'gemini-pro' };
+  const usageMetadata = (result.response as {
+    usageMetadata?: {
+      promptTokenCount?: number | null;
+      candidatesTokenCount?: number | null;
+      totalTokenCount?: number | null;
+    };
+  }).usageMetadata;
+  const promptTokens = Number(usageMetadata?.promptTokenCount ?? 0);
+  const completionTokens = Number(usageMetadata?.candidatesTokenCount ?? 0);
+  const totalTokens = Number(usageMetadata?.totalTokenCount ?? promptTokens + completionTokens);
+  return {
+    text: result.response.text(),
+    provider: 'gemini-pro',
+    model: 'gemini-2.0-flash',
+    usage: totalTokens > 0 ? { promptTokens, completionTokens, totalTokens } : undefined,
+    keySource: 'user',
+  };
 }
 
 // ── Router ──────────────────────────────────────────────────────
@@ -738,5 +824,5 @@ export async function streamChat(
     }
   }
 
-  return { text: fullText, provider };
+  return { text: fullText, provider, model: anthropicModel };
 }

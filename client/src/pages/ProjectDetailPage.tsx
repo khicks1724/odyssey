@@ -1,6 +1,7 @@
 import { Suspense, startTransition, useDeferredValue, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
+import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters';
 import './ProjectDetailPage.css';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -30,10 +31,11 @@ import {
   Download,
   Table,
   LogOut,
+  GraduationCap,
 } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary';
 import type { SearchPanelHandle } from '../components/SearchPanel';
-import type { ReportContent } from '../lib/report-download';
+import { downloadDocx, downloadPdf, downloadPptx, exportGoalsCSV, type ReportContent } from '../lib/report-download';
 import { useProject, useJoinRequests, deleteProjectCascade, removeSelfFromProjectAccess } from '../hooks/useProjects';
 import { useProjectLabels } from '../hooks/useProjectLabels';
 import { useProjectPrompts, type PromptFeature } from '../hooks/useProjectPrompts';
@@ -48,12 +50,17 @@ import { useChatPanel } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
+import GoalEditModal from '../components/GoalEditModal';
+import FilePreviewModal from '../components/FilePreviewModal';
+import RepoTreeModal from '../components/RepoTreeModal';
 import { getProjectFingerprint } from '../lib/project-fingerprint';
 import { getGitHubRepos, getPrimaryGitHubRepo } from '../lib/github';
 import { useAIErrorDialog } from '../lib/ai-error';
 import { useTabVisibility } from '../hooks/useTabVisibility';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { pickUnusedProjectLabelColor } from '../lib/project-label-colors';
+import { pushUndoAction } from '../lib/undo-manager';
+import WorkspaceTabBar from '../components/WorkspaceTabBar';
 
 const OverviewTab = lazyWithRetry(() => import('../components/project-tabs/OverviewTab'), 'project-tab-overview');
 const ActivityTab = lazyWithRetry(() => import('../components/project-tabs/ActivityTab'), 'project-tab-activity');
@@ -65,19 +72,7 @@ const ReportsTab = lazyWithRetry(() => import('../components/ReportsTab'), 'proj
 const FinancialsTab = lazyWithRetry(() => import('../components/project-tabs/FinancialsTab'), 'project-tab-financials');
 const TimelinePage = lazyWithRetry(() => import('../components/TimelinePage'), 'project-timeline');
 const FileViewerLazy = lazyWithRetry(() => import('../components/FileViewer'), 'project-file-viewer');
-const GoalEditModal = lazyWithRetry(() => import('../components/GoalEditModal'), 'project-goal-edit');
 const GoalReportModal = lazyWithRetry(() => import('../components/GoalReportModal'), 'project-goal-report');
-const FilePreviewModal = lazyWithRetry(() => import('../components/FilePreviewModal'), 'project-file-preview');
-const RepoTreeModal = lazyWithRetry(() => import('../components/RepoTreeModal'), 'project-repo-tree');
-
-let reportDownloadsPromise: Promise<typeof import('../lib/report-download')> | null = null;
-
-function loadReportDownloads() {
-  if (!reportDownloadsPromise) {
-    reportDownloadsPromise = import('../lib/report-download');
-  }
-  return reportDownloadsPromise;
-}
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -328,7 +323,17 @@ export default function ProjectDetailPage() {
   // Register this project with the global chat panel; unregister on unmount or project change
   useEffect(() => {
     if (project?.id && project?.name) {
-      register(project.id, project.name, refetchGoals);
+      register({
+        projectId: project.id,
+        projectName: project.name,
+        onGoalMutated: refetchGoals,
+        mode: 'project',
+        panelTitle: 'Project AI',
+        panelSubtitle: null,
+        workspaceContext: null,
+        inputPlaceholder: 'Prompt or add files…',
+        allowProjectSwitching: true,
+      });
     }
     return () => { unregister(); };
   }, [project?.id, project?.name, register, unregister, refetchGoals]);
@@ -440,6 +445,7 @@ export default function ProjectDetailPage() {
     commitSummary: { source: 'github' | 'gitlab'; repo: string; count: number }[];
     totalCommits: number;
     provider?: string;
+    generatedAt?: string;
   };
   const [standupLoading, setStandupLoading] = useState(false);
   const [standup, setStandup] = useState<StandupData | null>(null);
@@ -1074,6 +1080,8 @@ export default function ProjectDetailPage() {
   const handleRemoveMember = async (userId: string) => {
     if (!projectId) return;
     if (!isOwner) return;
+    const memberIndex = members.findIndex((member) => member.user_id === userId);
+    const deletedMember = memberIndex >= 0 ? members[memberIndex] ?? null : null;
     const { error } = await supabase
       .from('project_members')
       .delete()
@@ -1082,6 +1090,23 @@ export default function ProjectDetailPage() {
     if (error) throw error;
     await refetchGoals();
     await fetchMembers();
+    if (!deletedMember) return;
+    pushUndoAction({
+      label: `Removed project member ${getProjectMemberDisplayName(deletedMember)}`,
+      undo: async () => {
+        const { error: restoreError } = await supabase
+          .from('project_members')
+          .insert({
+            project_id: projectId,
+            user_id: deletedMember.user_id,
+            role: deletedMember.role,
+            joined_at: deletedMember.joined_at,
+          });
+        if (restoreError) throw restoreError;
+        await refetchGoals();
+        await fetchMembers();
+      },
+    });
   };
 
   const handlePromoteMember = async (userId: string) => {
@@ -1116,7 +1141,7 @@ export default function ProjectDetailPage() {
 
   if (projectLoading) {
     return (
-      <div className="p-8 max-w-6xl mx-auto animate-pulse">
+      <div className="app-page-width app-page-width--wide p-8 max-w-6xl mx-auto animate-pulse">
         <div className="h-4 bg-border rounded w-32 mb-4" />
         <div className="h-8 bg-border rounded w-64 mb-2" />
         <div className="h-4 bg-border rounded w-96" />
@@ -1126,7 +1151,7 @@ export default function ProjectDetailPage() {
 
   if (!project) {
     return (
-      <div className="p-8 max-w-6xl mx-auto text-center py-20">
+      <div className="app-page-width app-page-width--wide p-8 max-w-6xl mx-auto text-center py-20">
         <p className="text-muted text-sm mb-4">Project not found</p>
         <button type="button" onClick={() => navigate('/projects')} className="text-accent text-xs hover:underline">
           ← Back to Projects
@@ -1331,7 +1356,7 @@ export default function ProjectDetailPage() {
 
   return (
     <>
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="app-page-width app-page-width--wide p-8 max-w-6xl mx-auto">
       {/* Back button */}
       <button
         type="button"
@@ -1410,43 +1435,47 @@ export default function ProjectDetailPage() {
               </div>
             </div>
           </div>
-          <div className="relative group shrink-0">
-            <button
-              type="button"
-              onClick={() => setIuOpen(true)}
-              className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
-            >
-              <Sparkles size={13} /> Intelligent Update
-            </button>
-            <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-surface border border-border rounded-lg shadow-xl text-xs font-sans leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 z-50">
-              <p className="text-heading font-semibold mb-1">Intelligent Update</p>
-              <p className="text-muted">Analyzes your goals, commits, and activity across all linked repos, then proposes specific changes — new goals, deadline shifts, and priority updates — based on what's actually happening in the project.</p>
+          <div className="flex items-start gap-3 shrink-0 flex-wrap justify-end">
+            <div className="relative group shrink-0">
+              <button
+                type="button"
+                onClick={() => navigate(`/thesis?projectId=${encodeURIComponent(project.id)}`, {
+                  state: { projectId: project.id, source: 'project-detail' },
+                })}
+                className="flex items-center gap-2 px-4 py-2 border border-accent3/30 text-accent3 text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent3/5 transition-colors rounded-md"
+              >
+                <GraduationCap size={13} /> Open In Thesis
+              </button>
+              <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-surface border border-border rounded-lg shadow-xl text-xs font-sans leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 z-50">
+                <p className="text-heading font-semibold mb-1">Open In Thesis</p>
+                <p className="text-muted">Jump into the thesis workspace with this project pre-linked so its tasks, deadlines, and activity become thesis context immediately.</p>
+              </div>
+            </div>
+
+            <div className="relative group shrink-0">
+              <button
+                type="button"
+                onClick={() => setIuOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
+              >
+                <Sparkles size={13} /> Intelligent Update
+              </button>
+              <div className="absolute right-0 top-full mt-2 w-64 p-3 bg-surface border border-border rounded-lg shadow-xl text-xs font-sans leading-relaxed opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-150 z-50">
+                <p className="text-heading font-semibold mb-1">Intelligent Update</p>
+                <p className="text-muted">Analyzes your goals, commits, and activity across all linked repos, then proposes specific changes — new goals, deadline shifts, and priority updates — based on what's actually happening in the project.</p>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-px border border-border bg-border mb-8">
-        {visibleTabs.map((vt) => {
-          const tabMeta = tabs.find((t) => t.id === vt.id)!;
-          return (
-            <button
-              type="button"
-              key={tabMeta.id}
-              onClick={() => handleTabChange(tabMeta.id)}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 bg-surface text-xs tracking-wider uppercase transition-colors whitespace-nowrap first:rounded-tl last:rounded-tr ${
-                activeTab === tabMeta.id
-                  ? 'text-heading bg-surface2 font-medium'
-                  : 'text-muted hover:text-heading hover:bg-surface2'
-              }`}
-            >
-              <tabMeta.icon size={13} />
-              {tabMeta.label}
-            </button>
-          );
-        })}
-      </div>
+      <WorkspaceTabBar
+        tabs={visibleTabs.map((vt) => tabs.find((t) => t.id === vt.id)!)}
+        activeTab={activeTab}
+        onChange={handleTabChange}
+        stretch
+      />
 
       {/* Tab Content */}
       {activeTab === 'overview' && (
@@ -1605,6 +1634,7 @@ export default function ProjectDetailPage() {
             projectId={project.id}
             projectName={project.name}
             projectStartDate={project.start_date ?? null}
+            projectReportPrompt={getPrompt('report')}
             githubRepo={githubRepos}
             gitlabRepos={gitlabRepos}
             messages={reportMessages}
@@ -2015,11 +2045,34 @@ function DocumentsTab({
   }, [projectId, savedReportsVersion]);
 
   const handleDeleteReport = async (id: string) => {
+    const reportIndex = savedReports.findIndex((report) => report.id === id);
+    const deletedReport = reportIndex >= 0 ? savedReports[reportIndex] ?? null : null;
     setDeletingReportId(id);
     await supabase.from('saved_reports').delete().eq('id', id);
     setSavedReports((prev) => prev.filter((r) => r.id !== id));
     setDeletingReportId(null);
     if (previewReport?.id === id) setPreviewReport(null);
+    if (!deletedReport) return;
+    pushUndoAction({
+      label: `Deleted saved report ${deletedReport.title}`,
+      undo: async () => {
+        const { data, error } = await supabase
+          .from('saved_reports')
+          .insert({
+            ...deletedReport,
+            project_id: projectId,
+          })
+          .select('id, title, content, format, date_range_from, date_range_to, generated_at, provider')
+          .single();
+        if (error) throw error;
+        setSavedReports((prev) => {
+          if (prev.some((report) => report.id === deletedReport.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(reportIndex, next.length), 0, data as SavedReport);
+          return next;
+        });
+      },
+    });
   };
 
   const toggleRow = (id: string) => {
@@ -2225,7 +2278,7 @@ function DocumentsTab({
                   <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
                     docSelected.has(e.id) ? 'bg-accent border-accent' : 'border-border bg-surface'
                   }`}>
-                    {docSelected.has(e.id) && <span className="text-white text-[9px] font-bold leading-none">✓</span>}
+                    {docSelected.has(e.id) && <span className="odyssey-text-on-accent text-[9px] font-bold leading-none">✓</span>}
                   </div>
                 </div>
               )}
@@ -2343,7 +2396,6 @@ function DocumentsTab({
                     title="Download report"
                     onClick={async () => {
                       const rc = r.content as unknown as ReportContent;
-                      const { downloadDocx, downloadPptx, downloadPdf } = await loadReportDownloads();
                       if (r.format === 'pptx') await downloadPptx(rc);
                       else if (r.format === 'pdf') await downloadPdf(rc);
                       else await downloadDocx(rc);
@@ -2356,7 +2408,6 @@ function DocumentsTab({
                     type="button"
                     title="Export goals as CSV"
                     onClick={async () => {
-                      const { exportGoalsCSV } = await loadReportDownloads();
                       exportGoalsCSV(r.content as unknown as ReportContent);
                     }}
                     className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
@@ -2383,9 +2434,32 @@ function DocumentsTab({
       {previewReport && (() => {
         const rc = previewReport.content as {
           title?: string; subtitle?: string; executiveSummary?: string;
+          reportingPeriod?: string;
+          overallHealthScore?: number;
+          overallHealthLabel?: string;
+          accomplishments?: string[];
+          blockers?: string[];
+          upcomingMilestones?: string[];
+          recommendations?: string[];
+          keyMetrics?: Record<string, number | undefined>;
           dateRange?: { from: string; to: string };
-          sections?: Array<{ title: string; body: string; bullets?: string[]; table?: { headers: string[]; rows: string[][] } }>;
+          sections?: Array<{
+            title: string;
+            body: string;
+            bullets?: string[];
+            callout?: string;
+            subSections?: Array<{ heading: string; text: string }>;
+            figure?: { title: string; data: Array<{ label: string; value: number }> };
+            table?: { headers: string[]; rows: string[][] };
+          }>;
         };
+        const summaryGroups = [
+          { title: 'Accomplishments', items: rc.accomplishments ?? [] },
+          { title: 'Blockers', items: rc.blockers ?? [] },
+          { title: 'Upcoming Milestones', items: rc.upcomingMilestones ?? [] },
+          { title: 'Recommendations', items: rc.recommendations ?? [] },
+        ].filter((group) => group.items.length > 0);
+        const metricEntries = Object.entries(rc.keyMetrics ?? {}).filter(([, value]) => typeof value === 'number');
         return (
           <>
             <div className="fixed inset-0 bg-black/60 z-40" onClick={() => setPreviewReport(null)} />
@@ -2408,6 +2482,36 @@ function DocumentsTab({
 
                 {/* Scrollable content */}
                 <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
+                  {(rc.reportingPeriod || rc.overallHealthLabel || metricEntries.length > 0) && (
+                    <div className="grid gap-3 md:grid-cols-3">
+                      {rc.reportingPeriod && (
+                        <div className="p-4 border border-border rounded bg-surface2">
+                          <p className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold mb-2">Reporting Period</p>
+                          <p className="text-xs text-heading">{rc.reportingPeriod}</p>
+                        </div>
+                      )}
+                      {rc.overallHealthLabel && (
+                        <div className="p-4 border border-border rounded bg-surface2">
+                          <p className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold mb-2">Overall Health</p>
+                          <p className="text-xs text-heading">{rc.overallHealthLabel}{typeof rc.overallHealthScore === 'number' ? ` (${rc.overallHealthScore})` : ''}</p>
+                        </div>
+                      )}
+                      {metricEntries.length > 0 && (
+                        <div className="p-4 border border-border rounded bg-surface2">
+                          <p className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold mb-2">Key Metrics</p>
+                          <div className="space-y-1">
+                            {metricEntries.slice(0, 4).map(([key, value]) => (
+                              <div key={key} className="flex items-center justify-between gap-3 text-[11px] text-muted">
+                                <span>{key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase())}</span>
+                                <span className="text-heading font-medium">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Executive summary */}
                   {rc.executiveSummary && (
                     <div className="p-4 border border-border rounded bg-surface2">
@@ -2416,11 +2520,44 @@ function DocumentsTab({
                     </div>
                   )}
 
+                  {summaryGroups.length > 0 && (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {summaryGroups.map((group) => (
+                        <div key={group.title} className="p-4 border border-border rounded bg-surface2">
+                          <p className="text-[10px] tracking-[0.15em] uppercase text-muted font-semibold mb-2">{group.title}</p>
+                          <ul className="space-y-1.5">
+                            {group.items.map((item, index) => (
+                              <li key={`${group.title}-${index}`} className="flex items-start gap-2 text-xs text-heading leading-relaxed">
+                                <span className="text-accent shrink-0 mt-0.5">•</span>
+                                <span>{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* Sections */}
                   {(rc.sections ?? []).map((s, i) => (
                     <div key={i}>
                       <h4 className="text-xs font-bold text-heading mb-2 pb-1 border-b border-border">{s.title}</h4>
+                      {s.callout && (
+                        <div className="mb-3 p-3 border border-accent/20 bg-accent/5 rounded text-xs text-heading font-medium">
+                          {s.callout}
+                        </div>
+                      )}
                       {s.body && <p className="text-xs text-muted leading-relaxed mb-2">{s.body}</p>}
+                      {s.subSections && s.subSections.length > 0 && (
+                        <div className="space-y-2 mb-3">
+                          {s.subSections.map((subSection, j) => (
+                            <div key={j} className="border-l-2 border-border pl-3">
+                              <p className="text-[11px] font-semibold text-heading mb-1">{subSection.heading}</p>
+                              <p className="text-xs text-muted leading-relaxed">{subSection.text}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {s.bullets && s.bullets.length > 0 && (
                         <ul className="space-y-1 mb-2">
                           {s.bullets.map((b, j) => (
@@ -2430,6 +2567,27 @@ function DocumentsTab({
                             </li>
                           ))}
                         </ul>
+                      )}
+                      {s.figure && s.figure.data.length > 0 && (
+                        <div className="overflow-x-auto mb-3">
+                          <p className="text-[11px] font-semibold text-heading mb-2">{s.figure.title}</p>
+                          <table className="w-full text-[11px] border border-border">
+                            <thead>
+                              <tr className="bg-surface2">
+                                <th className="px-3 py-1.5 text-left text-muted font-semibold border-b border-border">Label</th>
+                                <th className="px-3 py-1.5 text-left text-muted font-semibold border-b border-border">Value</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {s.figure.data.map((point, j) => (
+                                <tr key={j} className="border-b border-border/50 last:border-0 hover:bg-surface2/50">
+                                  <td className="px-3 py-1.5 text-heading">{point.label}</td>
+                                  <td className="px-3 py-1.5 text-heading">{point.value}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       )}
                       {s.table && (
                         <div className="overflow-x-auto">
@@ -2844,7 +3002,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
   const [glScanResults, setGlScanResults] = useState<{ completed: string[]; suggested: { title: string; reason: string }[]; provider?: string } | null>(null);
 
   const parseCommits = (raw: string[]): CommitEntry[] =>
-    raw.slice(0, 30).map((c) => {
+    raw.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit)).slice(0, 30).map((c) => {
       const match = c.match(/^\[(.+?)\] (.+?) — (.+)$/);
       return match ? { date: match[1], message: match[2], author: match[3] } : { date: '', message: c, author: '' };
     });

@@ -6,6 +6,8 @@ interface Profile {
   id: string;
   display_name: string | null;
   avatar_url: string | null;
+  email?: string | null;
+  thesis_page_snapshot?: unknown;
 }
 
 export function useProfile() {
@@ -14,7 +16,13 @@ export function useProfile() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setProfile(null);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     supabase
       .from('profiles')
       .select('*')
@@ -26,7 +34,7 @@ export function useProfile() {
       });
   }, [user]);
 
-  const updateProfile = async (updates: Partial<Pick<Profile, 'display_name' | 'avatar_url'>>) => {
+  const updateProfile = async (updates: Partial<Pick<Profile, 'display_name' | 'avatar_url' | 'thesis_page_snapshot'>>) => {
     if (!user) throw new Error('Not authenticated');
     const { data, error } = await supabase
       .from('profiles')

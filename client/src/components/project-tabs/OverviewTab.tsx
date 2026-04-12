@@ -3,7 +3,7 @@ import {
   Activity,
   Users,
   Target,
-  Github,
+  Search,
   Sparkles,
   BarChart3,
   Clock,
@@ -394,6 +394,7 @@ type StandupData = {
   commitSummary: { source: 'github' | 'gitlab'; repo: string; count: number }[];
   totalCommits: number;
   provider?: string;
+  generatedAt?: string;
 };
 
 export interface OverviewTabProps {
@@ -441,15 +442,6 @@ export interface OverviewTabProps {
   loeLabels: { id: string; name: string }[];
 }
 
-function StatRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between items-center text-xs">
-      <span className="text-muted">{label}</span>
-      <span className="text-heading font-sans font-semibold">{value}</span>
-    </div>
-  );
-}
-
 function OverviewTab({
   project,
   goals,
@@ -486,159 +478,100 @@ function OverviewTab({
   const canManageMembers = currentUserRole === 'owner';
 
   const githubRepos = getGitHubRepos(project);
-  const primaryGitHubRepo = githubRepos[0] ?? null;
+  const now = Date.now();
+  const overdueCount = goals.filter(
+    (g) => g.deadline && new Date(g.deadline).getTime() < now && g.status !== 'complete',
+  ).length;
+  const soonCount = goals.filter((g) => {
+    if (!g.deadline || g.status === 'complete') return false;
+    const ms = new Date(g.deadline).getTime() - now;
+    return ms > 0 && ms < 14 * 86_400_000 && g.progress < 75;
+  }).length;
+  const completionRate = goals.length > 0 ? completedGoals.length / goals.length : 0;
+  let trajectoryLabel: string;
+  let trajectoryTone: string;
+  if (overdueCount > 0) {
+    trajectoryLabel = `At Risk · ${overdueCount} overdue`;
+    trajectoryTone = 'text-red-400';
+  } else if (soonCount > 0) {
+    trajectoryLabel = `Caution · ${soonCount} due soon`;
+    trajectoryTone = 'text-yellow-400';
+  } else if (completionRate >= 0.5 || overallProgress >= 60) {
+    trajectoryLabel = 'On Track';
+    trajectoryTone = 'text-green-500';
+  } else if (goals.length === 0) {
+    trajectoryLabel = 'No tasks yet';
+    trajectoryTone = 'text-muted';
+  } else {
+    trajectoryLabel = 'Early Stage';
+    trajectoryTone = 'text-muted';
+  }
 
   return (
     <>
-      {/* Stats + Integrations + AI */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-px bg-border border border-border mb-8">
-        <div className="bg-surface p-6">
-          <h3 className="font-sans text-sm font-bold text-heading mb-4">Project Status</h3>
-          <div className="space-y-3">
-            <StatRow label="Tasks" value={`${completedGoals.length} / ${goals.length}`} />
-            <StatRow label="Overall Progress" value={`${overallProgress}%`} />
-            <StatRow label="Members" value={String(members.length || 1)} />
-            <StatRow label="Events" value={String(events.length)} />
-            {(() => {
-              const now = Date.now();
-              const overdueCount = goals.filter(
-                (g) => g.deadline && new Date(g.deadline).getTime() < now && g.status !== 'complete'
-              ).length;
-              const soonCount = goals.filter((g) => {
-                if (!g.deadline || g.status === 'complete') return false;
-                const ms = new Date(g.deadline).getTime() - now;
-                return ms > 0 && ms < 14 * 86_400_000 && g.progress < 75;
-              }).length;
-              const completionRate = goals.length > 0 ? completedGoals.length / goals.length : 0;
-
-              let label: string;
-              let color: string;
-              if (overdueCount > 0) {
-                label = `At Risk · ${overdueCount} overdue`;
-                color = 'text-red-400';
-              } else if (soonCount > 0) {
-                label = `Caution · ${soonCount} due soon`;
-                color = 'text-yellow-400';
-              } else if (completionRate >= 0.5 || overallProgress >= 60) {
-                label = 'On Track';
-                color = 'text-green-500';
-              } else if (goals.length === 0) {
-                label = 'No tasks yet';
-                color = 'text-muted';
-              } else {
-                label = 'Early Stage';
-                color = 'text-muted';
-              }
-              return (
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-muted">Trajectory</span>
-                  <span className={`text-xs font-mono font-medium ${color}`}>{label}</span>
-                </div>
-              );
-            })()}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(18rem,0.72fr)] gap-px bg-border border border-border mb-5">
+        <div className="bg-surface p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <BarChart3 size={14} className="text-accent" />
+            <h3 className="font-sans text-sm font-bold text-heading">Project Status</h3>
           </div>
-        </div>
-        <div className="bg-surface p-6">
-          <h3 className="font-sans text-sm font-bold text-heading mb-4">Integrations</h3>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3 p-3 border border-border rounded">
-              <Github size={16} className={githubRepos.length > 0 ? 'text-accent' : 'text-muted'} />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs text-heading font-medium">GitHub</div>
-                {primaryGitHubRepo ? (
-                  <a
-                    href={`https://github.com/${primaryGitHubRepo}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] text-accent hover:underline truncate block"
-                  >
-                    {githubRepos.length === 1 ? primaryGitHubRepo : `${githubRepos.length} repos linked`}
-                  </a>
-                ) : (
-                  <div className="text-[10px] text-muted">Not connected</div>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveTab('settings')}
-                className="text-[10px] text-accent hover:underline"
-              >
-                {githubRepos.length > 0 ? 'Manage' : 'Connect'}
-              </button>
+          <div className="grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-3 xl:grid-cols-5">
+            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Tasks</p>
+              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{completedGoals.length} / {goals.length}</p>
             </div>
-            <div className="flex items-center gap-3 p-3 border border-border rounded">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" className={gitlabRepos.length > 0 ? 'text-[#FC6D26]' : 'text-muted'}>
-                <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 01-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 014.82 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0118.6 2a.43.43 0 01.58 0 .42.42 0 01.11.18l2.44 7.51 1.22 3.78a.84.84 0 01-.3.92z"/>
-              </svg>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs text-heading font-medium">GitLab <span className="text-[9px] text-muted font-mono">NPS</span></div>
-                {gitlabRepos.length > 0 ? (
-                  <div className="text-[10px] text-muted truncate">
-                    {gitlabRepos.length === 1 ? gitlabRepos[0] : `${gitlabRepos.length} repos linked`}
-                  </div>
-                ) : (
-                  <div className="text-[10px] text-muted">Not connected</div>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveTab('settings')}
-                className="text-[10px] text-accent hover:underline"
-              >
-                {gitlabRepos.length > 0 ? 'Manage' : 'Connect'}
-              </button>
+            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Progress</p>
+              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{overallProgress}%</p>
+            </div>
+            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Members</p>
+              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{members.length || 1}</p>
+            </div>
+            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Events</p>
+              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{events.length}</p>
+            </div>
+            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2 sm:col-span-2 xl:col-span-1">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Trajectory</p>
+              <p className={`mt-0.5 text-sm font-sans font-bold ${trajectoryTone}`}>{trajectoryLabel}</p>
             </div>
           </div>
         </div>
-        <div className="bg-surface p-6 flex flex-col gap-5">
-          {/* AI Insights */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Sparkles size={14} className="text-accent" />
-                <h3 className="font-sans text-sm font-bold text-heading">AI Insights</h3>
-              </div>
-              <button
-                type="button"
-                onClick={handleGenerateInsights}
-                disabled={insightsLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
-                           bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
-                           disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {insightsLoading ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-                {insightsLoading ? 'Analyzing…' : insights ? 'Regenerate' : 'Generate'}
-              </button>
-            </div>
-            <p className="text-[11px] text-muted leading-relaxed">
-              {insights ? `Last run ${new Date(insights.generatedAt ?? '').toLocaleDateString()}` : 'Project status, next steps, and feature ideas.'}
-            </p>
+        <div className="bg-surface p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Sparkles size={14} className="text-accent" />
+            <h3 className="font-sans text-sm font-bold text-heading">Generate</h3>
           </div>
-
-          <div className="border-t border-border" />
-
-          {/* 2-Week Standup */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <ClipboardList size={14} className="text-accent" />
-                <h3 className="font-sans text-sm font-bold text-heading">2-Week Standup</h3>
-              </div>
-              <button
-                type="button"
-                onClick={handleGenerateStandup}
-                disabled={standupLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] tracking-wider uppercase font-medium
-                           bg-accent/10 text-accent border border-accent/20 rounded hover:bg-accent/20 transition-colors
-                           disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {standupLoading ? <Loader2 size={10} className="animate-spin" /> : <ClipboardList size={10} />}
-                {standupLoading ? 'Generating…' : standup ? 'Regenerate' : 'Generate'}
-              </button>
-            </div>
-            <p className="text-[11px] text-muted leading-relaxed">
-              {standup ? `${standup.totalCommits} commits · ${standup.period.from} → ${standup.period.to}` : 'Summarizes commits, goals, and activity from the last 14 days.'}
-            </p>
+          <div className="grid grid-cols-2 gap-px border border-border bg-border">
+            <button
+              type="button"
+              onClick={handleGenerateInsights}
+              disabled={insightsLoading}
+              className="flex min-h-[4.5rem] items-center justify-between gap-3 bg-accent/10 px-4 py-2.5 text-left transition-colors hover:bg-accent/16 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className="flex items-center gap-2">
+                {insightsLoading ? <Loader2 size={14} className="animate-spin text-accent" /> : <Search size={14} className="text-accent" />}
+                <span className="font-sans text-sm font-bold text-heading">AI Insights</span>
+              </span>
+              <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-accent">
+                {insightsLoading ? 'Running' : insights ? 'Refresh' : 'Run'}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleGenerateStandup}
+              disabled={standupLoading}
+              className="flex min-h-[4.5rem] items-center justify-between gap-3 bg-accent/10 px-4 py-2.5 text-left transition-colors hover:bg-accent/16 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className="flex items-center gap-2">
+                {standupLoading ? <Loader2 size={14} className="animate-spin text-accent" /> : <ClipboardList size={14} className="text-accent" />}
+                <span className="font-sans text-sm font-bold text-heading">2-Week Standup</span>
+              </span>
+              <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-accent">
+                {standupLoading ? 'Running' : standup ? 'Refresh' : 'Run'}
+              </span>
+            </button>
           </div>
         </div>
       </div>
@@ -794,21 +727,36 @@ function OverviewTab({
 
           {standup && (
             <div className="space-y-5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[10px] font-mono text-muted">
-                  {standup.period.from} → {standup.period.to}
-                </span>
-                {standup.commitSummary.map((r) => (
-                  <span
-                    key={r.repo}
-                    className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-border/60 text-muted"
-                  >
-                    <GitBranch size={9} />
-                    {r.repo.split('/').pop()} · {r.count}
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] font-mono text-muted">
+                    {standup.period.from} → {standup.period.to}
                   </span>
-                ))}
-                {standup.provider && (
-                  <span className="ml-auto text-[10px] text-muted font-mono">{standup.provider}</span>
+                  {standup.commitSummary.map((r) => (
+                    <span
+                      key={r.repo}
+                      className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-border/60 text-muted"
+                    >
+                      <GitBranch size={9} />
+                      {r.repo.split('/').pop()} · {r.count}
+                    </span>
+                  ))}
+                </div>
+                {(standup.generatedAt || standup.provider) && (
+                  <div className="flex flex-col items-end gap-0.5">
+                    {standup.generatedAt && (
+                      <div className="flex items-center gap-1 text-[10px] text-muted">
+                        <Clock size={9} />
+                        {new Date(standup.generatedAt).toLocaleString()}
+                      </div>
+                    )}
+                    {standup.provider && (
+                      <div className="flex items-center gap-1 text-[10px] text-muted">
+                        <CheckCircle size={9} className="text-green-500" />
+                        <span>{standup.provider}</span>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -875,16 +823,22 @@ function OverviewTab({
 
       {/* Timeline */}
       <div className="border border-border bg-surface p-6 mb-8">
-        <div className="flex items-center gap-2 mb-4">
-          <Clock size={14} className="text-accent2" />
-          <h3 className="font-sans text-sm font-bold text-heading">Timeline</h3>
-        </div>
         <Timeline
           goals={goals}
           members={[
             { user_id: user?.id ?? '', display_name: user?.user_metadata?.user_name ?? user?.email ?? 'You' },
             ...members.map((m) => ({ user_id: m.user_id, display_name: m.profile?.display_name ?? null })),
           ]}
+          onGoalClick={(goal) => {
+            setEditAutoGuidance(false);
+            setEditGoal(goal);
+          }}
+          header={(
+            <>
+              <Clock size={14} className="text-accent2" />
+              <h3 className="font-sans text-sm font-bold text-heading">Timeline</h3>
+            </>
+          )}
         />
       </div>
 

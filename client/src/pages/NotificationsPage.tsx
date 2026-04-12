@@ -42,7 +42,7 @@ export default function NotificationsPage() {
   };
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="app-page-width app-page-width--roomy p-8 max-w-4xl mx-auto">
       <div className="flex items-end justify-between gap-4 flex-wrap mb-10">
         <div>
           <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">Notifications</p>

@@ -250,7 +250,7 @@ export default function ProjectsPage() {
   };
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="app-page-width app-page-width--wide p-8 max-w-6xl mx-auto">
       <div className="flex items-end justify-between mb-10 gap-4 flex-wrap">
         <div>
           <p className="text-[11px] tracking-[0.25em] uppercase text-accent2 mb-2 font-mono">Projects</p>

@@ -1,0 +1,163 @@
+\documentclass[thesis,ieee,twoside]{npsreport2018}
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% \documentclass Options
+%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+% Welcome to the NPS thesis template!  The "\documentclass" command above is
+% where you tell LaTeX what type of document you would like to make.  We describe
+% the options to you here.
+%
+% First note that the command has two parts, the options in square brackets [] and
+% the name of the class, "npsreport2018", in the curly braces {}.
+%
+% thesis, dissertation, article, techreport:  The thesis, dissertation, and techreport
+%     options enable multiple chapters and extend the LaTeX report class.  The article
+%     option has no chapters (it is all one chapter) and extends the LaTeX article class.
+% ieee or informs:  Select one of these options to set the citation style
+% twoside:  Use this option for theses and disserations.  It forces all chapters to start
+%     on odd-numbered pages (the right-hand side of a book) instead of the next page.
+%     Omitting this option is recommended for other types.
+% twoauthors, threeauthors, fourauthors:  The default is to have only one author so add
+%     one of these options for specifying a number of authors greater than one
+% acronym:  This option limits the acronyms printed in the acronym list (if you print one
+%     at all) to those that you used in your document by activating the "printonlyused"
+%     option of the acronym package.  Without this option, when you print the list of
+%     acronyms, it will include all those defined, regardless of whether they are used
+%     in the document.
+%
+% Advisors and Readers for thesis type:
+%   twoadvisors:  two advisors but no second reader
+%   twoadvisorsreader:  two advisors AND also a second reader
+%   tworeaders:  two second readers
+%
+% Dissertation Committee Members for dissertation type:
+%   fivemembers:  default committee size is six
+%   advisoralone:  lists the top person alone
+%
+% Less Commonly Used Options:
+%   classified:  use if you are in the STBL or SCIF writing classified work
+%   singlespace:  as opposed to the standard spacing for a thesis
+%   compacttitle
+%   10pt, 11pt, 12pt:  sets font size, thesis requirement is 12pt
+%   times, arial, courier:  sets the font face, thesis requirement is times
+% 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% Packages
+%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+% LaTeX's extensibility comes through users' ability to use "packages."
+% Here are some packages specifically here for use in this template.  Feel free to delete
+% or comment out the first two of these:
+\usepackage{hologo,lipsum} % provides \BibTex and \lipsum macros, for demos; can delete this package (just filler text)
+\newcommand{\BibTeX}{\hologo{BibTeX}} %provides \BibTeX macro for demos; can delete this command
+\ifnpstechreport
+\else
+\usepackage[fontsize=20pt,text=To~be~replaced~by~your~thesis~processor~using~the~data~from~your~Python~Thesis~Dashboard,color=red]{draftwatermark}
+\fi
+
+% For Example: you might find one of these useful:
+\usepackage[defaultlines=2,all]{nowidow}    % automatic management of widows and orphans
+\usepackage{listings}        % Use this for showing blocks of computer code
+\usepackage{longtable}       % Use this for tables that are longer than one page
+\usepackage{pdflscape}       % provides landscape environment
+% \usepackage{stocksize}       % provides the ability to change the size of the paper  %%% Requires TeXLive 2025 or later!
+%\usepackage{bibunits}        % Use this if you need to put references in your Executive Summary
+%\usepackage{colortbl}        % provides commands to color table columns, rows, cells, etc.
+%\usepackage{epstopdf}        % to use .eps files for figures
+%\usepackage{bm}              % bold math if you need bold greek letters
+%\usepackage{glossaries}      % comment out {doc,lipsum} package to use this package; see http://en.wikibooks.org/wiki/LaTeX/Glossary
+%\usepackage{asymptote}       % for graphics
+% The asymptote package allows for very nice graphics and figures
+% Proper usage requires additional information located at:
+% http://asymptote.sourceforge.net/
+% See the gallery at this URL for examples
+
+%\usepackage{placeins}        % float placement
+% Provides \FloatBarrier which keeps figures/tables in the same section.
+% LaTeX sometimes moves them to fill up pages.
+% http://ftp.math.purdue.edu/mirrors/ctan.org/macros/latex/contrib/placeins/placeins-doc.pdf
+
+%\usepackage[numbered]{mcode} % matlab code
+% The mcode package must be separately downloaded.
+% http://www.mathworks.com/matlabcentral/fileexchange/8015-m-code-latex-package
+
+%\usepackage{flafter}         % float placement
+% Ensures that figures/tables do not appear in the document before
+% they are referenced in the text.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% Information about your work
+%%%%%%%%%%%%%%%%%%%%%%%%%
+\input{front-matter}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% Here's where you put the actual content for the body of your thesis.
+%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% CHAPTERS
+% You have two options on how to structure your thesis:
+% a) A single file. All chapters, sections, etc. go in this file.
+%    This can make navigating your thesis a little more difficult.
+% b) Use multiple files.  One chapter per file is recommended.
+%    This breaks your thesis up into logical units to edit.
+%
+\input{chapter_1}
+
+
+% APPENDICES
+% Appendices are not mandatory thesis components. You should use them if you need them.
+% You have three options:
+% 1) No appendix. Comment-out the lines in this section.
+%
+% 2) A single appendix (with a single TOC entry). Use these lines, adapted to your needs:
+\NPSappendixTOC{[My Appendix Title]}
+\input{appendix_1}
+%
+% 3) Multiple appendices. Use this line:
+%\NPSappendices
+%    ...followed by this set of two lines for each appendix:
+% \chapter{[First appendix title]}
+% \input{appendix_1}
+% \chapter{[Second appendix title]}
+% \input{appendix_1}
+
+
+% SUPPLEMENTALS
+% If you want to include a supplemental with your thesis, Follow the instructions at https://nps.edu/web/thesisprocessing/supplementals.
+% The file linked in the following line shows an example.
+% \input{additional_resources/supplementals.tex}
+
+
+% REFERENCES
+% List all your BibTeX reference source files (ending in *.bib extension)
+
+% This command builds the bibliography:
+% 1. The default thesis style is nps-ieee.bst for IEEE and nps-informs.bst for INFORMS
+% 2. The argument "references" tells LaTeX to find your bib items in the file references.bib
+\NPSbibliography{references}
+
+% Notes:
+% 1. You can include multiple bib files (just comma separate them), for example:  \NPSbibliography{references,other-refs}
+% 2. Ensure the formatting matches the library's guidance (https://libguides.nps.edu/citation/bibtex).
+% 3. If not using a bib style (.bst) offered in the template, you can specify it like this:  \NPSbibliography[chicago]{references}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% This is the official end of the thesis.
+%%%%%%%%%%%%%%%%%%%%%%%%%
+\NPSend
+
+% DISTRIBUTION LIST
+% The list is automatically properly numbered
+% and already populated with the mandatory recipients.
+%
+\NPSdistribution{Initial Distribution List}
+\begin{distributionlist}
+\item Defense Technical Information Center\\Fort Belvoir, Virginia
+\item Dudley Knox Library\\Naval Postgraduate School\\Monterey, California
+%
+
+\end{distributionlist}
+
+\end{document}

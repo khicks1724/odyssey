@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { useFontTheme } from './font-theme';
 
 export interface ThemeColors {
   bg: string;
@@ -14,6 +15,12 @@ export interface ThemeColors {
   heading: string;
   /** Text color used on top of accent-colored backgrounds (buttons, bubbles). Defaults to white. */
   accentFg?: string;
+  /** Text color used on top of accent2-colored backgrounds. */
+  accent2Fg?: string;
+  /** Text color used on top of accent3-colored backgrounds. */
+  accent3Fg?: string;
+  /** Text color used on top of danger-colored backgrounds. */
+  dangerFg?: string;
   /** Clickable file/program token color in markdown-rendered AI output. */
   codeFile?: string;
   /** Clickable repo token color in markdown-rendered AI output. */
@@ -28,6 +35,8 @@ export interface Theme {
   colors: ThemeColors;
   /** Override the three preview dot colors [dot1, dot2, dot3]. Falls back to [bg, accent, accent3]. */
   previewColors?: [string, string, string];
+  colorScheme?: 'light' | 'dark';
+  linkedFontThemeId?: string;
 }
 
 export const themes: Theme[] = [
@@ -41,7 +50,7 @@ export const themes: Theme[] = [
       surface2: '#1f2330',
       border: '#2a3044',
       accent: '#6a9fd8',
-      accent2: '#5a9e8a',
+      accent2: '#6b7a8d',
       accent3: '#f5f0e8',
       danger: '#e05555',
       text: '#d0d9e6',
@@ -60,11 +69,14 @@ export const themes: Theme[] = [
       border: '#c8c0b4',
       accent: '#1e3a5f',
       accent2: '#2a5a8f',
-      accent3: '#3a7a6a',
+      accent3: '#6a9fd8',
       danger: '#b91c1c',
       text: '#1e3a5f',
       muted: '#6b7a8d',
       heading: '#0f1f33',
+      accentFg: '#f5f0e8',
+      accent2Fg: '#f5f0e8',
+      accent3Fg: '#f5f0e8',
     },
   },
   {
@@ -217,6 +229,32 @@ export const themes: Theme[] = [
     },
   },
   {
+    id: 'mfd',
+    name: 'MFD',
+    previewColors: ['#000000', '#f7f36b', '#66e2ff'],
+    colorScheme: 'dark',
+    linkedFontThemeId: 'mfd',
+    colors: {
+      bg: '#000000',
+      surface: '#050607',
+      surface2: '#0a0c0f',
+      border: '#2b3138',
+      accent: '#f7f36b',
+      accent2: '#66e2ff',
+      accent3: '#ff9b42',
+      danger: '#ff5c7a',
+      text: '#eef4ff',
+      muted: '#8da0b7',
+      heading: '#ffffff',
+      accentFg: '#050607',
+      accent2Fg: '#031219',
+      accent3Fg: '#140700',
+      codeFile: '#66e2ff',
+      codeRepo: '#d780ff',
+      codeTask: '#69ffb3',
+    },
+  },
+  {
     id: 'digital-trident',
     name: 'Digital Trident',
     previewColors: ['#000000', '#1e90ff', '#4169e1'],
@@ -294,9 +332,50 @@ export const themes: Theme[] = [
   },
 ];
 
+function hexToRgb(hex: string) {
+  const normalized = hex.trim().replace(/^#/, '');
+  const expanded = normalized.length === 3
+    ? normalized.split('').map((part) => `${part}${part}`).join('')
+    : normalized;
+  if (!/^[0-9a-fA-F]{6}$/.test(expanded)) return null;
+  const value = Number.parseInt(expanded, 16);
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+}
+
+function relativeLuminance(hex: string) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return 0;
+  const channels = [rgb.r, rgb.g, rgb.b].map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2]);
+}
+
+function contrastRatio(a: string, b: string) {
+  const lighter = Math.max(relativeLuminance(a), relativeLuminance(b));
+  const darker = Math.min(relativeLuminance(a), relativeLuminance(b));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function getReadableForeground(background: string, preferred?: string) {
+  const light = '#ffffff';
+  const dark = '#0f172a';
+  if (preferred) return preferred;
+  return contrastRatio(background, light) >= contrastRatio(background, dark) ? light : dark;
+}
+
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
   const c = theme.colors;
+  root.setAttribute('data-theme', theme.id);
+  root.style.colorScheme = theme.colorScheme ?? (relativeLuminance(c.bg) < 0.2 ? 'dark' : 'light');
   root.style.setProperty('--color-bg', c.bg);
   root.style.setProperty('--color-surface', c.surface);
   root.style.setProperty('--color-surface2', c.surface2);
@@ -308,7 +387,10 @@ function applyTheme(theme: Theme) {
   root.style.setProperty('--color-text', c.text);
   root.style.setProperty('--color-muted', c.muted);
   root.style.setProperty('--color-heading', c.heading);
-  root.style.setProperty('--color-accent-fg', c.accentFg ?? '#ffffff');
+  root.style.setProperty('--color-accent-fg', getReadableForeground(c.accent, c.accentFg));
+  root.style.setProperty('--color-accent2-fg', getReadableForeground(c.accent2, c.accent2Fg));
+  root.style.setProperty('--color-accent3-fg', getReadableForeground(c.accent3, c.accent3Fg));
+  root.style.setProperty('--color-danger-fg', getReadableForeground(c.danger, c.dangerFg));
   root.style.setProperty('--color-code-static', c.text);
   root.style.setProperty('--color-code-static-bg', `${c.surface2}cc`);
   root.style.setProperty('--color-code-static-border', `${c.border}cc`);
@@ -332,6 +414,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 const defaultThemeId = 'ivory';
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const { setFontTheme } = useFontTheme();
   const [theme, setThemeState] = useState<Theme>(() => {
     const saved = localStorage.getItem('odyssey-theme');
     return themes.find((t) => t.id === saved)
@@ -348,6 +431,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (t) {
       setThemeState(t);
       localStorage.setItem('odyssey-theme', id);
+      if (t.linkedFontThemeId) {
+        setFontTheme(t.linkedFontThemeId);
+      }
     }
   };
 

@@ -1,0 +1,143 @@
+Sometimes it can be helpful to put extra information into an appendix.
+
+\section{Less Common Figure Examples} \label{sec:uncommon-figures}
+Here are a few example figure types that are less common.
+
+\begin{figure}[H] % floats ask LaTeX to attempt to place figure here; used because fig originally landed on the next page, leaving big white space at the bottom of this page.
+    \framebox[\textwidth]{\parbox{\textwidth}{\lipsum[65]}}
+    \caption*{\small This is the long subcaption that explains the figure in detail and expounds on its relevance to the text. The other formatting option for long captions is shown in Figure \ref{fig:dragon}; choose one method for your thesis. All figures need to be referenced in the text before the image. Full source citation, as applicable, is required. Source:~\citet{Wunkerbunk:2002}.} \vspace*{1.5em}
+    \caption{Figure caption, with \emph{emph} and \textit{italics} in a caption.}
+\end{figure}
+
+\begin{figure}[H] % H prevents figures from landing in the middle of paragraphs
+    \framebox[\textwidth]{\parbox{\textwidth}{\lipsum[65]}}
+    \caption{Some styled math in a caption, $\mathsf{Func}(x, \sigma) = x^2 + \overline{\sigma} \times \pi$.}
+\end{figure}
+
+Do you need to incorporate multiple subfigures within one figure?
+
+\begin{figure}[H] % H prevents figures from landing in the middle of paragraphs
+    \centering
+    \subfloat[First sub-figure]{
+       \framebox[0.47\textwidth]{\parbox{0.45\textwidth}{\lipsum[65]}}
+    }
+    \hfill
+    \subfloat[Second sub-figure]{
+       \framebox[0.47\textwidth]{\parbox{0.45\textwidth}{\lipsum[65]}}
+    }
+    
+    \caption{Caption using subfigure package.}
+\end{figure}
+
+\subsection{A Long Code Listing}
+As introduced in Section~\ref{sec:figures}, you can also use figures to display source code.
+When your code listing is longer than one page, like the following example, it should have its own appendix or section in an appendix rather than being a figure.
+
+\lstinputlisting[language=bash,numbers=left,breaklines,frame=single,aboveskip=0.6in]{figs/bash-long.sh}
+% Use the `aboveskip=0.6in` parameter if you have text between the appendix title and the code listing.
+
+\subsection{A Long Table}
+As introduced in Section~\ref{section:tableformat}, you may need to show data in a table that is longer than one page, like Table~\ref{tab:long}.
+
+\begin{center} % NB:  Unlike putting \centering within a table environment, the longtable environment goes inside the center environment
+\begin{longtable}{lr}
+    \caption{A sample long table showing decimal ASCII 55--90} \label{tab:long} \\ \hline
+    Character & Number \\ \hline \endfirsthead % This caption and row appear at the top of the table
+    \caption[]{A sample long table showing decimal ASCII 55--90} \\ \hline
+    Character & Number \\ \hline \endhead % This caption and row appears at the top of each subsequent page
+    % Very important:  The caption for each subsequent page must have [] to prevent the table from being listed multiple times (once for each page!) in the List of Tables.  Also, the label should appear only on the first instance of the caption.
+    \hline \multicolumn{2}{r}{Continued on next page\ldots} \endfoot % This row appears at the bottom of all but the last page of the table
+    \hline Total & 36 \\ \hline \endlastfoot % This row appears at the end of the table and is not always necessary.
+    % You need to specify the above before providing your table data below.
+    7 & 55 \\
+    8 & 56 \\
+    9 & 57 \\
+    : & 58 \\
+    ; & 59 \\
+    < & 60 \\
+    = & 61 \\
+    > & 62 \\
+    ? & 63 \\
+    @ & 64 \\
+    A & 65 \\
+    B & 66 \\
+    C & 67 \\
+    D & 68 \\
+    E & 69 \\
+    F & 70 \\
+    G & 71 \\
+    H & 72 \\
+    I & 73 \\
+    J & 74 \\
+    K & 75 \\
+    L & 76 \\
+    M & 77 \\
+    N & 78 \\
+    O & 79 \\
+    P & 80 \\
+    Q & 81 \\
+    R & 82 \\
+    S & 83 \\
+    T & 84 \\
+    U & 85 \\
+    V & 86 \\
+    W & 87 \\
+    X & 88 \\
+    Y & 89 \\
+    Z & 90 \\
+\end{longtable}
+\end{center}
+
+\subsection{A Wide Figure or Table}
+If you need to present a figure or table that is too wide to fit between the margins, you can put in on a landscape page, as in Figure~\ref{fig:wide}.
+Increasing the page size (in portrait or landscape layout) up to $11''\times17''$ is also permissible, but only in an appendix or supplemental.
+For keeping this template simpler, we leave this larger page commented-out.
+If you need this a larger page, feel free to un-comment these lines and use the example code as your template.
+
+\begin{landscape}
+\vspace*{\fill} % Use this vertical fill macro both above and below the figure/table to center it vertically on the page
+\begin{figure}[H]
+\centering
+    \fbox{
+        \includegraphics[width=0.45\linewidth]{figs/dragon.jpg}
+        \includegraphics[width=0.45\linewidth]{figs/dragon.jpg}
+    }
+\caption{A Wide Figure}
+\label{fig:wide}
+\end{figure}
+\vspace*{\fill}
+\end{landscape}
+
+% \newstocksize{layoutsize={11in,17in},keepmargins} % Using this requires the stocksize package, which requires TeXLive 2025 or later!
+% \begin{landscape} % If you need a landscape page, keep the dimensions in the previous line portrait and use the landscape environment
+% \vspace*{\fill} % Use this vertical fill macro both above and below the figure/table to center it vertically on the page
+% \begin{figure}[H]
+% \centering
+%     \fbox{
+%         \includegraphics[width=0.45\linewidth]{figs/dragon.jpg}
+%         \includegraphics[width=0.45\linewidth]{figs/dragon.jpg}
+%     }
+% \caption{A Very Big Figure}
+% \label{fig:really-big}
+% \end{figure}
+% \vspace*{\fill}
+% \end{landscape}
+% \restorestocksize
+
+\section{Creating and Using Macros}
+\LaTeX{} macros are commands that you can use as shortcuts to reproducing the same code.
+For example, if you want to leave notes to yourself that contrast well with your thesis text, consider putting this macro definition in the main.tex file with your \verb|\usepackage{}| commands:
+
+\verb|\newcommand{\jl}[1]{\textcolor{red}{JL: #1}}|
+
+In this case, every time you put \verb|\jl{fix this!}| in your \LaTeX{} source, you will see \textcolor{red}{JL: fix this!} in your text.
+The first parameter of \verb|\newcommand| is the name of the macro that you are defining.  In this case, I pretended my initials are JL.  You can use any name for a macro that is not already used.
+The second parameter tells \LaTeX{} to expect one (1) parameter to this new macro.
+The third parameter tells \LaTeX{} what to do when seeing this new macro.  In this case, it prints in red text: my initials, a colon, a space, and the text that I provide to the command.
+
+If you need to have all of your comments disappear, for example, to submit your thesis draft to the TPO for its initial review, you can renew the command to hide all of your comments.  Just insert this line right after the above \verb|\newcommand| line:
+
+\verb|\renewcommand{\jl}[1]{}|
+
+As with nearly everything in \LaTeX{}, there is always a fancier way to do something.
+In the case of making notes to remind yourself of something in a part of the text, the \texttt{todonotes} package offers a lot of features that you might find helpful.

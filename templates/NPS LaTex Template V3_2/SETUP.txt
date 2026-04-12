@@ -1,0 +1,48 @@
+This setup file provides a brief quick start guide, tips & recommended best practices, and, for advanced users, some terminal commands.
+
+Quick Start:
+
+The default settings in the thesis template produce a thesis in the IEEE citation/references style.  To use the INFORMS style instead, change the documentclass declaration at the beginning of main.tex as follows:
+\documentclass[thesis,informs,twoside]{npsreport2018}
+
+If you would like, you may delete the .bst file that you do not need to use.
+ - IEEE needs nps-ieee.bst
+ - INFORMS needs nps-informs.bst
+
+
+For Overleaf, set main.tex as the main file via Menu, Main Document (if Overleaf has not already selected it for you) and click "Recompile."
+
+For your own LaTeX installation:
+ -In a program like MiKTeX, open main.tex.  Ensure pdflatex + bibtex are in the drop-down options next to the compile button (makeindex might also be there, but it does not need to be).  Click compile.
+ -From a terminal (or command prompt), run these commands (explained further below this quick start section):
+pdflatex main
+bibtex main
+pdflatex main
+pdflatex main
+
+
+Tips & Recommended Best Practices:
+
+Enter your references into the .bib file. Do not delete the .bst file. It formats your references.
+
+For Initial Review to Thesis Processing, do not remove any pages from your PDF.
+
+Do not delete the .bst, .cls, or .sty files.
+
+If you have reference numbers in your LIST OF FIGURES, it might mess up the reference numbering your thesis body. To avoid this, format your figure captions as shown in Figure 1.1 in the template. If you prefer to display citations in your List of Figures, see the suggested fixes here: https://wiki.nps.edu/pages/viewpage.action?pageId=353730736
+
+For APA or Chicago citation style, see the wiki FAQ section.
+
+
+Terminal (or Command Prompt) details:
+1.) First pdflatex command uses the template-provided .cls and .sty files and the user-provided .tex file(s) to create the .aux, .lof, .log, .lot, .out, .pdf, .synctex.gz, and .toc files.  In-text acronyms, bibliography, internal links, etc. will not yet work.
+
+2.) bibtex uses the .aux file just created along with the template-provided .bst file and user-provided .bib file to create the .blg and .bbl file.
+
+3.) Second pdflatex uses the same files as the first iteration, plus the .bbl file just created by bibtex and updates the same files that in created in the first iteration with new information regarding citations, acronyms, and internal links.  Now everything, except the in-text citations, is working, including the reference list.
+
+4.) But, since the in-text citations to the new reference list at the end bring their own new internal links, we'll need to run pdflatex a third time to get those internal links completed.  It uses all of the same files as input and updates all the same files as the second iteration.
+
+5.) Sometimes, pdflatex will give this warning:
+LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.
+When this happens, just run pdflatex once more to clear it and get your cross-references right.

@@ -19,6 +19,7 @@ import ActivityFeed from '../ActivityFeed';
 import CommitActivityCharts from '../CommitActivityCharts';
 import MarkdownWithFileLinks from '../MarkdownWithFileLinks';
 import ProgressRing from '../ProgressRing';
+import { useProjectCommitHistory } from '../../hooks/useProjectCommitHistory';
 import { supabase } from '../../lib/supabase';
 import type { Goal, OdysseyEvent } from '../../types';
 
@@ -170,19 +171,98 @@ function getMemberDisplayName(member: MemberRow) {
   );
 }
 
+function toneTextClass(tone: StatusTone) {
+  if (tone === 'positive') return 'text-accent3';
+  if (tone === 'danger') return 'text-danger';
+  if (tone === 'warning') return 'text-accent2';
+  return 'text-heading';
+}
+
+function toneBarClass(tone: StatusTone) {
+  if (tone === 'positive') return 'bg-accent3';
+  if (tone === 'danger') return 'bg-danger';
+  if (tone === 'warning') return 'bg-accent2';
+  return 'bg-muted/65';
+}
+
+function HoverPanelStat({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  tone?: StatusTone;
+}) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-surface px-3 py-2.5">
+      <p className="text-[9px] uppercase tracking-[0.18em] text-muted">{label}</p>
+      <p className={`mt-1 text-sm font-semibold ${toneTextClass(tone)}`}>{value}</p>
+    </div>
+  );
+}
+
+function HoverPanelBars({
+  items,
+  tone = 'warning',
+}: {
+  items: Array<{ label: string; value: number; meta?: string }>;
+  tone?: StatusTone;
+}) {
+  const maxValue = Math.max(...items.map((item) => item.value), 1);
+
+  return (
+    <div className="space-y-2.5">
+      {items.map((item) => (
+        <div key={item.label}>
+          <div className="flex items-center justify-between gap-3 text-[11px]">
+            <div className="min-w-0">
+              <span className="block truncate text-heading">{item.label}</span>
+              {item.meta && <span className="block text-[10px] text-muted mt-0.5">{item.meta}</span>}
+            </div>
+            <span className="shrink-0 font-mono text-muted">{item.value}</span>
+          </div>
+          <div className="mt-1.5 h-1.5 rounded-full bg-border/60 overflow-hidden">
+            <div className={`h-full rounded-full ${toneBarClass(tone)}`} style={{ width: `${Math.max((item.value / maxValue) * 100, item.value > 0 ? 10 : 0)}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MetricCard({
   label,
   value,
   meta,
   icon: Icon,
+  hoverTitle,
+  hoverEyebrow,
+  hoverContent,
 }: {
   label: string;
   value: string;
   meta: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
+  hoverTitle?: string;
+  hoverEyebrow?: string;
+  hoverContent?: React.ReactNode;
 }) {
+  const [open, setOpen] = React.useState(false);
+
   return (
-    <div className="rounded-2xl border border-border bg-surface2/40 px-4 py-4">
+    <div
+      className="relative rounded-2xl border border-border bg-surface2/40 px-4 py-4 transition-colors hover:bg-surface2/60 focus-within:bg-surface2/60"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocusCapture={() => setOpen(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+        }
+      }}
+      tabIndex={0}
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] uppercase tracking-[0.22em] text-muted">{label}</p>
@@ -193,6 +273,18 @@ function MetricCard({
         </div>
       </div>
       <p className="mt-3 text-xs text-muted leading-5">{meta}</p>
+
+      {hoverContent && (
+        <div className={`absolute left-0 right-0 top-full z-30 pt-3 transition-all duration-150 ${open ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-2 opacity-0'}`}>
+          <div className="overflow-hidden rounded-[1.35rem] border border-border bg-surface/96 shadow-[0_24px_70px_rgba(15,23,42,0.18)] backdrop-blur-md">
+            <div className="border-b border-border bg-[linear-gradient(135deg,rgba(147,161,183,0.08),rgba(255,255,255,0.03))] px-4 py-3">
+              {hoverEyebrow && <p className="text-[9px] uppercase tracking-[0.2em] text-accent">{hoverEyebrow}</p>}
+              {hoverTitle && <p className="mt-1 text-sm font-semibold text-heading">{hoverTitle}</p>}
+            </div>
+            <div className="px-4 py-4">{hoverContent}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -419,7 +511,6 @@ function ActivityTab({
   goals,
   events,
   eventsLoading,
-  hasCommitData,
   setHasCommitData,
   members,
   user,
@@ -429,6 +520,12 @@ function ActivityTab({
   handleTaskGuidance,
   getAssignee,
 }: ActivityTabProps) {
+  const repoHistory = useProjectCommitHistory(project.id);
+
+  React.useEffect(() => {
+    setHasCommitData(repoHistory.hasData);
+  }, [repoHistory.hasData, setHasCommitData]);
+
   const missingContributorIds = React.useMemo(() => {
     const knownNames = new Map<string, string>();
 
@@ -495,6 +592,63 @@ function ActivityTab({
     };
   }, [missingContributorIds]);
 
+  const repoSummary = React.useMemo(() => {
+    const thirtyDaysAgo = Date.now() - 30 * DAY_MS;
+    const linkedRepoCount = repoHistory.linkedRepos.length;
+    const repoCountBySource = new Map<'github' | 'gitlab', number>([
+      ['github', 0],
+      ['gitlab', 0],
+    ]);
+    const activeRepoKeys = new Set<string>();
+    let recentCommitCount = 0;
+
+    for (const repo of repoHistory.byRepo) {
+      let repoRecentCommitCount = 0;
+      for (const [date, count] of Object.entries(repo.dateMap)) {
+        const parsed = new Date(`${date}T00:00:00Z`).getTime();
+        if (Number.isNaN(parsed) || parsed < thirtyDaysAgo) continue;
+        repoRecentCommitCount += count;
+        recentCommitCount += count;
+      }
+      if (repoRecentCommitCount > 0) {
+        activeRepoKeys.add(`${repo.source}:${repo.repo}`);
+        repoCountBySource.set(repo.source, (repoCountBySource.get(repo.source) ?? 0) + repoRecentCommitCount);
+      }
+    }
+
+    const totalCommits = repoHistory.commits.reduce((sum, commit) => sum + commit.count, 0);
+    const sourceStats = Array.from(repoCountBySource.entries())
+      .map(([source, value]) => ({ label: SOURCE_LABELS[source] ?? source, value }))
+      .filter((entry) => entry.value > 0)
+      .sort((left, right) => right.value - left.value);
+
+    const repoView = repoHistory.loading
+      ? 'Syncing'
+      : repoHistory.hasData
+        ? 'Live'
+        : linkedRepoCount > 0
+          ? 'Idle'
+          : 'Quiet';
+
+    const meta = repoHistory.loading
+      ? 'Checking linked GitHub and GitLab repositories for recent commit history.'
+      : repoHistory.hasData
+        ? `${totalCommits} commits across ${Math.max(repoHistory.byRepo.length, 1)} linked repo${repoHistory.byRepo.length === 1 ? '' : 's'} in the last 12 months.`
+        : linkedRepoCount > 0
+          ? `${linkedRepoCount} linked repo${linkedRepoCount === 1 ? '' : 's'} found, but no commits were returned in the last 12 months.`
+          : 'No GitHub or GitLab repositories are currently linked to this project.';
+
+    return {
+      linkedRepoCount,
+      totalCommits,
+      recentCommitCount,
+      activeRepoCount: activeRepoKeys.size,
+      sourceStats,
+      repoView,
+      meta,
+    };
+  }, [repoHistory.byRepo, repoHistory.commits, repoHistory.hasData, repoHistory.linkedRepos.length, repoHistory.loading]);
+
   const activityModel = React.useMemo(() => {
     const now = Date.now();
     const cutoff14 = now - 14 * DAY_MS;
@@ -549,6 +703,11 @@ function ActivityTab({
     const recentEvents = events.filter((event) => new Date(event.occurred_at).getTime() >= cutoff14);
     const monthlyEvents = events.filter((event) => new Date(event.occurred_at).getTime() >= cutoff30);
     const overdueOpen = openGoals.filter((goal) => goal.deadline && goal.deadline < todayIso);
+    const dueSoonOpen = openGoals.filter((goal) => {
+      if (!goal.deadline || goal.deadline < todayIso) return false;
+      const dueAt = new Date(`${goal.deadline}T00:00:00Z`).getTime();
+      return dueAt - now <= 7 * DAY_MS;
+    });
     const avgProgress = goals.length > 0
       ? Math.round(goals.reduce((sum, goal) => sum + (Number.isFinite(goal.progress) ? goal.progress : 0), 0) / goals.length)
       : 0;
@@ -701,6 +860,12 @@ function ActivityTab({
 
     const cadence = Array.from(cadenceMap.values());
     const activeDays = cadence.filter((day) => day.count > 0).length;
+    const peakCadenceDay = cadence.reduce<ActivityDay | null>((peak, day) => {
+      if (!peak || day.count > peak.count) return day;
+      return peak;
+    }, null);
+    const repoSignals = monthlyEvents.filter((event) => event.source === 'github' || event.source === 'gitlab');
+    const repoEventCount = eventTypeCounts.get('commit') ?? 0;
 
     return {
       avgProgress,
@@ -709,14 +874,18 @@ function ActivityTab({
       recentGoalUpdates,
       recentEvents,
       overdueOpen,
+      dueSoonOpen,
       statusStats,
       categoryStats,
       loeStats,
       contributors,
       cadence,
       activeDays,
+      peakCadenceDay,
       sourceStats,
       eventTypeStats,
+      repoSignals,
+      repoEventCount,
     };
   }, [events, getAssignee, goals, members, supplementalNames, user]);
 
@@ -738,24 +907,234 @@ function ActivityTab({
           value={String(activityModel.openGoals.length)}
           meta={`${activityModel.overdueOpen.length} overdue and ${activityModel.recentGoalUpdates.length} touched in the last 14 days.`}
           icon={FolderKanban}
+          hoverEyebrow="Task Pressure"
+          hoverTitle="Open-task backlog and near-term delivery risk"
+          hoverContent={
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                <HoverPanelStat label="Open" value={String(activityModel.openGoals.length)} tone="warning" />
+                <HoverPanelStat label="Overdue" value={String(activityModel.overdueOpen.length)} tone={activityModel.overdueOpen.length > 0 ? 'danger' : 'positive'} />
+                <HoverPanelStat label="Due Soon" value={String(activityModel.dueSoonOpen.length)} tone={activityModel.dueSoonOpen.length > 0 ? 'warning' : 'neutral'} />
+              </div>
+
+              <div className="rounded-xl border border-border/70 bg-surface2/40 px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-muted">Status split</p>
+                <div className="mt-3 space-y-2.5">
+                  {activityModel.statusStats
+                    .filter((item) => item.id !== 'complete')
+                    .slice(0, 4)
+                    .map((item) => (
+                      <div key={item.id}>
+                        <div className="flex items-center justify-between gap-3 text-[11px]">
+                          <span className="text-heading">{item.label}</span>
+                          <span className={`font-mono ${toneTextClass(item.tone)}`}>{item.count}</span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 rounded-full bg-border/60 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${toneBarClass(item.tone)}`}
+                            style={{ width: `${Math.max((item.count / Math.max(activityModel.openGoals.length, 1)) * 100, item.count > 0 ? 10 : 0)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-muted mb-2">Most exposed tasks</p>
+                <div className="space-y-2">
+                  {activityModel.openGoals
+                    .slice()
+                    .sort((left, right) => {
+                      const leftRank = left.deadline && left.deadline < new Date().toISOString().slice(0, 10) ? 0 : 1;
+                      const rightRank = right.deadline && right.deadline < new Date().toISOString().slice(0, 10) ? 0 : 1;
+                      if (leftRank !== rightRank) return leftRank - rightRank;
+                      if ((left.deadline ?? '9999-12-31') !== (right.deadline ?? '9999-12-31')) {
+                        return (left.deadline ?? '9999-12-31').localeCompare(right.deadline ?? '9999-12-31');
+                      }
+                      return left.progress - right.progress;
+                    })
+                    .slice(0, 3)
+                    .map((goal) => (
+                      <div key={goal.id} className="rounded-xl border border-border/70 bg-surface px-3 py-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="min-w-0 truncate text-xs font-medium text-heading">{goal.title}</span>
+                          <span className="shrink-0 text-[10px] font-mono text-muted">{goal.progress}%</span>
+                        </div>
+                        <p className="mt-1 text-[10px] text-muted">
+                          {(STATUS_META[goal.status]?.label ?? goal.status)}{goal.deadline ? ` · due ${goal.deadline}` : ' · no deadline set'}
+                        </p>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
+              <p className="text-[11px] leading-5 text-muted">
+                {activityModel.overdueOpen.length > 0
+                  ? `${activityModel.overdueOpen.length} open task${activityModel.overdueOpen.length === 1 ? ' is' : 's are'} already past deadline, so this card is signaling immediate schedule pressure.`
+                  : activityModel.dueSoonOpen.length > 0
+                    ? `${activityModel.dueSoonOpen.length} open task${activityModel.dueSoonOpen.length === 1 ? ' is' : 's are'} due within the next week, which makes this the next delivery pinch point.`
+                    : 'No deadlines are currently slipping, so backlog pressure is mostly volume rather than lateness.'}
+              </p>
+            </div>
+          }
         />
         <MetricCard
           label="Average Progress"
           value={`${activityModel.avgProgress}%`}
           meta={`${activityModel.completedGoals.length} completed tasks out of ${goals.length} total.`}
           icon={BarChart3}
+          hoverEyebrow="Progress Shape"
+          hoverTitle="Completion depth across the current workload"
+          hoverContent={
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                <HoverPanelStat label="Average" value={`${activityModel.avgProgress}%`} tone={activityModel.avgProgress >= 70 ? 'positive' : activityModel.avgProgress >= 40 ? 'warning' : 'danger'} />
+                <HoverPanelStat label="Complete" value={`${activityModel.completedGoals.length}/${goals.length || 0}`} tone="positive" />
+                <HoverPanelStat label="Recent Touches" value={String(activityModel.recentGoalUpdates.length)} tone="warning" />
+              </div>
+
+              <div className="rounded-xl border border-border/70 bg-surface2/40 px-3 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted">Completion rate</p>
+                  <span className="text-[11px] font-mono text-heading">
+                    {goals.length > 0 ? Math.round((activityModel.completedGoals.length / goals.length) * 100) : 0}%
+                  </span>
+                </div>
+                <div className="mt-3 h-2 rounded-full bg-border/60 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-accent3"
+                    style={{ width: `${goals.length > 0 ? Math.max((activityModel.completedGoals.length / goals.length) * 100, activityModel.completedGoals.length > 0 ? 8 : 0) : 0}%` }}
+                  />
+                </div>
+              </div>
+
+              {activityModel.categoryStats.length > 0 && (
+                <div className="rounded-xl border border-border/70 bg-surface2/40 px-3 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted mb-3">Strongest category lanes</p>
+                  <HoverPanelBars
+                    items={activityModel.categoryStats.slice(0, 3).map((item) => ({
+                      label: item.label,
+                      value: item.avgProgress,
+                      meta: `${item.completed}/${item.total} complete · ${item.recentUpdates} recent touches`,
+                    }))}
+                    tone="warning"
+                  />
+                </div>
+              )}
+
+              <p className="text-[11px] leading-5 text-muted">
+                {activityModel.avgProgress >= 70
+                  ? 'The project is mostly in execution and close-out mode, with a large share of work already moving beyond the midpoint.'
+                  : activityModel.avgProgress >= 40
+                    ? 'Progress is moving, but the portfolio is still mixed between early execution and tasks that need follow-through to reach completion.'
+                    : 'Most work is still concentrated in early-stage progress, which usually means scope is open but completed output is still thin.'}
+              </p>
+            </div>
+          }
         />
         <MetricCard
           label="Active Contributors"
           value={String(activityModel.contributors.length)}
           meta={`${activityModel.recentEvents.length} logged events across ${activityModel.activeDays} active days in the last 14 days.`}
           icon={Users}
+          hoverEyebrow="Team Signals"
+          hoverTitle="Who is moving work and how often activity lands"
+          hoverContent={
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                <HoverPanelStat label="Contributors" value={String(activityModel.contributors.length)} tone="warning" />
+                <HoverPanelStat label="Active Days" value={String(activityModel.activeDays)} tone={activityModel.activeDays >= 7 ? 'positive' : 'warning'} />
+                <HoverPanelStat label="Events" value={String(activityModel.recentEvents.length)} tone="neutral" />
+              </div>
+
+              {activityModel.contributors.length > 0 && (
+                <div className="rounded-xl border border-border/70 bg-surface2/40 px-3 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted mb-3">Top contributor signals</p>
+                  <HoverPanelBars
+                    items={activityModel.contributors.slice(0, 4).map((person) => ({
+                      label: person.name,
+                      value: person.taskTouches + person.eventCount,
+                      meta: `${person.taskTouches} task touches · ${person.eventCount} events`,
+                    }))}
+                    tone="warning"
+                  />
+                </div>
+              )}
+
+              <div className="rounded-xl border border-border/70 bg-surface px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-muted">Cadence read</p>
+                <p className="mt-2 text-xs text-heading">
+                  {activityModel.peakCadenceDay && activityModel.peakCadenceDay.count > 0
+                    ? `${new Date(activityModel.peakCadenceDay.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} was the busiest recent day with ${activityModel.peakCadenceDay.count} total signals.`
+                    : 'No concentrated activity spike was detected in the last 14 days.'}
+                </p>
+              </div>
+
+              <p className="text-[11px] leading-5 text-muted">
+                {activityModel.contributors.length >= 4
+                  ? 'Activity is spread across multiple contributors, which usually indicates broader team engagement instead of one-person churn.'
+                  : activityModel.contributors.length >= 2
+                    ? 'A small working set is driving most project motion right now, so continuity depends on a few active contributors.'
+                    : 'Recent movement is highly concentrated, which can become a bottleneck if that contributor stalls.'}
+              </p>
+            </div>
+          }
         />
         <MetricCard
           label="Repo Momentum"
-          value={hasCommitData ? 'Live' : 'Quiet'}
-          meta={hasCommitData ? 'Combined GitHub and GitLab repo activity is present for this project.' : 'No commit history is currently linked into this project view.'}
+          value={repoSummary.repoView}
+          meta={repoSummary.meta}
           icon={GitCommitHorizontal}
+          hoverEyebrow="Repository Signal"
+          hoverTitle="Code-linked momentum and integration coverage"
+          hoverContent={
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-2">
+                <HoverPanelStat label="Repo View" value={repoSummary.repoView} tone={repoHistory.hasData ? 'positive' : repoSummary.linkedRepoCount > 0 ? 'warning' : 'danger'} />
+                <HoverPanelStat label="Linked Repos" value={String(repoSummary.linkedRepoCount)} tone={repoSummary.linkedRepoCount > 0 ? 'warning' : 'neutral'} />
+                <HoverPanelStat label="30d Commits" value={String(repoSummary.recentCommitCount)} tone={repoSummary.recentCommitCount > 0 ? 'positive' : 'neutral'} />
+              </div>
+
+              {repoSummary.sourceStats.length > 0 && (
+                <div className="rounded-xl border border-border/70 bg-surface2/40 px-3 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-muted mb-3">Source mix in the last 30 days</p>
+                  <HoverPanelBars
+                    items={repoSummary.sourceStats.slice(0, 4).map((item) => ({
+                      label: item.label,
+                      value: item.value,
+                    }))}
+                    tone="neutral"
+                  />
+                </div>
+              )}
+
+              <div className="rounded-xl border border-border/70 bg-surface px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-muted">Readout</p>
+                <p className="mt-2 text-xs text-heading">
+                  {repoHistory.loading
+                    ? 'Repository history is syncing now, so this card will update as soon as linked repo commits are loaded.'
+                    : repoHistory.hasData
+                      ? 'Repository history is connected into this activity view, so the momentum card and commit charts are now reading from the same linked-repo feed.'
+                      : repoSummary.linkedRepoCount > 0
+                        ? 'Linked repositories were found, but no recent commit history was returned, so the project appears connected but currently quiet.'
+                        : 'No linked repositories are configured yet, so repo momentum cannot be measured from GitHub or GitLab.'}
+                </p>
+              </div>
+
+              <p className="text-[11px] leading-5 text-muted">
+                {repoHistory.loading
+                  ? 'Odyssey is checking every linked repo so this summary can reflect actual commit movement instead of only manual project events.'
+                  : repoHistory.hasData
+                    ? repoSummary.recentCommitCount > 0
+                      ? `${repoSummary.recentCommitCount} commit${repoSummary.recentCommitCount === 1 ? '' : 's'} landed in the last 30 days across ${Math.max(repoSummary.activeRepoCount, 1)} active repo${repoSummary.activeRepoCount === 1 ? '' : 's'}.`
+                      : `${repoSummary.totalCommits} commit${repoSummary.totalCommits === 1 ? '' : 's'} are linked in the last 12 months, but the last 30 days have been quiet.`
+                    : repoSummary.linkedRepoCount > 0
+                      ? 'The repo integration is present, but commit history did not return any activity in the lookback window.'
+                      : 'Link GitHub or GitLab here to add a real code-momentum lane instead of relying only on task and collaboration activity.'}
+              </p>
+            </div>
+          }
         />
       </section>
 
@@ -765,12 +1144,16 @@ function ActivityTab({
             <h3 className="text-sm font-semibold text-heading">Repository Activity</h3>
             <p className="text-xs text-muted mt-1">Combined commit heatmap and commit velocity across all linked project repos.</p>
           </div>
-          <span className="text-[11px] font-mono text-muted">{hasCommitData ? 'repo data connected' : 'waiting for repo data'}</span>
+          <span className="text-[11px] font-mono text-muted">
+            {repoHistory.loading ? 'syncing repo data' : repoHistory.hasData ? 'repo data connected' : repoSummary.linkedRepoCount > 0 ? 'repos linked, no commits returned' : 'waiting for repo data'}
+          </span>
         </div>
         <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
-        {!hasCommitData && (
+        {!repoHistory.loading && !repoHistory.hasData && (
           <div className="mt-3 rounded-xl border border-border/70 bg-surface2/35 px-4 py-3 text-xs text-muted">
-            Link GitHub or GitLab repositories to surface combined commit heatmaps and daily commit velocity here.
+            {repoSummary.linkedRepoCount > 0
+              ? 'Linked repositories are connected, but no commit activity was returned for the current lookback window.'
+              : 'Link GitHub or GitLab repositories to surface combined commit heatmaps and daily commit velocity here.'}
           </div>
         )}
       </section>

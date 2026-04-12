@@ -29,9 +29,9 @@
 
 /* Textarea auto-resize */
 .pc-input {
-  height: 26px;
-  min-height: 26px;
-  max-height: 80px;
+  height: 44px;
+  min-height: 44px;
+  max-height: 120px;
   overflow-y: auto;
   resize: none;
   line-height: 1.4;
@@ -101,6 +101,53 @@
   background: var(--color-surface);
 }
 
+.pc-stack-control {
+  display: flex;
+  flex-direction: column;
+  width: 36px;
+  min-height: 44px;
+  align-self: stretch;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--color-surface2);
+}
+
+.pc-stack-btn {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted);
+  background: transparent;
+  transition: color 0.15s, background 0.15s, opacity 0.15s;
+  cursor: pointer;
+}
+
+.pc-stack-btn + .pc-stack-btn {
+  border-top: 1px solid var(--color-border);
+}
+
+.pc-stack-btn:hover {
+  color: var(--color-heading);
+  background: var(--color-surface);
+}
+
+.pc-stack-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.pc-stack-btn--active {
+  color: var(--color-heading);
+  background: var(--color-surface);
+}
+
+.pc-stack-btn--recording {
+  color: var(--color-accent2);
+  background: color-mix(in srgb, var(--color-accent2) 12%, var(--color-surface));
+}
+
 .pc-send-btn {
   display: flex;
   align-items: center;
@@ -109,6 +156,12 @@
   align-self: stretch;
   border-radius: 6px;
   flex-shrink: 0;
+  color: var(--color-accent-fg);
+}
+
+.pc-send-btn svg {
+  color: currentColor;
+  stroke: currentColor;
 }
 
 /* Attachment chip above textarea */

@@ -1,4 +1,5 @@
 import type { OdysseyEvent } from '../types';
+import { isGeneratedThesisLatexCommitEvent } from '../lib/activity-filters';
 import './ActivityFeed.css';
 import { GitCommit, MessageSquare, FileEdit, StickyNote, Video, Upload, TrendingUp, File, Plus, ArrowRight, Bot } from 'lucide-react';
 
@@ -36,6 +37,8 @@ interface ActivityFeedProps {
 }
 
 export default function ActivityFeed({ events, loading, emptyMessage }: ActivityFeedProps) {
+  const visibleEvents = events.filter((event) => !isGeneratedThesisLatexCommitEvent(event));
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -52,7 +55,7 @@ export default function ActivityFeed({ events, loading, emptyMessage }: Activity
     );
   }
 
-  if (events.length === 0) {
+  if (visibleEvents.length === 0) {
     if (emptyMessage === undefined) return null;
     return (
       <div className="py-8 text-center">
@@ -63,7 +66,7 @@ export default function ActivityFeed({ events, loading, emptyMessage }: Activity
 
   return (
     <div className="space-y-1">
-      {events.map((event) => {
+      {visibleEvents.map((event) => {
         const Icon = eventIcons[event.event_type] ?? File;
         const color = sourceColors[event.source] || 'text-muted';
         const timeAgo = getTimeAgo(event.occurred_at);

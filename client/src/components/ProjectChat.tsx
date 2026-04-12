@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Send, Loader2, Bot, Check, Ban, Plus, Pencil, Trash2, Copy, CheckCheck, AlertTriangle,
-  X, FileText, Github, GitBranch, Image, File, ChevronRight, ChevronDown,
+  X, FileText, Github, GitBranch, Image, File, ChevronRight, ChevronDown, Mic,
   Download, TableIcon,
 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
-import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask, type TaskProposal } from '../lib/chat-panel';
+import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask, type TaskProposal, type TaskProposalState } from '../lib/chat-panel';
 import { downloadReport, exportGoalsCSV } from '../lib/report-download';
 import { supabase } from '../lib/supabase';
 import { saveGeneratedReportToProject } from '../lib/report-storage';
@@ -14,9 +14,59 @@ import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 import RepoTreeModal from './RepoTreeModal';
 import type { Project } from '../types';
 import { useAIErrorDialog } from '../lib/ai-error';
+import { pushUndoAction } from '../lib/undo-manager';
 import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
 import { getGitHubRepos } from '../lib/github';
+import {
+  applyThesisPaperDraftEdit,
+  DEFAULT_THESIS_EXAMPLE_PATH,
+  getThesisWorkspaceActiveFile,
+  parseThesisSourcePdf,
+  parseThesisSourceUrl,
+  queueThesisSource,
+  uploadThesisSourcePdf,
+  getThesisWorkspaceFromSnapshot,
+  readStoredThesisPaperSnapshot,
+  type ParsedThesisSourceRecord,
+  type ThesisSourceAttachment,
+  updateStoredThesisPaperSnapshot,
+} from '../lib/thesis-paper';
 import './ProjectChat.css';
+
+type BrowserSpeechRecognitionResultLike = {
+  isFinal: boolean;
+  length: number;
+  [index: number]: {
+    transcript: string;
+  };
+};
+
+type BrowserSpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: ArrayLike<BrowserSpeechRecognitionResultLike>;
+};
+
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onresult: ((event: BrowserSpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+  }
+}
 
 type PendingAction = NonNullable<Message['pendingActions']>[number];
 
@@ -73,6 +123,8 @@ const ACTION_ICONS: Record<string, React.ReactNode> = {
   review_redundancy: <AlertTriangle size={12} />,
   extend_deadline: <Pencil size={12} />,
   contract_deadline: <Pencil size={12} />,
+  update_paper_draft: <Pencil size={12} />,
+  add_thesis_source: <FileText size={12} />,
 };
 
 const ACTION_COLORS: Record<string, string> = {
@@ -82,6 +134,8 @@ const ACTION_COLORS: Record<string, string> = {
   review_redundancy: 'border-amber-500/30 bg-amber-500/5 text-amber-300',
   extend_deadline: 'border-accent/30 bg-accent/5 text-accent',
   contract_deadline: 'border-border bg-surface2 text-muted',
+  update_paper_draft: 'border-accent/30 bg-accent/5 text-accent',
+  add_thesis_source: 'border-accent2/30 bg-accent2/5 text-accent2',
 };
 
 const ACTION_LABELS: Record<TaskProposal['type'], string> = {
@@ -91,7 +145,121 @@ const ACTION_LABELS: Record<TaskProposal['type'], string> = {
   review_redundancy: 'Redundancy Check',
   extend_deadline: 'Extend Deadline',
   contract_deadline: 'Move Deadline Up',
+  update_paper_draft: 'Edit Paper Draft',
+  add_thesis_source: 'Add Thesis Source',
 };
+
+const THESIS_SOURCE_SYNC_EVENT = 'odyssey:thesis-sources-updated';
+
+function createThesisSourceId(prefix: string) {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeParsedSourceKind(value: unknown) {
+  return value === 'book_chapter'
+    || value === 'government_report'
+    || value === 'dataset'
+    || value === 'interview_notes'
+    || value === 'archive_record'
+    || value === 'web_article'
+    || value === 'documentation'
+    ? value
+    : 'journal_article';
+}
+
+function mapParsedKindToLibraryType(method: 'url' | 'pdf' | 'manual', kind: string) {
+  if (kind === 'dataset') return 'dataset';
+  if (kind === 'interview_notes') return 'notes';
+  if (kind === 'documentation' || kind === 'web_article') return 'link';
+  if (kind === 'government_report' || kind === 'archive_record') return method === 'url' ? 'link' : 'report';
+  if (kind === 'book_chapter') return 'book';
+  if (method === 'url') return 'link';
+  return 'paper';
+}
+
+function mapParsedKindToQueueType(kind: string) {
+  if (kind === 'dataset') return 'dataset';
+  if (kind === 'interview_notes') return 'notes';
+  if (kind === 'documentation' || kind === 'web_article') return 'web';
+  if (kind === 'archive_record') return 'document';
+  return 'paper';
+}
+
+function buildQueuedThesisSource(
+  parsed: ParsedThesisSourceRecord,
+  method: 'url' | 'pdf',
+  locator: string,
+  attachmentName?: string,
+  attachment?: ThesisSourceAttachment | null,
+) {
+  const today = new Date().toISOString().slice(0, 10);
+  const kind = normalizeParsedSourceKind(parsed.sourceKind);
+  const title = parsed.title?.trim() || attachmentName || locator;
+  const credit = parsed.credit?.trim() || (method === 'pdf' ? 'Unknown author' : 'Unknown publisher');
+  const fallbackVenue = method === 'url'
+    ? (() => {
+        try {
+          return new URL(locator).hostname.replace(/^www\./i, '');
+        } catch {
+          return 'Web source';
+        }
+      })()
+    : 'Uploaded PDF';
+  const venue = parsed.contextField?.trim() || fallbackVenue;
+  const year = parsed.year?.trim() || `${new Date().getUTCFullYear()}`;
+  const notes = parsed.summary?.trim() || parsed.abstract?.trim() || `Added from ${method === 'url' ? 'URL' : 'PDF'} via Thesis AI.`;
+
+  return {
+    libraryItem: {
+      id: createThesisSourceId('lib'),
+      title,
+      type: mapParsedKindToLibraryType(method, kind),
+      acquisitionMethod: method,
+      sourceKind: kind,
+      status: 'queued',
+      role: 'secondary',
+      verification: 'provisional',
+      chapterTarget: 'literature_review',
+      credit,
+      venue,
+      year,
+      locator,
+      citation: parsed.citation?.trim() || '',
+      abstract: parsed.abstract?.trim() || parsed.summary?.trim() || '',
+      notes,
+      tags: parsed.keywords ?? [],
+      addedOn: today,
+      attachmentName: attachment?.name ?? '',
+      attachmentStoragePath: attachment?.storagePath ?? '',
+      attachmentMimeType: attachment?.mimeType ?? '',
+      attachmentUploadedAt: attachment?.uploadedAt ?? '',
+    },
+    queueItem: {
+      id: createThesisSourceId('src'),
+      title,
+      type: mapParsedKindToQueueType(kind),
+      status: 'queued',
+      insight: notes,
+    },
+  };
+}
+
+function findAttachmentByName(messages: Message[], attachmentName: string) {
+  const target = attachmentName.trim().toLowerCase();
+  if (!target) return null;
+
+  for (let msgIdx = messages.length - 1; msgIdx >= 0; msgIdx -= 1) {
+    const message = messages[msgIdx];
+    if (message.role !== 'user' || !message.attachments?.length) continue;
+    const match = [...message.attachments].reverse().find((attachment) => attachment.name.trim().toLowerCase() === target);
+    if (match) return match;
+  }
+
+  return null;
+}
 
 function getProposalKey(action: PendingAction, index: number): string {
   return action.id?.trim() || `proposal-${index}`;
@@ -342,6 +510,22 @@ function formatProposalSummary(action: PendingAction): string[] {
     return [`Target: ${String(action.args.goalTitle ?? action.title ?? 'Selected task')}`];
   }
 
+  if (action.type === 'update_paper_draft') {
+    const lineStart = Number(action.args.lineStart);
+    const lineEnd = Number(action.args.lineEnd);
+    return [
+      `Lines: ${Number.isFinite(lineStart) && Number.isFinite(lineEnd) ? `${lineStart}-${lineEnd}` : 'unknown'}`,
+      `Replacement: ${typeof action.args.replacement === 'string' ? `${action.args.replacement.split('\n').length} line(s)` : 'none'}`,
+    ];
+  }
+
+  if (action.type === 'add_thesis_source') {
+    return [
+      `URL: ${typeof action.args.url === 'string' ? action.args.url : 'none'}`,
+      `Attachment: ${typeof action.args.attachmentName === 'string' ? action.args.attachmentName : 'none'}`,
+    ];
+  }
+
   if (action.type === 'extend_deadline' || action.type === 'contract_deadline') {
     return [
       `Target: ${String(action.args.goalTitle ?? action.title ?? 'Selected task')}`,
@@ -452,7 +636,16 @@ function inferProjectFromPrompt(text: string, projects: Project[], fallbackProje
 
 export default function ProjectChat({ projectId, projectName, projects, onGoalMutated }: Props) {
   const { agent, providers, notifyModelUsed } = useAIAgent();
-  const { messages, setMessages } = useChatPanel();
+  const {
+    messages,
+    setMessages,
+    mode,
+    panelTitle,
+    panelSubtitle,
+    workspaceContext,
+    inputPlaceholder,
+    allowProjectSwitching,
+  } = useChatPanel();
   const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
   const [resolvedProjectId, setResolvedProjectId] = useState<string | null>(projectId ?? projects[0]?.id ?? null);
   const selectedProject = projects.find((project) => project.id === resolvedProjectId) ?? null;
@@ -482,10 +675,18 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   const bottomRef    = useRef<HTMLDivElement>(null);
   const messagesRef  = useRef<HTMLDivElement>(null);
   const messagesStateRef = useRef<Message[]>(messages);
+  const previousMessageCountRef = useRef(messages.length);
+  const shouldStickToBottomRef = useRef(true);
   const inputRef     = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const contextRef  = useRef<HTMLDivElement>(null);
+  const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const dictationBaseInputRef = useRef('');
   const autoDownloadedReportKeysRef = useRef<Set<string>>(new Set());
+  const [isDictating, setIsDictating] = useState(false);
+
+  const speechRecognitionSupported = typeof window !== 'undefined'
+    && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
 
   // Close project picker on outside click
   useEffect(() => {
@@ -524,10 +725,12 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   useEffect(() => {
     if (projectId) {
       setResolvedProjectId(projectId);
+    } else if (!allowProjectSwitching) {
+      setResolvedProjectId(null);
     } else if (!resolvedProjectId && projects.length > 0) {
       setResolvedProjectId(projects[0].id);
     }
-  }, [projectId, projects, resolvedProjectId]);
+  }, [allowProjectSwitching, projectId, projects, resolvedProjectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -664,7 +867,28 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   useEffect(() => {
     const el = messagesRef.current;
-    if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    if (!el) return;
+
+    const updateStickiness = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      shouldStickToBottomRef.current = distanceFromBottom <= 96;
+    };
+
+    updateStickiness();
+    el.addEventListener('scroll', updateStickiness, { passive: true });
+    return () => el.removeEventListener('scroll', updateStickiness);
+  }, []);
+
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+
+    const previousMessageCount = previousMessageCountRef.current;
+    const messagesGrew = messages.length > previousMessageCount;
+    previousMessageCountRef.current = messages.length;
+
+    if (!messagesGrew || !shouldStickToBottomRef.current) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [messages]);
   useEffect(() => {
     messagesStateRef.current = messages;
@@ -683,6 +907,110 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     t.style.height = Math.min(t.scrollHeight, 120) + 'px';
   }, []);
 
+  const syncInputWithResize = useCallback((nextValue: string) => {
+    setInput(nextValue);
+    window.requestAnimationFrame(() => {
+      if (inputRef.current) resizeTextarea(inputRef.current);
+    });
+  }, [resizeTextarea]);
+
+  const stopDictation = useCallback((mode: 'stop' | 'abort' = 'stop') => {
+    const recognition = speechRecognitionRef.current;
+    if (!recognition) return;
+    if (mode === 'abort') {
+      recognition.abort();
+    } else {
+      recognition.stop();
+    }
+  }, []);
+
+  const startDictation = useCallback(() => {
+    const RecognitionCtor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!RecognitionCtor) {
+      setError('Dictation is not supported in this browser.');
+      return;
+    }
+
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.abort();
+      speechRecognitionRef.current = null;
+    }
+
+    const recognition = new RecognitionCtor();
+    dictationBaseInputRef.current = input;
+    speechRecognitionRef.current = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || 'en-US';
+
+    recognition.onstart = () => {
+      setIsDictating(true);
+      setError(null);
+      setContextOpen(false);
+      setContextView('main');
+      inputRef.current?.focus();
+    };
+
+    recognition.onresult = (event) => {
+      let committedText = dictationBaseInputRef.current;
+      let interimText = '';
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result?.[0]?.transcript?.trim() ?? '';
+        if (!transcript) continue;
+        if (result.isFinal) {
+          committedText = committedText
+            ? `${committedText}${/\s$/.test(committedText) ? '' : ' '}${transcript}`
+            : transcript;
+        } else {
+          interimText += `${interimText ? ' ' : ''}${transcript}`;
+        }
+      }
+
+      dictationBaseInputRef.current = committedText;
+      const displayValue = interimText
+        ? `${committedText}${committedText && !/\s$/.test(committedText) ? ' ' : ''}${interimText}`
+        : committedText;
+      syncInputWithResize(displayValue);
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === 'aborted') return;
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setError('Microphone access was blocked. Allow microphone access to use dictation.');
+      } else {
+        setError('Dictation failed. Try again.');
+      }
+      setIsDictating(false);
+      speechRecognitionRef.current = null;
+    };
+
+    recognition.onend = () => {
+      setIsDictating(false);
+      if (speechRecognitionRef.current === recognition) {
+        speechRecognitionRef.current = null;
+      }
+      syncInputWithResize(dictationBaseInputRef.current);
+    };
+
+    recognition.start();
+  }, [input, syncInputWithResize]);
+
+  const toggleDictation = useCallback(() => {
+    if (isDictating) {
+      stopDictation('stop');
+      return;
+    }
+    startDictation();
+  }, [isDictating, startDictation, stopDictation]);
+
+  useEffect(() => () => {
+    const recognition = speechRecognitionRef.current;
+    speechRecognitionRef.current = null;
+    recognition?.abort();
+  }, []);
+
   // ── Copy ────────────────────────────────────────────────────────────────
 
   const copyMessage = useCallback((text: string, idx: number) => {
@@ -698,6 +1026,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     if (!files) return;
     for (const file of Array.from(files)) {
       const isImage = file.type.startsWith('image/');
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
       const id = `${Date.now()}-${Math.random()}`;
 
       if (isImage) {
@@ -708,6 +1037,20 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
           setAttachments((prev) => [...prev, {
             id, type: 'image', name: file.name,
             base64, mimeType: file.type, previewUrl: dataUrl,
+          }]);
+        };
+        reader.readAsDataURL(file);
+      } else if (isPdf) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          const base64 = dataUrl.split(',')[1];
+          setAttachments((prev) => [...prev, {
+            id,
+            type: 'document',
+            name: file.name,
+            base64,
+            mimeType: file.type || 'application/pdf',
           }]);
         };
         reader.readAsDataURL(file);
@@ -781,12 +1124,17 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   // ── Send ─────────────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async (overrideText?: string, historyOverride?: Message[]) => {
+    if (!overrideText) stopDictation('stop');
     const text = (overrideText ?? input).trim();
     const activeAttachments = overrideText ? [] : attachments;
     if ((!text && activeAttachments.length === 0) || loading) return;
-    const targetProjectId = inferProjectFromPrompt(text, projects, resolvedProjectId);
+    const targetProjectId = allowProjectSwitching
+      ? inferProjectFromPrompt(text, projects, resolvedProjectId)
+      : (resolvedProjectId ?? projectId ?? null);
     if (!targetProjectId) {
-      setError('No accessible project is available for chat.');
+      setError(mode === 'thesis'
+        ? 'Link a project on the thesis page before using Thesis AI.'
+        : 'No accessible project is available for chat.');
       return;
     }
     const inferredProject = projects.find((project) => project.id === targetProjectId) ?? null;
@@ -798,6 +1146,8 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
       name: a.name,
       previewUrl: a.previewUrl,
       mimeType: a.mimeType,
+      base64: a.base64,
+      textContent: a.textContent,
       repo: a.repo,
       repoType: a.repoType,
     }));
@@ -815,7 +1165,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
     const userMsg: Message = {
       role: 'user',
-      content: inferredProject && inferredProject.id !== projectId ? `[Project: ${inferredProject.name}]\n${text}` : text,
+      content: allowProjectSwitching && inferredProject && inferredProject.id !== projectId ? `[Project: ${inferredProject.name}]\n${text}` : text,
       attachments: displayAtts.length ? displayAtts : undefined,
     };
     const next = [...(historyOverride ?? messages), userMsg];
@@ -958,6 +1308,8 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         body: JSON.stringify({
           agent,
           projectId: targetProjectId,
+          workspaceMode: mode,
+          workspaceContext,
           messages: next.map((m) => ({ role: m.role, content: m.content })),
           attachments: wireAtts.length ? wireAtts : undefined,
         }),
@@ -973,26 +1325,54 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
           : data.pendingAction
             ? [data.pendingAction]
             : [];
-        setMessages((prev) => [...prev, {
-          role: 'assistant',
-          content: data.message,
-          provider: data.provider,
-          pendingActions: pendingActions.length ? pendingActions : undefined,
-          actionStates: pendingActions.length
-            ? Object.fromEntries(pendingActions.map((action, index) => [getProposalKey(action, index), 'pending' as const]))
-            : undefined,
-        }]);
+        const actionStates: Record<string, TaskProposalState> | undefined = pendingActions.length
+          ? Object.fromEntries(pendingActions.map((action, index) => [getProposalKey(action, index), 'pending' as const]))
+          : undefined;
+        const autoAppliedSummaries: string[] = [];
+
+        if (mode === 'thesis') {
+          for (const [index, action] of pendingActions.entries()) {
+            if (action.type !== 'update_paper_draft' && action.type !== 'add_thesis_source') continue;
+            try {
+              const result = await executeAction(action);
+              if (actionStates) actionStates[getProposalKey(action, index)] = 'approved';
+              autoAppliedSummaries.push(result);
+            } catch (autoApplyError) {
+              const message = getActionErrorMessage(autoApplyError);
+              const label = action.type === 'add_thesis_source' ? 'Source add failed' : 'Paper edit failed';
+              setError(`${label}: ${message}`);
+              showAIError(`${label}: ${message}`);
+            }
+          }
+        }
+
+        setMessages((prev) => {
+          const nextMessages: Message[] = [...prev, {
+            role: 'assistant',
+            content: data.message,
+            provider: data.provider,
+            pendingActions: pendingActions.length ? pendingActions : undefined,
+            actionStates,
+          }];
+          if (autoAppliedSummaries.length > 0) {
+            nextMessages.push({
+              role: 'assistant',
+              content: `Applied in the thesis workspace: ${autoAppliedSummaries.join(' ')}`,
+            });
+          }
+          return nextMessages;
+        });
       }
     } catch {
       setError('Network error — is the server running?');
       showAIError('Network error — is the server running?', 502);
     }
     setLoading(false);
-  }, [input, attachments, loading, messages, agent, projectId, projects, resolvedProjectId, notifyModelUsed]);
+  }, [input, attachments, loading, messages, agent, projectId, projects, resolvedProjectId, notifyModelUsed, allowProjectSwitching, mode, workspaceContext, stopDictation]);
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
-  const executeAction = async (action: PendingAction): Promise<string> => {
+  async function executeAction(action: PendingAction): Promise<string> {
     const { type, args } = action;
     if (type === 'create_goal') {
       const requestedAssignees = Array.isArray(args.assignees)
@@ -1058,17 +1438,132 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     }
     if (type === 'delete_goal') {
       const goalId = resolveGoalId(action, projectGoals);
+      const deletedGoal = goalId
+        ? await supabase.from('goals').select('*').eq('id', goalId).maybeSingle()
+        : { data: null, error: null };
+      if (deletedGoal?.error) throw deletedGoal.error;
       const { error: err } = await supabase.from('goals').delete().eq('id', goalId);
       if (err) throw err;
       setProjectGoals((prev) => prev.filter((goal) => goal.id !== goalId));
+      if (deletedGoal?.data) {
+        pushUndoAction({
+          label: `Deleted task ${String(deletedGoal.data.title ?? args.goalTitle ?? 'task')}`,
+          undo: async () => {
+            const { data, error } = await supabase
+              .from('goals')
+              .insert(deletedGoal.data)
+              .select()
+              .single();
+            if (error) throw error;
+            setProjectGoals((prev) => {
+              if (prev.some((goal) => goal.id === data.id)) return prev;
+              return [...prev, { id: String(data.id), title: String(data.title ?? args.goalTitle ?? '') }];
+            });
+            onGoalMutated?.();
+          },
+        });
+      }
       return `Deleted goal: "${args.goalTitle}"`;
     }
     if (type === 'review_redundancy') {
       const goalTitles = Array.isArray(args.goalTitles) ? args.goalTitles.map((value) => String(value)).filter(Boolean) : [];
       return `Reviewed redundancy candidate: ${goalTitles.join(', ') || 'task set'}`;
     }
+    if (type === 'update_paper_draft') {
+      if (mode !== 'thesis') {
+        throw new Error('Paper draft edits are only available in Thesis AI.');
+      }
+      const lineStart = Number(args.lineStart);
+      const lineEnd = Number(args.lineEnd);
+      const replacement = typeof args.replacement === 'string' ? args.replacement : '';
+      const currentSnapshot = readStoredThesisPaperSnapshot();
+      const currentWorkspace = getThesisWorkspaceFromSnapshot(
+        currentSnapshot,
+        currentSnapshot.draft,
+        currentSnapshot.activeFilePath ?? DEFAULT_THESIS_EXAMPLE_PATH,
+      );
+      const activeFile = getThesisWorkspaceActiveFile(currentWorkspace);
+      if (!activeFile) {
+        throw new Error('No thesis file is currently open.');
+      }
+
+      const nextDraft = applyThesisPaperDraftEdit(activeFile.content, {
+        lineStart,
+        lineEnd,
+        replacement,
+      });
+      const nextWorkspace = {
+        ...currentWorkspace,
+        files: currentWorkspace.files.map((file) => (
+          file.id === activeFile.id ? { ...file, content: nextDraft } : file
+        )),
+        activeFileId: activeFile.id,
+      };
+
+      updateStoredThesisPaperSnapshot({
+        draft: nextDraft,
+        previewStatus: 'rendering',
+        renderError: null,
+        workspace: nextWorkspace,
+        activeFileId: activeFile.id,
+        activeFilePath: activeFile.path,
+      });
+      return `Updated thesis draft lines ${lineStart}-${lineEnd}.`;
+    }
+    if (type === 'add_thesis_source') {
+      if (mode !== 'thesis') {
+        throw new Error('Thesis source ingest is only available in Thesis AI.');
+      }
+
+      const url = typeof args.url === 'string' ? args.url.trim() : '';
+      const attachmentName = typeof args.attachmentName === 'string' ? args.attachmentName.trim() : '';
+
+      let parsed: ParsedThesisSourceRecord;
+      let method: 'url' | 'pdf';
+      let locator: string;
+      let attachment: ThesisSourceAttachment | null = null;
+
+      if (url) {
+        parsed = await parseThesisSourceUrl(url);
+        method = 'url';
+        locator = parsed.locator || url;
+      } else if (attachmentName) {
+        const pdfAttachment = findAttachmentByName(messagesStateRef.current, attachmentName);
+        if (!pdfAttachment?.base64) {
+          throw new Error(`Could not find the attached PDF "${attachmentName}".`);
+        }
+        const mimeType = pdfAttachment.mimeType || 'application/pdf';
+        if (!/pdf/i.test(mimeType) && !/\.pdf$/i.test(pdfAttachment.name)) {
+          throw new Error('Only PDF attachments can be added as thesis sources right now.');
+        }
+
+        const binary = atob(pdfAttachment.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        const file = new globalThis.File([bytes], pdfAttachment.name, { type: mimeType });
+        parsed = await parseThesisSourcePdf(file);
+        attachment = await uploadThesisSourcePdf(file);
+        method = 'pdf';
+        locator = pdfAttachment.name;
+      } else {
+        throw new Error('No URL or PDF attachment was provided for this source action.');
+      }
+
+      const queued = buildQueuedThesisSource(parsed, method, locator, attachmentName || undefined, attachment);
+      const response = await queueThesisSource(queued);
+      window.dispatchEvent(new CustomEvent(THESIS_SOURCE_SYNC_EVENT, {
+        detail: {
+          sourceLibrary: response.sourceLibrary,
+          sourceQueueItems: response.sourceQueueItems,
+        },
+      }));
+
+      return `Added source: "${queued.libraryItem.title}" (${parsed.sourceTypeLabel || parsed.sourceKind || method}).`;
+    }
     throw new Error(`Unknown action type: ${type}`);
-  };
+  }
 
   const setProposalState = useCallback((msgIdx: number, action: PendingAction, actionIdx: number, state: 'pending' | 'approved' | 'denied' | 'executing') => {
     setMessages((prev) => withProposalState(prev, msgIdx, action, actionIdx, state));
@@ -1078,7 +1573,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     setMessages((prev) => withProposalState(prev, msgIdx, action, actionIdx, 'executing'));
     try {
       const result = await executeAction(action);
-      if (action.type !== 'review_redundancy') onGoalMutated?.();
+      if (action.type !== 'review_redundancy' && action.type !== 'update_paper_draft' && action.type !== 'add_thesis_source') onGoalMutated?.();
       setMessages((prev) => ([
         ...withProposalState(prev, msgIdx, action, actionIdx, 'approved'),
         {
@@ -1284,42 +1779,63 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         <div className="flex items-center gap-2 min-w-0">
           <Bot size={14} className="text-accent shrink-0" />
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-bold text-heading font-sans">Project AI</div>
-            {/* Clickable project switcher */}
+            <div className="text-xs font-bold text-heading font-sans">{panelTitle}</div>
             <div className="relative" ref={projectPickerRef}>
-              <button
-                type="button"
-                onClick={() => setProjectPickerOpen((o) => !o)}
-                className="flex items-center gap-0.5 text-[10px] text-muted font-mono hover:text-heading transition-colors"
-              >
-                <span className="truncate max-w-[140px]">{selectedProject?.name ?? projectName ?? 'No project selected'}</span>
-                <ChevronDown size={9} className={`shrink-0 transition-transform ${projectPickerOpen ? 'rotate-180' : ''}`} />
-              </button>
-              {projectPickerOpen && projects.length > 0 && (
-                <div className="absolute top-full left-0 mt-1 w-52 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-xl z-50 overflow-hidden">
-                  {projects.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => {
-                        setResolvedProjectId(p.id);
-                        setProjectPickerOpen(false);
-                      }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--color-surface2)] ${
-                        p.id === resolvedProjectId ? 'text-[var(--color-accent)] font-semibold' : 'text-[var(--color-heading)]'
-                      }`}
-                    >
-                      {p.id === resolvedProjectId && <Check size={10} className="shrink-0 text-[var(--color-accent)]" />}
-                      {p.id !== resolvedProjectId && <span className="w-[10px] shrink-0" />}
-                      <span className="truncate">{p.name}</span>
-                    </button>
-                  ))}
+              {allowProjectSwitching ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setProjectPickerOpen((o) => !o)}
+                    className="flex items-center gap-0.5 text-[10px] text-muted font-mono hover:text-heading transition-colors"
+                  >
+                    <span className="truncate max-w-[140px]">{selectedProject?.name ?? projectName ?? 'No project selected'}</span>
+                    <ChevronDown size={9} className={`shrink-0 transition-transform ${projectPickerOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {projectPickerOpen && projects.length > 0 && (
+                    <div className="absolute top-full left-0 mt-1 w-52 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-xl z-50 overflow-hidden">
+                      {projects.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setResolvedProjectId(p.id);
+                            setProjectPickerOpen(false);
+                          }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--color-surface2)] ${
+                            p.id === resolvedProjectId ? 'text-[var(--color-accent)] font-semibold' : 'text-[var(--color-heading)]'
+                          }`}
+                        >
+                          {p.id === resolvedProjectId && <Check size={10} className="shrink-0 text-[var(--color-accent)]" />}
+                          {p.id !== resolvedProjectId && <span className="w-[10px] shrink-0" />}
+                          <span className="truncate">{p.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-[10px] text-muted font-mono">
+                  {selectedProject?.name ?? projectName ?? 'No linked project'}
                 </div>
               )}
             </div>
+            {panelSubtitle && <div className="mt-0.5 text-[10px] text-muted">{panelSubtitle}</div>}
           </div>
         </div>
       </div>
+
+      {mode === 'thesis' && (
+        <div className="shrink-0 border-b border-border bg-surface px-3 py-2">
+          <div className="rounded border border-accent/20 bg-accent/5 px-3 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-accent">Thesis Workspace Context</div>
+              <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-heading">
+                {selectedProject?.name ?? projectName ?? 'No linked project'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div ref={messagesRef} className="pc-messages flex-1 p-4 space-y-3">
@@ -1327,14 +1843,18 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
           <div className="text-center py-8">
             <Bot size={24} className="text-muted mx-auto mb-2" />
             <p className="text-xs text-muted font-mono">
-              Ask me anything about <span className="text-accent">{selectedProject?.name ?? projectName ?? 'your projects'}</span>
+              {mode === 'thesis'
+                ? <>Ask me to strengthen your thesis using <span className="text-accent">{selectedProject?.name ?? projectName ?? 'the linked project context'}</span></>
+                : <>Ask me anything about <span className="text-accent">{selectedProject?.name ?? projectName ?? 'your projects'}</span></>}
             </p>
-            <p className="text-[10px] text-muted/60 mt-1">
-              I can create, edit, and delete tasks — I'll always ask before acting.
-            </p>
-            <p className="text-[10px] text-muted/40 mt-0.5">
-              Use <span className="text-accent/60">+</span> to attach files, images, documents, or repos.
-            </p>
+            {mode !== 'thesis' && (
+              <>
+                <p className="mt-1 text-[10px] text-muted/60">I can create, edit, and delete tasks. I’ll always ask before acting.</p>
+                <p className="mt-0.5 text-[10px] text-muted/40">
+                  Use <span className="text-accent/60">+</span> to attach files, images, documents, or repos.
+                </p>
+              </>
+            )}
           </div>
         )}
 
@@ -1573,7 +2093,19 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                         <p className="mt-1 text-xs text-heading">{action.description}</p>
                       )}
                       {action.reasoning && (
-                        <p className="mt-2 text-[10px] leading-relaxed text-muted">{action.reasoning}</p>
+                        <div className="mt-2">
+                          <MarkdownWithFileLinks
+                            block={false}
+                            filePaths={new Map<string, FileRef>()}
+                            onFileClick={() => {}}
+                            githubRepo={null}
+                            gitlabRepos={[]}
+                            onRepoClick={() => {}}
+                            className="text-[10px] leading-relaxed text-muted"
+                          >
+                            {action.reasoning}
+                          </MarkdownWithFileLinks>
+                        </div>
                       )}
 
                       {summaryLines.length > 0 && (
@@ -1589,7 +2121,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                       {actionState === 'pending' && (
                         <div className="mt-3 flex items-center gap-2">
                           <button type="button" onClick={() => handleApprove(i, action, actionIdx)}
-                            className="flex items-center gap-1 px-3 py-1 text-[10px] bg-accent3 text-white rounded hover:bg-accent3/90 transition-colors font-medium">
+                            className="odyssey-fill-accent3 flex items-center gap-1 px-3 py-1 text-[10px] rounded transition-colors hover:opacity-90 font-medium">
                             <Check size={10} /> {isManualReview ? 'Mark Reviewed' : 'Approve'}
                           </button>
                           <button type="button" onClick={() => handleDeny(i, action, actionIdx)}
@@ -1651,16 +2183,34 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
         {/* Input row */}
         <div className="px-2 py-1 flex gap-1.5 items-stretch">
-          {/* + context button */}
+          {/* + / dictation stack */}
           <div className="relative shrink-0 flex self-stretch" ref={contextRef}>
-            <button
-              type="button"
-              title="Add context"
-              onClick={() => { setContextOpen((o) => !o); setContextView('main'); }}
-              className="pc-add-btn h-full"
-            >
-              <Plus size={14} />
-            </button>
+            <div className="pc-stack-control">
+              <button
+                type="button"
+                title="Add context"
+                onClick={() => { setContextOpen((o) => !o); setContextView('main'); }}
+                className={`pc-stack-btn pc-stack-btn--top ${contextOpen ? 'pc-stack-btn--active' : ''}`}
+              >
+                <Plus size={14} />
+              </button>
+              <button
+                type="button"
+                title={
+                  isDictating
+                    ? 'Stop dictation'
+                    : speechRecognitionSupported
+                      ? 'Start dictation'
+                      : 'Dictation unavailable'
+                }
+                aria-pressed={isDictating}
+                onClick={toggleDictation}
+                disabled={!speechRecognitionSupported && !isDictating}
+                className={`pc-stack-btn pc-stack-btn--bottom ${isDictating ? 'pc-stack-btn--recording' : ''}`}
+              >
+                <Mic size={12} />
+              </button>
+            </div>
             {contextOpen && <ContextMenu />}
           </div>
 
@@ -1668,12 +2218,16 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
           <textarea
             ref={inputRef}
             value={input}
-            onChange={(e) => { setInput(e.target.value); resizeTextarea(e.target); }}
+            onChange={(e) => {
+              if (isDictating) stopDictation('abort');
+              setInput(e.target.value);
+              resizeTextarea(e.target);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
             }}
             onPaste={handlePaste}
-            placeholder="Prompt or add files…"
+            placeholder={inputPlaceholder}
             rows={1}
             className="pc-input flex-1 bg-surface2 border border-border text-heading text-xs font-mono placeholder:text-muted/50 px-3 py-1 focus:outline-none focus:border-accent/50 rounded"
           />

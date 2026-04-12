@@ -13,6 +13,31 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade',
 ]);
 
+const ALLOWED_PROXY_PREFIXES = [
+  'auth/v1/',
+  'rest/v1/',
+  'storage/v1/',
+  'realtime/v1/',
+];
+
+const ALLOWED_REQUEST_HEADERS = new Set([
+  'accept',
+  'accept-language',
+  'accept-profile',
+  'apikey',
+  'authorization',
+  'cache-control',
+  'content-profile',
+  'content-range',
+  'content-type',
+  'if-match',
+  'if-none-match',
+  'prefer',
+  'range',
+  'x-client-info',
+  'x-upsert',
+]);
+
 const RESPONSE_HEADERS_TO_SKIP = new Set([
   'content-encoding',
   'content-length',
@@ -37,11 +62,18 @@ function buildUpstreamUrl(request: FastifyRequest<{ Params: ProxyParams }>, base
   return upstream.toString();
 }
 
+function isAllowedProxyPath(path: string): boolean {
+  const normalized = path.replace(/^\/+/, '');
+  if (normalized.includes('..')) return false;
+  return ALLOWED_PROXY_PREFIXES.some((prefix) => normalized === prefix.slice(0, -1) || normalized.startsWith(prefix));
+}
+
 function buildProxyHeaders(headers: FastifyRequest['headers']): Headers {
   const proxiedHeaders = new Headers();
 
   for (const [key, value] of Object.entries(headers)) {
-    if (HOP_BY_HOP_HEADERS.has(key.toLowerCase()) || value == null) continue;
+    const lower = key.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(lower) || value == null || !ALLOWED_REQUEST_HEADERS.has(lower)) continue;
 
     if (Array.isArray(value)) {
       for (const entry of value) proxiedHeaders.append(key, entry);
@@ -112,6 +144,11 @@ export async function supabaseProxyRoutes(server: FastifyInstance) {
     url: '/supabase/*',
     handler: async (request, reply) => {
       try {
+        const proxyPath = request.params['*'] ?? '';
+        if (!isAllowedProxyPath(proxyPath)) {
+          return reply.status(403).send({ error: 'Supabase proxy path is not allowed' });
+        }
+
         const upstreamUrl = buildUpstreamUrl(request, upstreamBaseUrl);
         const headers = buildProxyHeaders(request.headers);
         const body = buildRequestBody(request);

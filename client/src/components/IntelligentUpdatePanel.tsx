@@ -10,6 +10,8 @@ import { supabase } from '../lib/supabase';
 import type { Goal } from '../types';
 import GoalEditModal, { type MemberOption } from './GoalEditModal';
 import { useAIErrorDialog } from '../lib/ai-error';
+import { pushUndoAction } from '../lib/undo-manager';
+import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -277,7 +279,23 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
         const merged = overrides ? { ...baseUpdates, ...overrides } : baseUpdates;
         await supabase.from('goals').update(merged).eq('id', args.goalId as string);
       } else if (type === 'delete_goal') {
+        const { data: deletedGoal, error: loadError } = await supabase
+          .from('goals')
+          .select('*')
+          .eq('id', args.goalId as string)
+          .maybeSingle();
+        if (loadError) throw loadError;
         await supabase.from('goals').delete().eq('id', args.goalId as string);
+        if (deletedGoal) {
+          pushUndoAction({
+            label: `Deleted task ${deletedGoal.title}`,
+            undo: async () => {
+              const { error: restoreError } = await supabase.from('goals').insert(deletedGoal);
+              if (restoreError) throw restoreError;
+              onGoalMutated();
+            },
+          });
+        }
       } else if (type === 'extend_deadline' || type === 'contract_deadline') {
         const newDeadline = overrides?.deadline ?? args.suggestedDeadline;
         await supabase.from('goals').update({ deadline: newDeadline }).eq('id', args.goalId as string);
@@ -413,7 +431,13 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
 
                   {/* Reasoning (always shown, collapsed-style) */}
                   <div className="px-3 pb-3">
-                    <p className="text-[10px] text-muted leading-relaxed">{s.reasoning}</p>
+                    <MarkdownWithFileLinks
+                      filePaths={new Map()}
+                      onFileClick={() => {}}
+                      className="text-[10px] text-muted leading-relaxed"
+                    >
+                      {s.reasoning}
+                    </MarkdownWithFileLinks>
                   </div>
 
                   {/* Action buttons */}
@@ -485,7 +509,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
               <button
                 type="button"
                 onClick={acceptAll}
-                className="flex items-center gap-1.5 px-4 py-1.5 bg-accent3 text-white text-xs rounded hover:bg-accent3/90 transition-colors font-medium"
+                className="odyssey-fill-accent3 flex items-center gap-1.5 px-4 py-1.5 text-xs rounded transition-colors hover:opacity-90 font-medium"
               >
                 <Check size={11} /> Accept All ({pendingCount})
               </button>

@@ -1,7 +1,9 @@
 import {
   LayoutDashboard,
   FolderKanban,
+  GraduationCap,
   Bell,
+  ChartNoAxesColumn,
   MessageSquare,
   Settings,
   LogOut,
@@ -15,16 +17,10 @@ import { useAuth } from '../../lib/auth';
 import { useProfile } from '../../hooks/useProfile';
 import { useProjects } from '../../hooks/useProjects';
 import { useNotifications } from '../../hooks/useNotifications';
+import { getStoredSidebarCollapsed, setStoredSidebarCollapsed, SIDEBAR_COLLAPSE_EVENT } from '../../lib/sidebar-state';
+import { canViewTokenUsagePage } from '../../lib/admin-access';
 import UserAvatar from '../UserAvatar';
 import { useEffect, useRef, useState } from 'react';
-
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/projects', icon: FolderKanban, label: 'Projects' },
-  { to: '/chat', icon: MessageSquare, label: 'Chat' },
-  { to: '/notifications', icon: Bell, label: 'Notifications' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
-];
 
 export default function Sidebar() {
   const { user, signOut } = useAuth();
@@ -33,7 +29,7 @@ export default function Sidebar() {
   const { unreadCount } = useNotifications();
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => getStoredSidebarCollapsed());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const switcherRef = useRef<HTMLDivElement | null>(null);
@@ -41,6 +37,19 @@ export default function Sidebar() {
   const sidebarCollapsed = routeCollapsed || collapsed;
   const userLabel = profile?.display_name ?? user?.user_metadata?.user_name ?? user?.email ?? 'You';
   const userAvatar = profile?.avatar_url ?? user?.user_metadata?.avatar_url ?? null;
+  const canViewTokenUsage = canViewTokenUsagePage(
+    [user?.email, profile?.email, user?.user_metadata?.email],
+    [profile?.display_name, user?.user_metadata?.display_name, user?.user_metadata?.name, userLabel],
+  );
+  const navItems = [
+    { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+    { to: '/projects', icon: FolderKanban, label: 'Projects' },
+    { to: '/thesis', icon: GraduationCap, label: 'Thesis', badge: 'In Progress' },
+    { to: '/chat', icon: MessageSquare, label: 'Chat' },
+    ...(canViewTokenUsage ? [{ to: '/token-usage', icon: ChartNoAxesColumn, label: 'Token Usage' }] : []),
+    { to: '/notifications', icon: Bell, label: 'Notifications' },
+    { to: '/settings', icon: Settings, label: 'Settings' },
+  ];
 
   // Detect current project from URL
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
@@ -64,6 +73,16 @@ export default function Sidebar() {
   useEffect(() => {
     setSwitcherOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    const handleCollapseChange = (event: Event) => {
+      const detail = (event as CustomEvent<boolean>).detail;
+      setCollapsed(typeof detail === 'boolean' ? detail : getStoredSidebarCollapsed());
+    };
+
+    window.addEventListener(SIDEBAR_COLLAPSE_EVENT, handleCollapseChange as EventListener);
+    return () => window.removeEventListener(SIDEBAR_COLLAPSE_EVENT, handleCollapseChange as EventListener);
+  }, []);
 
   const handleSignOut = async () => {
     if (signingOut) return;
@@ -91,7 +110,7 @@ export default function Sidebar() {
         <button
           onClick={() => {
             if (routeCollapsed) return;
-            setCollapsed(!collapsed);
+            setStoredSidebarCollapsed(!collapsed);
           }}
           className="p-1 rounded hover:bg-surface2 text-muted hover:text-heading transition-colors shrink-0"
           disabled={routeCollapsed}
@@ -151,7 +170,7 @@ export default function Sidebar() {
 
       {/* Nav Links */}
       <nav className="relative z-40 flex-1 px-3 py-2 space-y-1">
-        {navItems.map(({ to, icon: Icon, label }) => (
+        {navItems.map(({ to, icon: Icon, label, badge }) => (
           <NavLink
             key={to}
             to={to}
@@ -166,6 +185,9 @@ export default function Sidebar() {
           >
             <span className="relative shrink-0 overflow-visible">
               <Icon size={16} />
+              {badge && (
+                <span className="absolute -right-2 -bottom-1 h-2.5 w-2.5 rounded-full border border-[#c9924d] bg-[#f3c46e]" />
+              )}
               {to === '/notifications' && unreadCount > 0 && (
                 <span className="absolute -right-2.5 -top-2.5 z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3c7c7] text-[#a61b1b] border border-[#e7a8a8] shadow-sm text-[9px] font-semibold leading-[18px] text-center">
                   {unreadCount > 99 ? '99+' : unreadCount}
@@ -175,6 +197,11 @@ export default function Sidebar() {
             {!sidebarCollapsed && (
               <span className="flex items-center justify-between gap-2 min-w-0 flex-1">
                 <span className="truncate">{label}</span>
+                {badge && (
+                  <span className="shrink-0 rounded-full border border-[#d7b17a] bg-[#f5e2bf] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-[#8a5b1a]">
+                    {badge}
+                  </span>
+                )}
               </span>
             )}
           </NavLink>

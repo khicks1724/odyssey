@@ -72,11 +72,16 @@ create table if not exists public.goal_attachments (
   id          uuid primary key default gen_random_uuid(),
   goal_id     uuid not null references public.goals(id) on delete cascade,
   project_id  uuid not null references public.projects(id) on delete cascade,
+  comment_id  uuid references public.goal_comments(id) on delete cascade,
   author_id   uuid references auth.users(id) on delete set null,
   file_name   text not null,
   file_path   text not null,
   file_size   bigint,
   mime_type   text,
+  extracted_text text,
+  content_preview text,
+  document_summary text,
+  extracted_char_count integer not null default 0,
   created_at  timestamptz not null default now()
 );
 
@@ -121,39 +126,71 @@ for insert with check (
 drop policy if exists "goal_attachments_delete" on public.goal_attachments;
 create policy "goal_attachments_delete" on public.goal_attachments
 for delete using (
-  exists (
+  author_id = auth.uid()
+  or exists (
     select 1
     from public.projects p
     where p.id = goal_attachments.project_id
+      and p.owner_id = auth.uid()
+  )
+);
+
+insert into storage.buckets (id, name, public)
+values ('goal-attachments', 'goal-attachments', false)
+on conflict (id) do update set public = excluded.public;
+
+drop policy if exists "goal_attachments_storage_insert" on storage.objects;
+create policy "goal_attachments_storage_insert"
+on storage.objects for insert to authenticated
+with check (
+  bucket_id = 'goal-attachments'
+  and exists (
+    select 1
+    from public.projects p
+    where p.id::text = split_part(name, '/', 1)
       and (
         p.owner_id = auth.uid()
         or exists (
           select 1 from public.project_members pm
-          where pm.project_id = goal_attachments.project_id
+          where pm.project_id = p.id
             and pm.user_id = auth.uid()
         )
       )
   )
 );
 
-insert into storage.buckets (id, name, public)
-values ('goal-attachments', 'goal-attachments', true)
-on conflict (id) do nothing;
-
-drop policy if exists "goal_attachments_storage_insert" on storage.objects;
-create policy "goal_attachments_storage_insert"
-on storage.objects for insert to authenticated
-with check (bucket_id = 'goal-attachments');
-
 drop policy if exists "goal_attachments_storage_select" on storage.objects;
 create policy "goal_attachments_storage_select"
 on storage.objects for select to authenticated
-using (bucket_id = 'goal-attachments');
+using (
+  bucket_id = 'goal-attachments'
+  and exists (
+    select 1
+    from public.projects p
+    where p.id::text = split_part(name, '/', 1)
+      and (
+        p.owner_id = auth.uid()
+        or exists (
+          select 1 from public.project_members pm
+          where pm.project_id = p.id
+            and pm.user_id = auth.uid()
+        )
+      )
+  )
+);
 
 drop policy if exists "goal_attachments_storage_delete" on storage.objects;
 create policy "goal_attachments_storage_delete"
 on storage.objects for delete to authenticated
-using (bucket_id = 'goal-attachments');
+using (
+  bucket_id = 'goal-attachments'
+  and exists (
+    select 1
+    from public.projects p
+    where p.id::text = split_part(name, '/', 1)
+      and p.owner_id = auth.uid()
+  )
+);
 
 insert into storage.buckets (id, name, public)
 values ('project-assets', 'project-assets', true)

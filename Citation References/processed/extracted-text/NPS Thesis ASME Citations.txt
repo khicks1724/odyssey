@@ -1,0 +1,246 @@
+<Publications & Submissions<Journals<Information for Authors
+<Journal Guidelines<References
+References
+Within the text, references should be cited in numerical order according
+to their order of appearance. The numbered reference citation within text
+should be enclosed in brackets.
+Example: It was shown by Prusa [1] that the width of the plume decreases
+under these conditions.
+In the case of two citations, the numbers should be separated by a
+comma [1,2]. In the case of more than two references, the numbers
+should be separated by a dash [5-7].
+Note: ASME primarily uses a form of the Chicago Manual of Style for
+reference format. Authors are encouraged to seek out precise
+instructions via: http://www.chicagomanualofstyle.org/.
+Interested in receiving our Step-by-Step Guide to
+Funding Your Engineering Research and other valuable
+resources? Get access
+ASME does not allow references to Wikipedia.
+
+Sample References
+References should be listed together at the end of the paper; footnotes
+should not be used for this purpose.
+References should be arranged in numerical order according to the
+sequence of citations within the text. Each reference should include the
+last name of each author followed by initials and/or first name.
+Journal Articles and Papers in Serial Publications
+To cite an online journal article in Chicago style, list the author’s name,
+the publication date, the title of the article, the journal name, volume,
+issue, the page range on which the article appears, and a DOI or URL.
+For an article accessed in print, follow the same format and simply omit
+the DOI or URL.
+If there are 11 or more authors, list the first seven in the bibliography,
+followed by “et al.”
+Journal Article Examples:
+[3] Adams, Z., 2014, “Bending of an Infinite Beam on an Elastic
+Substrate,” ASME J Appl. Mech., 3, pp. 221-228.
+5] Pickard, Hanna, 2014, “What Is Personality Disorder?” Philosophy,
+Psychiatry, & Psychology 18(3): 181–84.
+https://doi.org/10.1353/ppp.2011.0040.
+9] Zhang, T. W., Khun, C., Liu, Q., and Miller, A. P., 2011, “Self-Healing
+Techniques,” Nature, 332(6662), pp. 888-892.
+Textbooks and Monographs
+[10] Gibson, T.A., and Tucker, M. T., 2008, The Big Book of Cellular
+Studies, John Wiley and Sons, NY.
+Chapter Within a Book
+[32] Stevens, T. T., 1999, “Stochastic Fields and Their Digital
+Simulation,” Stochastic Methods. T. A. Sulle, and M. Siiu, eds., Martinius
+Publishers, Dordrecht, Germany, pp. 22-36 URL.
+Individual Conference Papers/Papers in Compiled
+Proceedings/Collection of Works by Numerous Authors
+[21] Wions, T. T., and Mills, C. D., 2006, “Structural Dynamics in Parallel
+Manipulation,” Proceedings of the IDETC/CIE, New Orleans, LA,
+
+September 10-13, 2005, ASME Paper No. DETC2005-99532, pp. 777-
+798.
+[2] Wayne, John “John Cowboy Videos 2009,” YouTube video, 7:00,
+November 13, 2009, http://www.you tube.com/ watch?v=
+aBcDeFgH9yz.
+[5] Tigues, Tim, “Dancing for Horses.” HorseLife. April 24, 2020.
+https://www.horselife.com/15/22/43/51.
+[3] “Apple Privacy Policy,” last modified February 4, 2009, accessed
+July 19, 2010, http://www.apple.com/intl/en/privacypolicy.html.
+[17] “WD2000: Visual Basic Macro to Assign Clipboard Text to a String
+Variable,” revision 1.3, Microsoft Help and Support, last modified
+November 23, 2006, http://support.microsoft.com/kb/212730.
+[22] Bryson, Mia, “One Fish, Five Fish.” FishLife. August 22, 2010. Last
+Modified February 20, 2021.
+Theses and Technical Reports
+[1] Oligaria, T. T., Fredy, C. W., Popullo, A. Z., and Tucker, M. A., 20111,
+“Characterization of PKM Dynamics,” SAE Technical Paper No. 2011-02-
+8345, 07ATC-96.
+[25] Mollen, T., P., 2014, “Use of General Nonlinear Material in
+Articulated Systems,” Ph.D. dissertation, University of Boston, Boston,
+MA.
+[27] Clinton, D., 2013, “Review of Rocket Technology,” NASA Report No.
+NASA RE-8842.
+E-Books and Online Books
+When citing a book you accessed online or in the form of an e-book,
+simply add relevant information about its format or location to the end of
+your citation.
+[21] Tufits, Lane, 2021, To Be or Not to Be. Scholastic, Philadelphia. URL
+or DOI.
+[23] Smith, John, 2014, A Dog’s Life in Berlin. Oxford University Press,
+New York. : 10.1055/acprof.oso/97890.0394.000.
+Citing ASME Journal Titles
+In order to improve the accuracy of citation data collection, ASME has
+standardized the following abbreviations for the titles in the ASME
+Journal Program. Authors should use these abbreviations for ASME titles
+in their references.
+Note: ASME needs to be in front of all ASME titles:
+ASME Journal TitleAbbreviation
+Applied Mechanics ReviewsAppl Mech Rev
+ASME Letters in Dynamic Systems
+and Control
+ASME Letters Dyn Syst
+Contr
+ASME Letters in Translational
+Robotics
+ASME Lett Trans Robot
+ASCE-ASME Journal of Risk and
+Uncertainty in Engineering Systems,
+Part B: Mechanical Engineering
+ASCE-ASME J Risk
+Uncertainty Eng Syst Part
+B: Mech Eng
+ASME Journal of Engineering for
+Sustainable Buildings and Cities
+J of Sustainable Bldg
+and Cities
+ASME Journal of Engineering and
+Science in Medical Diagnostics and
+Therapy
+J Eng Sci Med Diagn
+Ther
+Journal of Applied MechanicsJ Appl Mech
+Journal of Autonomous Vehicles
+and Systems
+J Auton Veh Syst
+Journal of Biomechanical
+Engineering
+J Biomech Eng
+
+Journal of Computational and
+Nonlinear Dynamics
+J Comput Nonlin Dyn
+Journal of Computing and
+Information Science in Engineering
+J Comput Inf Sci Eng
+Journal of Dynamic Systems,
+Measurement and Control
+J Dyn Syst Meas Contr
+Journal of Electrochemical Energy
+Conversion and Storage
+J Electrochem Energy
+Convers Storage
+Journal of Electronic PackagingJ Electron Packag
+Journal of Energy Resources
+Technology
+J Energy Res Technol
+Journal of Energy Resources
+Technology, Part A: Sustainable and
+Renewable Energy
+J. Energy Res. Technol.
+Part A
+Journal of Energy Resources
+Technology, Part B: Subsurface
+Energy and Carbon Capture
+J. Energy Res. Technol.
+Part B
+Journal of Engineering for Gas
+Turbines and Power
+J Eng Gas Turbines
+Power
+Journal of Engineering Materials
+and Technology
+J Eng Mater Technol
+Journal of Fluids EngineeringJ Fluids Eng
+Journal of Fuel Cell Science and
+Technology
+J Fuel Cell Sci Technol
+Journal of Heat and Mass TransferJ. Heat Mass Transfer
+Journal of Manufacturing Science
+and Engineering
+J Manuf Sci Eng
+Journal of Mechanical DesignJ Mech Des
+Journal of Mechanisms and
+Robotics
+J Mech Rob
+Journal of Medical DevicesJ Med Devices
+Journal of Micro and Nano-
+Manufacturing
+J Micro Nano-Manuf
+Journal of Micro and Nano Science
+and Engineering
+J Micro Nano Sci Eng
+Journal of Nanotechnology in
+Engineering and Medicine
+J Nanotechol Eng Med
+Journal of Nondestructive
+Evaluation, Diagnostics and
+Prognostics of Engineering Systems
+J Nondestructive
+Evaluation
+Journal of Nuclear Engineering in
+Radiation Science
+J Nucl Eng Radiat Sci
+Journal of Offshore Mechanics and
+Arctic Engineering
+J Offshore Mech Arct
+Eng
+Journal of Pressure Vessel
+Technology
+J Pressure Vessel
+Technol
+Journal of Solar Energy
+Engineering: Including Wind Energy
+and Building Energy Conservation
+J Sol Energy Eng
+
+Journal of Thermal Science and
+Engineering Applications
+J Therm Sci Eng Appl
+Journal of TribologyJ Tribol
+Journal of TurbomachineryJ Turbomach
+Journal of Verification, Validation,
+and Uncertainty Quantification
+J Verif Valid Uncertainty
+Quantif
+Journal of Vibration and AcousticsJ Vib Acoust
+Step-by-Step Research Funding Guide
+Download your free Step-by-Step Guide to Funding Your Engineering
+Research. With a global outlook, this guide is useful to all engineering
+researchers.
+Avoid common application mistakes
+Boost your confidence when applying
+Funding tips and information for engineers around the world
+Guidelines for managing research funds
+Sign up to receive this guide and additional helpful resources for your
+research journey.
+
+First Name*Last Name*
+Institution/Company Name*Country/Region*
+Please Select
+School or Work Email*
+What are your engineering field(s) of interest?
+From time to time, we would like to contact you about our products and services, as well as
+other content that may be of interest to you. If you consent to us contacting you for this
+purpose, please tick the box below:
+I agree to receive other communications from ASME.
+You can unsubscribe from these communications at any time. For more information on how to
+unsubscribe, our privacy practices, and how we are committed to protecting and respecting
+your privacy, please review our Privacy Policy.
+By clicking submit below, you consent to allow ASME to store and process the personal
+information submitted above to provide you the content requested.
+About ASME
+
+Terms of UsePrivacy and Security StatementCommunication Preferences
+Sales PolicySitemap©2026 The American Society of Mechanical Engineers.All rights reserved.
+©2026 The American Society of Mechanical Engineers.All rights reserved.
+Codes & Standards
+Certification & Accreditation
+Learning & Development
+Publications & Submissions
+Conferences & Events
+Topics & Resources
+ASME Membership

@@ -1,0 +1,1776 @@
+Citation Guide
+Chicago Author-Date: Citation Examples + Rules
+Chicago Author-Date (17th ed.): Citation Examples & Essential Rules
+For NPS theses, papers, and publications: to cite properly, follow the citation examples and apply the essential
+rules.
+**The Chicago Manual of Style's 18th edition is available, but the NPS Citation Team has not yet updated the
+citation guide.
+Please follow the examples in this guide, which reflect the 17th edition.**
+Click here to see a full list of changes
+**The latest Zotero update has removed Chicago 17th edition. To restore it, go to Zotero settings —> Cite —> Get additional styles... —> Chicago Manual of
+Style 17th edition (author-date).**
+Citation ExamplesEssential Rules
+Artificial Intelligence (GenAI)
+arXiv
+Blog
+Book
+Audiobook
+Chapter in Edited Book
+Electronic
+Print
+Class Notes, Lecture, Presentation,
+Workshop
+Computer Program / Software
+Conference Paper / Proceedings
+Data Set / Database
+Dictionary / Encyclopedia
+Author given
+Organization as author
+Fact Sheet
+Government / Military Document
+Directive
+Doctrine
+Field Manual
+Government Report
+CRS Report
+GAO Report
+Strategy Document / Other
+Government Report
+Instruction
+Memorandum
+Military Regulation
+Handbook
+Journal Article
+Legal
+Bill / Resolution
+Code of Federal Regulations
+Congressional Hearing / Testimony
+within a Hearing
+Court Case Decision
+Executive Order
+Public Law
+Magazine Article
+Map
+Multimedia
+Film
+Podcast
+Video
+Newspaper Article
+Patent
+Personal Communication, Interview, Email
+Report
+Research Report / Think Tank Report
+/ Working Paper
+Technical Report
+Secondary / Indirect Source
+Social Media
+Speech
+Thesis / Dissertation
+Think Tank Report
+Unpublished / Informally Published Work
+Website / Webpage
+Janes Example
+White Paper
+Wikipedia (not recommended)
+Working Paper / Occasional Paper
+Accessed Dates
+Author Names: Honorifics
+Authors: Identifying Authors of Official
+Documents
+Bibliography vs. List of References
+Capitalization: Title Case vs. Sentence case
+Country Names with Government
+Organizations
+Figures / Images / Graphs
+How Often to Cite?
+In-text Citation Placement & Signal Phrases
+Missing Info
+Multiple Authors, et al.
+Multiple Works by the Same Author / Multiple
+Sources in One Citation
+No Date Given
+Online Sources: Links
+Page Numbers and Other Locators
+Print vs. Online Sources
+Secondary / Indirect Sources
+Tables
+
+If you do not see an example that matches your source type or the rule that you need, consult the Additional
+Resources for your style.
+
+Citation Examples
+Artificial Intelligence (GenAI)
+While generative AI can help you develop initial understanding of a topic, it should not be cited in your work as a source of reliable information;
+see Guidance for Gen AI Use in Academic Work and DKL's GenAI research guide.
+Source TypeGeneric ExampleActual Example
+R = Reference Entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+GenAI
+R: None
+T: (Company, full date)
+In your text: Include the
+prompt and the relevant
+portion of the response.
+R: None
+T: (SandwichAI, June 24, 2024)
+In your text: As part of our methodology, we asked ChatBLT to
+"Calculate the ratio of mayonnaise to bread as a single (n−1)-
+dimensional hyperplane using the ham sandwich theorem." It responded
+with "42."
+arXiv
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+arXiv
+Zotero
+R: Author Last Name, Author First Name. Year. “Title of Work in
+Title Case.” ArXiv. Full date of publication or modification.
+DOI or URL.
+
+T: (Author Last Name year)
+
+R: Barterra, Kerner. 2023. “Great Grapes throughout History.” ArXiv.
+June 21, 2023. https://doi.org/10.48550/arXiv.123456789.
+
+T: (Barterra 2023, 16)
+Blog
+If the title does not contain the word "blog," add "(blog)" after the title.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the blog name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Post
+Zotero
+R: Author Last Name, Author First
+Name. Year of post. “Title of Entry
+in Title Case.” Title of Blog in Title
+Case and Italics (blog), full date of
+post. URL.
+T: (Author Last Name year)
+R: Dubner, Stephen J. 2014. “The Quality-Quantity Tradeoff
+Dilemma.” Freakonomics (blog), June 25, 2014.
+https://freakonomics.com/2014/06/25/the-quality-quantity-tradeoff-
+dilemma/.
+T: (Dubner 2014)
+
+Book
+Include page numbers in in-text citations when citing quoted material.
+For works with a translator, follow the guidance for edited books but substitute "trans." for "ed." in the notes and "translated" for "edited" in the
+references.
+Audiobook
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Audiobook
+Zotero
+R: Author Last Name, Author First
+Name. Year. Title of Book in Title
+Case and Italics. Read by [Reader
+Name]. Place of Publication:
+Publisher. Audiobook Provider in Title
+Case, total length.
+T: (Author Last Name year)
+R: Thorton, Kany. 2023. My Life in the Stacks: A
+Memoir of Decimals, Decibels, and Cold Spaghetti.
+Read by Mattecca Norpiek. Monterey, CA: Silly
+Triangle Press. Audible, 738:47:33.
+T: (Thorton 2023)
+Chapter in Edited Book
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+One author, two
+editors
+Zotero
+R: Author Last Name, Author First
+Name. Year. “Title of Chapter in Title
+Case.” In Title of Book in Title Case
+and Italics, edited by Editor1 and
+Editor2, starting page of chapter–
+ending page of chapter. Place of
+Publication: Publisher.
+T: (Author Last Name year, page[s]
+cited)
+R: Haynes, Peter. 2009. “Al-Qaeda, Oil Dependence,
+and U.S. Foreign Policy.” In Energy Security and
+Global Politics: The Militarization of Resource
+Management, edited by Daniel Moran and James A.
+Russell, 62–74. New York: Routledge.
+T: (Haynes 2009, 70)
+Three authors, one
+editor
+From the
+introduction,
+forward, preface,
+etc.
+Zotero
+R: Last1, First1, First2 Last2, and
+First3 Last3. Year. “Title of Chapter in
+Title Case.” In Title of Book in Title
+Case and Italics, edited by Editor,
+starting page of chapter–ending page
+of chapter. Place of Publication:
+Publisher.
+T: (Last1, Last2, and Last3 year)
+R: Cordesman, Anthony H., Adam Mausner, and
+David Kasten. 2009. Introduction. In Winning in
+Afghanistan: Creating Effective Afghan Security
+Forces, edited by John Smith, 1–12. Washington, DC:
+Center for Strategic and International Studies.
+T: (Cordesman, Mausner, and Kasten 2009)
+No quotation marks needed for book sections with generic names, such as Introduction, Foreword, Preface, etc.
+Electronic Book
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+DOI or URL Zotero
+R: Bonds, Mark Evan. 2014. Absolute Music: The
+History of an Idea. New York: Oxford University Press.
+https://doi.org/10.1093/acprof:oso/
+9780199343638.003.0002.
+
+With Digital Object
+Identifier (DOI) or
+URL, from a book
+provider, or from a
+library database
+DOI preferred
+R: Author Last Name, Author First
+Name. Year published. Title of Book
+in Title Case and Italics. Place of
+Publication: Publisher. DOI or URL.
+T: (Author Last Name year)
+or
+T: (Author Last Name year, loc. xxx)
+T: (Bonds 2014)
+or
+T: (Bonds 2014, chap. 2)
+From a book provider Zotero
+R: Pieken, Rebecca. 2019. Essential Four-Letter
+Words for Managing Editors. New York: Routledge.
+Kindle.
+T: (Pieken 2019, loc. 888)
+From a library database Zotero
+R: Crabtree, John, and Ann Chaplin. 2013. Bolivia:
+Processes of Change. ProQuest.
+T: (Crabtree and Chaplin 2013)
+or
+T: (Crabtree and Chaplin 2013, chap 2)
+Include page numbers in in-text citations when citing quoted material.
+Print Book
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+One author
+Zotero
+R: Author Last Name, Author First
+Name. Year. Title of Book in Title
+Case and Italics. Place of
+Publication: Publisher.
+T: (Author year, page)
+R: Pollan, Michael. 2006. The Omnivore’s Dilemma: A
+Natural History of Four Meals. New York: Penguin.
+T: (Pollan 2006, 99–100)
+Two authors with
+edition number
+Zotero
+R: Last1, First1, and First2 Last2.
+Year. Title of Book in Title Case and
+Italics. Edition. Place of Publication:
+Publisher.
+T: (Last1 and Last2 year, page)
+R: Strindberg, Anders, and Mats Wärn. 2011.
+Islamism: Religion, Radicalization and Resistance.
+2nd ed. Hoboken, NJ: John Wiley and Sons.
+T: (Strindberg and Wärn 2011, 14)
+Three authors
+Zotero
+R: Last1, First1, First2 Last2, and
+First3 Last3. Year. Title of Book in
+Title Case and Italics. Place of
+Publication: Publisher.
+T: (Last1, Last2, and Last3 year,
+page)
+R: Cordesman, Anthony H., Adam Mausner, and
+David Kasten. 2009. Winning in Afghanistan: Creating
+Effective Afghan Security Forces. Washington, DC:
+Center for Strategic and International Studies.
+T: (Cordesman, Mausner, and Kasten 2009, 50)
+Four or more
+authors
+Zotero
+R: Last1, First1, First2 Last2, First3
+Last3, and First4 Last4. Year. Title of
+Book in Title Case and Italics. Place
+of Publication: Publisher.
+T:(Last1et al. year, page)
+R: Cordesman, Anthony H., Adam Mausner, Eleanor
+Bermudashorts, and David Kasten. 2009. Winning in
+Afghanistan: Creating Effective Afghan Security
+Forces. Washington, DC: Center for Strategic
+and International Studies.
+
+T: (Last1 et al. year, page)
+T: (Cordesman et al. 2009, 50)
+If the city of publication may be unknown to readers or may be confused with another city of the same name, the abbreviation of the state, province,
+or (sometimes) country is usually added. Washington is traditionally followed by DC, but other major cities, such as Los Angeles and Baltimore, need
+no state abbreviation.
+Class Notes, Lecture, Presentation, Workshop
+Class notes include lecture notes, slides, and any other course-related material published by an instructor.
+If class notes are not available to your readers, format as a personal communication using professor's / lecturer's name and "class notes."
+Class notes and lectures published to your online course site are considered unpublished.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Class Notes
+Published
+Zotero
+R: Instructor Last Name, Instructor First
+Name. Year. “Title of Notes in Title
+Case.” Class notes for Class,
+Institution, Location of Institution, full
+date of class. URL or DOI.
+T: (Instructor Last Name year)
+R: Johnson, Justin. 2017. "Python NumPy Tutorial." Class
+notes for CS231n: Convolutional Neural Networks for
+Visual Recognition, Stanford University, Palo Alto, CA.
+https://cs231n.github.io/python-numpy-tutorial/.
+T: (Johnson 2017)
+Lecture
+Published
+(online)
+Zotero
+R: Speaker Last Name, Speaker First
+Name. Year. “Title of Lecture in Title
+Case.” Lecture at Venue, Location of
+Venue. DOI or URL.
+T: (Speaker Last Name year)
+R: Horse, Belmont B. 2017. “Horseshoes and Hand
+Grenades: On the Joys of Approximation.” Lecture at
+Barnes Event Center, Derby, KY. https://horse.com/.
+T: (Horse 2017)
+Lecture
+Unpublished
+Class notes/unpublished lectures can
+be referred to in running text and
+omitted from the List of References.
+In your text: See example.
+In your text: Emily Potatohead, president of Happy Writers, Inc., gave a
+lecture titled “How to Write a Thesis” on March 29, 2013, at California State
+University, Monterey Bay. In her presentation, she described five steps to help
+streamline the writing process.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Presentation
+or Workshop
+Zotero
+R: Presenter Last Name, Presenter
+First Name. Year of presentation. “Title
+of Presentation in Title Case.” Type of
+presentation at Venue, Location of
+Venue, full date of presentation. DOI or
+URL.
+T: (Presenter Last Name year)
+R: Randall, Lisa. 2002. “Unification in Warped Extra
+Dimensions and Bulk Holography.” Presentation at
+Cavendish Laboratory, University of Cambridge,
+Cambridge, UK, July 19,
+2002. https://www.damtp.cam.ac.uk/
+events/strings02/avt/randall/.
+T: (Randall 2002)
+
+Computer Program / Software
+Citation is required only if the software is not well known.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+Zotero
+R: Company or Creator Last Name, Creator
+First Name. Year published. Title of Software in
+Title Case, version number. Place of
+Publication. Accessed full date. DOI or URL.
+T: (Company or Creator Last Name year)
+B: Borenstein, Matthew, Lion Hedges, Jonah Higgins,
+and Hy Rothstein. 2005. Comprehensive Meta-Analysis,
+version 2. Englewood, NJ. Accessed February 3, 2016.
+https://www.meta-analysis.com.
+T: (Borenstein et al. 2005)
+
+Conference Paper / Proceedings
+For examples of how to handle volume, issue, and month/season information, see Journal Article (print).
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Conference
+Proceedings
+(online)
+Zotero
+R: Author Last Name, Author
+First Name. Year published.
+“Title of Article in Title Case.” In
+Title of Proceedings or
+Collection in Title Case and
+Italics volume number (issue):
+starting page of article–ending
+page of article. DOI or URL.
+T: (Author Last Name year)
+How to cite multiple authors
+R: Morentz, James W, Christopher Doyle, Lawrence Skelly, and
+Nabil Adam. 2009. “Unified Incident Command and Decision
+Support (UICDS) a Department of Homeland Security Initiative in
+Information Sharing.” In 2009 IEEE Conference on Technologies
+for Homeland Security 182–
+87. https://doi.org/10.1109/THS.2009.5168032.
+T: (Morentz et al. 2009)
+Conference
+Proceedings
+(print)
+Zotero
+R: Last1, First1, First2 Last2,
+First3 Last3, and First4 Last4.
+Year. “Title of Chapter in Title
+Case.” In Title of Proceedings
+or Collection in Title Case and
+Italics. Edited by Editor1,
+Editor2, Editor3, and Editor4,
+starting page of chapter–ending
+page of chapter. Place of
+Publication: Publisher.
+T: (Last1 et al. year)
+R: Katz, Itai, Kevin Gabayan, Hamid Aghajan, and Daisy
+Germanshepherdhighness. 2007. “A Multi-touch Surface Using
+Multiple Cameras.” In Advanced Concepts for Intelligent Vision
+Systems: 9th International Conference, edited by Jacques Blanc-
+Talon, Wilfried Philips, Dan Popescu, and Paul Scheunders, 97–
+108. Berlin, Germany: Springer-Verlag.
+T: (Katz et al. 2007, 97–100)
+Paper
+Presented at
+Conference
+Unpublished
+Zotero
+R: Last1, First1, First2 Last2,
+First3 Last3, and First4 Last4.
+Year of presentation. “Title of
+Paper in Title Case.” Paper
+presented at Name of
+Conference in Title Case,
+Location of Conference.
+T: (Last1 et al. year)
+R: Teplin, Linda A., Gary M. McClelland, Karen M. Abram, and
+Jason J. Washburn. 2005. “Early Violent Death in Delinquent
+Youth: A Prospective Longitudinal Study.” Paper presented at the
+Annual Meeting of the American Psychology-Law Society, La
+Jolla, CA.
+T: (Teplin et al. 2005)
+
+Data Set / Database
+Since an unpublished data set is irretrievable, it is treated as a personal communication and therefore not cited in references.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Data Set
+Published
+Zotero
+R: Author Last Name,
+Author First Name.
+Year published. “Title of
+Data Set in Title Case.”
+Organization. DOI or
+URL.
+R: Suro, Roberto. 2004. “Changing Channels and Crisscrossing Culture: A
+Survey of Latinos on News Media.” Pew Research Center.
+https://www.pewresearch.org/hispanic/2004/04/19/changing-channels-and-
+crisscrossing-cultures/.
+T: (Suro 2004)
+Data Set
+Unpublished
+R: None
+T: (Author First and
+Last Name,
+unpublished data, full
+date data was
+received)
+R: None
+T: (Rebecca Kanteen, unpublished data, May 23, 1955)
+No reference entry is needed. Zotero will not be used to cite.
+Database
+Zotero
+R: Database Name
+(record locator;
+accessed full date).
+DOI or URL.
+T: (Database Name year [use
+n.d. if regularly updated])
+R: NASA/IPAC Extragalactic Database (object name IRAS F00400+4059;
+accessed October 6, 2009). https://nedwww.ipac.caltech.edu/.
+T: (NASA/IPAC Extragalactic Database, n.d.)
+R: GenBank (for RP11-322N14 BAC [accession number AC017046];
+accessed October 6, 2020). https://www.ncbi.nlm.nih.gov/Genbank/.
+T: (GenBank, n.d.)
+
+Dictionary / Encyclopedia
+Repeat the year with the month and day to avoid any confusion.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the dictionary or encyclopedia name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Dictionary /
+Encyclopedia
+Author given
+Zotero
+R: Author Last Name, Author
+First Name. Year. Title of
+Reference Work in Title
+Case and Italics. S.v. “title of
+entry in lowercase unless proper
+noun.” Accessed or modified full
+date. URL.
+T: (Author Last Name year)
+R: Bowhead, Beau. 2023. "Whale Cheese." In Cheese, Pleese:
+The Encyclopedia of Obscure and Unusual Cheeses. Curd Your
+Enthusiasm Co. Last modified December 20, 2023.
+https://www.cheesepleese.com/pleese/whalecheese.
+T: (Bowhead 2023)
+Dictionary /
+Encyclopedia
+Organization
+as author
+Zotero
+R: Title of Reference Work
+in Title Case and Italics. Year.
+S.v. “title of entry in lowercase
+unless proper noun.”
+Accessed or modified full date.
+URL.
+T: (Reference Work year)
+R: Merriam-Webster. 2017. S.v. “metamorphosis.” Accessed July
+6, 2017. https://www.merriam-webster.com/
+dictionary/metamorphosis.
+T: (Merriam-Webster 2017)
+Fact Sheet
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Fact
+Sheet
+Zotero
+R: Department. Year.
+“Title of Fact Sheet in
+Title Case.” DOI or
+URL.
+T: (Department year)
+R: Department of Labor. 2008. “The Construction Industry under the Fair Labor
+Standards Act (FLSA).” https://www.dol.gov/whd/regs/compliance/whdfs1.htm.
+T: (Department of Labor 2008)
+
+Government / Military Document
+Include page numbers in in-text citations when citing quoted material.
+Directive
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Directive
+Zotero
+R: Department.
+Year. Title of
+Directive in Title
+Case and Italics.
+Document
+identification
+number. Place of
+Publication:
+Publisher =
+Department. DOI or
+URL.
+T (first citation):
+(Department
+[Acronym] year)
+T (subsequent
+citations):
+(Acronym year)
+R: Department of Defense. 2005. Information Assurance Training,
+Certification, and Workforce Management. DOD Directive 8570.01-M.
+Washington, DC: Department of Defense. https://www.esd.whs.mil/Portals/54/
+Documents/DD/issuances/dodm/857001m.pdf.
+T (first citation): (Department of Defense [DOD] 2005)
+T (subsequent citations): (DOD 2005)
+Doctrine
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Doctrine
+Zotero
+R: Department.
+Year. Title of Joint
+Doctrine in Title
+Case and Italics.
+Document
+identification
+number. Place of
+Publication:
+Publisher =
+Department. DOI or
+URL.
+T: (Department
+year)
+R: Joint Chiefs of Staff. 2017. Doctrine for the Armed Forces of the United
+States. JP 1. Washington, DC: Joint Chiefs of
+Staff. https://fas.org/irp/doddir/dod/jp1.pdf.
+T: (Joint Chiefs of Staff 2017, 33)
+Field Manual / Military Regulation
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+R: Department.
+Year. Title of Field
+Manual in Title Case
+and Italics
+R: Department of the Army. 1994. Sniper Training. FM 23-10. Washington,
+DC: Department of the Army. https://www.bits.de/NRANEU/
+others/amd-us-archive/fm_23-10%2894%29.pdf.
+T (fi t it ti )(Dt t f th A[DA] 1994)
+
+Field Manual /
+Military
+Regulation
+Zotero
+and Italics.
+Document
+identification
+number. Place of
+Publication:
+Publisher =
+Department. DOI or
+URL.
+T (first citation):
+(Department
+[Acronym] year)
+T (subsequent
+citations):
+(Acronym year)
+T (first citation): (Department of the Army [DA] 1994)
+T (subsequent citations): (DA 1994, 6)
+Government Report
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+
+Government
+Report
+CRS Report
+R: Author Last
+Name, Author First
+Name. Year. Title of
+Report in Title Case
+and Italics.
+Document
+identification
+number.
+Washington, DC:
+Congressional
+Research Service.
+DOI or URL.
+T: (Author Last
+Name year)
+CRS Report Zotero
+R: Erwin, Marshall C. 2013. Intelligence Issues for Congress. CRS Report
+No. RL33539. Washington, DC: Congressional Research Service.
+https://www.fas.org/sgp/crs/intel/RL33539.pdf.
+T: (Erwin 2013, 16)
+GAO Report
+R: Author Last
+Name, Author First
+Name. Year. Title of
+Report in Title Case
+and Italics.
+Document
+identification
+number. Place of
+Publication:
+Publisher.
+T: (Author Last
+Name year)
+GAO Report Zotero
+R: Berrick, Cathleen A. 2009. Homeland Security: DHS’s Progress and
+Challenges in Key Areas of Maritime, Aviation, and Cybersecurity. GAO-10-
+106. Washington, DC: Government Accountability Office.
+T: (Berrick 2009, 22)
+St tSt t Dt / Oth Gt RtZ t
+
+Strategy
+Document / Other
+Government
+Report
+R: Author Last
+Name, Author First
+Name or
+Department. Year.
+Title of Report in
+Title Case and
+Italics. Place of
+Publication:
+Publisher. DOI or
+URL.
+T: (Last Name
+or Department year)
+Strategy Document / Other Government Report Zotero
+R: Biden, Joseph R., Jr. 2022. National Security Strategy of the United States
+of America. Washington, DC: White House. https://www.whitehouse.gov/wp-
+content/uploads/2022/10/Biden-Harris-Administrations-National-Security-
+Strategy-10.2022.pdf.
+T: (Biden 2022, 12)
+Instruction
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Instruction
+Zotero
+
+R: Department.
+Year. Title of
+Instruction in Title
+Case and Italics.
+Document
+identification
+number. Place of
+Publication:
+Publisher =
+Department.
+T (first citation):
+(Department
+[Acronym] year)
+T (subsequent
+citations):
+(Acronym year)
+R: Department of Defense. 2012. Identification (ID) Cards Required by the
+Geneva Convention. DOD Instruction 1000.01. Washington, DC: Department
+of Defense.
+T (first citation): (Department of Defense [DOD] 2012, 95)
+T (subsequent citations): (DOD 2012, 8)
+Memorandum
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Memorandum
+Zotero
+R: Author Last
+Name, Author First
+Name. Year. “Title of
+Memo in Title
+Case.” Official
+memorandum.
+Place of Publication:
+Department. DOIor
+R: Takai, Teresa M. 2013. “Adoption of the National Information Exchange
+Model within the Department of Defense.” Official memorandum. Washington,
+DC: Department of Defense. https://dodcio.defense.gov/Portals/0/Documents/
+2013-03-
+28%20Adoption%20of%20the%20NIEM%20within%20the%20DoD.pdf.
+T: (Takai 2013, 18)
+
+Department. DOI or
+URL.
+T: (Author Last
+Name year)
+Handbook
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+Zotero
+R: Name of Company. Year.
+Title of Handbook in Title
+Case and Italics. Place of
+Publication. DOI or URL.
+T: (Name of Company year)
+R: Western Spud. 1972. Transmission Systems for Potatoes. 168th ed.
+Kinston-Slalom,
+ID. https://www.spud.org/potato/transmission/grease.html.
+T: (Western Spud 1972, 954)
+Print
+Zotero
+R: Western Electric. 1985. Transmission Systems for
+Communications. 3rd ed. Winston-Salem, NC.
+T: (Western Electric 1985, 2)
+Journal Article
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+DOI
+preferred
+R: Author Last Name, Author First Name.
+Year. “Title of Article in Title Case.” Title of
+Journal in Title Case and Italics volume
+number (xx) (Month or Season): starting
+page of article–ending page of article. DOI or
+URL or Name of Database in Title Case.
+T: (Author Last Name year, page[s])
+How to cite multiple authors
+DOI or URL Zotero
+R: Long, Janice R., and Cat Dragon. 2024. “Happy on a
+Monday: This and Other Signs You're Retired.” Python
+Dreams 19 (2) (April): 2007–2024.
+https://doi.org/10.0000/123456789000.
+T: (Long and Dragon 2024)
+From a library database Zotero
+R: Giannopoulou, Zina. 2014. “Prisoners of Plot
+in José Saramago’s The Cave.” Philosophy and
+Literature 38 (2) (October): 332–49. Project MUSE.
+T: (Giannopoulou 2014, 338)
+Print
+Zotero
+R: Author Last Name, Author First Name.
+Year. “Title of Article in Title Case.” Title of
+Journal in Title Case and Italics volume
+number (xx) (Month or Season): starting
+page of article–ending page of article.
+T: (Author Last Name year, page[s])
+R: Liu, Jui-Ch'i. 2015. “Beholding the Feminine Sublime:
+Lee Miller’s War Photography.” Signs 40 (2) (Winter):
+308–19.
+T: (Liu 2015, 312)
+
+Legal
+Legal publications use notes for documentation; few include bibliographies. Any work using the author-date style that needs to do more than mention
+the occasional source in the text should therefore use supplementary Chicago Notes & Bibliography footnotes formatting. For a full discussion of
+legal and public documents, including examples, see CMOS 14.269–305.
+Bill / Resolution
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Federal
+unenacted
+R: None
+T: None
+In your text: (Abbreviated Bill or Resolution
+Chamber and Number, xxx Cong. (year))
+Footnote: See header notes.
+R: None
+T: None
+In your text: The Managed Competition Act
+(H.R. 5936, 102nd Cong. (1992)) noted that
+potatoes are smarter than E. coli–laden cats
+. . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Code of Federal Regulations
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Code of Federal
+Regulations
+R: None
+T: None
+In your text: Include name of act, C.F.R. title
+number and section number (title number C.F.R. §
+xxx), and year published.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In 2006, the Department of
+Energy introduced the Renewable Energy
+Production Incentives (10 C.F.R. § 451),
+which . . .
+or
+In 10 C.F.R. § 451 (2006), the Department of
+Energy establishes guidelines on Renewable
+Energy Production Incentives, which . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Congressional Hearing / Testimony within a Hearing
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Congressional
+Hearing
+Full hearing
+R: None
+T: None
+In your text: Include title of hearing, date, and
+any other useful identifying information.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In 2009, the House Committee
+on the Budget held a hearing on the Long-
+term Sustainability of Current Defense Plans
+to ascertain . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+
+Testimony
+within a Hearing
+R: None
+T: None
+In your text: Include name of testifier, title of
+hearing, date, and any other useful identifying
+information.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In his 2015 testimony during
+the NASA Infrastructure–Enabling Discovery,
+Enabling Durability hearing, NASA lead
+scientist Paul K. Martin remarked that . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Court Case Decision
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Lower court
+R: None
+T: None
+In your text: Party Names (Case ID [includes
+volume number, abbreviated name of the reporter,
+first page of decision, abbreviated name of the
+court (if not indicated by the reporter) and the date
+together in parentheses])
+Footnote: See header notes.
+R: None
+T: None
+In your text: In the case Lessard v. Schmidt
+(349 F. Supp. 1078 (E.D. Wis. 1972)), the
+court ruled that . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Supreme Court
+R: None
+T: None
+In your text: Party Names (Case ID [includes
+volume number, abbreviated name of the
+reporter(s), first page of the decision, and the date
+in parentheses)
+Footnote: See header notes.
+R: None
+T: None
+In your text: In the case Winter v. NRDC,
+Inc. (129 S. Ct. 365 (2008)), the court ruled
+that . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Executive Order
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Executive Order
+R: None
+T: None
+In your text: Include "Title of Executive Order in
+Title Case," executive order number, and year.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In 2013, Executive Order
+13655, "Adjustments of Certain Rates of
+Pay," established that . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Public Law
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+
+Public Law
+R: None
+T: None
+In your text: Include the title and year of the act.
+Note: if the year is included in the title of the act,
+there is no need to repeat it.
+Footnote: See header notes.
+R: None
+T: None
+In your text: The 1990 Americans with
+Disabilities Act established . . .
+Footnote: See header notes.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Magazine Article
+Include page numbers in in-text citations when citing quoted material.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the magazine name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+
+R: Author Last Name, Author First Name.
+Year. “Title of Article in Title Case.” Title
+of Magazine in Title Case and Italics, full
+date of publication.
+DOI or URL or Name of Database in
+Title Case.
+T: (Last Name year)
+DOI or URL Zotero
+R: Preposterous, Geronimo. 2017. "Mai Tais and Milkshakes:
+A Fast Ride to the ER." Libation Incidents Monthly, February
+1, 2017. https://pollock.trashcan.com/2017/02/22/mtmer.
+T: (Preposterous 2017, 456)
+From a library database Zotero
+R: Preposterous, Geronimo. 2020. "Mojitos and Mussels: New
+Frontiers in Smoothie Formulation." Libation Incidents
+Monthly, January 1, 2020. EBSCO.
+T: (Preposterous 2020, 201)
+Print
+Zotero
+R: Author Last Name, Author First Name.
+Year. “Title of Article in Title Case,” Title
+of Magazine in Title Case and Italics, full
+date of publication.
+T: (Last Name year)
+R: Preposterous, Geronimo. 2017. "Martinis and Mackerel:
+From Seafood to See Food." Libation Incidents Monthly,
+March 1, 2017.
+T: (Preposterous 2017)
+
+Map
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Google Map
+Zotero
+R: Google
+Maps. Year
+accessed.
+“Title of Map
+in Title Case.”
+Accessed full
+date. URL.
+T: (Google
+Maps year)
+R: Google Maps. 2017. “Monterey Bay.” Accessed January 4, 2017.
+https://www.google.com/maps/place/Monterey+Bay/
+@36.7896106,-122.0843052,11z/data=!3m1!4b1!4m5!3m4!1s0x808e0ccfc5859dfd:
+0x124654a608855d43!8m2!3d36.8007413!4d-121.947311.
+T: (Google Maps 2017)
+Cartographer
+given
+R: Map
+Source or
+Maker in Title
+Case. Year.
+“Title of Map
+in Title Case.”
+Accessed full
+date. DOI or
+URL.
+T: (Map
+Source or
+Maker in Title
+Case year)
+R: Lewis County Geographic Information Services. 2014. “Population Density, 2000
+U.S. Census.” Accessed January 4, 2017.
+https://maps.lewiscountywa.gov/maps/Demographics/census-popdens_2000.pdf.
+T: (Lewis County Geographic Information Services 2014)
+
+Multimedia
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Film
+Zotero
+R: Director Last Name, Director First
+Name, dir. Year originally
+released. Title of Film in Title Case
+and Italics. Place of Publication:
+Publisher, year published of the copy
+you are using. Medium or
+DOI or URL.
+T: (Director Last Name, year originally released)
+R: Hitchcock, Alfred, dir. 1959. North by Northwest. Burbank, CA: Warner
+Home Video, 2000. DVD.
+T: (Hitchcock 1959)
+Podcast
+or
+Video
+News, YouTube,
+or any kind of
+streaming video
+Zotero
+R: Author Last Name, Author First
+Name or Organization or Screen
+Name. Year. “Title of Video in Title
+Case.” Media type, length of podcast
+or video. Full date of posting. URL.
+T: (Author or Organization or Screen
+Name year)
+R: CNN. 2017. “US Military Sends Warships, Aircraft to
+Texas.” Video, August 31, 2017. 1:31.
+https://www.cnn.com/2017/08/30/politics/texas-harvey-
+flooding-military-response/.
+T: (CNN 2017)
+R: BellaFolletti. 2009. “Possible Ghost Caught on
+Surveillance Camera.” YouTube video, April 8, 2009,
+1:19. https://www.youtube.com/watch?v=Dq1ms2JhYBI.
+T: (BellaFolletti 2009)
+
+Newspaper Article
+Do not use the leading word “the” when referencing newspaper names in list of references (New York Times, not The New York Times).
+Include page numbers in in-text citations when citing quoted material.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the newspaper name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+R: Author Last Name, Author
+First Name. Year. “Title of Article
+in Title Case.” Title of
+Newspaper in Title Case and
+Italics, full date of publication.
+DOI or URL or Name of
+Database in Title Case.
+T: (Author Last Name year)
+DOI or URL, Author given Zotero
+R: Brody, Jane E. 2007. “Mental Reserves Keep Brains Agile.” New
+York Times, December 11,
+2007. https://www.nytimes.com/2007/12/11/health/11brod.html.
+T: (Brody 2007, 5)
+From a library database Zotero
+R: Brady, Joan. 2020. “Mental Reserves Keep Brains Delicious.” New
+Pork Times, January 24, 2020. Lexis Advance.
+T: (Brady 2020, 65)
+Print
+No
+author
+given
+Zotero
+R: Title of Newspaper in Title
+Case and Italics. Year. “Title of
+Article in Title Case,” full date of
+publication. DOI or URL.
+T: (Title of Newspaper year)
+R: Monterey Gerald. 2014. “Local Otters Find Tourists 'Incredibly
+Cute,'” April 5, 2014.
+T: (Monterey Gerald 2014, 8)
+Patent
+If a patent has more than one date, use the year of issuance.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Patent
+Zotero
+R: Rightsholder Last Name,
+Rightsholder First Name. Year
+issued. Title of patent in sentence
+case. U.S. Patent xxxxxxx, filed full
+date, and issued full date. DOI or
+URL.
+T: (Rightsholder Last Name year issued)
+R: Bell, Alexander Graham. 1876. Improvement in telegraphy. U.S.
+Patent 174465A, filed February 14, 1876, and issued March 7,
+1876. https://www.google.com/patents/US174465.
+T: (Bell 1876)
+
+Personal Communication: Email, Interview, Personal Communication
+Cite in-text only.
+Personal communication is material obtained directly from a person, organization, or other source that your typical readers will be unable to access.
+A source should be cited as a personal communication when there is no direct, reliable path for your readers to retrieve the information. Examples
+include phone calls, conversations, letters, emails, files attached to an email, internal documents, documents posted to a listserv or internal server, or
+any unpublished source to which your readers have no access.
+If a personal name is not given, include an occupation or position instead. Example: (lieutenant commander, USN, personal communication, April 11,
+2022).
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Email
+(including attachments such as
+presentation slides, data sets,
+internal documents, etc.)
+R: None
+T: (Sender, email message to
+author, full date of email)
+or
+In your text: (email message to
+author, full date of email)
+R: None
+T: (Q. Grumbupple, email to author, October
+22, 1994)
+or
+In your text: According to Quentin Grumbupple (email to
+author, October 22, 1994)
+No reference entry is needed. Zotero will not be used to cite.
+Interview
+R: None
+In your text: Interviewee Name
+(interviewee title), [in discussion
+with the author], full date of
+interview.
+R: None
+In your text: . . . as claimed by Osiris Jones
+(professor of octopus kinesiology, University
+of Headfoot), in discussion with the author,
+June 1, 2012.
+No in-text citation or reference entry is needed. Zotero will not be used to cite.
+Personal Communication
+R: None
+T: (Interlocutor Name, type of
+communication, full date)
+R: None
+T: (Sandi Lopez, personal communication,
+September 8, 2009)
+No reference entry is needed. Zotero will not be used to cite.
+
+Report
+An official report is freestanding and should have publisher and/or copyright information. If it is not freestanding, then format it as a webpage.
+Include page numbers in in-text citations when citing quoted material.
+Research Report / Think Tank Report / White Paper
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+(online)
+Zotero
+R: Author 1 Last Name, Author
+1 First Name, Author 2 First
+and Last Name, . . . Author 7
+First and Last Name et al.
+Year. Title of Report in Title
+Case and Italics. Document
+identification number. Place of
+Publication: Publisher. DOI or
+URL or Name of Database.
+T: (Author 1 Last Name et al.
+Year)
+How to cite multiple authors
+R: Dixon, Lloyd, Noreen Clancy, Benjamin M. Miller, Sue Hoegberg,
+Michael M. Lewis, Bruce Bender, Samara Ebinger et al. 2017. The Cost
+and Affordability of Flood Insurance in New York City. RR-1776-
+NYCEDC. Santa Monica, CA: RAND.
+https://www.rand.org/pubs/research_reports/RR1776.html.
+T: (Dixon et al. 2017, 5)
+Technical Report
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Agency
+as author
+(online)
+Zotero
+R: Agency Name. Year. Title of
+Technical Report in Title Case
+and Italics. Document
+identification number. DOI or
+URL.
+T: (Agency year)
+R: National Toxicology Program. 2012. Toxicology and Carcinogenesis
+Studies of Trimethylolpropane Triacrylate (Technical Grade) (CASRN
+15625-89-5) in F344/N Rats and B6C3F1/N Mice (Dermal Studies).
+Report No. TR-576. https://pubmed.ncbi.nlm.nih.gov/23385646/.
+T: (National Toxicology Program 2012, 18)
+Author
+given
+(online)
+Zotero
+R: Author Last Name, Author
+First Name. Year. Title of
+Technical Report in Title Case
+and Italics. Document
+identification number. DOI or
+URL or Name of Database in
+Title Case.
+T: (Author year)
+How to cite multiple authors
+R: Tang, K. Linda, and Daniel R. Eignor. 2001. A Study in the Use of
+Collateral Statistical Information in Attempting to Reduce TOEFL IRT
+Item Parameter Estimation Sample Sizes. Report Numbers RR-01-11,
+TOEFL-TR-17. Princeton, NJ: Educational Testing
+Service, https://www.ets.org/research/policy_
+research_reports/publications/report/2001/hsfb.
+T: (Tang and Eignor 2001, 22)
+Author
+given
+(print)
+Zotero
+R: Author Last Name, Author
+First Name. Year. Title of
+Technical Report in Title Case
+and Italics. Document
+identification number. Place of
+Publication: Publisher
+R: Jones, Larry, and Florence Johnson. 2015. The Absorption Rate of
+E. coli in Cats. Report No. 17-59. Madison, WI: Veterinary Studies.
+T: (Jones and Johnson 2015, 6)
+
+Zotero Publication: Publisher.
+T: (Author year)
+Secondary / Indirect Source
+How to cite secondary / indirect sources
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Secondary /
+Indirect
+Source
+Zotero
+R: List the indirect source that quotes or discusses
+the material you are referring to (cite using the
+appropriate format for the source type—book,
+journal article, etc.)
+In your text: Mention the primary source, then cite
+the indirect source using the appropriate in-text
+format for the source type—book, journal article,
+etc.
+R: Nicholson, Ian A. M. 2003. Inventing
+Personality: Gordon Allport and the Science of
+Selfhood. Washington, DC: American
+Psychological Association.
+In your text: We can see this principle at work
+in the following passage from Allport’s diary,
+quoted in Nicholson: “ . . . ” (2003, 59).
+Social Media
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Facebook,
+Instagram,
+Twitter,
+etc.
+Zotero
+R: Author or Organization
+(handle if not Facebook).
+Year. "Title of post or
+shortened tweet text
+in sentence case." Platform,
+full date, timestamp for tweets
+only. URL.
+T: (Author or Organization year)
+R: Babygiraffe (@babygiraffehaslastlaugh). 2016. "I'm cuter than any
+stupid potato. They don't even have necks." Twitter, April 3, 2016, 5:02
+a.m.
+https://twitter.com/babygiraffehaslastlaugh/status/53645653465436354.
+T: (Babygiraffe 2016)
+Speech
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Speech
+R: List the source that quotes or reprints the speech
+you are referring to (cite using the appropriate
+reference-list format for the source type—book,
+journal article, etc.).
+In your text: Include the name of the speaker and
+cite the source.
+R: Smith, Jacob, ed. 2009. Well Said! Great
+Speeches in American History. Washington, DC:
+E & K Publishing.
+In your text: Martin Luther King, Jr. declared, “I
+have a dream that one day this nation will rise up
+and live out the true meaning of its creed” (Smith
+2009, 18).
+
+Thesis / Dissertation
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+From a
+commercial
+database
+Zotero
+R: Author Last Name, Author First
+Name. Year. “Title of
+Thesis/Dissertation in Title Case.”
+Type of document, Institution.
+Name of Database in Title
+Case (document identification
+number).
+T: (Author Last Name year)
+R: Choi, Mihwa. 2008. “Contesting Imaginaires in Death
+Rituals during the Northern Song Dynasty.” PhD diss.,
+University of Chicago. ProQuest (AAT 3300426).
+T: (Choi 2008, 22)
+From an
+institutional
+archive such as
+the NPS Archive:
+Calhoun
+R: Author Last Name, Author First
+Name. Year. “Title of
+Thesis/Dissertation in Title Case.”
+Type of document, Institution. DOI
+or URL.
+T: (Author Last Name year)
+Dissertation Zotero
+R: Rivera, Joey. 2010. “Software System Architecture
+Modeling Methodology for Naval Gun Weapon Systems.”
+PhD diss., Naval Postgraduate School.
+https://hdl.handle.net/10945/10504.
+T: (Rivera 2010, 15)
+Thesis Zotero
+R: Moon, Thomas D. 2009. “Rising Dragon: Infrastructure
+Development and Chinese Influence in Vietnam.” Master’s
+thesis, Naval Postgraduate School.
+https://calhoun.nps.edu/handle/10945/4694.
+T: (Moon 2009)
+
+Unpublished / Informally Published Work
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Unpublished
+Work
+(print)
+Zotero
+R: Author Last Name, Author
+First Name. Year viewed. “Title
+of Work in Title Case.”
+Unpublished [type of work], Full
+date viewed.
+T: (Author Last Name year)
+R: Horse, Belmont B. 1995. “Back in the Saddle.” Unpublished
+manuscript, May 3, 1995.
+T: (Horse 1995)
+Unpublished
+Work
+Accepted for
+publication
+(online)
+Zotero
+R: Author Last Name, Author
+First Name. Forthcoming. “Title
+of Article in Title Case.” Title of
+Journal in Title Case and Italics.
+DOI or URL.
+T: (Author Last Name,
+forthcoming)
+R: Briscoe, Robert. Forthcoming. “Egocentric Spatial
+Representation in Action and Perception.” Philosophy and
+Phenomenological Research.
+http://cogprints.org/5780/1/ECSRAP.F07.pdf.
+T: (Briscoe, forthcoming)
+Unpublished
+Work
+Submitted for
+publication
+(online)
+Zotero
+R: Author Last Name, Author
+First Name. Year modified. “Title
+of Work in Title Case.”
+Unpublished, last modified full
+date. DOI or URL.
+T: (Author Last Name year)
+R: Horse, Belmont B. 1996. “Back in the Saddle 2: Back in the
+Saddle.” Unpublished, last modified December 24, 1996.
+https://horse.com/bits2bits.
+T: (Horse 1996)
+
+Website / Webpage
+The title of a website rarely includes ".com"—for example, BBC online is "BBC," not "BBC.com."
+Italicize newspaper names but not names of news organizations—for example, New York Times but not Reuters, Bloomberg, CNN, etc. These news
+organizations only have an online presence, whereas the New York Times also has a print counterpart.
+Follow the guidance in the Essential Rules for including page numbers.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the organization name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Author and
+publication
+date given
+Zotero
+R: Author Last Name,
+Author First Name. Year.
+“Title, Section, or Page
+Name in Title Case.”
+Organization. Full date of
+publication or
+modification. URL.
+T: (Author Last Name
+year)
+R: Roth, Richard. 2017. “75 Years Ago, the Doolittle Raid Changed
+History.” CNN. Last modified April 18, 2017.
+https://www.cnn.com/2017/04/18/us/75th-anniversary-doolittle-
+raid/index.html.
+T: (Roth 2017)
+No author
+given
+Organization
+as author
+Zotero
+R: Organization. Year.
+“Title, Section, or Page
+Name in Title Case.” Full
+date of publication or last
+modification. URL.
+T: (Organization year)
+R: Federal Bureau of Investigation. 2017. “Forging Papers to Sell Fake
+Art.” April 6, 2017. https://www.fbi.gov/news/stories/forging-papers-to-
+sell-fake-art.
+T (first citation): (Federal Bureau of Investigation [FBI] 2017)
+T (subsequent citations): (FBI 2017)
+No date given
+Zotero
+R: Organization. n.d.
+“Title, Section, or Page
+Name in Title Case.”
+Accessed full date. URL.
+T: (Organization, n.d.)
+R: Department of Defense. n.d. “About the Department of Defense
+(DOD).” Accessed April 18, 2017. https://www.defense.gov/About/.
+T (first citation): (Department of Defense [DOD], n.d.)
+T (subsequent citations): (DOD, n.d.)
+Janes
+example
+Zotero
+R: Janes. Year. “Title,
+Section, or Page Name in
+Title Case.” Full date of
+publication or last
+modification.
+T: (Janes 2017)
+R: Janes. 2024. “Mali: Country Overview.” Last modified March 19,
+2024. https://customer.janes.com/CountryIntelligence/Countries/Country_986.
+T: (Janes 2024)
+
+Wikipedia
+Wikipedia is not normally an accepted source in academia; please ask your instructor or advisor.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Wikipedia
+Zotero
+R: Wikipedia. Year. S.v. “title of entry in
+lowercase unless proper noun.” Full date
+of access or last modification. URL.
+T: (Wikipedia year)
+R: Wikipedia. 2017. S.v. “Kurt Vonnegut.” Last modified July
+8, 2017. https://en.wikipedia.org/wiki/Kurt_Vonnegut.
+T: (Wikipedia 2017)
+Working Paper / Occasional Paper
+Include page numbers in in-text citations when citing quoted material.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Working
+Paper /
+Occasional
+Paper
+Zotero
+R: Author Last Name, Author First Name. Year. “Title of
+Working Paper in Title Case.” Working paper, Institution or
+Company. DOI or URL.
+
+T: (Author Last Name year)
+
+R: Linguine, Lila. 2014. “Anteaters and Aardvarks: Power Critters.”
+Working paper, Animal Rights Institute. www.aanda.power/careers.html.
+
+T: (Linguine 2014, 8)
+
+Essential Rules
+Accessed Dates
+Only include date accessed if the source material has no date.
+Author Names: Honorifics
+Do not include honorifics (Dr., Col., Professor, etc.) when citing author names. Including these titles in the body of
+your document is acceptable.
+
+Identifying Authors of Official Documents
+For the National Security Strategy, cite the president as the author.
+For other official documents, the author is the organization immediately responsible for creating the document. In
+the example below, the author is the Office of the Chief of Naval Operations and the publisher is the Department of
+the Navy.
+
+In the example above, the author is NOT an umbrella organization, signatory, or any of the following:
+Chief of Naval Operations
+Deputy Chief of Naval Operations
+W. F. Moran
+Department of Defense
+Navy Pentagon
+R. P. Burke
+United States of America
+Do not include acronyms for organizations listed as authors in the List of References or footnotes:
+YES: Office of the Chief of Naval Operations.
+NO: Office of the Chief of Naval Operations (CNO or OCNO).
+NO: CNO or OCNO.
+Bibliography vs. List of References
+What is the difference between them?
+A List of References includes all works cited in a text
+A Bibliography lists all works cited and consulted
+The NPS Thesis Processing Office prefers a List of References for the following:
+Thesis
+Capstone project report
+MBA report
+Dissertation
+For papers, check with your professors for their preference.
+
+Capitalization: Title Case vs. Sentence case
+Title CaseSentence case
+Love among the Ruins: A Memoir of Life and Love in Hamburg, 1945Love among the ruins: A memoir of life and love in Hamburg, 1945
+Capitalize everything except:
+conjunctions (and, but, or, etc.)
+prepositions (to, of, on, among, between, etc.)
+articles (a, an, the)
+Capitalize only:
+the first words in titles and subtitles
+proper nouns
+
+Note: Always format the information in your citations (titles, author names, etc.) according to the requirements of
+the citation style you are using, regardless of how it appears in the original source.
+Country Names with Government Organizations
+When naming government organizations, be consistent: for example, either Department of Defense or U.S.
+Department of Defense. If citing organizations from multiple countries, ensure that it is clear which organization is
+associated with which country—for example, Australian Department of Defence, South African Department of
+Defence, Sri Lanka Ministry of Defence, Singapore Ministry of Defence.
+Figures / Images / Graphs
+A citation is required if you did not wholly create the figure—i.e., if you used someone else's image or data. A
+citation is not needed when all elements of the figure are your own creation.
+See Figure 1 for placement of the title and the in-text citation.
+Put a period and a space after the title.
+If you use the figure exactly as it appears in the source, use
+“Source: ___.”
+If you alter the original figure or use someone else's image or data to create the figure, use “Adapted from ___.”
+Figure 1. A Figure with a Citation in APA, Chicago Author-Date, or INFORMS Style. Source: Author (2017).
+or
+Figure 1. A Figure with a Citation in APA, Chicago Author-Date, or INFORMS Style. Adapted from Author (2017).
+For more details, see the Thesis Template.
+Thesis Template
+
+How Often to Cite?
+Remember: one citation at the end of a string of sentences or a paragraph cannot “cover” the entire section.
+
+Cite a source the first time it is used in each paragraph.
+
+Every sentence thereafter in the paragraph that uses information from this same source must contain either a signal phrase or a citation clearly
+indicating where the information came from.
+
+Note: always use a citation (even if you also use a signal phrase) every time you quote material.
+In-text Citation Placement & Signal Phrases
+Where in the sentence does my in-text citation go?
+
+If you name your source(s) in a given sentence, a parenthetical citation containing only the year always follows immediately after the name(s) of the
+author(s). Example: In contrast to earlier work by Abbott and Costello (1999), Laurel and Hardy (2008) propose an altogether different model for
+optimizing hat density.
+
+If you do not explicitly name your source(s) in a given sentence, a single parenthetical citation goes at the end of the sentence or clause it covers
+(Goffman 1974), inside the punctuation, like this (Melville 1851).
+“If the sentence ends with a quotation, close the quote, then place the citation between the quotation marks and the punctuation, like this”
+(Woolf 1931, 14).
+
+Do not insert spaces between a parenthetical citation and the punctuation that follows it.
+In the paragraph below, the parenthetical in-text citations are highlighted in yellow, and the signal phrases are in blue. Note that the
+second sentence is common knowledge, whereas the final sentence is clearly the opinion of the author.
+In a 2009 Journal of Restaurant Marketing article, restaurateur Shawna Jackson contends that a restaurant’s color scheme influences how hungry its
+patrons are. Consider popular fast-food restaurants, which often use red and yellow in their advertising and décor. According to a study by Roberta
+Chen and David Lopez (2016), restaurant customers feel energized in red and yellow environments, which encourages them to order more food. The
+same study indicates that patrons feel relaxed in blue and purple environments, which encourages them to “spend more time considering the menu
+options and eat at a slower pace” (29). Although blue décor can give your restaurant a more casual, laid-back feel (Chen and Lopez 2016), Jackson
+believes it encourages patrons to linger at their tables without ordering additional food or beverages. Accordingly, it is difficult to identify a popular
+chain restaurant that decorates with calmer hues.
+Using Signal Phrases Effectively
+Missing Info
+If any information is missing from a source (a journal with no volume number, for example), simply omit
+that information. For sources consulted in hardcopy, omit the URL and any additional verbiage that introduces it.
+Anything retrieved online, however, MUST have a link. The only exception is journals retrieved from a subscription
+database such as ProQuest.
+
+Multiple Authors, et al.
+Up to three authors:
+In the reference list, include all of them
+In the text, include all of them
+
+Four to ten authors:
+In the reference list, include all of them
+In the text, list only the first author, followed by et al. (“and others”)
+
+More than ten authors:
+In the reference list, include only the first seven, followed by et al.
+In the text, list only the first author, followed by et al.
+
+Multiple Works by the Same Author / Multiple Sources in One Citation
+Examples given are for books; follow the appropriate style for the source type you are citing.
+SourceGeneric ExampleActual Example
+Multiple Works by Same Author
+(same year, different sources)
+List sources in alphabetical order by title in the List of References (ignoring initial "a," "an," or "the") and append a lowercase letter to the year.
+Source 1
+R: Author Last Name, Author First Name. Year
+published + a. Title of Book 1 in Title Case and
+Italics. Place of Publication: Publisher.
+T: (Author Last Name year + a)
+R: Hawthorne, Pat. 2006a.The Cannibal’s Dilemma:
+An Unnatural History of Four Siblings. New York:
+Penguin.
+T: (Hawthorne 2006a)
+Source 2
+R: Author Last Name, Author First Name. Year
+published + b. Title of Book 2 in Title Case and
+Italics. Place of Publication: Publisher.
+T: (Author Last Name year + b)
+R: Hawthorne, Pat. 2006b. Having People for
+Dinner: A Guide for the Home Cook. New York:
+Penguin.
+T: (Hawthorne 2006b)
+CombinedT (both sources): (Author Last Name year + a, year + b)T (both sources): (Hawthorne 2006a, 2006b)
+Multiple Works by Same Author
+(different year, different sources)
+List sources in chronological order.
+Source 1
+R: Author Last Name, Author First Name. Year
+published. Title of Book 1 in Title Case and
+Italics. Place of Publication: Publisher.
+T: (Author Last Name year, page)
+R: Hawthorne, Pat. 2006. Having People for Dinner:
+A Guide for the Home Cook. New York: Penguin.
+T: (Hawthorne 2006, 99–100)
+Source 2
+R: Author Last Name, Author First Name. Year
+published. Title of Book 2 in Title Case and
+Italics. Place of Publication: Publisher.
+T: (Author Last Name year)
+R: Hawthorne, Pat. 2008. Regrets. New York:
+Penguin.
+T: (Hawthorne 2008)
+CombinedT (both sources): (Author Last Name year 1, year 2)T (both sources): (Hawthorne 2006, 2008)
+Multiple Sources in One Citation
+(different authors, different years)
+Place references in alphabetical order and separate them with a semicolon. Ensure all authors appear in the list of references.
+"Where two or more works by different authors with the same last name are listed in a reference list, the text citation must include an initial (or two
+initials or a given name if necessary)." CMOS 15.22
+Combined
+T: (Author 1 Last Name year; Author 2 Last
+Name year)
+T: (Fiddleywink and Snort 2005; Munglesnee,
+Grumpernickel, and Smith 1995; Otatop 2007).
+T: (Q. Fiddleywink 1975; Z. Fiddleywink 1982)
+
+No Date Given
+To cite an undated document, use n.d. (no date). Ensure a comma separates the author or organization name and
+the year in parenthetical citations. For example: (Househill, n.d.).
+Online Sources: Links
+When listing an online document (for example, a thesis, report, or journal article) in the references, if possible,
+provide a DOI. If the source does not have a DOI, link to the document itself (PDF, etc.) or to the landing page that
+directs the reader to the full text.
+Do not insert a hard or soft return within the URL string: doing so breaks the link.
+A DOI or URL does not belong in an in-text citation. Ever.
+
+Page Numbers and Other Locators
+In-text Citations
+Include page numbers in in-text citations when citing quoted material.
+Example: (Haynes 2009, 70)
+No page number is needed in an in-text citation when you are referring to the source as a whole. For example: “George W. Bush’s Decision
+Points recounts pivotal moments during his time in office.”
+If the source does not contain page numbers, often with electronic formats, include as much information as
+needed for the reader to locate the material. In citations especially of shorter electronic works presented as a
+single, searchable document, such locators may be unnecessary.
+Locator OptionsExample
+heading or section name (okay to abbreviate a long heading or section name)Methods section
+paragraph or section numberpara. 2
+sec. 24
+chap, heading, or section in combination with a paragraph numberchap. 3, para. 1
+descriptive phraseunder "The Battleground"
+location numbersloc. 444 of 3023, Kindle
+table, figure, or slide number
+table 1.4
+fig. 3
+slide 5
+video or podcast time stamp2:12
+appendix number or letterAppendix C
+See CMOS 15.8: Page numbers and other locators in author-date text citations.
+
+In the list of references/bibliography
+For portions of larger documents, such as journal articles and book chapters, include the page range.
+Example
+R: Cordesman, Anthony H., Adam Mausner, and David Kasten. 2009. Introduction. In Winning in Afghanistan:
+Creating Effective Afghan Security Forces, edited by John Smith, 1–12. Washington, DC: Center for Strategic
+and International Studies.
+Print vs. Online Sources
+When citing a source retrieved online, use the "online" format even when you or someone else printed out the
+material. For example, if you print out a thesis or your advisor provides you with a printed thesis, it is still
+categorized as an online document.
+Only cite as a print source when the material has been produced by a publisher in hard copy. For example, if you
+obtain a print journal or book from the library stacks, it is categorized as a printed source.
+
+Secondary / Indirect Sources
+An indirect source is a source that cites some other work that you discuss in your text.
+Whenever possible, consult primary sources and your sources’ sources yourself. Upon investigation of the primary
+source, you may find you disagree with the indirect source author’s analysis or methods.
+How to Incorporate Indirect Sources
+The following passage incorporates a properly credited indirect source. The indirect source information is highlighted in
+yellow; the primary source information is highlighted in blue.
+Walker (2008) describes Miguel Roig's 1999 experiment, which correlates inadequate paraphrasing in student writing with
+poor reading comprehension. Citing Roig’s data, Walker explains that "students do in fact possess skills necessary for
+paraphrasing but ... may be impeded from applying those skills when dealing with rigorous text" (387).
+Note: Include only the indirect source (the source you consulted) in your reference list.
+For more information
+See the TPO's "Citing Your Sources’ Sources" handout.
+Tables
+A citation is required if you did not wholly create the table—i.e., if you used someone else's data. A citation is not
+needed when all elements of the table are your own creation.
+See Table 1 for placement of the title and the in-text citation.
+Put a period and a space after the title.
+If you use the table exactly as it appears in the source, use
+“Source: ___.”
+If you alter the original table or if you use someone else's data to create the table, use “Adapted from ___.”
+
+Table 1. A Table with a Citation in APA, Chicago Author-Date, or INFORMS Style. Source: Author (2017).
+or
+Table 1. A Table with a Citation in APA, Chicago Author-Date, or INFORMS Style. Adapted from Author (2017).
+For more details, see the Thesis Template.
+Thesis Template
+
+Additional Resources
+Chicago Manual of Style Online
+The definitive guide for the Chicago styles

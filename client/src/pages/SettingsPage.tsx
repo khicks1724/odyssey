@@ -862,11 +862,11 @@ export default function SettingsPage() {
     }));
   };
 
-  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google_ai', 'google'];
+  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google'];
   const isGoogleIdentityLinked = (user?.identities ?? []).some((identity) => identity.provider === 'google');
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
+    <div className="app-page-width app-page-width--standard p-8 max-w-3xl mx-auto">
       <div className="mb-10">
         <p className="text-[11px] tracking-[0.25em] uppercase text-muted mb-2 font-mono">
           Settings

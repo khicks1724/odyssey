@@ -29,6 +29,8 @@ interface CoordinationTabProps {
   isOwner: boolean;
 }
 
+type WorkloadPerson = CoordinationSnapshot['workloadBalance']['people'][number];
+
 const GRAPH_TYPE_ORDER = ['person', 'task', 'deliverable', 'concept', 'document', 'repo', 'file'] as const;
 const GRAPH_TYPE_LABELS: Record<string, string> = {
   person: 'People',
@@ -64,6 +66,28 @@ const CONTRIBUTION_CHART = {
   innerRadius: 22,
 };
 const CONTRIBUTION_SLICE_COLORS = ['#6fb7ff', '#7ce3b2', '#f5c66a', '#f08ca0', '#b9a1ff', '#8bd0f6'];
+
+type VisibleGraphNode = CoordinationGraphNode & {
+  degree: number;
+  x: number;
+  y: number;
+  radius: number;
+  dimmed: boolean;
+  matched: boolean;
+  displayLabel: string;
+  showCard: boolean;
+  cardWidth: number;
+  cardHeight: number;
+};
+
+type KnowledgeGraphStyle = 'odyssey' | 'rowboat';
+
+type GraphClusterAnchor = {
+  nodeType: string;
+  x: number;
+  y: number;
+  radius: number;
+};
 
 function formatDateTime(value: string): string {
   if (!value) return 'Not generated yet';
@@ -388,7 +412,7 @@ function QueueCard({ queue }: { queue: PersonQueue | null }) {
   );
 }
 
-function ContributionCard({ profile }: { profile: ContributionProfile }) {
+function ContributionCard({ profile, workload }: { profile: ContributionProfile; workload?: WorkloadPerson | null }) {
   const [hoveredConceptIndex, setHoveredConceptIndex] = useState<number | null>(null);
   const totalConceptWeight = profile.topConcepts.reduce((sum, concept) => sum + concept.score, 0);
   const conceptSlices = profile.topConcepts.map((concept, index) => {
@@ -419,6 +443,8 @@ function ContributionCard({ profile }: { profile: ContributionProfile }) {
     };
   });
   const hoveredConcept = hoveredConceptIndex !== null ? conceptSlices[hoveredConceptIndex] ?? null : null;
+  const statusLabel = workload?.capacityStatus?.toUpperCase() ?? 'BALANCED';
+  const statusClasses = workloadClasses(workload?.capacityStatus ?? 'balanced');
 
   return (
     <div className="border border-border bg-surface2 p-4">
@@ -427,15 +453,17 @@ function ContributionCard({ profile }: { profile: ContributionProfile }) {
           <p className="text-sm font-semibold text-heading">{profile.displayName}</p>
           <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted">{profile.role}</p>
           <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted">
+            <p>Active: <span className="text-heading">{workload?.activeTasks ?? profile.activeTasks}</span></p>
+            <p>Blocked: <span className="text-heading">{workload?.blockedTasks ?? 0}</span></p>
+            <p>Overdue: <span className="text-heading">{workload?.overdueTasks ?? 0}</span></p>
+            <p>Recent hours: <span className="text-heading">{workload?.recentHours ?? profile.recentHours}</span></p>
             <p>Completed: <span className="text-heading">{profile.completedTasks}</span></p>
-            <p>Docs: <span className="text-heading">{profile.documentsContributed}</span></p>
-            <p>Comments: <span className="text-heading">{profile.commentsContributed}</span></p>
             <p>Collaborators: <span className="text-heading">{profile.collaborationCount}</span></p>
           </div>
         </div>
         <div className="ml-auto text-right text-xs text-muted">
-          <p><span className="text-heading">{profile.activeTasks}</span> active</p>
-          <p><span className="text-heading">{profile.recentHours}</span>h recent</p>
+          <p className={`text-xs uppercase tracking-[0.18em] ${statusClasses}`}>{statusLabel}</p>
+          <p className="mt-2">Load score: <span className="text-heading">{workload?.loadScore ?? 0}</span></p>
         </div>
       </div>
 
@@ -557,6 +585,173 @@ function trimRepoLabel(label: string, sharedPrefix: string): string {
   return trimmed || label;
 }
 
+function getGraphNodeCardWidth(label: string) {
+  return Math.min(190, Math.max(118, 84 + label.length * 3.1));
+}
+
+function hashGraphString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function buildRowboatLayout(
+  nodes: VisibleGraphNode[],
+  edges: CoordinationGraphEdge[],
+  focusNodeId: string | null,
+  selectedNodeId: string | null,
+): {
+  nodes: VisibleGraphNode[];
+  edges: CoordinationGraphEdge[];
+  anchors: GraphClusterAnchor[];
+} {
+  const centerX = GRAPH_VIEWBOX.width / 2 - 12;
+  const centerY = GRAPH_VIEWBOX.height / 2 + 6;
+  const anchorRadiusX = GRAPH_VIEWBOX.width * 0.4;
+  const anchorRadiusY = GRAPH_VIEWBOX.height * 0.3;
+  const anchors = GRAPH_TYPE_ORDER.map((nodeType, index) => {
+    const angle = ((Math.PI * 2) / GRAPH_TYPE_ORDER.length) * index - Math.PI / 2;
+    return {
+      nodeType,
+      x: centerX + Math.cos(angle) * anchorRadiusX,
+      y: centerY + Math.sin(angle) * anchorRadiusY,
+      radius: 40,
+    };
+  });
+  const anchorByType = new Map(anchors.map((anchor) => [anchor.nodeType, anchor]));
+  const positioned = new Map<string, { x: number; y: number }>();
+  const focusNeighborIds = new Set<string>();
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const topRankedNodes = [...nodes]
+    .sort((left, right) => {
+      const leftMatched = left.matched ? 1 : 0;
+      const rightMatched = right.matched ? 1 : 0;
+      if (rightMatched !== leftMatched) return rightMatched - leftMatched;
+      if (right.degree !== left.degree) return right.degree - left.degree;
+      return left.label.localeCompare(right.label);
+    });
+
+  const activeFocusId = focusNodeId && nodeMap.has(focusNodeId)
+    ? focusNodeId
+    : topRankedNodes[0]?.id ?? null;
+
+  if (activeFocusId && nodeMap.has(activeFocusId)) {
+    positioned.set(activeFocusId, { x: centerX, y: centerY });
+    const neighbors = edges
+      .filter((edge) => edge.fromNodeId === activeFocusId || edge.toNodeId === activeFocusId)
+      .map((edge) => (edge.fromNodeId === activeFocusId ? edge.toNodeId : edge.fromNodeId))
+      .filter((nodeId, index, values) => values.indexOf(nodeId) === index)
+      .map((nodeId) => nodeMap.get(nodeId))
+      .filter((node): node is VisibleGraphNode => Boolean(node))
+      .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label));
+
+    neighbors.forEach((node, index) => {
+      focusNeighborIds.add(node.id);
+      const typeIndex = Math.max(0, GRAPH_TYPE_ORDER.indexOf(node.nodeType as typeof GRAPH_TYPE_ORDER[number]));
+      const anchorAngle = ((Math.PI * 2) / GRAPH_TYPE_ORDER.length) * typeIndex - Math.PI / 2;
+      const localAngle = anchorAngle + (((index % 4) - 1.5) * 0.22);
+      const ring = Math.floor(index / 4);
+      positioned.set(node.id, {
+        x: clampGraphCoordinate(centerX + Math.cos(localAngle) * (150 + ring * 52), 78, GRAPH_VIEWBOX.width - 78),
+        y: clampGraphCoordinate(centerY + Math.sin(localAngle) * (118 + ring * 46), 78, GRAPH_VIEWBOX.height - 78),
+      });
+    });
+  }
+
+  const nodesByType = new Map<string, VisibleGraphNode[]>();
+  for (const nodeType of GRAPH_TYPE_ORDER) nodesByType.set(nodeType, []);
+  nodes.forEach((node) => {
+    if (!positioned.has(node.id)) {
+      const bucket = nodesByType.get(node.nodeType) ?? [];
+      bucket.push(node);
+      nodesByType.set(node.nodeType, bucket);
+    }
+  });
+
+  for (const nodeType of GRAPH_TYPE_ORDER) {
+    const anchor = anchorByType.get(nodeType);
+    if (!anchor) continue;
+
+    const bucket = [...(nodesByType.get(nodeType) ?? [])].sort((left, right) => {
+      const leftMatched = left.matched ? 1 : 0;
+      const rightMatched = right.matched ? 1 : 0;
+      if (rightMatched !== leftMatched) return rightMatched - leftMatched;
+      if (right.degree !== left.degree) return right.degree - left.degree;
+      return left.label.localeCompare(right.label);
+    });
+
+    bucket.forEach((node, index) => {
+      const ring = Math.floor(index / 7);
+      const slot = index % 7;
+      const angleSeed = hashGraphString(`${node.nodeType}:${node.id}`) % 360;
+      const angle = (Math.PI * 2 * slot) / 7 + (angleSeed * Math.PI) / 180 / 6 + ring * 0.18;
+      const spreadX = 56 + ring * 52;
+      const spreadY = 42 + ring * 40;
+      positioned.set(node.id, {
+        x: clampGraphCoordinate(anchor.x + Math.cos(angle) * spreadX, 64, GRAPH_VIEWBOX.width - 64),
+        y: clampGraphCoordinate(anchor.y + Math.sin(angle) * spreadY, 64, GRAPH_VIEWBOX.height - 64),
+      });
+    });
+  }
+
+  const laidOutNodes = nodes.map((node) => {
+    const position = positioned.get(node.id) ?? { x: node.x, y: node.y };
+    const emphasized = node.id === selectedNodeId || node.id === activeFocusId || focusNeighborIds.has(node.id) || node.matched;
+    const shouldShowCard = node.id === activeFocusId
+      || node.id === selectedNodeId
+      || node.matched
+      || focusNeighborIds.has(node.id)
+      || (node.degree >= 11 && (node.nodeType === 'person' || node.nodeType === 'repo' || node.nodeType === 'document'));
+
+    return {
+      ...node,
+      x: position.x,
+      y: position.y,
+      radius: emphasized ? Math.min(node.radius + 1.5, 20) : node.radius,
+      showCard: shouldShowCard,
+      cardWidth: shouldShowCard ? Math.min((emphasized ? node.cardWidth + 10 : node.cardWidth), 208) : node.cardWidth,
+      cardHeight: emphasized ? node.cardHeight + 2 : node.cardHeight,
+    };
+  });
+
+  const renderedEdgeIds = new Set<string>();
+  const filteredEdges = edges.filter((edge) => {
+    const from = nodeMap.get(edge.fromNodeId);
+    const to = nodeMap.get(edge.toNodeId);
+    if (!from || !to) return false;
+
+    const touchesFocus = edge.fromNodeId === activeFocusId || edge.toNodeId === activeFocusId;
+    const touchesFocusNeighbor = focusNeighborIds.has(edge.fromNodeId) || focusNeighborIds.has(edge.toNodeId);
+    const touchesMatched = from.matched || to.matched;
+    const strongBridge = (from.degree >= 10 && to.degree >= 8) || (to.degree >= 10 && from.degree >= 8);
+    const sameTypeLocal = from.nodeType === to.nodeType && (from.degree >= 8 || to.degree >= 8);
+    const keep = touchesFocus || touchesFocusNeighbor || touchesMatched || strongBridge || sameTypeLocal;
+    if (!keep || renderedEdgeIds.has(edge.id)) return false;
+    renderedEdgeIds.add(edge.id);
+    return true;
+  });
+
+  return { nodes: laidOutNodes, edges: filteredEdges, anchors };
+}
+
+function buildCurvedGraphEdgePath(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  highlighted: boolean,
+) {
+  const midpointX = (from.x + to.x) / 2;
+  const midpointY = (from.y + to.y) / 2;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const bend = Math.min(180, length) * (highlighted ? 0.18 : 0.1);
+  const controlX = midpointX + (GRAPH_VIEWBOX.width / 2 - midpointX) * 0.16 - (dy / length) * bend;
+  const controlY = midpointY + (GRAPH_VIEWBOX.height / 2 - midpointY) * 0.14 + (dx / length) * bend;
+  return `M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`;
+}
+
 function buildVisibleGraph(
   graph: CoordinationGraph | null,
   activeType: string,
@@ -566,7 +761,7 @@ function buildVisibleGraph(
   selectedNodeId: string | null,
   showInferred: boolean,
 ): {
-  nodes: Array<CoordinationGraphNode & { degree: number; x: number; y: number; radius: number; dimmed: boolean; matched: boolean; displayLabel: string }>;
+  nodes: VisibleGraphNode[];
   edges: CoordinationGraphEdge[];
 } {
   if (!graph) return { nodes: [], edges: [] };
@@ -704,6 +899,15 @@ function buildVisibleGraph(
       dimmed: activeType !== 'all' && node.nodeType !== activeType,
       matched: matchedNodeIds.has(node.id),
       displayLabel: node.nodeType === 'repo' ? trimRepoLabel(node.label, repoPrefix) : node.label,
+      showCard: matchedNodeIds.has(node.id)
+        || node.id === selectedNodeId
+        || degree >= 6
+        || node.nodeType === 'person'
+        || node.nodeType === 'repo'
+        || node.nodeType === 'document'
+        || node.nodeType === 'deliverable',
+      cardWidth: getGraphNodeCardWidth(node.nodeType === 'repo' ? trimRepoLabel(node.label, repoPrefix) : node.label),
+      cardHeight: 34,
     };
   });
 
@@ -716,6 +920,7 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [graphMode, setGraphMode] = useState<'overview' | 'ownership' | 'expertise' | 'deliverables'>('overview');
+  const [graphStyle, setGraphStyle] = useState<KnowledgeGraphStyle>('odyssey');
   const [density, setDensity] = useState<'focused' | 'balanced' | 'expanded'>('balanced');
   const [showInferred, setShowInferred] = useState(true);
   const [zoom, setZoom] = useState(1);
@@ -729,7 +934,19 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
 
   const degreeMap = buildDegreeMap(graph, showInferred);
   const { nodes, edges } = buildVisibleGraph(graph, activeType, searchTerm, graphMode, density, selectedNodeId, showInferred);
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const baseNodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const rowboatFocusNodeId = hoveredNodeId && baseNodeMap.has(hoveredNodeId)
+    ? hoveredNodeId
+    : selectedNodeId && baseNodeMap.has(selectedNodeId)
+      ? selectedNodeId
+      : nodes.find((node) => node.matched)?.id
+        ?? [...nodes]
+          .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))[0]?.id
+        ?? null;
+  const rowboatLayout = buildRowboatLayout(nodes, edges, rowboatFocusNodeId, selectedNodeId);
+  const renderedNodes = graphStyle === 'rowboat' ? rowboatLayout.nodes : nodes;
+  const renderedEdges = graphStyle === 'rowboat' ? rowboatLayout.edges : edges;
+  const nodeMap = new Map(renderedNodes.map((node) => [node.id, node]));
 
   useEffect(() => {
     if (!selectedNodeId || nodeMap.has(selectedNodeId)) return;
@@ -742,19 +959,12 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
   const infoBox = infoNode ? getGraphInfoBoxSize(infoNode.label) : null;
   const infoBoxPosition = infoNode && infoBox ? getGraphInfoBoxPosition(infoNode, infoBox) : null;
   const selectedNeighbors = selectedNode
-    ? edges
+    ? renderedEdges
       .filter((edge) => edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id)
       .reduce<Array<{
         edgeType: string;
         weight: number;
-        node: CoordinationGraphNode & {
-          degree: number;
-          x: number;
-          y: number;
-          radius: number;
-          dimmed: boolean;
-          matched: boolean;
-        };
+        node: VisibleGraphNode;
       }>>((neighbors, edge) => {
         const relatedNodeId = edge.fromNodeId === selectedNode.id ? edge.toNodeId : edge.fromNodeId;
         const relatedNode = nodeMap.get(relatedNodeId);
@@ -899,6 +1109,25 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
           </div>
 
           <div>
+            <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">Graph Style</p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                ['odyssey', 'Odyssey'],
+                ['rowboat', 'Rowboat'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setGraphStyle(value as KnowledgeGraphStyle)}
+                  className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${graphStyle === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
             <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">Node Type</p>
             <div className="flex flex-wrap gap-2">
               <button
@@ -963,7 +1192,7 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
               Reset View
             </button>
             <span className="rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted">
-              Labels: People + Repos
+              {graphStyle === 'rowboat' ? 'Labels: key entities + matches' : 'Labels: People + Repos'}
             </span>
           </div>
         </div>
@@ -990,89 +1219,233 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
           onPointerEnter={() => setHovering(true)}
         >
           <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-[0.22em] text-muted">
-            <span>{hovering ? 'Scroll to zoom, drag to pan' : 'Interactive graph'}</span>
+            <span>{hovering ? 'Scroll to zoom, drag to pan' : graphStyle === 'rowboat' ? 'Focus-driven memory map' : 'Interactive graph'}</span>
             <span>{Math.round(zoom * 100)}%</span>
           </div>
           <svg viewBox={`0 0 ${GRAPH_VIEWBOX.width} ${GRAPH_VIEWBOX.height}`} className={`${fullscreen ? 'h-[calc(100vh-22rem)] min-h-[620px]' : 'h-[560px]'} w-full select-none`}>
             <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-              {GRAPH_TYPE_ORDER.map((nodeType, index) => {
-                const x = (GRAPH_VIEWBOX.width / (GRAPH_TYPE_ORDER.length + 1)) * (index + 1);
-                return (
-                  <g key={nodeType}>
-                    <text x={x} y={26} textAnchor="middle" fill="#8b95a7" fontSize="12" letterSpacing="2.4">
-                      {GRAPH_TYPE_LABELS[nodeType].toUpperCase()}
-                    </text>
-                    <line x1={x} y1={40} x2={x} y2={540} stroke="rgba(139,149,167,0.14)" strokeWidth="1" />
-                  </g>
-                );
-              })}
+              {graphStyle === 'rowboat' ? (
+                <>
+                  <circle cx={GRAPH_VIEWBOX.width / 2} cy={GRAPH_VIEWBOX.height / 2 + 6} r={82} fill="rgba(111,183,255,0.06)" stroke="rgba(111,183,255,0.16)" strokeWidth="1.2" />
+                  <text x={GRAPH_VIEWBOX.width / 2} y={GRAPH_VIEWBOX.height / 2 + 10} textAnchor="middle" fill="#7a8ba8" fontSize="11" letterSpacing="2.2">
+                    PROJECT MEMORY
+                  </text>
 
-              {edges.map((edge) => {
-                const from = nodeMap.get(edge.fromNodeId);
-                const to = nodeMap.get(edge.toNodeId);
-                if (!from || !to) return null;
-                const highlighted = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
-                const edgeDimmed = selectedNode
-                  ? !highlighted
-                  : !highlighted && activeType !== 'all' && from.nodeType !== activeType && to.nodeType !== activeType;
-                return (
-                  <line
-                    key={edge.id}
-                    x1={from.x}
-                    y1={from.y}
-                    x2={to.x}
-                    y2={to.y}
-                    stroke={highlighted ? 'rgba(245,198,106,0.96)' : edgeDimmed ? 'rgba(139,149,167,0.06)' : 'rgba(111,183,255,0.22)'}
-                    strokeWidth={highlighted ? Math.max(3.2, edge.weight * 2.1) : Math.max(0.8, Math.min(2.4, edge.weight))}
-                  />
-                );
-              })}
-
-              {nodes.map((node) => {
-                const showLabel = node.nodeType === 'person' || node.nodeType === 'repo';
-                const emphasized = connectedNodeIds.has(node.id) || node.matched;
-                const fadedBySelection = selectedNode ? !connectedNodeIds.has(node.id) : false;
-                return (
-                  <g
-                    key={node.id}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setSelectedNodeId(node.id);
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onPointerEnter={(event) => {
-                      event.stopPropagation();
-                      setHoveredNodeId(node.id);
-                    }}
-                    onPointerLeave={(event) => {
-                      event.stopPropagation();
-                      setHoveredNodeId((current) => (current === node.id ? null : current));
-                    }}
-                    className="cursor-pointer"
-                  >
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={node.radius}
-                      fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
-                      fillOpacity={selectedNode?.id === node.id ? 1 : fadedBySelection ? 0.14 : emphasized ? 0.9 : node.dimmed ? 0.22 : 0.72}
-                      stroke={selectedNode?.id === node.id ? '#ffffff' : emphasized ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.14)'}
-                      strokeWidth={selectedNode?.id === node.id ? 3 : emphasized ? 1.5 : 1}
-                    />
-                    {showLabel && (
-                      <text
-                        x={node.x}
-                        y={node.y + node.radius + 14}
-                        textAnchor="middle"
-                        fill={selectedNode?.id === node.id ? '#f8fafc' : node.dimmed ? '#667085' : '#cbd5e1'}
-                        fontSize="10"
-                      >
-                        {node.displayLabel.length > 28 ? `${node.displayLabel.slice(0, 26)}...` : node.displayLabel}
+                  {rowboatLayout.anchors.map((anchor) => (
+                    <g key={anchor.nodeType}>
+                      <circle
+                        cx={anchor.x}
+                        cy={anchor.y}
+                        r={anchor.radius}
+                        fill={GRAPH_TYPE_COLORS[anchor.nodeType] ?? '#8b95a7'}
+                        fillOpacity={0.08}
+                        stroke={GRAPH_TYPE_COLORS[anchor.nodeType] ?? '#8b95a7'}
+                        strokeOpacity={0.18}
+                        strokeWidth="1.2"
+                      />
+                      <text x={anchor.x} y={anchor.y - anchor.radius - 10} textAnchor="middle" fill="#7a8ba8" fontSize="12" letterSpacing="2.4">
+                        {GRAPH_TYPE_LABELS[anchor.nodeType].toUpperCase()}
                       </text>
-                    )}
-                  </g>
-                );
-              })}
+                    </g>
+                  ))}
+
+                  {renderedEdges.map((edge) => {
+                    const from = nodeMap.get(edge.fromNodeId);
+                    const to = nodeMap.get(edge.toNodeId);
+                    if (!from || !to) return null;
+                    const highlighted = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
+                    const edgeDimmed = selectedNode
+                      ? !highlighted
+                      : !highlighted && activeType !== 'all' && from.nodeType !== activeType && to.nodeType !== activeType;
+                    return (
+                      <path
+                        key={edge.id}
+                        d={buildCurvedGraphEdgePath(from, to, Boolean(highlighted))}
+                        fill="none"
+                        stroke={highlighted ? 'rgba(245,198,106,0.94)' : edgeDimmed ? 'rgba(139,149,167,0.07)' : 'rgba(111,183,255,0.18)'}
+                        strokeWidth={highlighted ? Math.max(3.1, edge.weight * 2) : Math.max(0.9, Math.min(2.1, edge.weight))}
+                        strokeLinecap="round"
+                        style={{ transition: 'd 180ms ease, stroke 180ms ease, stroke-width 180ms ease, opacity 180ms ease' }}
+                      />
+                    );
+                  })}
+
+                  {renderedNodes.map((node) => {
+                    const emphasized = connectedNodeIds.has(node.id) || node.matched;
+                    const fadedBySelection = selectedNode ? !connectedNodeIds.has(node.id) : false;
+                    const isSelected = selectedNode?.id === node.id;
+                    return (
+                      <g
+                        key={node.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedNodeId(node.id);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onPointerEnter={(event) => {
+                          event.stopPropagation();
+                          setHoveredNodeId(node.id);
+                        }}
+                        onPointerLeave={(event) => {
+                          event.stopPropagation();
+                          setHoveredNodeId((current) => (current === node.id ? null : current));
+                        }}
+                        className="cursor-pointer"
+                      >
+                        {node.showCard ? (
+                          <>
+                            <rect
+                              x={node.x - node.cardWidth / 2}
+                              y={node.y - node.cardHeight / 2}
+                              width={node.cardWidth}
+                              height={node.cardHeight}
+                              rx={15}
+                              fill={fadedBySelection ? 'rgba(255,255,255,0.52)' : 'rgba(248,250,252,0.92)'}
+                              stroke={isSelected ? 'rgba(245,198,106,0.92)' : emphasized ? 'rgba(111,183,255,0.35)' : 'rgba(148,163,184,0.22)'}
+                              strokeWidth={isSelected ? 2.6 : 1.2}
+                              style={{ transition: 'x 180ms ease, y 180ms ease, width 180ms ease, stroke 180ms ease, fill 180ms ease' }}
+                            />
+                            <circle
+                              cx={node.x - node.cardWidth / 2 + 15}
+                              cy={node.y}
+                              r={6.5}
+                              fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
+                              fillOpacity={fadedBySelection ? 0.3 : 0.88}
+                              style={{ transition: 'cx 180ms ease, cy 180ms ease, fill-opacity 180ms ease' }}
+                            />
+                            <text
+                              x={node.x - node.cardWidth / 2 + 28}
+                              y={node.y + 4}
+                              textAnchor="start"
+                              fill={fadedBySelection ? '#9aa4b5' : '#23324b'}
+                              fontSize="11"
+                              fontWeight="600"
+                              style={{ transition: 'x 180ms ease, y 180ms ease, fill 180ms ease' }}
+                            >
+                              {node.displayLabel.length > 26 ? `${node.displayLabel.slice(0, 24)}...` : node.displayLabel}
+                            </text>
+                            <text
+                              x={node.x + node.cardWidth / 2 - 12}
+                              y={node.y + 4}
+                              textAnchor="end"
+                              fill={fadedBySelection ? '#9aa4b5' : '#5f708d'}
+                              fontSize="10"
+                              style={{ transition: 'x 180ms ease, y 180ms ease, fill 180ms ease' }}
+                            >
+                              {node.degree}
+                            </text>
+                          </>
+                        ) : (
+                          <>
+                            <circle
+                              cx={node.x}
+                              cy={node.y}
+                              r={node.radius}
+                              fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
+                              fillOpacity={isSelected ? 1 : fadedBySelection ? 0.12 : emphasized ? 0.88 : node.dimmed ? 0.22 : 0.66}
+                              stroke={isSelected ? '#ffffff' : emphasized ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.14)'}
+                              strokeWidth={isSelected ? 3 : emphasized ? 1.5 : 1}
+                              style={{ transition: 'cx 180ms ease, cy 180ms ease, r 180ms ease, fill-opacity 180ms ease, stroke 180ms ease' }}
+                            />
+                            {(node.matched || isSelected) && (
+                              <text
+                                x={node.x}
+                                y={node.y + node.radius + 14}
+                                textAnchor="middle"
+                                fill="#64748b"
+                                fontSize="10"
+                              >
+                                {node.displayLabel.length > 20 ? `${node.displayLabel.slice(0, 18)}...` : node.displayLabel}
+                              </text>
+                            )}
+                          </>
+                        )}
+                      </g>
+                    );
+                  })}
+                </>
+              ) : (
+                <>
+                  {GRAPH_TYPE_ORDER.map((nodeType, index) => {
+                    const x = (GRAPH_VIEWBOX.width / (GRAPH_TYPE_ORDER.length + 1)) * (index + 1);
+                    return (
+                      <g key={nodeType}>
+                        <text x={x} y={26} textAnchor="middle" fill="#8b95a7" fontSize="12" letterSpacing="2.4">
+                          {GRAPH_TYPE_LABELS[nodeType].toUpperCase()}
+                        </text>
+                        <line x1={x} y1={40} x2={x} y2={540} stroke="rgba(139,149,167,0.14)" strokeWidth="1" />
+                      </g>
+                    );
+                  })}
+
+                  {renderedEdges.map((edge) => {
+                    const from = nodeMap.get(edge.fromNodeId);
+                    const to = nodeMap.get(edge.toNodeId);
+                    if (!from || !to) return null;
+                    const highlighted = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
+                    const edgeDimmed = selectedNode
+                      ? !highlighted
+                      : !highlighted && activeType !== 'all' && from.nodeType !== activeType && to.nodeType !== activeType;
+                    return (
+                      <line
+                        key={edge.id}
+                        x1={from.x}
+                        y1={from.y}
+                        x2={to.x}
+                        y2={to.y}
+                        stroke={highlighted ? 'rgba(245,198,106,0.96)' : edgeDimmed ? 'rgba(139,149,167,0.06)' : 'rgba(111,183,255,0.22)'}
+                        strokeWidth={highlighted ? Math.max(3.2, edge.weight * 2.1) : Math.max(0.8, Math.min(2.4, edge.weight))}
+                      />
+                    );
+                  })}
+
+                  {renderedNodes.map((node) => {
+                    const showLabel = node.nodeType === 'person' || node.nodeType === 'repo';
+                    const emphasized = connectedNodeIds.has(node.id) || node.matched;
+                    const fadedBySelection = selectedNode ? !connectedNodeIds.has(node.id) : false;
+                    return (
+                      <g
+                        key={node.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedNodeId(node.id);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onPointerEnter={(event) => {
+                          event.stopPropagation();
+                          setHoveredNodeId(node.id);
+                        }}
+                        onPointerLeave={(event) => {
+                          event.stopPropagation();
+                          setHoveredNodeId((current) => (current === node.id ? null : current));
+                        }}
+                        className="cursor-pointer"
+                      >
+                        <circle
+                          cx={node.x}
+                          cy={node.y}
+                          r={node.radius}
+                          fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
+                          fillOpacity={selectedNode?.id === node.id ? 1 : fadedBySelection ? 0.14 : emphasized ? 0.9 : node.dimmed ? 0.22 : 0.72}
+                          stroke={selectedNode?.id === node.id ? '#ffffff' : emphasized ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.14)'}
+                          strokeWidth={selectedNode?.id === node.id ? 3 : emphasized ? 1.5 : 1}
+                        />
+                        {showLabel && (
+                          <text
+                            x={node.x}
+                            y={node.y + node.radius + 14}
+                            textAnchor="middle"
+                            fill={selectedNode?.id === node.id ? '#f8fafc' : node.dimmed ? '#667085' : '#cbd5e1'}
+                            fontSize="10"
+                          >
+                            {node.displayLabel.length > 28 ? `${node.displayLabel.slice(0, 26)}...` : node.displayLabel}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  })}
+                </>
+              )}
 
               {infoNode && infoBox && infoBoxPosition && (
                 <foreignObject
@@ -1362,8 +1735,8 @@ export default function CoordinationTab({ projectId, isOwner }: CoordinationTabP
             <QueueCard queue={snapshot?.myNextActions ?? null} />
           </Section>
 
-          <Section title="Workload Balance" icon={Scale}>
-            {snapshot?.workloadBalance.people.length ? (
+          <Section title="Contribution Profiles" icon={Users}>
+            {snapshot?.contributionProfiles.length ? (
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-2 text-xs text-muted">
                   <span className="rounded-full border border-border bg-surface2 px-3 py-1">
@@ -1372,41 +1745,16 @@ export default function CoordinationTab({ projectId, isOwner }: CoordinationTabP
                   <span className="rounded-full border border-border bg-surface2 px-3 py-1">
                     Avg recent hours: {snapshot.workloadBalance.averageRecentHours}
                   </span>
+                  <span className="rounded-full border border-border bg-surface2 px-3 py-1">
+                    Heavy load: {snapshot.workloadBalance.people.filter((person) => person.capacityStatus === 'heavy').length}
+                  </span>
                 </div>
                 <div className="grid gap-4 xl:grid-cols-2">
-                  {snapshot.workloadBalance.people.map((person) => (
-                    <div key={person.userId} className="border border-border bg-surface2 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-heading">{person.displayName}</p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted">{person.role}</p>
-                        </div>
-                        <span className={`text-xs uppercase tracking-[0.18em] ${workloadClasses(person.capacityStatus)}`}>
-                          {person.capacityStatus}
-                        </span>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted">
-                        <p>Active: <span className="text-heading">{person.activeTasks}</span></p>
-                        <p>Blocked: <span className="text-heading">{person.blockedTasks}</span></p>
-                        <p>Overdue: <span className="text-heading">{person.overdueTasks}</span></p>
-                        <p>Recent hours: <span className="text-heading">{person.recentHours}</span></p>
-                        <p className="col-span-2">Load score: <span className="text-heading">{person.loadScore}</span></p>
-                      </div>
-                    </div>
-                  ))}
+                  {snapshot.contributionProfiles.map((profile) => {
+                    const workload = snapshot.workloadBalance.people.find((person) => person.userId === profile.userId) ?? null;
+                    return <ContributionCard key={profile.userId} profile={profile} workload={workload} />;
+                  })}
                 </div>
-              </div>
-            ) : (
-              <EmptyState text="Workload data will appear after the first coordination snapshot is generated." />
-            )}
-          </Section>
-
-          <Section title="Contribution Profiles" icon={Users}>
-            {snapshot?.contributionProfiles.length ? (
-              <div className="grid gap-4 xl:grid-cols-2">
-                {snapshot.contributionProfiles.map((profile) => (
-                  <ContributionCard key={profile.userId} profile={profile} />
-                ))}
               </div>
             ) : (
               <EmptyState text="Contribution profiles will populate once coordination data is generated." />

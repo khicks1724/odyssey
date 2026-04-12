@@ -53,17 +53,10 @@ const TEST_OUTPUT_TOKENS = 16;
 
 function getEncryptionKey(): Buffer {
   const secret = process.env.AI_KEY_SECRET;
-  if (secret) {
-    // Derive a 32-byte key from the secret
-    return createHash('sha256').update(secret).digest();
+  if (!secret) {
+    throw new Error('AI_KEY_SECRET must be set to encrypt provider credentials');
   }
-  // Legacy compatibility fallback for existing deployments without AI_KEY_SECRET.
-  // We intentionally do not fall back to a static literal.
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-  if (!serviceKey) {
-    throw new Error('AI_KEY_SECRET or SUPABASE_SERVICE_KEY must be set');
-  }
-  return createHash('sha256').update(serviceKey).digest();
+  return createHash('sha256').update(secret).digest();
 }
 
 function encryptKey(plaintext: string): { encryptedKey: string; iv: string; authTag: string } {

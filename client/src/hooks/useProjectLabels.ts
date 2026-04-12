@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { pushUndoAction } from '../lib/undo-manager';
 
 export interface ProjectLabel {
   id: string;
@@ -71,6 +72,8 @@ export function useProjectLabels(projectId: string | undefined) {
   };
 
   const deleteLabel = async (id: string) => {
+    const labelIndex = labels.findIndex((label) => label.id === id);
+    const deletedLabel = labelIndex >= 0 ? labels[labelIndex] ?? null : null;
     setError(null);
     const { data, error } = await supabase
       .from('project_labels')
@@ -87,6 +90,26 @@ export function useProjectLabels(projectId: string | undefined) {
       throw new Error(message);
     }
     setLabels((prev) => prev.filter((l) => l.id !== id));
+    if (deletedLabel) {
+      pushUndoAction({
+        label: `Deleted ${deletedLabel.type === 'category' ? 'category' : 'LOE'} label ${deletedLabel.name}`,
+        undo: async () => {
+          const { data: restored, error: restoreError } = await supabase
+            .from('project_labels')
+            .insert(deletedLabel)
+            .select()
+            .single();
+          if (restoreError) throw new Error(restoreError.message);
+          setLabels((prev) => {
+            if (prev.some((label) => label.id === deletedLabel.id)) return prev;
+            const next = [...prev];
+            next.splice(Math.min(labelIndex, next.length), 0, restored as ProjectLabel);
+            return next;
+          });
+          await fetch();
+        },
+      });
+    }
     await fetch();
   };
 

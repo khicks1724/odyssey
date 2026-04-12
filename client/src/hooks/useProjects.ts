@@ -196,7 +196,12 @@ export function useProjects() {
   const [loading, setLoading] = useState(true);
 
   const fetchProjects = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setProjects([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     const { data, error } = await supabase
       .from('projects')

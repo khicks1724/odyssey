@@ -2,6 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { isRateLimited, resetInSeconds } from '../lib/rate-limit.js';
 import { supabase } from '../lib/supabase.js';
 import {
+  createDefaultThesisDocumentSeed,
+  isKyleHicksDisplayName,
+} from '../lib/thesis-default.js';
+import {
   normalizeUsername,
   usernameToInternalEmail,
   validatePassword,
@@ -142,6 +146,29 @@ export async function authRoutes(server: FastifyInstance) {
       request.log.error(profileError);
       await supabase.auth.admin.deleteUser(userId).catch(() => undefined);
       return reply.status(500).send({ error: 'Unable to finish account setup right now' });
+    }
+
+    if (!isKyleHicksDisplayName(safeDisplayName)) {
+      const seed = createDefaultThesisDocumentSeed();
+      const { error: thesisDocumentError } = await supabase
+        .from('thesis_documents')
+        .upsert({
+          user_id: userId,
+          draft: seed.draft,
+          editor_theme: null,
+          snapshot: seed.snapshot,
+          repo_sync_status: 'idle',
+          repo_sync_error: null,
+          repo_synced_at: null,
+        });
+
+      if (thesisDocumentError) {
+        request.log.error({
+          error: thesisDocumentError,
+          userId,
+          username: normalizedUsername,
+        }, 'failed to seed default thesis document during registration');
+      }
     }
 
     return reply.status(201).send({

@@ -19,7 +19,7 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
 
-          if (id.includes('jspdf') || id.includes('pptxgenjs') || id.includes('html2canvas') || id.includes('xlsx') || id.includes('docx')) {
+          if (id.includes('jspdf') || id.includes('pptxgenjs') || id.includes('html2canvas') || id.includes('docx')) {
             return 'reporting';
           }
           if (id.includes('world-atlas') || id.includes('topojson-client')) return 'globe';

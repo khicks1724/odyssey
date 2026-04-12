@@ -108,7 +108,7 @@ export default function LogTimeModal({ goalId, projectId, goalTitle, onClose, on
           <button
             onClick={handleSubmit}
             disabled={!valid || submitting}
-            className="flex items-center gap-1.5 px-4 py-1.5 bg-[var(--color-accent)] text-white text-xs font-medium rounded hover:opacity-90 transition-opacity disabled:opacity-40 font-sans"
+            className="odyssey-fill-accent flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium rounded transition-opacity hover:opacity-90 disabled:opacity-40 font-sans"
           >
             {submitting ? <Loader2 size={11} className="animate-spin" /> : <Clock size={11} />}
             {submitting ? 'Saving…' : `Log ${valid ? parsedHours + 'h' : ''}`}

@@ -4,19 +4,25 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "generate-templates": "node ../scripts/generate-explorer-templates.mjs",
+    "dev": "npm run generate-templates && vite",
+    "build": "npm run generate-templates && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@supabase/supabase-js": "^2.99.2",
     "@tailwindcss/vite": "^4.2.1",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/topojson-client": "^3.1.5",
     "docx": "^9.6.1",
     "jspdf": "^4.2.1",
+    "jszip": "^3.10.1",
+    "latex.js": "^0.12.6",
     "lucide-react": "^0.577.0",
+    "monaco-editor": "^0.55.1",
+    "pdfjs-dist": "^5.6.205",
     "pptxgenjs": "^4.0.1",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.4",
@@ -27,8 +33,7 @@
     "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.2.1",
     "topojson-client": "^3.1.0",
-    "world-atlas": "^2.0.2",
-    "xlsx": "^0.18.5"
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -37,11 +42,15 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.0",
     "eslint": "^9.39.4",
+    "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.0.0"
+  },
+  "overrides": {
+    "brace-expansion": "1.1.13"
   }
 }

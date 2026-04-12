@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import { chat, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProviderSelection, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { decryptUserKey } from '../routes/user-ai-keys.js';
+import { logAiTokenUsage } from '../routes/token-usage.js';
 import { supabase } from './supabase.js';
 
 const NODE_TYPES = ['person', 'task', 'document', 'repo', 'file', 'concept', 'deliverable'] as const;
@@ -1811,6 +1812,18 @@ async function inferGraphEnhancements(input: {
       },
       providerSelection.credential,
     );
+    try {
+      await logAiTokenUsage({
+        authHeader: undefined,
+        result,
+        feature: 'coordination_graph_enrichment',
+        routePath: '/api/projects/:projectId/coordination/recompute',
+        projectId: input.project.id,
+        knownUserId: input.generatedBy,
+      });
+    } catch {
+      // Coordination generation should not fail if usage auditing fails.
+    }
 
     const parsed = JSON.parse(extractJsonPayload(result.text)) as GraphInferenceDraft;
     const nodes = [...input.nodes];

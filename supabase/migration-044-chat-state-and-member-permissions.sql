@@ -293,6 +293,8 @@ grant execute on function public.create_direct_chat_thread(uuid, uuid) to authen
 
 drop policy if exists "Project owners can update" on public.projects;
 drop policy if exists "Project owners can delete" on public.projects;
+drop policy if exists "Project members can update projects" on public.projects;
+drop policy if exists "Project members can delete projects" on public.projects;
 
 create policy "Project members can update projects"
   on public.projects for update
@@ -324,6 +326,9 @@ create policy "Project members can delete projects"
 drop policy if exists "Project owners can manage members" on public.project_members;
 drop policy if exists "Project owners can remove members" on public.project_members;
 drop policy if exists "Project owners can update members" on public.project_members;
+drop policy if exists "Project members can insert members" on public.project_members;
+drop policy if exists "Project members can update members" on public.project_members;
+drop policy if exists "Project members can delete members" on public.project_members;
 
 create policy "Project members can insert members"
   on public.project_members for insert
@@ -482,6 +487,7 @@ end;
 $$;
 
 drop policy if exists "Project owners can insert events" on public.events;
+drop policy if exists "Project members can insert events" on public.events;
 create policy "Project members can insert events"
   on public.events for insert
   with check (
@@ -493,6 +499,7 @@ create policy "Project members can insert events"
   );
 
 drop policy if exists "Project owners can manage integrations" on public.integrations;
+drop policy if exists "Project members can manage integrations" on public.integrations;
 create policy "Project members can manage integrations"
   on public.integrations for all
   using (
@@ -513,6 +520,9 @@ create policy "Project members can manage integrations"
 drop policy if exists "project_labels_insert_owner" on public.project_labels;
 drop policy if exists "project_labels_update_owner" on public.project_labels;
 drop policy if exists "project_labels_delete_owner" on public.project_labels;
+drop policy if exists "project_labels_insert_member" on public.project_labels;
+drop policy if exists "project_labels_update_member" on public.project_labels;
+drop policy if exists "project_labels_delete_member" on public.project_labels;
 
 create policy "project_labels_insert_member"
   on public.project_labels for insert
@@ -554,6 +564,9 @@ create policy "project_labels_delete_member"
 drop policy if exists "project_prompts_insert_owner" on public.project_prompts;
 drop policy if exists "project_prompts_update_owner" on public.project_prompts;
 drop policy if exists "project_prompts_delete_owner" on public.project_prompts;
+drop policy if exists "project_prompts_insert_member" on public.project_prompts;
+drop policy if exists "project_prompts_update_member" on public.project_prompts;
+drop policy if exists "project_prompts_delete_member" on public.project_prompts;
 
 create policy "project_prompts_insert_member"
   on public.project_prompts for insert

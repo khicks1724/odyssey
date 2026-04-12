@@ -18,3 +18,55 @@
 .app-header-fixed {
   zoom: calc(1 / var(--app-zoom, 1));
 }
+
+html[data-view-mode="extended"] .app-page-width {
+  width: min(100%, calc(100vw - 2.5rem));
+}
+
+html[data-view-mode="extended"] .app-page-width--compact {
+  max-width: 78rem !important;
+}
+
+html[data-view-mode="extended"] .app-page-width--standard {
+  max-width: 90rem !important;
+}
+
+html[data-view-mode="extended"] .app-page-width--roomy {
+  max-width: 98rem !important;
+}
+
+html[data-view-mode="extended"] .app-page-width--wide {
+  max-width: 116rem !important;
+}
+
+html[data-view-mode="extended"] .app-page-width--ultra {
+  max-width: 122rem !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][class~="max-w-2xl"] {
+  max-width: min(100%, 78rem) !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][class~="max-w-3xl"] {
+  max-width: min(100%, 90rem) !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][class~="max-w-4xl"] {
+  max-width: min(100%, 98rem) !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][class~="max-w-5xl"] {
+  max-width: min(100%, 106rem) !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][class~="max-w-6xl"] {
+  max-width: min(100%, 116rem) !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][class~="max-w-7xl"] {
+  max-width: min(100%, 122rem) !important;
+}
+
+html[data-view-mode="extended"] .app-route-shell--chat .app-chat-thread-width {
+  max-width: min(100%, 108rem) !important;
+}

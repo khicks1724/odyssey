@@ -1,0 +1,1364 @@
+Citation Guide
+INFORMS: Citation Examples + Rules
+INFORMS (v. 1.7, 2020): Citation Examples & Essential Rules
+For NPS theses, papers, and publications: to cite properly, follow the citation examples and apply the essential
+rules.
+Citation ExamplesEssential Rules
+Artificial Intelligence (GenAI)
+arXiv
+Blog
+Book
+Chapter in Edited Book
+Electronic
+Print
+Class Notes / Lecture / Presentation /
+Workshop
+Computer Program / Software
+Conference Paper / Proceedings
+Data Set / Database
+Dictionary / Encyclopedia
+Fact Sheet
+Government / Military Document
+Directive
+Doctrine
+Field Manual
+Government Report
+Instruction
+Military Regulation
+Strategy Document
+Handbook
+Journal Article
+Legal
+Bill / Resolution
+Code of Federal Regulations
+Congressional Hearing / Testimony within a
+Hearing
+Court Case Decision
+Executive Order
+Public Law
+Magazine / Newspaper Article
+Patent
+Personal Communication
+Report
+Research Report / Think Tank Report /
+White Paper
+Technical Report
+Standard
+Secondary / Indirect Source
+Thesis / Dissertation
+Think Tank Report
+Unpublished / Informally Published Works
+Website / Webpage
+Janes Example
+White Paper
+Wikipedia (not recommended)
+Working Paper / Occasional Paper
+Abbreviations
+Acronyms
+Accessed Dates
+Author Names: Honorifics
+Authors: Identifying Authors of Official
+Documents
+Bibliography vs. List of References
+Capitalization: Title Case vs. Sentence
+case
+Country Names with Government
+Organizations
+Equations
+Figures / Images / Graphs
+How Often to Cite?
+In-text Citation Placement & Signal
+Phrases
+Missing Info
+Multiple Authors, et al.
+Multiple Sources in One Citation
+No Date Given
+Online Sources: Links
+Page Numbers
+Print vs. Online Sources
+Same Author, Multiple Works
+Secondary / Indirect Sources
+Tables
+
+If you do not see an example that matches your source type or the rule that you need, consult the Additional
+Resources for your style.
+Citation Examples
+
+Artificial Intelligence (GenAI)
+While generative AI can help you develop initial understanding of a topic, it should not be cited in your work as a source of reliable information;
+see Guidance for Gen AI Use in Academic Work and DKL's GenAI research guide.
+Source TypeGeneric ExampleActual Example
+R = Reference Entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+GenAI
+R: Company (year) Title of
+GenAI in sentence
+case, version number if
+available. Accessed
+date, URL.
+T: (Company year)
+In your text: Include the
+prompt and the relevant
+portion of the response.
+R: SandwichAI (2024) ChatBLT, version 1,326,495.2. Accessed June 24,
+2024, https://nocrust.sandwichai.com/.
+T: (SandwichAI 2024)
+In your text: As part of our methodology, we asked ChatBLT to
+"Calculate the ratio of mayonnaise to bread as a single (n−1)-
+dimensional hyperplane using the ham sandwich theorem." It responded
+with "42."
+arXiv
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+arXiv
+R: Author AA (year) Title of work in
+sentence case. arXiv, Place of
+Publication, DOI or URL.
+T: (Author year)
+R: Barterra K (2023) Great grapes throughout history. arXiv, Half
+Moon Bay, CA, https://doi.org/10.48550/arXiv.10987654321.
+T: (Barterra 2023)
+Blog
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the blog name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Blog
+R: Author AA (year) Title in
+sentence case. Name of
+Blog in Title
+Case, blog. Accessed
+date, URL.
+T: (Author year)
+R: Locke JJ (2020) Effect of weird tails in 35mm Innsmouth sprocket
+periodicity distributions on re-tiered bicyclical phase shifting using
+Cthulhean logic. The Thing’s Credible!, blog. Accessed December 22,
+2020, https://wrywhisker.pulpfriction.net/wallcrust/linear-colinear-
+felinear.html.
+T: (Locke 2020)
+
+Book
+Follow the guidance in the Essential Rules for including page numbers.
+Chapter / Section in Edited Book
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+One author,
+one editor
+R: Author AA (year) Title of
+chapter in sentence case.
+Editor AA, ed. Title of Book in
+Title Case and Italics
+(Publisher, Place of
+Publication), starting page of
+chapter–ending page of
+chapter.
+T: (Author year)
+R: Haynes P (2009) Al-Qaeda, oil dependence, and US foreign
+policy. Goodname A, ed. Energy Security and Global Politics: The
+Militarization of Resource Management (Routledge, New York),
+62–74.
+T: (Haynes 2009)
+Three authors,
+two editors
+From the
+introduction,
+foreword,
+preface, etc.
+R: Author AA, Author BB,
+Author CC (year) Title of
+section in sentence case.
+Editor AA, Editor BB, eds. Title
+of Book in Title Case and
+Italics (Publisher, Place of
+Publication), starting page of
+section–ending page of
+section.
+T: (Author A et al. year)
+R: Cordesman AH, Mausner A, Kasten D (2009) Introduction.
+Python MM, Monty PP, eds. Winning in Afghanistan: Creating
+Effective Afghan Security Forces (Center for Strategic and
+International Studies, Washington, DC), 15–25.
+T: (Cordesman et al. 2009)
+Electronic Book
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+With Digital
+Object
+Identifier (DOI)
+or URL
+DOI preferred
+R: Author AA (year) Title of
+Book in Title Case and
+Italics, DOI or URL or Name
+of Database in Title Case.
+T: (Author year, location
+information)
+DOI or URL
+R: Bonds ME (2014) Absolute Music: The History of an
+Idea, https://doi.org/10.1093/acprof:oso/9780199343638.003.0004.
+T: (Bonds 2014, ch. 2)
+From a book provider
+R: Molly CC (2006) Training Dogs: A Cat's Guide with Step-by-
+Step Instructions on Maintaining Control of the House While
+Staying Insanely Cute, https://www.amazon.com.
+T: (Molly 2006)
+From a library database
+R: Crabtree J, Chaplin A (2013) Bolivia: Processes of Change,
+ProQuest.
+T: (Crabtree and Chaplin 2013)
+
+When citing a direct quotation from an electronic book without page numbers, include as much information as needed for the reader to locate the
+material. The citation might include a chapter number, section heading, or paragraph number within the section.
+Print Book
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+One author
+R: Author AA (year) Title of
+Book in Title Case and Italics
+(Publisher, Place of
+Publication).
+T: (Author year)
+R: Pollan M (2006) The Omnivore's Dilemma: A Natural History of
+Four Meals (Penguin, New York).
+T: (Pollan 2006, p. 15)
+Two authors
+with edition
+number
+R: Author AA, Author BB
+(year) Title of Book in Title
+Case and Italics, xx ed.
+(Publisher, Place of
+Publication).
+T: (Author A and Author B
+year)
+R: Strindberg A, Wärn M (2011) Islamism: Religion, Radicalization
+and Resistance, 2nd ed. (John Wiley and Sons, Hoboken, NJ).
+T: (Strindberg and Wärn 2011)
+Three authors
+R: Author AA, Author BB,
+Author CC (year) Title of Book
+in Title Case and Italics
+(Publisher, Place of
+Publication).
+T: (Author A et al. year)
+R: Cordesman AH, Mausner A, Kasten D (2009) Winning in
+Afghanistan: Creating Effective Afghan Security Forces (Center
+for Strategic and International Studies, Washington, DC).
+T: (Cordesman et al. 2009, p. 23)
+
+Class Notes / Lecture / Presentation / Workshop
+Class notes include lecture notes, slides, and any other course-related material published by an instructor.
+If class notes are not available to your readers, format as a personal communication using professor's/lecturer's name and "class notes."
+Class notes and lectures published to your online course site are considered unpublished.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Class Notes /
+Lecture
+Published
+R: Author AA (year) Title of
+lecture in sentence case. Class
+notes or Lecture, Name of
+Class in Title Case, Month and
+day of Lecture, Department,
+School, Location of
+Institution, DOI or URL.
+T: (Author year)
+R: Blanche C (2017) How to be the cutest cat in the world.
+Lecture, Meow Studies 402, August 21, Department of Applied
+Whiskers, Finishing School for Pets, Monterey,
+CA, https://wallcrust.com/meows/cats.whiskers.
+T: (Blanche 2017)
+Class Notes /
+Lecture
+Unpublished
+R: Author AA (year) Title of class
+or lecture in sentence case.
+Class notes or Lecture, Name of
+Class in Title Case, Month and
+day of Lecture, Department,
+School, Location of Institution.
+T: (Author year)
+Class notes:
+R: Houston A (2016) Why capitalization matters when visiting the
+House of Potato Chips. Class notes, Performance Management
+and Budgeting, September 28, Linguistics Department, University
+of Idaho, Fort Chip, ID.
+T: (Houston 2016)
+Lecture:
+R: Norton NN (2004) Optimizing the rotational velocity of lizards
+through ceiling fan modulation. Lecture, Introduction to Veterinary
+Studies, May 2, Department of Dragon Husbandry, Charlatan
+State University, Monogahela, WV.
+T: (Norton 2004)
+Presentation or
+Workshop
+R: Author AA (year) Title of
+presentation in sentence case.
+Presentation or Workshop,
+Name of Event in Title Case,
+Month and day of Presentation,
+Venue, Location of Venue, DOI
+or URL.
+T: (Author year)
+R: Horse BB (2020) Horseshoes and hand grenades: On the joys
+of approximation. Presentation, Conference on Improbable
+Probabilities, April 24, Belmont Race Track, Elmont,
+NY, https://horse.edu/horseshoesandgrenades.
+T: (Horse 2020)
+
+Computer Program / Software
+Citation is required only if the software is not well known.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Computer
+Program /
+Software
+R: Rightsholder AA, Rightsholder BB,
+Rightsholder CC, Rightsholder DD (year)
+Title of obscure software in sentence case.
+Accessed date, DOI or URL.
+T: (Rightsholder AA et al. year)
+How to cite multiple authors
+R: Borenstein M, Hedges L, Higgins J, Rothstein H
+(2005) Comprehensive meta-analysis, version 2.
+Accessed May 8, 2015, http://www.meta-
+analysis.com/?index.html.
+T: (Borenstein et al. 2005)
+
+Conference Paper / Proceedings
+Follow the guidance in the Essential Rules for including page numbers.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Conference
+Proceedings
+(online)
+R: Author AA, Author BB,
+Author CC (year) Title of article
+in sentence case.
+Abbreviated Title of
+Proceedings or Collection in
+Title Case and Italics (Venue,
+Location of Conference), DOI
+or URL.
+T: (Author A et al. year)
+How to cite multiple authors
+R: Morentz JW, Doyle C, Skelly L, Adam N (2009) Unified Incident
+Command and Decision Support (UICDS) a Department of
+Homeland Security initiative in information sharing. 2009 IEEE
+Conference on Technologies for Homeland Security (Waltham,
+MA), https://doi.org/10.1109/THS.2009.5168032.
+T: (Morentz et al. 2009)
+Conference
+Proceedings
+(print)
+R: Author AA, Author BB,
+Author CC (year) Title of article
+in sentence case. Title of
+Proceedings or Collection in
+Title Case and Italics (Venue,
+Location of Conference),
+starting page of article–ending
+page of article.
+T: (Author A et al. year)
+R: Pieken R, Pieken S (2021) Sugar, flour, and semicolons: A
+baker's guide to starting an editing service. Whisk and Word: 9th
+International Conference (Seaside, CA), 97–108.
+T: (Pieken R et al. 2021)
+Paper
+Presented at
+Conference
+Unpublished
+R: Author AA, Author BB,
+Author CC (year) Title of article
+in sentence case. Abbreviated
+Title of Conference in Title
+Case, Location of Conference.
+T: (Author A et al. year)
+R: Teplin LA, McClelland GM, Abram KM, Mileusnic D (2005) Early
+violent death in delinquent youth: A prospective longitudinal
+study. Ann. Mtg. of the Amer. Psych.-Law Soc., La Jolla, CA.
+T: (Teplin et al. 2005)
+
+Data Set / Database
+For information retrieved from a database, provide enough information for your readers to replicate the data. Include in your text the name of the
+database or the data source, along with other descriptive information (such as the unit of observation, the years selected, the sample size, and/or
+other selection criteria). The database does not necessarily need to appear in your List of References.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Data Set /
+Database
+Published
+R: Author AA or
+Organization
+(year) Title of study in
+sentence case.
+Organization.
+Accessed date, DOI
+or URL.
+T: (Author or
+Organization year)
+R: Suro R (2004) Changing channels and crisscrossing culture: A survey of
+Latinos on news media. Pew Research Center. Accessed April 30,
+2012, https://www.pewresearch.org/hispanic/2004/04/19/changing-channels-
+and-crisscrossing-cultures/.
+T: (Suro 2004)
+Data Set
+Unpublished
+R: Author AA (year)
+Data provided to the
+author via personal
+communication,
+Month and day.
+T: (Author year)
+R: Blanche C (2006) Data provided to the author via email, August 30.
+T: (Blanche 2006)
+Dictionary / Encyclopedia
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Dictionary /
+Encyclopedia
+R: Title of entry in sentence case (year
+accessed) Title of Reference Work in
+Title Case and Italics. Accessed date,
+DOI or URL.
+T: (Title of entry year accessed)
+R: Metamorphosis (2011) Merriam-Webster. Accessed
+March 4, 2011, https://www.merriam-
+webster.com/dictionary/metamorphosis.
+T: (Metamorphosis 2011)
+
+Fact Sheet
+Follow the guidance in the Essential Rules for including page numbers.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Fact Sheet
+R: Department (year) Title
+of fact sheet in sentence
+case, DOI or URL.
+T (first citation):
+(Department [Acronym]
+year)
+T (subsequent citations):
+(Acronym of Department
+year)
+R: Department of Labor (2008) The construction industry under the Fair
+Labor Standards Act (FLSA), https://www.dol.gov/agencies/whd/fact-
+sheets/1-flsa-construction.
+T (first citation): (Department of Labor [DOL] 2008)
+T (subsequent citations): (DOL 2008)
+
+Government / Military Document
+Follow the guidance in the Essential Rules for including page numbers.
+Directive / Instruction
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Directive /
+Instruction
+R: Department (year) Title
+of directive in sentence
+case. Type of document
+and identification
+number, Place of
+Publication, DOI or URL.
+T (first citation):
+(Department [Acronym]
+year)
+T (subsequent citations):
+(Acronym year)
+R: Department of Defense (2005) Information assurance training,
+certification, workforce management. DOD Directive 8570.01-
+M, Washington,
+DC, https://www.jcs.mil/Portals/36/Documents/Doctrine/pubs/jp1_ch1.pdf.
+T (first citation): (Department of Defense [DOD] 2005)
+T (subsequent citations): (DOD 2005)
+Doctrine
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Joint
+Doctrine
+R: Department (year) Title
+of joint doctrine in
+sentence case. Type of
+document and
+identification
+number, Place of
+Publication, DOI or URL.
+T (first
+citation): (Department
+[Acronym] year)
+T (subsequent
+citations): (Acronym year)
+R: Joint Chiefs of Staff (2017) Countering air and missile threats. JP 3-
+01, Washington,
+DC, https://www.jcs.mil/Portals/36/Documents/Doctrine/pubs/jp1_ch1.pdf.
+T (first citation): (Joint Chiefs of Staff [JCS] 2017)
+T (subsequent citations): (JCS 2017)
+Field Manual / Military Regulation
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Field Manual
+/ Military
+Regulation
+R: Department (year) Title
+of field manual in sentence
+case. Type of document
+and identification
+number, Place of
+Publication, DOI or URL.
+T (first
+citation): (Department
+[Acronym] year)
+T (subsequent
+R: Department of the Army (1994) Sniper training. FM 23-10, Washington,
+DC, http://www.bits.de/NRANEU/others/amd-us-archive/fm_23-
+10%2894%29.pdf.
+T (first citation): (Department of the Army [DA] 1994)
+T (subsequent citations): (DA 1994)
+
+citations): (Acronym year)
+Government Report
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Government
+Report
+R: Department (year) Title
+of report in sentence case.
+Type of document and
+identification
+number, Place of
+Publication, DOI or URL.
+T (first
+citation): (Department
+[Acronym] year)
+T (subsequent
+citations): (Acronym year)
+R: Secretary of Lard (2023) Craving potato chips while working. Report
+DPG 138-1883, Monterey, CA, https://www.ecoli.gov/bites-but-
+wearehungry.pdf.
+T (first citation): (Secretary of Lard [SOL] 2023)
+T (subsequent citations): (SOL 2023)
+Strategy Document
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Strategy
+Document
+R: Department (year) Title
+of document in sentence
+case. Type of document
+and identification
+number, Place of
+Publication, DOI or URL.
+T (first
+citation): (Department
+[Acronym] year)
+T (subsequent
+citations): (Acronym year)
+R: Joint Chiefs of Calf (2023) National mooing strategy of the United Cows
+of America. Tulare,
+CA, https://www.moo.org/moooooooooooooooooooooooooo.pdf.
+T (first citation): (Joint Chiefs of Calf [JCC] 2023)
+T (subsequent citations): (JCC 2023)
+
+Handbook
+Follow the guidance in the Essential Rules for including page numbers.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+R: Organization (year) Title of
+Handbook in Title Case and
+Italics. Document identification
+number (Place of
+Publication), DOI or URL.
+T: (Organization year)
+R: Western Spud (1972) Transmission Systems for Potatoes, 168th
+ed. (Kinston-Slalom,
+ID), https://www.spud.org/potato/transmission/grease.html.
+T: (Western Spud 1972)
+Print
+R: Organization (year) Title of
+Handbook in Title Case and
+Italics. Document identification
+number (Place of Publication).
+T: (Organization year)
+R: Western Electric (1985) Transmission Systems for
+Communications, 3rd ed. (Winston-Salem, NC).
+T: (Western Electric 1985)
+Journal Article
+Follow the guidance in the Essential Rules for including page numbers.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Online
+DOI
+preferred
+R: Author AA, Author BB (year) Title of
+article in sentence case. Abbreviated
+Title of Journal in Title Case and
+Italics volume(issue number), DOI or
+URL or Name of Database in Title Case.
+T: (Author A and Author B year, p. xxx)
+How to cite multiple authors
+DOI or URL
+R: Sanico GF, Kakinaka M (2008) Terrorism and deterrence
+policy with transnational support. J. of Def. and Peace 19(2),
+https://doi.org/10.1080/10242690701505419.
+T: (Sanico and Kakinaka 2008, p. 588)
+From a library database
+R: Brown GG, Dell RH, Holtz H, Newman AM (2003) How US
+Air Force Space Command optimizes long-term investment in
+space systems. INFORMS J. on Applied Analytics 33(4),
+INFORMS PubsOnLine.
+T: (Brown et al. 2003, p. 2)
+Print
+R: Author AA (year) Title of article in
+sentence case. Abbreviated Title of
+Journal in Title Case and
+Italics volume(issue number):starting
+page of article–ending page of article.
+T: (Author year)
+R: Griffin G (2009) Managing peacekeeping
+communications. J. of Bus. Continuity
+& Emer. Planning 3(4):317–327.
+T: (Griffin 2009)
+
+Legal
+Legal publications use notes for documentation; few include bibliographies. Any work using the author-date style that needs to do more than mention
+the occasional source in the text should therefore use supplementary Chicago Notes & Bibliography footnotes formatting. For a full discussion of legal
+and public documents, including examples, see CMOS 14.269–305.
+Bill / Resolution
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Bill/Resolution
+Federal
+unenacted
+R: None
+T: None
+In your text: (Abbreviated Bill or
+Resolution Chamber and Number, xxx
+Cong. (year))
+Footnote: See header notes.
+R: None
+T: None
+In your text: The Managed Competition Act (H.R.
+5936, 102nd Cong. (1992)) noted that potatoes are
+smarter than E. coli–laden cats . . .
+Footnote: See header notes.
+Code of Federal Regulations
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Code of Federal
+Regulations
+R: None
+T: None
+In your text: Include name of act, C.F.R.
+title number and section number (title
+number C.F.R. § xxx), and year
+published.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In 2006, the Department of Energy
+introduced the Renewable Energy Production
+Incentives (10 C.F.R. § 451), which . . .
+or
+In 10 C.F.R. § 451 (2006), the Department of Energy
+establishes guidelines on Renewable Energy
+Production Incentives, which . . .
+Footnote: See header notes.
+Congressional Hearing / Testimony within a Hearing
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Congressional
+Hearing
+Full hearing
+R: None
+T: None
+In your text: Include title of hearing, date, and
+any other useful identifying information.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In 2009, the House Committee on the
+Budget held a hearing on the Long-term
+Sustainability of Current Defense Plans to ascertain .
+. .
+Footnote: See header notes.
+Testimony within
+a Hearing
+R: None
+T: None
+In your text: Include name of testifier,
+title of hearing, date, and any other
+useful identifying information
+R: None
+T: None
+In your text: In his 2015 testimony during the NASA
+Infrastructure–Enabling Discovery,
+Enabling Durability hearing, NASA lead scientist Paul K.
+
+useful identifying information.
+Footnote: See header notes.
+Martin remarked that . . .
+Footnote: See header notes.
+Court Case Decision
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Court Case
+Decision
+Lower court
+R: None
+T: None
+In your text: Party Names (Case ID
+[includes first page of decision] (Court
+Abbreviation and year))
+Footnote: See header notes.
+R: None
+T: None
+In your text: In the case Lessard v. Schmidt (349 F.
+Supp. 1078 (E.D. Wis. 1972)), the court ruled that . . .
+Footnote: See header notes.
+Court Case
+Decision
+Supreme Court
+R: None
+T: None
+In your text: Party Names (Case ID
+[includes first page of decision (year))
+Footnote: See header notes.
+R: None
+T: None
+In your text: In the case Winter v. NRDC, Inc. (129
+S. Ct. 365 (2008)), the court ruled that . . .
+Footnote: See header notes.
+Executive Order
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Executive Order
+R: None
+T: None
+In your text: Include "Title of
+Executive Order in Title Case," executive
+order number, and year.
+Footnote: See header notes.
+R: None
+T: None
+In your text: In 2013, Executive Order
+13655, "Adjustments of Certain Rates of
+Pay," established that . . .
+Footnote: See header notes.
+Public Law
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Public Law
+R: None
+T: none
+In your text: Include the title and year of
+the act.
+Note: if the year is included in the act, there is no need
+to repeat it
+Footnote: See header notes.
+R: None
+T: None
+In your text: The 1990 Americans with Disabilities
+Act established . . .
+Footnote: See header notes.
+
+Magazine / Newspaper Article
+Follow the guidance in the Essential Rules for including page numbers.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the magazine or newspaper name.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Author
+given
+(print)
+R: Author AA (year) Title of
+article in sentence case.
+Title of Magazine or
+Newspaper in Title Case
+and Italics (Month and
+day).
+T: (Author year)
+R: Beforebad S (2014) Cold spaghetti: To eat or not to eat? Pasta
+Dynamics (January 1).
+T: (Beforebad 2014)
+No author
+given
+(online)
+R: Title of Magazine or
+Newspaper in Title Case
+and Italics (year) Title of
+article in sentence
+case (Month and day),
+DOI or URL
+T: (Title of Magazine or
+Newspaper year)
+R: The Economist (2014) So long easy money: Foreign drug firms face a
+severe profit squeeze (June 12),
+https://www.economist.com/news/business/21604178-foreign-drug-firms-
+face-severe-profit-squeeze-so-long-easy-money.
+T: (The Economist 2014, p. 18)
+Patent
+If a patent has more than one date, use the year of issuance.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Patent
+R: Rightsholder AA (year patent
+issued) Patent Number in Title
+Case. Patent Office, Location of
+Office, DOI or URL.
+T: (Patent number year)
+R: Bell AG (1876) U.S. Patent No. 174,465. U.S. Patent and
+Trademark Office, Washington,
+DC, https://www.google.com/patents/US174465.
+T: (U.S. Patent No. 174,465 1846)
+
+Personal Communication / Interview / Email
+Personal communication is material obtained directly from a person, organization, or other source that your typical readers will be unable to access.
+A source should be cited as a personal communication when there is no direct, reliable path for your readers to retrieve the information. Examples
+include phone calls, conversations, letters, emails, files attached to an email (presentation slides, data sets, internal documents), documents posted
+to a listserv or internal server, or any unpublished source to which your readers have no access.
+If a personal name is not given, include an occupation or position instead. Example: (lieutenant commander, USN 2022).
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Personal
+Communication /
+Email
+R: Correspondent AA (year) Type of information
+provided to the author via personal
+communication, Month and day.
+T: (Correspondent year)
+R: Wunkerbunk TT (2002) Moss-growing
+statistics provided to the author via personal
+communication, June 11.
+T: (Wunkerbunk 2002)
+Interview
+R: Interviewee AA (year) Interview by
+Interviewer. Medium, Month and day. Name of
+Institution.
+T: (Interviewee year)
+R: Monster C (1985) Interview by Ernest J.
+Keebler. Betamax, November 20. Keebler
+Company.
+T: (Monster 1985)
+Secondary / Indirect Source
+How to cite secondary / indirect sources
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Secondary /
+Indirect Source
+R: List the indirect source that quotes or discusses
+the material you're referring to (cite using the
+appropriate reference-list format for the source type—
+book, journal article, etc.)
+In your text: Signal phrase (citation of
+indirect source, using the appropriate in-text format
+for the source type—book, journal article, etc.)
+In your text: See example.
+R: Nicholson, IAM (2003) Inventing
+Personality: Gordon Allport and the Science of
+Selfhood (American Psychological
+Association, Washington, DC).
+In your text: We can see this principle at
+work in the following passage from Allport’s
+diary, as cited in Nicholson (2003): " . . . "
+
+Report
+An official report is freestanding and should have publisher and/or copyright information. If it is not freestanding, then format it as a webpage.
+Follow the guidance in the Essential Rules for including page numbers.
+Research Report / Think Tank Report / White Paper
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Research
+Report / Think
+Tank Report /
+White Paper
+R: Author AA, Author BB, Author
+CC or Organization (year) Title of
+report in sentence case. Type of
+document and identification
+number, Organization, Place of
+Publication, Country if
+not in U.S., DOI or URL.
+T: (Author et al. or
+Organization year)
+How to cite multiple
+authors
+R: Dixon L, Clancy N, Miller BM, Hoegberg, S, Lewis MM, Bender B,
+Ebinger S (2017) The cost and affordability of flood insurance in New York
+City. Report RR-1776-NYCEDC, RAND Corporation, Santa Monica,
+CA, https://www.rand.org/pubs/research_reports/RR1776.html.
+T: (Dixon et al. 2017, p. 4)
+Technical Report
+Author
+given
+R: Author AA, Author BB, Author
+CC (year) Title of report in
+sentence case. Type of document
+and identification
+number, Organization, Place of
+Publication, Country if
+not in U.S., DOI or URL.
+T: (Author et al. or
+Organization year)
+How to cite multiple
+authors
+R: Wonka W, Loompa O, Bucket C (1972) Stochastic error-correction in a
+hyperbaric ethereal pulley system for vitreous personal vertical
+displacement apparatuses (PVDA). Technical report VK-1916, GLOOP
+Corporation, Great Missenden,
+UK, https://www.beanfeast.org/badegg/wahwah.pdf.
+T: (Wonka et al. 1972)
+Organization
+as author
+R: Organization (year) Title of
+report in sentence case. Type of
+document and identification
+number, Place of
+Publication, Country if
+not in U.S., DOI or URL.
+T: (Organization year)
+R: Trotter Agricultural Group (1961) Applications for transatlantic
+perambulation of gigantomorphic distention in P. persica. Technical Report
+OGG-19551962, New York, https://www.centipede.org/502seagulls.pdf.
+T: (Trotter Agricultural Group 1961)
+
+Standard
+Follow the guidance in the Essential Rules for including page numbers.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Standard
+R: Organization (year) Title in
+sentence case. Standard
+number, Month day, Place of
+Publication, DOI or URL.
+T: (Organization year)
+R: National Information Standards Organization (2010) Bibliographic
+references. ANSI/NISO Z39.29-2005 (R2010), May 22, Baltimore,
+MD, https://doi.org/10.3789/ansi.niso.z39.29-2005R2010.
+T (first citation): (National Information Standards Organization [NISO]
+2010)
+T (subsequent citations): (NISO 2010)
+Thesis / Dissertation
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+From a commercial
+database
+R: Author AA (year) Title of
+thesis/dissertation in sentence
+case. Type of document,
+Department Name, Institution,
+Location of Institution (if not
+included in institution
+name), Database (document
+identification number).
+T: (Author year)
+R: Nekeip R (2008) Pescatarians and daisies: A match made in
+sushi heaven. Master’s thesis, Department of Sashimi, School of
+Sushi, Maui, HI, ProQuest Dissertations and Theses database
+(AAT 3300426).
+T: (Nekeip 2008)
+From an
+institutional
+archive such
+as the NPS
+Archive:
+Calhoun
+R: Author AA (year) Title of
+thesis/dissertation in sentence
+case. Type of document,
+Department Name, Institution,
+Location of Institution (if not
+included in institution
+name), DOI or URL.
+T: (Author year)
+R: Yoshi H (1988) Effects of pizza consumption on katana-
+wielding dexterity in terrapinoids. Doctoral dissertation,
+Department of Reptile Bellicosity, Eastman & Laird University,
+New York, https://hdl.handle.net/6576565753/splinter.html.
+T: (Yoshi 1988)
+
+Unpublished / Informally Published Work
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Unpublished
+Accepted for
+publication
+(online)
+R: Author AA (year) Title of
+document in sentence case.
+Title of Journal in Title Case
+and Italics. Forthcoming, DOI
+or URL.
+T: (Author year)
+R: Horse BB (1996) Back in the saddle 2: Back in the saddle.
+Gaucho Marx: A Journal of Cowpoke Consciousness.
+Forthcoming, https://blahblahblahhorse.com/bits2bits.
+T: (Horse 1996)
+Unpublished
+Work
+(print)
+R: Author AA (year) Title of
+document in sentence case.
+Unpublished type of
+document, Organization,
+Location of Organization.
+T: (Author year)
+R: Horse BB (1995) Back in the saddle. Unpublished memoir,
+Leaping H Ranch, Peoria, IL.
+T: (Horse 1995)
+
+Website / Webpage
+The title of a website rarely includes ".com"—for example, BBC online is "BBC," not "BBC.com."
+Italicize newspaper names, not names of news organizations—for example, New York Times, not Reuters, Bloomberg, CNN, etc. These news organiza
+presence, whereas The New York Times has both an online and print counterpart.
+Do not use "Staff Writer" or "Editors" as the author; if no author name is listed, use the organization name.
+Always include an accessed date for webpages.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Author
+and date
+given
+R: Author AA
+(year) Title,
+section, or
+page name in
+sentence
+case. Name
+of Website in
+Title Case.
+Accessed
+date, URL.
+T: (Author
+year)
+R: Sushi UQ (1995) Absorption of cats in sushi. Sushi Lab. Accessed November 9, 1999,
+https://www.wallcrust.com/hgtehrwOIASD.html.
+T: (Sushi 1995)
+Organization
+as author
+R:
+Organization
+(year) Title,
+section, or
+page name in
+sentence
+case.
+Accessed
+date, URL
+T:
+(Organization
+year)
+R: Department of Norton (2024) Laughing until it hurts. Accessed 23 September 2024,
+https://www.wallcrust/montypython/deadparrots/potatoes/ecoli/cannibalism/horses/milkshak
+T (first citation): (Department of Norton [DON] 2024)
+T (subsequent citations): (DON 2024)
+No date
+given
+R: Author AA
+or
+Organization
+(year
+accessed)
+Title, section,
+or page
+name in
+sentence
+case. Name
+of Website in
+Title Case.
+Accessed
+date, URL.
+T:(Author
+R: Python M (2017) Finding a dead parrot on a silly walk. Ministry of Silly Walks. Accessed
+https://www.omgitsadeadparrot.com/feathers.
+T: (Python 2017)
+
+T: (Author
+year
+accessed)
+Janes
+example
+R: Janes
+(year) Title,
+section, or
+page name in
+sentence
+case.
+Accessed
+date, URL.
+T: (Janes
+year)
+R: Janes (2017) Mali: Country overview. Accessed June 16,
+2017, https://customer.janes.com/CountryIntelligence/Countries/Country_986.
+T: (Janes 2017)
+Wikipedia
+Wikipedia is not normally an accepted source in academia; please ask your instructor or advisor.
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Wikipedia
+R: Title of entry in sentence case (year
+accessed) Wikipedia. Accessed date, DOI
+or URL.
+T: (Title of entry year accessed)
+R: Psychology (2016) Wikipedia. Accessed October 10,
+2016, https://en.wikipedia.org/wiki/Psychology.
+T: (Psychology 2016)
+Working Paper / Occasional Paper
+Source TypeGeneric ExampleActual Example
+R = Bibliography / List of References entry T = In-text Citation See also Capitalization (Title Case / Sentence case)
+Working Paper /
+Occasional
+Paper
+Author AA (year) Title of working paper in
+sentence case. Working paper [number if
+available], Organization, Place of
+Publication, URL.
+Sushi UQ (2023) Three-handed Fibonacci model for optimizing surface-to-volume
+ratio of temaki in Hilbert space. Working paper, Donburi Institute of Internal
+Gastronomy, Pierre, SD, https://www.wallcrust.com/403t3-
+9j/340txf%oii%/gonzoponzu.html.
+
+Essential Rules
+Abbreviations
+ INFORMS Common Journal Abbreviations
+
+Accessed Dates
+Always include date accessed for webpages.
+Acronyms
+To introduce an acronym in a parenthetical citation, spell out the organization name first, then include the acronym
+in brackets, as here:
+First citation: (Chief of Naval Operations [CNO])
+Subsequent citations: (CNO)
+It doesn't matter if you've already defined the acronym in the text; ensure it is spelled out in the parenthetical
+citation as well.
+Do not include acronyms for organizations listed as authors in the List of References.
+Author Names: Honorifics
+Do not include honorifics (Dr., Col., Professor, etc.) when citing author names. Including these titles in the body of
+your document is acceptable.
+Identifying Authors of Official Documents
+For the National Security Strategy, cite the president as the author.
+For other official documents, the author is the organization immediately responsible for creating the document. In
+the example below, the author is the Office of the Chief of Naval Operations and the publisher is the Department of
+the Navy.
+
+In the example above, the author is NOT an umbrella organization, signatory, or any of the following:
+Chief of Naval Operations
+Deputy Chief of Naval Operations
+W. F. Moran
+Department of Defense
+Navy Pentagon
+R. P. Burke
+United States of America
+Do not include acronyms for organizations listed as authors in the List of References or footnotes:
+YES: Office of the Chief of Naval Operations.
+NO: Office of the Chief of Naval Operations (CNO or OCNO).
+NO: CNO or OCNO.
+
+Bibliography vs. List of References
+What is the difference between them?
+A List of References includes all works cited in a text
+A Bibliography lists all works cited and consulted
+The NPS Thesis Processing Office prefers a List of References for the following:
+Thesis
+Capstone project report
+MBA report
+Dissertation
+For papers, check with your professors for their preference.
+Capitalization: Title Case vs. Sentence case
+Title CaseSentence case
+Love among the Ruins: A Memoir of Life and Love in Hamburg, 1945Love among the ruins: A memoir of life and love in Hamburg, 1945
+Capitalize everything except:
+conjunctions (and, but, or, etc.)
+prepositions (to, of, on, among, between, etc.)
+articles (a, an, the)
+Capitalize only:
+the first words in titles and subtitles
+proper nouns
+
+Note: Always format the information in your citations (titles, author names, etc.) according to the requirements of
+the citation style you are using, regardless of how it appears in the original source.
+Country Names with Government Organizations
+When naming government organizations, be consistent: for example, either Department of Defense or U.S.
+Department of Defense. If citing organizations from multiple countries, ensure that it is clear which organization is
+associated with which country—for example, Australian Department of Defence, South African Department of
+Defence, Sri Lanka Ministry of Defence, Singapore Ministry of Defence.
+
+Equations
+Every equation that is not field-specific common knowledge needs to be cited. You may weave the source into the
+narrative:
+The next step was to apply the X method (Ochoa 2022), to describe ...
+Ochoa (2022) summarizes the derivation as follows ...
+Here is an example of citing properly before the equation. Note the period at the end. Equations must function
+grammatically as part of the text:
+Boito et al. (2015) address the widely used metric, the cost per flying hours (CPFH). The formula for CPFH is
+Adapted from Moreau P P (2022) A cost-effectiveness analysis of C-12 variant airborne ISR capabilities in the Marine Corps. Master's thesis, Naval Postgraduate School, Department of Dragon Husbandry, Naval Postgraduate School, Monterey,
+CA. https://calhoun.nps.edu/handle/10945/69689.
+And here is an example of how to cite an equation after it is presented:
+Cost per Aircraft (PAI) was the next metric we looked at as an alternative. This metric, expressed as
+,
+takes the total O&S costs and divides it by the total number of aircraft (Boito et al. 2015).
+Adapted from Moreau P P (2022) A cost-effectiveness analysis of C-12 variant airborne ISR capabilities in the Marine Corps. Master's thesis, Naval Postgraduate School, Department of Dragon Husbandry, Naval Postgraduate School, Monterey,
+CA. https://calhoun.nps.edu/handle/10945/69689.
+
+Figures / Images / Graphs
+A citation is required if you did not wholly create the figure—i.e., if you used someone else's image or data. A
+citation is not needed when all elements of the figure are your own creation.
+See Figure 1 for placement of the title and the in-text citation.
+Put a period and a space after the title.
+If you use the figure exactly as it appears in the source, use
+“Source: ___.”
+If you alter the original figure or use someone else's image or data to create the figure, use “Adapted from ___.”
+Figure 1. A Figure with a Citation in APA, Chicago Author-Date, or INFORMS Style. Source: Author (2017).
+or
+Figure 1. A Figure with a Citation in APA, Chicago Author-Date, or INFORMS Style. Adapted from Author (2017).
+For more details see the Thesis Template.
+Thesis Template 
+How Often to Cite?
+Remember: one citation at the end of a string of sentences or a paragraph cannot “cover” the entire section.
+
+Cite a source the first time it is used in each paragraph.
+
+Every sentence thereafter in the paragraph that uses information from this same source must contain either a signal phrase or a citation clearly
+indicating where the information came from.
+
+Note: always use a citation (even if you also use a signal phrase) every time you quote material.
+
+In-text Citation Placement & Signal Phrases
+Where in the sentence does my in-text citation go?
+If you name your source(s) in a given sentence, a parenthetical citation containing only the year always follows immediately after the name(s) of the
+author(s). Example: In contrast to earlier work by Abbott and Costello (1999), Laurel and Hardy (2008) propose an altogether different model for
+optimizing hat density ...
+
+If you do not explicitly name your source(s) in a given sentence, a single parenthetical citation goes at the end of the sentence or clause it covers
+(Goffman 1974), inside the punctuation, like this (Melville 1851).
+“If the sentence ends with a quotation, close the quote, then place the citation between the quotation marks and the punctuation, like this”
+(Woolf 1931, p. 22).
+
+Do not insert spaces between a parenthetical citation and the punctuation that follows it.
+In the paragraph below, the parenthetical in-text citations are highlighted in yellow, and the signal phrases are in blue. Note that the
+second sentence is common knowledge, whereas the final sentence is clearly the opinion of the author.
+Red and yellow are the best colors with which to decorate your restaurant because they induce feelings of hunger (Smith and Jones 2009). Consider
+popular fast-food chains, which often use red and yellow in their advertising and décor. According to Smith and Jones’ study (2009), restaurant
+customers felt more energized in red and yellow environments, which encouraged them to order more food. The same study indicated that patrons felt
+relaxed in blue and purple environments, which encouraged them to “spend more time considering the menu options and eat at a slower pace” (p.
+452). Although blue décor can give your restaurant a more casual, laid-back feel (Kramer 1999), Smith and Jones believe it encourages patrons to
+linger at their tables without ordering additional food or beverages. Accordingly, it is difficult to identify a popular chain restaurant that decorates with
+calmer hues.
+Using Signal Phrases Effectively 
+Missing Info
+If any information is missing from a source (a journal with no volume number, for example), simply omit
+that information. For sources consulted in hardcopy, omit the URL and any additional verbiage that introduces it.
+Anything retrieved online, however, MUST have a link. The only exception is journals retrieved from a subscription
+database such as ProQuest.
+Multiple Authors, et al.
+One or two authors:
+In the reference list, include all of them
+In the text, include all of them
+Three to ten authors:
+In the reference list, include all of them
+In the text, list only the first author, followed by et al. (“and others”)
+Eleven or more authors:
+In the reference list, include only the first seven, followed by et al.
+In the text, list only the first author, followed by et al. (“and others”)
+
+Same Author, Multiple Works / Multiple Sources in One Citation
+Examples given are for books; follow the appropriate style for the source type you are citing.
+SourceGeneric ExampleActual Example
+Same author, same year, different sources
+List sources in alphabetical order by title in the List of References (ignoring initial "a," "an," or "the") and append a lowercase letter to the year.
+Source 1
+R: Author AA (year + a) Title of Book 1
+in Title Case and Italics (Publisher,
+Place of Publication).
+T: (Author year + a)
+R: Hawthorne M (2006a) The Cannibal’s Dilemma: An
+Unnatural History of Four Siblings (Penguin, New York).
+T: (Hawthorne 2006a)
+Source 2
+R: Author AA (year+b) Title of Book 2 in
+Title Case and Italics (Publisher, Place
+of Publication).
+T: (Author year + b)
+R: Hawthorne M (2006b) Having People for Dinner: A Guide
+for the Home Cook (Penguin, New York).
+T: (Hawthorne 2006b)
+Combined
+T (both sources): Author Last Name
+year + a, year + b)
+T (both sources): (Hawthorne 2006a, 2006b)
+Same author, different year, different sources
+List sources in chronological order.
+Source 1
+R: Author AA (year) Title of Book 1 in
+Title Case and Italics (Publisher, Place
+of Publication).
+T: (Author year)
+R: Hawthorne M (2006) Having People for Dinner: A Guide
+for the Home Cook (Penguin, New York).
+T: (Hawthorne 2006)
+Source 2
+R: Author AA (year) Title of Book 2 in
+Title Case and Italics (Publisher, Place
+of Publication).
+T: (Author year)
+R: Hawthorne P (2008) Regrets (Penguin, New York).
+T: (Hawthorne 2008)
+Combined
+T (both sources): (Author year 1, year
+2)
+T (both sources): (Hawthorne 2006, 2008)
+Different authors, different years
+Place references in alphabetical order and separate them with a semicolon. Ensure all authors appear in the list of references.
+Combined
+T: (Author 1 year; Author 2 year)
+T: (Hawthorne 2006b; Norton 1998; Stulberg 2014)
+No Date Given
+To cite an undated document, put the year you accessed the material in parentheses in both in-text citations and
+the list of references.
+
+Online Sources: Links
+When listing an online document (for example, a thesis, report, or journal article) in the references, if possible,
+provide a DOI. If the source does not have a DOI, link to the document itself (PDF, etc.) or to the landing page that
+directs the reader to the full text.
+Do not insert a hard or soft return within the URL string: doing so breaks the link.
+A DOI or URL does not belong in an in-text citation. Ever.
+Page Numbers
+For direct quotes, add page numbers to the in-text citation only.
+Example: (Haynes 2009, p. 70)
+For book chapters, include page-number range in List of References/Bibliography.
+Example: Cordesman AH, Mausner A, Kasten D (2009) Introduction. Python MM, Monty PP, eds. Winning in
+Afghanistan: Creating Effective Afghan Security Forces (Center for Strategic and International Studies,
+Washington, DC), 15–25.
+Print vs. Online Sources
+When citing a source retrieved online, use the "online" format even when you or someone else printed out the
+material. For example, if you print out a thesis or your advisor provides you with a printed thesis, it is still
+categorized as an online document.
+Only cite as a print source when the material has been produced by a publisher in hard copy. For example, if you
+obtain a print journal or book from the library stacks, it is categorized as a printed source.
+Secondary / Indirect Sources
+An indirect source is a source that cites some other work that you discuss in your text.
+Whenever possible, consult primary sources and your sources’ sources yourself. Upon investigation of the primary
+source, you may find you disagree with the indirect source author’s analysis or methods.
+How to Incorporate Indirect Sources
+The following passage incorporates a properly credited indirect source. The indirect source information is highlighted in
+yellow; the primary source information is highlighted in blue.
+Walker (2008) describes Miguel Roig’s 1999 experiment, which correlates inadequate paraphrasing in student writing with
+poor reading comprehension. Citing Roig’s data, Walker explains that “students do in fact possess skills necessary for
+paraphrasing but ... may be impeded from applying those skills when dealing with rigorous text” (p. 387).
+Note: Include only the indirect source (the source you consulted) in your reference list.
+For more information
+See the TPO's "Citing Your Sources’ Sources" handout.
+
+Tables
+A citation is required if you did not wholly create the table—i.e., if you used someone else's data. A citation is not
+needed when all elements of the table are your own creation.
+See Table 1 for placement of the title and the in-text citation.
+Put a period and a space after the title.
+If you use the table exactly as it appears in the source, use
+“Source: ___.”
+If you alter the original table or if you use someone else's data to create the table, use “Adapted from ___.”
+
+Table 1. A Table with a Citation in APA, Chicago Author-Date, or INFORMS Style. Source: Author (2017).
+or
+Table 1. A Table with a Citation in APA, Chicago Author-Date, or INFORMS Style. Adapted from Author (2017).
+For more details see the Thesis Template.
+Thesis Template 
+Additional Resources
+INFORMS Style Guide Version 1.7, Nov 2020 
+Example citations start on p. 35

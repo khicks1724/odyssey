@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { supabase } from '../lib/supabase.js';
-import { getInternalUserId, getUserFromAuthHeader, isInternalRequest, userHasProjectAccess } from '../lib/request-auth.js';
+import { getInternalUserId, getUserFromAuthHeader, isInternalRequest, requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
 import { getGitLabToken, storeGitLabToken } from '../lib/gitlab-token.js';
+import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
 
 interface GitLabIntegrationConfig {
   repoUrl?: string;
@@ -223,29 +224,14 @@ async function glGet(repoPath: string, path: string, token: string, host: string
   }
 }
 
-async function requireProjectAccess(projectId: string, userId: string): Promise<boolean> {
-  return userHasProjectAccess(projectId, userId);
-}
-
 async function authorizeGitLabProjectRequest(
   authorization: string | undefined,
   projectId: string | undefined,
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
-  if (!projectId?.trim()) {
-    return { ok: false, status: 400, error: 'projectId is required' };
-  }
-
-  const userId = await getUserFromAuthHeader(authorization);
-  if (!userId) {
-    return { ok: false, status: 401, error: 'Unauthorized' };
-  }
-
-  const allowed = await requireProjectAccess(projectId, userId);
-  if (!allowed) {
-    return { ok: false, status: 403, error: 'Forbidden' };
-  }
-
-  return { ok: true };
+  const access = await requireProjectAccessFromAuthHeader(projectId, authorization);
+  return access.ok
+    ? { ok: true }
+    : { ok: false, status: access.status, error: access.error };
 }
 
 export async function gitlabRoutes(server: FastifyInstance) {
@@ -272,7 +258,9 @@ export async function gitlabRoutes(server: FastifyInstance) {
 
     type GLCommit = { created_at: string; title: string; author_name: string };
     const commits = commitsResult.status === 'fulfilled'
-      ? (commitsResult.value as GLCommit[]).map((c) =>
+      ? (commitsResult.value as GLCommit[])
+        .filter((c) => !isGeneratedThesisLatexCommitMessage(c.title))
+        .map((c) =>
           `[${c.created_at.slice(0, 10)}] ${c.title} — ${c.author_name}`
         )
       : [];
@@ -298,8 +286,8 @@ export async function gitlabRoutes(server: FastifyInstance) {
     if (!access) return reply.status(400).send({ error: 'GitLab repo not linked for this project' });
 
     try {
-      const data = await glGet(access.repoPath, '/repository/commits?per_page=6&order_by=created_at&sort=desc', access.token, access.host) as Array<{ id: string; title: string }>;
-      return { commits: data };
+      const data = await glGet(access.repoPath, '/repository/commits?per_page=12&order_by=created_at&sort=desc', access.token, access.host) as Array<{ id: string; title: string }>;
+      return { commits: data.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit.title)).slice(0, 6) };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return reply.status(500).send({ error: msg });
@@ -435,20 +423,15 @@ export async function gitlabRoutes(server: FastifyInstance) {
   });
 
   server.get<{ Querystring: { projectId: string } }>('/gitlab/link', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(authHeader.slice(7));
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { projectId } = request.query;
     if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
 
-    const hasAccess = await requireProjectAccess(projectId, user.id);
-    if (!hasAccess) return reply.status(403).send({ error: 'Not a member of this project' });
+    const access = await requireProjectAccessFromAuthHeader(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
 
     const integration = await getGitLabIntegration(projectId);
     const config = (integration?.config ?? null) as GitLabIntegrationConfig | null;
-    const tokenRow = await getGitLabTokenRow(projectId, user.id);
+    const tokenRow = await getGitLabTokenRow(projectId, access.userId);
     const repos = getGitLabRepoPaths(config);
     const repoUrl = getGitLabRepoUrl(config);
 
@@ -461,16 +444,11 @@ export async function gitlabRoutes(server: FastifyInstance) {
   });
 
   server.post<{ Body: { projectId: string; repoUrl: string; token?: string } }>('/gitlab/link', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(authHeader.slice(7));
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { projectId, repoUrl, token: providedToken } = request.body;
     if (!projectId || !repoUrl?.trim()) return reply.status(400).send({ error: 'projectId and repoUrl are required' });
 
-    const hasAccess = await requireProjectAccess(projectId, user.id);
-    if (!hasAccess) return reply.status(403).send({ error: 'Not a member of this project' });
+    const access = await requireProjectAccessFromAuthHeader(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
 
     let parsedRepo: { host: string; repoPath: string; repoUrl: string };
     try {
@@ -481,7 +459,7 @@ export async function gitlabRoutes(server: FastifyInstance) {
 
     const existing = await getGitLabIntegration(projectId);
     const existingConfig = (existing?.config ?? null) as GitLabIntegrationConfig | null;
-    const tokenRow = await getGitLabTokenRow(projectId, user.id);
+    const tokenRow = await getGitLabTokenRow(projectId, access.userId);
     const existingUserToken = tokenRow
       ? getGitLabToken({
           tokenEncrypted: tokenRow.token_encrypted,
@@ -513,7 +491,7 @@ export async function gitlabRoutes(server: FastifyInstance) {
     const dbErr = await saveGitLabIntegration(projectId, configToSave);
     if (dbErr) return reply.status(500).send({ error: dbErr.message });
     if (providedToken?.trim() || (!tokenRow && legacySharedToken)) {
-      const tokenSaveError = await saveGitLabTokenForUser(projectId, user.id, parsedRepo.host, effectiveToken);
+      const tokenSaveError = await saveGitLabTokenForUser(projectId, access.userId, parsedRepo.host, effectiveToken);
       if (tokenSaveError) return reply.status(500).send({ error: tokenSaveError });
     }
 
@@ -570,16 +548,11 @@ export async function gitlabRoutes(server: FastifyInstance) {
   });
 
   server.delete<{ Querystring: { projectId: string; repo?: string } }>('/gitlab/link', async (request, reply) => {
-    const authHeader = request.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) return reply.status(401).send({ error: 'Unauthorized' });
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(authHeader.slice(7));
-    if (authErr || !user) return reply.status(401).send({ error: 'Unauthorized' });
-
     const { projectId, repo } = request.query;
     if (!projectId) return reply.status(400).send({ error: 'projectId required' });
 
-    const hasAccess = await requireProjectAccess(projectId, user.id);
-    if (!hasAccess) return reply.status(403).send({ error: 'Not a member of this project' });
+    const access = await requireProjectAccessFromAuthHeader(projectId, request.headers.authorization);
+    if (!access.ok) return reply.status(access.status).send({ error: access.error });
 
     const existing = await getGitLabIntegration(projectId);
     const existingConfig = (existing?.config ?? null) as GitLabIntegrationConfig | null;

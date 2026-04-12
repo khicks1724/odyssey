@@ -4,6 +4,7 @@ import './FontSwitcher.css';
 
 const fontDesc: Record<string, string> = {
   default:       'Syne + DM Mono',
+  mfd:           'Aviation display',
   bahnschrift:   'Geometric condensed',
   ubuntu:        'Clean modern sans-serif',
   consolas:      'Consolas monospace',

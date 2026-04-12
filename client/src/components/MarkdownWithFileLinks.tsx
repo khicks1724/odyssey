@@ -77,9 +77,9 @@ function TextWithFilePaths({
   const parts: React.ReactNode[] = [];
   let last = 0;
   let match: RegExpExecArray | null;
-  FILE_PATH_RE.lastIndex = 0;
+  const filePathRe = new RegExp(FILE_PATH_RE.source, 'g');
 
-  while ((match = FILE_PATH_RE.exec(text)) !== null) {
+  while ((match = filePathRe.exec(text)) !== null) {
     const candidate = match[1];
     const ref = resolveFileRef(candidate, filePaths, refs);
     if (!ref) continue;
@@ -220,6 +220,7 @@ export default function MarkdownWithFileLinks({
   }
 
   const repoButtonCls = 'font-mono text-[0.85em] bg-[var(--color-code-repo-bg)] text-[var(--color-code-repo)] px-1 py-0.5 rounded border border-[var(--color-code-repo-border)] hover:bg-[var(--color-code-repo-border)] cursor-pointer transition-colors underline-offset-2 hover:underline';
+  const isInternalHref = (href: string | undefined) => Boolean(href && (/^(\/(?!\/)|#)/.test(href) || href.startsWith(window.location.origin)));
 
   const strongRenderer = ({ children: c }: { children?: React.ReactNode }) => {
     if (onRepoClick) {
@@ -272,9 +273,17 @@ export default function MarkdownWithFileLinks({
           code: codeRenderer,
           text: textRenderer,
           a: ({ href, children: c }) => (
-            <a href={href} className="text-[var(--color-accent2)] underline underline-offset-2 hover:opacity-80 transition-opacity" target="_blank" rel="noreferrer">
-              {c}
-            </a>
+            isInternalHref(href)
+              ? (
+                <a href={href} className="text-[var(--color-accent2)] underline underline-offset-2 hover:opacity-80 transition-opacity">
+                  {c}
+                </a>
+              )
+              : (
+                <a href={href} className="text-[var(--color-accent2)] underline underline-offset-2 hover:opacity-80 transition-opacity" target="_blank" rel="noreferrer">
+                  {c}
+                </a>
+              )
           ),
           ...extraComponents,
         }}

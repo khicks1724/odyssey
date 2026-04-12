@@ -80,6 +80,79 @@ async function readTemplateUploadError(res: Response, fallback: string): Promise
   return normalized.slice(0, 220);
 }
 
+function readBlobAsDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('Failed to read image.'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function resolveImageSourceToDataUrl(src: string): Promise<string> {
+  if (src.startsWith('data:')) return src;
+  const response = await fetch(src, { mode: 'cors' });
+  if (!response.ok) {
+    throw new Error('Failed to load image.');
+  }
+  return readBlobAsDataUrl(await response.blob());
+}
+
+function loadImageElement(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load image.'));
+    image.decoding = 'async';
+    image.src = src;
+  });
+}
+
+async function createCroppedProjectImageFile(
+  sourceUrl: string,
+  zoom: number,
+  offsetX: number,
+  offsetY: number,
+  fileName: string,
+): Promise<File> {
+  const cropSize = 720;
+  const image = await loadImageElement(sourceUrl);
+  const baseScale = Math.max(cropSize / image.naturalWidth, cropSize / image.naturalHeight);
+  const renderedWidth = image.naturalWidth * baseScale * zoom;
+  const renderedHeight = image.naturalHeight * baseScale * zoom;
+  const imageLeft = (cropSize - renderedWidth) / 2 + offsetX;
+  const imageTop = (cropSize - renderedHeight) / 2 + offsetY;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = cropSize;
+  canvas.height = cropSize;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Failed to prepare crop canvas.');
+  }
+
+  context.clearRect(0, 0, cropSize, cropSize);
+  context.drawImage(image, imageLeft, imageTop, renderedWidth, renderedHeight);
+
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((nextBlob) => {
+      if (nextBlob) {
+        resolve(nextBlob);
+        return;
+      }
+      reject(new Error('Failed to export cropped image.'));
+    }, 'image/png', 0.95);
+  });
+
+  return new File([blob], fileName, { type: 'image/png' });
+}
+
 // ── GitLab repo section ───────────────────────────────────────────────────────
 function GitLabSection({ projectId, onReposChanged }: { projectId: string; onReposChanged?: (repos: string[]) => void }) {
   const [linkedRepos, setLinkedRepos] = React.useState<string[]>([]);
@@ -280,8 +353,12 @@ function ProjectNameForm({
   updateProject: (updates: { name?: string; description?: string; start_date?: string | null; invite_code?: string; image_url?: string | null }) => Promise<unknown>;
   isOwner: boolean;
   imageUploading?: boolean;
-  handleImageUpload?: (file: File, inputEl?: HTMLInputElement | null) => void;
+  handleImageUpload?: (file: File, inputEl?: HTMLInputElement | null) => Promise<void> | void;
 }) {
+  const CROP_OFFSET_LIMIT = 180;
+  const CROP_ZOOM_MIN = 1;
+  const CROP_ZOOM_MAX = 3;
+  const CROP_ZOOM_STEP = 0.08;
   const [name, setName] = React.useState(project.name);
   const [description, setDescription] = React.useState(project.description ?? '');
   const [startDate, setStartDate] = React.useState(project.start_date ?? '');
@@ -289,6 +366,25 @@ function ProjectNameForm({
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [copiedInviteCode, setCopiedInviteCode] = React.useState(false);
+  const [imageMenuOpen, setImageMenuOpen] = React.useState(false);
+  const [editImageLoading, setEditImageLoading] = React.useState(false);
+  const [cropDialogOpen, setCropDialogOpen] = React.useState(false);
+  const [cropSourceUrl, setCropSourceUrl] = React.useState<string | null>(null);
+  const [cropZoom, setCropZoom] = React.useState(1);
+  const [cropOffsetX, setCropOffsetX] = React.useState(0);
+  const [cropOffsetY, setCropOffsetY] = React.useState(0);
+  const [cropSaving, setCropSaving] = React.useState(false);
+  const [cropError, setCropError] = React.useState<string | null>(null);
+  const [cropDragging, setCropDragging] = React.useState(false);
+  const imageMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const projectImageInputRef = React.useRef<HTMLInputElement | null>(null);
+  const cropDragStateRef = React.useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originOffsetX: number;
+    originOffsetY: number;
+  } | null>(null);
   const projectFingerprint = project.id ? getProjectFingerprint(project.id) : null;
 
   const dirty = name.trim() !== project.name
@@ -318,6 +414,136 @@ function ProjectNameForm({
     setTimeout(() => setCopiedInviteCode(false), 1600);
   };
 
+  React.useEffect(() => {
+    if (!imageMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!imageMenuRef.current?.contains(event.target as Node)) {
+        setImageMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [imageMenuOpen]);
+
+  React.useEffect(() => {
+    if (!cropDragging) return;
+
+    const clampCropOffset = (value: number) => Math.max(-CROP_OFFSET_LIMIT, Math.min(CROP_OFFSET_LIMIT, value));
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const dragState = cropDragStateRef.current;
+      if (!dragState || event.pointerId !== dragState.pointerId) return;
+      setCropOffsetX(clampCropOffset(dragState.originOffsetX + (event.clientX - dragState.startX)));
+      setCropOffsetY(clampCropOffset(dragState.originOffsetY + (event.clientY - dragState.startY)));
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const dragState = cropDragStateRef.current;
+      if (!dragState || event.pointerId !== dragState.pointerId) return;
+      cropDragStateRef.current = null;
+      setCropDragging(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [CROP_OFFSET_LIMIT, cropDragging]);
+
+  React.useEffect(() => {
+    if (cropDialogOpen) return;
+    cropDragStateRef.current = null;
+    setCropDragging(false);
+  }, [cropDialogOpen]);
+
+  const handleReplaceProjectImage = () => {
+    setImageMenuOpen(false);
+    projectImageInputRef.current?.click();
+  };
+
+  const handleProjectImageFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    await Promise.resolve(handleImageUpload?.(file, event.target));
+    event.target.value = '';
+  };
+
+  const handleOpenImageEditor = async () => {
+    if (!project.image_url) return;
+
+    setEditImageLoading(true);
+    setCropError(null);
+    try {
+      const dataUrl = await resolveImageSourceToDataUrl(project.image_url);
+      setCropSourceUrl(dataUrl);
+      setCropZoom(1);
+      setCropOffsetX(0);
+      setCropOffsetY(0);
+      setCropDialogOpen(true);
+      setImageMenuOpen(false);
+    } catch (error) {
+      setCropError(error instanceof Error ? error.message : 'Unable to load the current image for editing.');
+    } finally {
+      setEditImageLoading(false);
+    }
+  };
+
+  const handleSaveCroppedImage = async () => {
+    if (!cropSourceUrl) return;
+
+    setCropSaving(true);
+    setCropError(null);
+    try {
+      const nextFile = await createCroppedProjectImageFile(
+        cropSourceUrl,
+        cropZoom,
+        cropOffsetX,
+        cropOffsetY,
+        `${(project.name || 'project').trim().replace(/\s+/g, '-').toLowerCase() || 'project'}-image.png`,
+      );
+      if (handleImageUpload) {
+        await Promise.resolve(handleImageUpload(nextFile, projectImageInputRef.current));
+      } else {
+        const fallbackDataUrl = await readBlobAsDataUrl(nextFile);
+        await updateProject({ image_url: fallbackDataUrl });
+      }
+      setCropDialogOpen(false);
+    } catch (error) {
+      setCropError(error instanceof Error ? error.message : 'Failed to save the cropped image.');
+    } finally {
+      setCropSaving(false);
+    }
+  };
+
+  const handleCropPreviewPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (cropSaving || imageUploading) return;
+    event.preventDefault();
+    cropDragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originOffsetX: cropOffsetX,
+      originOffsetY: cropOffsetY,
+    };
+    setCropDragging(true);
+  };
+
+  const handleCropPreviewWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (cropSaving || imageUploading) return;
+    event.preventDefault();
+    setCropZoom((currentZoom) => {
+      const nextZoom = currentZoom + (event.deltaY < 0 ? CROP_ZOOM_STEP : -CROP_ZOOM_STEP);
+      return Math.max(CROP_ZOOM_MIN, Math.min(CROP_ZOOM_MAX, Number(nextZoom.toFixed(2))));
+    });
+  };
+
   return (
     <div className="border border-border bg-surface p-6">
       <div className="flex items-center gap-2 mb-6">
@@ -329,25 +555,54 @@ function ProjectNameForm({
           <div className="flex flex-col gap-3 w-full xl:w-[26rem] shrink-0">
             {/* Project image + name side-by-side */}
             <div className="flex items-start gap-4">
-              {/* Image thumbnail with upload on hover */}
-              <div className="relative group shrink-0">
-                <div className="w-16 h-16 rounded-lg border border-border bg-surface2 overflow-hidden flex items-center justify-center">
+              <div className="relative shrink-0" ref={imageMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setImageMenuOpen((current) => !current)}
+                  className="group relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-lg border border-border bg-surface2 transition-colors hover:border-accent/35"
+                  title={project.image_url ? 'Edit or replace project image' : 'Upload project image'}
+                >
                   {project.image_url
                     ? <img src={project.image_url} alt="Project" className="w-full h-full object-cover" />
                     : <span className="text-xl font-bold text-muted/40">{project.name[0]?.toUpperCase()}</span>
                   }
-                </div>
-                {/* Hover overlay with upload/remove */}
-                <label className="absolute inset-0 rounded-lg flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                  title="Upload project image">
-                  {imageUploading
-                    ? <Loader2 size={14} className="animate-spin text-white" />
-                    : <Plus size={14} className="text-white" />
-                  }
-                  <input type="file" accept="image/*" className="sr-only" disabled={imageUploading}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleImageUpload?.(f, e.target); e.target.value = ''; }} />
-                </label>
-                {/* Remove button below image */}
+                  <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
+                    {imageUploading || editImageLoading
+                      ? <Loader2 size={14} className="animate-spin text-white" />
+                      : <Pencil size={14} className="text-white" />
+                    }
+                  </span>
+                </button>
+                <input
+                  ref={projectImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  disabled={imageUploading || cropSaving}
+                  onChange={handleProjectImageFileChange}
+                />
+                {imageMenuOpen && (
+                  <div className="absolute left-0 top-full z-20 mt-2 w-40 overflow-hidden rounded-lg border border-border bg-surface shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
+                    <button
+                      type="button"
+                      onClick={handleOpenImageEditor}
+                      disabled={!project.image_url || editImageLoading}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-heading transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:text-muted/50"
+                    >
+                      {editImageLoading ? <Loader2 size={14} className="animate-spin" /> : <Pencil size={14} />}
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleReplaceProjectImage}
+                      disabled={imageUploading}
+                      className="flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-sm text-heading transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:text-muted/50"
+                    >
+                      {imageUploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                      {project.image_url ? 'Replace' : 'Upload'}
+                    </button>
+                  </div>
+                )}
                 {project.image_url && (
                   <button type="button" title="Remove image"
                     onClick={() => updateProject({ image_url: null })}
@@ -387,6 +642,9 @@ function ProjectNameForm({
                 </div>
                 <p className="mt-1 text-[10px] text-muted">All users in the same project will see the same hash.</p>
               </div>
+            )}
+            {cropError && !cropDialogOpen && (
+              <p className="text-[11px] text-danger">{cropError}</p>
             )}
             <div>
               <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -448,6 +706,122 @@ function ProjectNameForm({
           </button>
         </div>
       </form>
+      {cropDialogOpen && cropSourceUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(8,15,28,0.58)] p-4 backdrop-blur-[2px]">
+          <div className="w-full max-w-3xl border border-border bg-surface p-6 shadow-[0_24px_60px_rgba(15,23,42,0.28)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h4 className="font-sans text-sm font-bold text-heading">Edit Project Image</h4>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                  Adjust the crop, then save to replace the current project image.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCropDialogOpen(false);
+                  setCropError(null);
+                }}
+                className="inline-flex h-8 w-8 items-center justify-center border border-border bg-surface2 text-muted transition-colors hover:text-heading"
+                title="Close image editor"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="flex items-center justify-center border border-border bg-surface2 p-5">
+                <div
+                  className={`relative h-[22rem] w-[22rem] overflow-hidden border border-border bg-surface shadow-inner ${cropDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+                  onPointerDown={handleCropPreviewPointerDown}
+                  onWheel={handleCropPreviewWheel}
+                  style={{ touchAction: 'none' }}
+                >
+                  <img
+                    src={cropSourceUrl}
+                    alt="Project crop preview"
+                    className="pointer-events-none absolute left-1/2 top-1/2 max-w-none select-none"
+                    draggable={false}
+                    style={{
+                      width: `calc(100% * ${cropZoom})`,
+                      height: `calc(100% * ${cropZoom})`,
+                      objectFit: 'cover',
+                      transform: `translate(calc(-50% + ${cropOffsetX}px), calc(-50% + ${cropOffsetY}px))`,
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-5">
+                <div>
+                  <label className="mb-2 block text-[10px] uppercase tracking-[0.18em] text-muted">Zoom</label>
+                  <input
+                    type="range"
+                    min={CROP_ZOOM_MIN}
+                    max={CROP_ZOOM_MAX}
+                    step={0.01}
+                    value={cropZoom}
+                    onChange={(event) => setCropZoom(Number(event.target.value))}
+                    className="w-full accent-[var(--color-accent)]"
+                  />
+                  <div className="mt-1 text-[11px] text-muted">{cropZoom.toFixed(2)}x</div>
+                </div>
+                <div>
+                  <label className="mb-2 block text-[10px] uppercase tracking-[0.18em] text-muted">Horizontal Position</label>
+                  <input
+                    type="range"
+                    min={-CROP_OFFSET_LIMIT}
+                    max={CROP_OFFSET_LIMIT}
+                    step={1}
+                    value={cropOffsetX}
+                    onChange={(event) => setCropOffsetX(Number(event.target.value))}
+                    className="w-full accent-[var(--color-accent)]"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-[10px] uppercase tracking-[0.18em] text-muted">Vertical Position</label>
+                  <input
+                    type="range"
+                    min={-CROP_OFFSET_LIMIT}
+                    max={CROP_OFFSET_LIMIT}
+                    step={1}
+                    value={cropOffsetY}
+                    onChange={(event) => setCropOffsetY(Number(event.target.value))}
+                    className="w-full accent-[var(--color-accent)]"
+                  />
+                </div>
+                <p className="text-[11px] text-muted">
+                  Drag the image preview to reposition it, scroll to zoom, or use the sliders for finer adjustment.
+                </p>
+                {cropError && (
+                  <p className="text-[11px] text-danger">{cropError}</p>
+                )}
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveCroppedImage}
+                    disabled={cropSaving || imageUploading}
+                    className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-accent transition-colors hover:bg-accent/16 disabled:opacity-50"
+                  >
+                    {cropSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                    Save Crop
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCropDialogOpen(false);
+                      setCropError(null);
+                    }}
+                    className="inline-flex items-center gap-2 border border-border bg-surface2 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-heading transition-colors hover:bg-surface"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -700,6 +1074,7 @@ function SettingsTab({
   const [templates, setTemplates] = React.useState<{
     id: string;
     templateType: 'docx' | 'pptx' | 'pdf';
+    sourceFormat?: 'docx' | 'pptx' | 'pdf';
     filename: string;
     sizeBytes: number;
     storagePath: string;
@@ -711,6 +1086,8 @@ function SettingsTab({
       layoutHints?: string[];
       fonts?: string[];
       palette?: string[];
+      analysisConfidence?: 'low' | 'medium' | 'high';
+      sourceFormat?: 'docx' | 'pptx' | 'pdf';
     } | null;
   }[]>([]);
   const [templateUploading, setTemplateUploading] = React.useState<'docx' | 'pptx' | 'pdf' | null>(null);
@@ -839,6 +1216,7 @@ function SettingsTab({
         template?: {
           id: string;
           templateType: 'docx' | 'pptx' | 'pdf';
+          sourceFormat?: 'docx' | 'pptx' | 'pdf';
           filename: string;
           sizeBytes: number;
           storagePath: string;
@@ -850,6 +1228,8 @@ function SettingsTab({
             layoutHints?: string[];
             fonts?: string[];
             palette?: string[];
+            analysisConfidence?: 'low' | 'medium' | 'high';
+            sourceFormat?: 'docx' | 'pptx' | 'pdf';
           } | null;
         };
       };
@@ -1087,13 +1467,13 @@ function SettingsTab({
 
             {(inviteTab === 'username' || inviteTab === 'nps_email' || inviteTab === 'shared') && (
               <div>
-                <p className="text-[11px] text-muted mb-4">
-                  {inviteTab === 'username'
-                    ? 'Invite someone by the exact username they used when they joined Odyssey.'
-                    : inviteTab === 'nps_email'
-                      ? 'Invite someone by the email linked to their Odyssey Microsoft sign-in.'
-                      : 'Choose someone you already share another project with, just like the direct-message picker in chat.'}
-                </p>
+                {inviteTab !== 'shared' && (
+                  <p className="text-[11px] text-muted mb-4">
+                    {inviteTab === 'username'
+                      ? 'Invite someone by the exact username they used when they joined Odyssey.'
+                      : 'Invite someone by the email linked to their Odyssey Microsoft sign-in.'}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 mb-4">
                   <span className="text-[10px] tracking-[0.15em] uppercase text-muted">Invite as</span>
                   <div className="flex items-center gap-px border border-border rounded overflow-hidden">
@@ -1206,13 +1586,13 @@ function SettingsTab({
                     </button>
                   </div>
                 )}
-                <div className="rounded border border-dashed border-border px-4 py-3 text-[11px] text-muted">
-                  {inviteTab === 'username'
-                    ? 'This matches the Odyssey username exactly and immediately adds them to the project.'
-                    : inviteTab === 'nps_email'
-                      ? 'This matches the email they linked in Odyssey and immediately adds them to the project.'
-                      : 'This only shows people you already share another project with and adds them directly to this project.'}
-                </div>
+                {inviteTab !== 'shared' && (
+                  <div className="rounded border border-dashed border-border px-4 py-3 text-[11px] text-muted">
+                    {inviteTab === 'username'
+                      ? 'This matches the Odyssey username exactly and immediately adds them to the project.'
+                      : 'This matches the email they linked in Odyssey and immediately adds them to the project.'}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1422,11 +1802,11 @@ function SettingsTab({
       {/* Report Templates */}
       <div className="border border-border bg-surface p-6">
           {/* Hidden file inputs — stable refs, never re-mounted */}
-          <input ref={tmplInputDocx} type="file" accept=".docx,.pdf" title="Word report template file" className="sr-only"
+          <input ref={tmplInputDocx} type="file" accept=".docx,.pptx,.pdf" title="Word report template file" className="sr-only"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('docx', f); e.target.value = ''; }} />
-          <input ref={tmplInputPptx} type="file" accept=".pptx,.pdf" title="PowerPoint template file" className="sr-only"
+          <input ref={tmplInputPptx} type="file" accept=".docx,.pptx,.pdf" title="PowerPoint template file" className="sr-only"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('pptx', f); e.target.value = ''; }} />
-          <input ref={tmplInputPdf} type="file" accept=".docx,.pdf" title="PDF report template file" className="sr-only"
+          <input ref={tmplInputPdf} type="file" accept=".docx,.pptx,.pdf" title="PDF report template file" className="sr-only"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) handleTemplateUpload('pdf', f); e.target.value = ''; }} />
 
           <div className="flex items-center gap-2 mb-2">
@@ -1434,7 +1814,7 @@ function SettingsTab({
             <h3 className="font-sans text-sm font-bold text-heading">Report Templates</h3>
           </div>
           <p className="text-[11px] text-muted mb-5">
-            Upload a template file for each report type. The AI will analyze its structure and mirror the layout, headings, and style when generating reports. Large templates are uploaded in smaller chunks so they can survive stricter proxy limits.
+            Upload a template file for each report type. You can use DOCX, PPTX, or PDF as the source template. Odyssey will analyze the uploaded file's structure, typography, colors, and layout cues, then adapt that design language into the generated output format. Large templates are uploaded in smaller chunks so they can survive stricter proxy limits.
           </p>
 
           {templateError && (
@@ -1443,9 +1823,9 @@ function SettingsTab({
 
           <div className="flex flex-col gap-3">
             {([
-              { type: 'docx' as const, label: 'Word Report (.docx)', ref: tmplInputDocx, hint: 'DOCX or PDF' },
-              { type: 'pptx' as const, label: 'PowerPoint (.pptx)', ref: tmplInputPptx, hint: 'PPTX or PDF' },
-              { type: 'pdf'  as const, label: 'PDF Report (.pdf)',  ref: tmplInputPdf,  hint: 'DOCX or PDF' },
+              { type: 'docx' as const, label: 'Word Report (.docx)', ref: tmplInputDocx, hint: 'DOCX, PPTX, or PDF source' },
+              { type: 'pptx' as const, label: 'PowerPoint (.pptx)', ref: tmplInputPptx, hint: 'DOCX, PPTX, or PDF source' },
+              { type: 'pdf'  as const, label: 'PDF Report (.pdf)',  ref: tmplInputPdf,  hint: 'DOCX, PPTX, or PDF source' },
             ] as const).map(({ type, label, ref, hint }) => {
               const existing = templates.find((t) => t.templateType === type);
               const uploading = templateUploading === type;
@@ -1457,7 +1837,7 @@ function SettingsTab({
                       <p className="text-[11px] font-semibold text-heading">{label}</p>
                       {existing ? (
                         <>
-                          <p className="text-[10px] text-muted truncate">{existing.filename} · {(existing.sizeBytes / 1024).toFixed(0)} KB</p>
+                          <p className="text-[10px] text-muted truncate">{existing.filename} · {(existing.sizeBytes / 1024).toFixed(0)} KB · source {String(existing.sourceFormat ?? existing.analysis?.sourceFormat ?? type).toUpperCase()}</p>
                           <p className="text-[10px] text-muted/80 truncate">
                             {existing.analysis?.summary ?? 'Saved to project storage and used during report generation.'}
                           </p>

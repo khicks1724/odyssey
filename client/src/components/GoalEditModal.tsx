@@ -46,7 +46,7 @@ interface GoalEditModalProps {
   onRepoClick?: (repo: string, type: 'github' | 'gitlab') => void;
   onTaskClick?: (taskId: string) => void;
   onCreateProjectLabel?: (type: 'category' | 'loe', name: string) => Promise<string>;
-  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'description' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'ai_guidance'>>) => Promise<void>;
+  onSave: (id: string, updates: Partial<Pick<Goal, 'title' | 'description' | 'category' | 'loe' | 'assigned_to' | 'assignees' | 'deadline' | 'status' | 'progress' | 'estimated_hours' | 'ai_guidance'>>) => Promise<void>;
   /** Silent background save — does NOT close the modal. Used for auto-persisting AI guidance. */
   onSilentSave?: (id: string, updates: Partial<Pick<Goal, 'ai_guidance'>>) => Promise<void>;
   onClose: () => void;
@@ -82,6 +82,7 @@ export default function GoalEditModal({
   const [deadline,       setDeadline]       = useState(goal.deadline?.split('T')[0] ?? '');
   const [status,         setStatus]         = useState<Goal['status']>(goal.status);
   const [progress,       setProgress]       = useState(goal.progress);
+  const [estimatedHours, setEstimatedHours] = useState(goal.estimated_hours?.toString() ?? '');
   const [saving,         setSaving]         = useState(false);
   const [saveError,      setSaveError]      = useState<string | null>(null);
 
@@ -159,6 +160,7 @@ export default function GoalEditModal({
         deadline: deadline || null,
         status,
         progress,
+        estimated_hours: estimatedHours.trim() ? Number(estimatedHours) : null,
       });
       onClose();
     } catch (error) {
@@ -262,6 +264,19 @@ export default function GoalEditModal({
                     className="w-full accent-[var(--color-accent)] mt-2"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] tracking-[0.2em] uppercase text-[var(--color-muted)] mb-1.5">Estimated Hours</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  value={estimatedHours}
+                  onChange={(e) => setEstimatedHours(e.target.value)}
+                  placeholder="Optional estimate"
+                  className="w-full px-3 py-2 bg-[var(--color-surface2)] border border-[var(--color-border)] text-[var(--color-heading)] text-xs font-mono focus:outline-none focus:border-[var(--color-accent)]/50 transition-colors rounded"
+                />
               </div>
 
               {/* Category + LOE */}
@@ -453,7 +468,7 @@ export default function GoalEditModal({
               type="button"
               onClick={handleSave}
               disabled={saving || !title.trim()}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-[var(--color-accent)] text-white text-xs rounded hover:opacity-90 transition-opacity disabled:opacity-40"
+              className="odyssey-fill-accent flex items-center gap-1.5 px-4 py-1.5 text-xs rounded transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
               Save Changes

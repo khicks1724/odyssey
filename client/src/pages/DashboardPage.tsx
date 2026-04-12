@@ -1,6 +1,8 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
   Activity,
+  ChevronLeft,
+  ChevronRight,
   FolderKanban,
   Target,
   TrendingUp,
@@ -93,6 +95,17 @@ export default function DashboardPage() {
   const { tasks: hoverTasks, events: hoverEvents, breakdown, loading: hoverLoading } = useDashboardHoverDetails();
   const { tasks: myTasks, loading: myTasksLoading } = useMyAssignedTasks();
   const { summary: aiSummary, loading: aiSummaryLoading, error: aiSummaryError, generate: generateAISummary } = useDashboardAISummary();
+  const myTasksViewportRef = useRef<HTMLDivElement | null>(null);
+  const myTasksDragRef = useRef<{ pointerId: number | null; startX: number; startScrollLeft: number; moved: boolean }>({
+    pointerId: null,
+    startX: 0,
+    startScrollLeft: 0,
+    moved: false,
+  });
+  const myTasksSuppressClickRef = useRef(false);
+  const [canScrollMyTasksLeft, setCanScrollMyTasksLeft] = useState(false);
+  const [canScrollMyTasksRight, setCanScrollMyTasksRight] = useState(false);
+  const [isMyTasksDragging, setIsMyTasksDragging] = useState(false);
 
   // Repo context for the insight's project
   const [insightGitlabRepos, setInsightGitlabRepos] = useState<string[]>([]);
@@ -165,8 +178,103 @@ export default function DashboardPage() {
     { label: 'On-Track Rate', value: statsLoading ? '…' : stats.onTrackRate !== null ? `${stats.onTrackRate}%` : '—', icon: TrendingUp, color: 'text-heading' },
   ];
 
+  const updateMyTasksScrollState = useCallback(() => {
+    const viewport = myTasksViewportRef.current;
+    if (!viewport) {
+      setCanScrollMyTasksLeft(false);
+      setCanScrollMyTasksRight(false);
+      return;
+    }
+    setCanScrollMyTasksLeft(viewport.scrollLeft > 4);
+    setCanScrollMyTasksRight(viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - 4);
+  }, []);
+
+  const getMyTasksScrollStep = useCallback(() => {
+    const viewport = myTasksViewportRef.current;
+    if (!viewport) return 0;
+    return Math.max(1, Math.round(viewport.clientWidth / 5));
+  }, []);
+
+  const scrollMyTasksByStep = useCallback((direction: 'left' | 'right') => {
+    const viewport = myTasksViewportRef.current;
+    if (!viewport) return;
+    const amount = getMyTasksScrollStep();
+    viewport.scrollBy({
+      left: direction === 'right' ? amount : -amount,
+      behavior: 'smooth',
+    });
+  }, [getMyTasksScrollStep]);
+
+  const finishMyTasksDrag = useCallback((pointerId?: number) => {
+    const viewport = myTasksViewportRef.current;
+    if (viewport != null && pointerId != null && viewport.hasPointerCapture(pointerId)) {
+      viewport.releasePointerCapture(pointerId);
+    }
+    const moved = myTasksDragRef.current.moved;
+    myTasksDragRef.current = {
+      pointerId: null,
+      startX: 0,
+      startScrollLeft: 0,
+      moved: false,
+    };
+    setIsMyTasksDragging(false);
+    if (moved) {
+      window.setTimeout(() => {
+        myTasksSuppressClickRef.current = false;
+      }, 0);
+    }
+  }, []);
+
+  const handleMyTasksPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const viewport = myTasksViewportRef.current;
+    if (!viewport) return;
+    myTasksSuppressClickRef.current = false;
+    myTasksDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: viewport.scrollLeft,
+      moved: false,
+    };
+    setIsMyTasksDragging(false);
+    viewport.setPointerCapture(event.pointerId);
+  }, []);
+
+  const handleMyTasksPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const viewport = myTasksViewportRef.current;
+    const dragState = myTasksDragRef.current;
+    if (!viewport || dragState.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - dragState.startX;
+    if (!dragState.moved && Math.abs(deltaX) < 6) return;
+    event.preventDefault();
+    if (!dragState.moved) {
+      dragState.moved = true;
+      myTasksSuppressClickRef.current = true;
+      setIsMyTasksDragging(true);
+    }
+    viewport.scrollLeft = dragState.startScrollLeft - deltaX;
+  }, []);
+
+  const handleMyTasksPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (myTasksDragRef.current.pointerId !== event.pointerId) return;
+    finishMyTasksDrag(event.pointerId);
+  }, [finishMyTasksDrag]);
+
+  useEffect(() => {
+    updateMyTasksScrollState();
+    const viewport = myTasksViewportRef.current;
+    if (!viewport) return;
+    const handleScroll = () => updateMyTasksScrollState();
+    viewport.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('resize', updateMyTasksScrollState);
+    return () => {
+      viewport.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', updateMyTasksScrollState);
+    };
+  }, [myTasks.length, updateMyTasksScrollState]);
+
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="app-page-width app-page-width--wide p-8 max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-10">
         <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">Dashboard</p>
@@ -320,53 +428,91 @@ export default function DashboardPage() {
 
         {myTasksLoading ? (
           <div className="flex gap-3 overflow-hidden">
-            {[1,2,3,4].map((i) => <div key={i} className="h-24 w-64 shrink-0 bg-border/40 rounded animate-pulse" />)}
+            {[1, 2, 3, 4, 5].map((i) => <div key={i} className="h-24 grow basis-0 bg-border/40 rounded animate-pulse" />)}
           </div>
         ) : myTasks.length === 0 ? (
           <div className="py-6 text-center">
             <p className="text-xs text-muted tracking-wide">No tasks assigned to you. Tasks assigned to you across all projects appear here.</p>
           </div>
         ) : (
-          <div className="flex gap-px overflow-x-auto pb-1 bg-border border border-border" style={{ scrollbarWidth: 'thin' }}>
-            {myTasks.map((task) => {
-              const daysLeft = task.deadline
-                ? Math.ceil((new Date(task.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-                : null;
-              const overdue = daysLeft !== null && daysLeft < 0;
-              const urgent = daysLeft !== null && !overdue && daysLeft <= 3;
-              const StatusIcon = statusIcons[task.status] ?? Circle;
-              return (
-                <Link
-                  key={task.id}
-                  to={`/projects/${task.projectId}`}
-                  state={{ openTab: 'goals', editGoalId: task.id }}
-                  className="bg-surface hover:bg-surface2 transition-colors shrink-0 w-60 px-4 py-3 flex flex-col gap-2 group"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <StatusIcon size={11} className={`${statusColors[task.status] ?? 'text-muted'} shrink-0 mt-0.5`} />
-                    {daysLeft !== null && (
-                      <span className={`text-[9px] font-mono shrink-0 ${overdue ? 'text-accent' : urgent ? 'text-accent' : 'text-muted'}`}>
-                        {overdue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Due today' : `${daysLeft}d left`}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-heading font-semibold leading-snug line-clamp-2 group-hover:text-accent transition-colors">{task.title}</p>
-                  <p className="text-[10px] text-muted truncate">{task.projectName}</p>
-                  {/* Progress bar */}
-                  <div className="w-full h-1 bg-border rounded-full overflow-hidden">
-                    <div className="h-full bg-accent2 rounded-full" style={{ width: `${task.progress}%` }} />
-                  </div>
-                  <div className="flex items-center gap-1 flex-wrap">
-                    {task.category && (
-                      <span className="text-[9px] px-1.5 py-0.5 border border-white/20 bg-white/5 rounded text-muted font-mono uppercase">{task.category}</span>
-                    )}
-                    {task.loe && (
-                      <span className="text-[9px] px-1.5 py-0.5 border border-accent2/50 bg-accent2/10 rounded text-accent2 font-mono uppercase">{task.loe}</span>
-                    )}
-                  </div>
-                </Link>
-              );
-            })}
+          <div className="relative">
+            {canScrollMyTasksLeft && (
+              <button
+                type="button"
+                onClick={() => scrollMyTasksByStep('left')}
+                className="absolute left-0 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 border border-border bg-surface/92 p-1.5 text-muted shadow-sm backdrop-blur-sm transition-colors hover:text-heading"
+                aria-label="Scroll tasks left"
+              >
+                <ChevronLeft size={14} />
+              </button>
+            )}
+            {canScrollMyTasksRight && (
+              <button
+                type="button"
+                onClick={() => scrollMyTasksByStep('right')}
+                className="absolute right-0 top-1/2 z-10 translate-x-1/2 -translate-y-1/2 border border-border bg-surface/92 p-1.5 text-muted shadow-sm backdrop-blur-sm transition-colors hover:text-heading"
+                aria-label="Scroll tasks right"
+              >
+                <ChevronRight size={14} />
+              </button>
+            )}
+            <div
+              ref={myTasksViewportRef}
+              className={`overflow-hidden ${isMyTasksDragging ? 'cursor-grabbing' : 'cursor-grab'} select-none`}
+              onPointerDown={handleMyTasksPointerDown}
+              onPointerMove={handleMyTasksPointerMove}
+              onPointerUp={handleMyTasksPointerUp}
+              onPointerCancel={handleMyTasksPointerUp}
+              style={{ touchAction: 'pan-y' }}
+            >
+              <div className="flex gap-px border border-border bg-border">
+                {myTasks.map((task) => {
+                  const daysLeft = task.deadline
+                    ? Math.ceil((new Date(task.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+                    : null;
+                  const overdue = daysLeft !== null && daysLeft < 0;
+                  const urgent = daysLeft !== null && !overdue && daysLeft <= 3;
+                  const StatusIcon = statusIcons[task.status] ?? Circle;
+                  return (
+                    <Link
+                      key={task.id}
+                      to={`/projects/${task.projectId}`}
+                      state={{ openTab: 'goals', editGoalId: task.id }}
+                      onClick={(event) => {
+                        if (!myTasksSuppressClickRef.current) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                      draggable={false}
+                      className="bg-surface px-4 py-3 transition-colors hover:bg-surface2 flex shrink-0 flex-col gap-2 group"
+                      style={{ flex: '0 0 calc((100% - 4px) / 5)' }}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <StatusIcon size={11} className={`${statusColors[task.status] ?? 'text-muted'} shrink-0 mt-0.5`} />
+                        {daysLeft !== null && (
+                          <span className={`text-[9px] font-mono shrink-0 ${overdue ? 'text-accent' : urgent ? 'text-accent' : 'text-muted'}`}>
+                            {overdue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Due today' : `${daysLeft}d left`}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-heading font-semibold leading-snug line-clamp-2 group-hover:text-accent transition-colors">{task.title}</p>
+                      <p className="text-[10px] text-muted truncate">{task.projectName}</p>
+                      <div className="w-full h-1 bg-border rounded-full overflow-hidden">
+                        <div className="h-full bg-accent2 rounded-full" style={{ width: `${task.progress}%` }} />
+                      </div>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {task.category && (
+                          <span className="text-[9px] px-1.5 py-0.5 border border-white/20 bg-white/5 rounded text-muted font-mono uppercase">{task.category}</span>
+                        )}
+                        {task.loe && (
+                          <span className="text-[9px] px-1.5 py-0.5 border border-accent2/50 bg-accent2/10 rounded text-accent2 font-mono uppercase">{task.loe}</span>
+                        )}
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -392,9 +538,14 @@ export default function DashboardPage() {
         {aiSummary ? (
           <div>
             <p className="text-sm text-heading leading-relaxed">{aiSummary.summary}</p>
-            <p className="text-[9px] text-muted/50 font-mono mt-3">
-              Generated {new Date(aiSummary.generatedAt).toLocaleString()}
-            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[9px] font-mono text-muted/50">
+              <p>Generated {new Date(aiSummary.generatedAt).toLocaleString()}</p>
+              {(aiSummary.model ?? aiSummary.provider) && (
+                <span className="rounded border border-border px-1.5 py-0.5 text-muted/70">
+                  {aiSummary.model ?? aiSummary.provider}
+                </span>
+              )}
+            </div>
           </div>
         ) : !aiSummaryLoading && (
           <p className="text-xs text-muted">Click Generate for a personalized summary of your projects and tasks.</p>

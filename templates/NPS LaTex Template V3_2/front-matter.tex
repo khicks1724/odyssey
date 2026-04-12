@@ -1,0 +1,167 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% Information about your work
+%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+% LaTeX uses the following information about your work to create the "front matter" of
+% your document.
+
+\title{[Title]}
+
+% Student info
+\author{[Author Name]}
+\rank{[Rank, Service]}    %\rank{Civilian} % if you don't have a rank
+\degree{Master of Science in [Degree]}
+\degreeabbreviation{MS}   % Should be MS, MBA or MA
+\prevdegrees{[B.S., My Old School, Year]} % previous degree
+% For students with multiple degrees, place \\ between each.
+
+% Department info
+\department{Department of [Department]}
+\thesisadvisor{[Primary Advisor]}
+\secondreader{[Second Reader]}
+\departmentchair{[Department Chair]}
+
+% The date you are graduating:
+\degreedate{[Month Year]}
+
+% Use same distribution statement selected on your thesis dashboard.
+\distribution{Approved for public release. Distribution is unlimited.}
+
+% Paste abstract from your thesis dashboard. New paragraphs start after an empty line.
+\abstract{%
+\lipsum[1] % example text, remove me
+}
+
+% If CUI (Controlled Unclassified Information), swap which line is commented-out (the % sign) for your drafts.
+\securitybanner{}
+%\securitybanner{CUI} % remove before requesting FINAL REVIEW with thesis processor, who will insert final banners.
+%
+% Do NOT upload CUI to public websites like Overleaf.com.
+%
+% If you are interested in getting a SECURE Overleaf site approved for NPS CUI work, visit https://nps.edu/web/thesisprocessing/latex-cui.
+%
+% Mandatory fields for the SF298.
+%
+\ifnpstechreport
+    \ReportType{Technical Report}
+\else
+    \ReportType{Master's Thesis}
+\fi
+\ReportDate{[Month Year]}       % for a thesis, graduation date
+\SponsoringAgency{N/A}          % really, for technical reports
+\DatesCovered{MM-DD-YYYY to MM-DD-YYYY}
+\ReportClassification{Unclassified}
+\AbstractClassification{Unclassified}
+\PageClassification{Unclassified}
+%
+% Optional fields for the SF298.
+%
+\RPTpreparedFor{}
+\ContractNumber{}
+\GrantNumber{}
+\ProgramElementNumber{}
+\TaskNumber{}
+\WorkUnitNumber{}
+\POReportNumber{}
+\Acronyms{}
+\SMReportNumber{}
+\SubjectTerms{}
+\ResponsiblePerson{}
+\RPTelephone{}
+\SignatureOne{}
+\SignatureTwo{}
+\SupplementaryNotes{The views expressed in this document are those of the author and do not reflect the official policy or position of the Department of Defense or the U.S. Government.
+}
+
+% Optional. Prevents footnotes from being reset at each chapter
+% Comment this out to have them reset with each chapter.
+\makeatletter
+\@removefromreset{footnote}{chapter}
+\makeatother
+
+% Optional. Adds pdf metadata and links.
+% This should be right before the \begin{document}, to be the
+% last package / macros defined. (Hyper-ref is fragile,
+% needs to be last, and has known conflicts with other packages.)
+% Comment out if you have build problems building with hyperref
+\NPShyperref
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%
+% Your thesis begins here.
+%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\begin{document}
+%% IEEE format only and Mechanical and Aerospace Engineering (MAE) Department only:
+%% Uncomment the next line.  All others, leave commented out (with % sign)
+%\bstctlcite{forced-et-al-off}
+\NPScover                  % Cover page
+\NPSsftne                  % SF298 form
+%\NPSsignature             % Tech Report page (iii): signature page
+\ifnpstechreport
+    \else
+    \NPSthesistitle            % Thesis page (iii): title page
+    \fi
+\NPSabstractpage           % Abstract Page
+\NPSfrontmatter            % NPS front matter follows
+
+\ifnpstechreport
+\else
+\DraftwatermarkOptions{stamp=false} % Starting at this point in the document, this commands the draftwatermark package to stop printing.
+\fi
+
+% This changes the chaptermark and includes the various tables
+% It must be here.  Comment this line out for articles that do not contain chapters.
+\renewcommand{\chaptermark}[1]{\markboth{\MakeUppercase{\chaptername}\ \thechapter.\ #1}{}}
+
+%
+% If you don't need one of these, comment it out.
+%
+%\setcounter{page}{7} % -- if you need to change the page number for the TOC do it here
+\NPStableOfContents
+\NPSlistOfFigures
+\NPSlistOfTables
+\NPSlistOfAcronymsFromFile{acronyms}
+
+%
+% Put (optional) Executive Summary here.
+% New paragraphs start after an empty line. See exec_sum_with_refs.tex under the examples directory for a demo.
+% If not using, comment-out or delete all of these lines.
+%
+\NPSexecsummary{%
+This is different from your abstract. An executive summary is required or recommended for the departments listed \href{https://nps.edu/documents/105790666/106471207/Executive_Summary_Guidance.pdf}{\underline{here}}. Most executive summaries range from 2--5 pages.
+
+An executive summary is a highly condensed version of your thesis that should be able to stand alone, independent of your thesis. An executive summary should summarize your purpose, methods, results, conclusions, and recommendations to allow someone who can read ONLY that document to walk away with a solid understanding of the research.
+
+If you include figures or tables in your executive summary, do not use the caption commands for the titles. Instead, manually type in the titles. This will keep these titles out of your thesis's Lists of Figures and List of Tables, and allow the figure and table numbering to start at “1” in the thesis body, as required.
+
+% How to have References in your Executive Summary:
+If you include citations in the Executive Summary, it may make more sense to type your entries in manually, since most executive summaries contain only a handful of sources. To add a reference list programmatically, see exec\_sum\_with\_refs.tex in the ``additional\_resources'' node of this template for the code.
+% Instead of having this sample Executive Summary content here, put your executive summary in the
+% file additional_resources/exec_sum_with_refs.tex and use this next line to link it here:
+%\input{additional_resources/exec_sum_with_refs}
+}
+
+%
+% Put (optional) acknowledgements here.  
+% New paragraphs start after an empty line.
+% If not using, comment-out or delete all of these lines.
+%
+\NPSacknowledgements{%
+Optional for all departments. Acknowledgments may be more informal in tone than the main thesis text but should still follow the correct use of sentence structure, grammar, and punctuation. 
+
+Write your own acknowledgments; do not borrow the text from another author. While acknowledgments tend to be similar across document types, they should reflect your own language and sentence structure.
+}
+
+\NPSdisclosures{%
+This page is used to openly state any financial, personal, or other benefits related to the work that may not be obvious to the reader. As a rule of thumb: If a reasonable reader might question your objectivity if they knew about it, it should be disclosed. This includes funding, sponsorships, paid or unpaid affiliations, access to special resources, or any personal benefit that could influence—or appear to influence—your decisions or conclusions.
+
+This section should also clearly explain whether and how generative artificial intelligence (genAI) tools were used during the research or writing process (for example, for brainstorming, coding assistance, editing, or data analysis). If genAI was used in a way that affected the content, structure, or interpretation of the work, it should be disclosed. You can review NPS’s guidance on citation and disclosure of genAI here:
+
+https://nps.edu/web/gwc/citation-disclosure
+
+Transparency helps maintain academic integrity, builds trust with the reader, and allows the work to be evaluated fairly. When in doubt, disclose rather than omit.
+}
+
+% Start layout for the NPS body
+\NPSbody

@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { pushUndoAction } from '../lib/undo-manager';
 import type { Goal } from '../types';
 import './TimelinePage.css';
 import './Timeline.css';
@@ -241,8 +242,35 @@ export default function TimelinePage({
   };
 
   const deleteSprint = async (id: string) => {
+    const sprintIndex = sprints.findIndex((sprint) => sprint.id === id);
+    const deletedSprint = sprintIndex >= 0 ? sprints[sprintIndex] ?? null : null;
     await supabase.from('time_periods').delete().eq('id', id);
     setSprints((prev) => prev.filter((s) => s.id !== id));
+    if (!deletedSprint || !projectId) return;
+    pushUndoAction({
+      label: `Deleted ${deletedSprint.type} ${deletedSprint.name}`,
+      undo: async () => {
+        const { data, error } = await supabase
+          .from('time_periods')
+          .insert({
+            id: deletedSprint.id,
+            project_id: projectId,
+            name: deletedSprint.name,
+            type: deletedSprint.type,
+            start_date: deletedSprint.start_date,
+            end_date: deletedSprint.end_date,
+          })
+          .select('id, name, type, start_date, end_date')
+          .single();
+        if (error) throw error;
+        setSprints((prev) => {
+          if (prev.some((sprint) => sprint.id === deletedSprint.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(sprintIndex, next.length), 0, data as Sprint);
+          return next.sort((a, b) => a.start_date.localeCompare(b.start_date));
+        });
+      },
+    });
   };
 
   /* ── Filtered + sorted goals ── */
@@ -590,7 +618,7 @@ export default function TimelinePage({
             type="button"
             onClick={createSprint}
             disabled={!sprintForm.name.trim() || !sprintForm.start_date || !sprintForm.end_date}
-            className="text-[10px] font-mono px-3 py-1 bg-accent text-white rounded hover:opacity-90 disabled:opacity-40 transition-opacity h-[26px]"
+            className="odyssey-fill-accent text-[10px] font-mono px-3 py-1 rounded transition-opacity hover:opacity-90 disabled:opacity-40 h-[26px]"
           >
             Add
           </button>
@@ -661,6 +689,16 @@ export default function TimelinePage({
                   }}
                   onMouseLeave={() => setHovered(null)}
                   onClick={() => onGoalClick?.(goal)}
+                  onKeyDown={(event) => {
+                    if (!onGoalClick) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onGoalClick(goal);
+                    }
+                  }}
+                  tabIndex={onGoalClick ? 0 : -1}
+                  role={onGoalClick ? 'button' : undefined}
+                  aria-label={onGoalClick ? `Edit task ${goal.title}` : undefined}
                 >
                   <span className="tl-label-dot shrink-0" />
                   <span className="text-[11px] font-mono truncate leading-tight tl-label-text">
@@ -795,6 +833,16 @@ export default function TimelinePage({
                     onMouseEnter={(e) => setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect(), 'bar')}
                     onMouseLeave={() => setHovered(null)}
                     onClick={() => onGoalClick?.(goal)}
+                    onKeyDown={(event) => {
+                      if (!onGoalClick) return;
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onGoalClick(goal);
+                      }
+                    }}
+                    tabIndex={onGoalClick ? 0 : -1}
+                    role={onGoalClick ? 'button' : undefined}
+                    aria-label={onGoalClick ? `Edit task ${goal.title}` : undefined}
                   >
                     <div className="tl-bar-track" {...({ style: cv({ '--tl-bg': c.bg, '--tl-border': `${c.border}40` }) } as any)} />
                     <div className="tl-bar-fill"  {...({ style: cv({ '--tl-bg': c.border, '--tl-w': `${fillW}px` }) } as any)} />

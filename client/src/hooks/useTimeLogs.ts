@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { pushUndoAction } from '../lib/undo-manager';
 import type { TimeLog } from '../types';
 
 export function useTimeLogs(goalId: string | undefined) {
@@ -41,8 +42,29 @@ export function useTimeLogs(goalId: string | undefined) {
   };
 
   const deleteLog = async (id: string) => {
+    const logIndex = logs.findIndex((log) => log.id === id);
+    const deletedLog = logIndex >= 0 ? logs[logIndex] ?? null : null;
     const { error } = await supabase.from('time_logs').delete().eq('id', id);
-    if (!error) setLogs(prev => prev.filter(l => l.id !== id));
+    if (error) return;
+    setLogs(prev => prev.filter(l => l.id !== id));
+    if (!deletedLog) return;
+    pushUndoAction({
+      label: `Deleted time log (${deletedLog.logged_hours}h)`,
+      undo: async () => {
+        const { data, error: restoreError } = await supabase
+          .from('time_logs')
+          .insert(deletedLog)
+          .select()
+          .single();
+        if (restoreError) throw restoreError;
+        setLogs((prev) => {
+          if (prev.some((log) => log.id === deletedLog.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(logIndex, next.length), 0, data as TimeLog);
+          return next;
+        });
+      },
+    });
   };
 
   return { logs, loading, totalHours, logTime, deleteLog, refetch: fetchLogs };

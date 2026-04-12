@@ -93,9 +93,23 @@ export const fontThemes: FontTheme[] = [
       fontTracking: '0em',
     },
   },
+  {
+    id: 'mfd',
+    name: 'MFD',
+    label: 'MFD',
+    sample: 'Aa',
+    vars: {
+      fontUi: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif',
+      fontSans: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif',
+      fontSerif: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", Arial, sans-serif',
+      fontMono: 'Consolas, "Lucida Console", "Cascadia Mono", monospace',
+      fontScale: '1.01',
+      fontTracking: '0.035em',
+    },
+  },
 ];
 
-function applyFontTheme(theme: FontTheme) {
+export function applyFontTheme(theme: FontTheme) {
   const root = document.documentElement;
   root.style.setProperty('--font-ui', theme.vars.fontUi);
   root.style.setProperty('--font-sans', theme.vars.fontSans);
@@ -104,6 +118,10 @@ function applyFontTheme(theme: FontTheme) {
   root.style.setProperty('--font-scale', theme.vars.fontScale ?? '1');
   root.style.setProperty('--font-tracking', theme.vars.fontTracking ?? 'normal');
   root.setAttribute('data-font-theme', theme.id);
+}
+
+export function getFontThemeById(id: string) {
+  return fontThemes.find((theme) => theme.id === id) ?? null;
 }
 
 interface FontThemeContextValue {

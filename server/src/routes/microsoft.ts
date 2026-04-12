@@ -9,7 +9,7 @@ const ENCRYPT_KEY_HEX = process.env.MICROSOFT_TOKEN_ENCRYPT_KEY ?? '';
 const canEncrypt = ENCRYPT_KEY_HEX.length === 64;
 
 function encryptToken(text: string): string {
-  if (!canEncrypt) return text;
+  if (!canEncrypt) throw new Error('MICROSOFT_TOKEN_ENCRYPT_KEY must be set to store Microsoft tokens');
   const key = Buffer.from(ENCRYPT_KEY_HEX, 'hex');
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -19,7 +19,7 @@ function encryptToken(text: string): string {
 }
 
 function decryptToken(encryptedText: string): string {
-  if (!canEncrypt) return encryptedText;
+  if (!canEncrypt) throw new Error('MICROSOFT_TOKEN_ENCRYPT_KEY must be set to decrypt Microsoft tokens');
   const [ivHex, tagHex, dataHex] = encryptedText.split(':');
   const key = Buffer.from(ENCRYPT_KEY_HEX, 'hex');
   const iv = Buffer.from(ivHex, 'hex');
@@ -79,6 +79,9 @@ function verifyState(state: string): string | null {
 
 // ── Load stored token, refreshing if expired ─────────────────────────────────
 async function getAccessToken(userId: string): Promise<string | null> {
+  if (!canEncrypt) {
+    throw new Error('MICROSOFT_TOKEN_ENCRYPT_KEY must be configured');
+  }
   const { data, error } = await supabase
     .from('user_connections')
     .select('access_token, refresh_token, expires_at')

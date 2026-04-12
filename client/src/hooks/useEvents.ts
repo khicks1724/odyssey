@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { isGeneratedThesisLatexCommitEvent } from '../lib/activity-filters';
 import type { OdysseyEvent } from '../types';
 
 export function useEvents(projectId: string | undefined) {
@@ -16,7 +17,7 @@ export function useEvents(projectId: string | undefined) {
       .order('occurred_at', { ascending: false })
       .limit(50);
 
-    if (!error && data) setEvents(data);
+    if (!error && data) setEvents(data.filter((event) => !isGeneratedThesisLatexCommitEvent(event as OdysseyEvent)));
     setLoading(false);
   }, [projectId]);
 
@@ -33,7 +34,9 @@ export function useEvents(projectId: string | undefined) {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'events', filter: `project_id=eq.${projectId}` },
         (payload) => {
-          setEvents((prev) => [payload.new as OdysseyEvent, ...prev]);
+          const nextEvent = payload.new as OdysseyEvent;
+          if (isGeneratedThesisLatexCommitEvent(nextEvent)) return;
+          setEvents((prev) => [nextEvent, ...prev]);
         },
       )
       .subscribe();
@@ -57,7 +60,7 @@ export function useRecentEvents(limit = 20) {
       .order('occurred_at', { ascending: false })
       .limit(limit)
       .then(({ data, error }) => {
-        if (!error && data) setEvents(data);
+        if (!error && data) setEvents(data.filter((event) => !isGeneratedThesisLatexCommitEvent(event as OdysseyEvent)));
         setLoading(false);
       });
   }, [limit]);

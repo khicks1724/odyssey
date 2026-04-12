@@ -31,6 +31,7 @@ export interface Goal {
   status: 'not_started' | 'in_progress' | 'in_review' | 'complete' | 'active' | 'at_risk' | 'missed';
   risk_score: number | null;
   progress: number;
+  estimated_hours?: number | null;
   completed_at: string | null;
   assigned_to: string | null;
   assignees: string[];

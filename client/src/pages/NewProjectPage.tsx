@@ -128,7 +128,7 @@ export default function NewProjectPage() {
   };
 
   return (
-    <div className="p-8 max-w-2xl mx-auto">
+    <div className="app-page-width app-page-width--compact p-8 max-w-2xl mx-auto">
       {/* Header */}
       <div className="mb-8">
         <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">

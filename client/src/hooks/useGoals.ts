@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { pushUndoAction } from '../lib/undo-manager';
 import type { Goal } from '../types';
 
 export function useGoals(projectId: string | undefined) {
@@ -23,7 +24,7 @@ export function useGoals(projectId: string | undefined) {
     fetchGoals();
   }, [fetchGoals]);
 
-  const createGoal = async (goal: { title: string; description?: string | null; deadline?: string; category?: string; loe?: string; assigned_to?: string; assignees?: string[]; createdByAI?: boolean }) => {
+  const createGoal = async (goal: { title: string; description?: string | null; deadline?: string; category?: string; loe?: string; assigned_to?: string; assignees?: string[]; estimated_hours?: number | null; createdByAI?: boolean }) => {
     if (!projectId) throw new Error('No project');
     const { data: { user } } = await supabase.auth.getUser();
     const assignees = goal.assignees?.length ? goal.assignees : (goal.assigned_to ? [goal.assigned_to] : []);
@@ -37,6 +38,7 @@ export function useGoals(projectId: string | undefined) {
         status: 'not_started',
         category: goal.category || null,
         loe: goal.loe || null,
+        estimated_hours: goal.estimated_hours ?? null,
         assigned_to: assignees[0] ?? null,
         assignees,
         created_by: goal.createdByAI ? null : (user?.id ?? null),
@@ -64,7 +66,7 @@ export function useGoals(projectId: string | undefined) {
     return data;
   };
 
-  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'description' | 'deadline' | 'status' | 'progress' | 'assigned_to' | 'assignees' | 'category' | 'loe' | 'completed_at' | 'ai_guidance'>>) => {
+  const updateGoal = async (id: string, updates: Partial<Pick<Goal, 'title' | 'description' | 'deadline' | 'status' | 'progress' | 'estimated_hours' | 'assigned_to' | 'assignees' | 'category' | 'loe' | 'completed_at' | 'ai_guidance'>>) => {
     const { data: { user } } = await supabase.auth.getUser();
     const enriched: typeof updates & { updated_by?: string | null } = { ...updates, updated_by: user?.id ?? null };
     if (updates.description !== undefined) {
@@ -120,9 +122,31 @@ export function useGoals(projectId: string | undefined) {
   };
 
   const deleteGoal = async (id: string) => {
+    const goalIndex = goals.findIndex((goal) => goal.id === id);
+    const deletedGoal = goalIndex >= 0 ? goals[goalIndex] ?? null : null;
     const { error } = await supabase.from('goals').delete().eq('id', id);
     if (error) throw error;
     setGoals((prev) => prev.filter((g) => g.id !== id));
+
+    if (!deletedGoal) return;
+
+    pushUndoAction({
+      label: `Deleted task ${deletedGoal.title}`,
+      undo: async () => {
+        const { data, error: restoreError } = await supabase
+          .from('goals')
+          .insert(deletedGoal)
+          .select()
+          .single();
+        if (restoreError) throw restoreError;
+        setGoals((prev) => {
+          if (prev.some((goal) => goal.id === deletedGoal.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(goalIndex, next.length), 0, data as Goal);
+          return next;
+        });
+      },
+    });
   };
 
   return { goals, loading, createGoal, updateGoal, deleteGoal, refetch: fetchGoals };

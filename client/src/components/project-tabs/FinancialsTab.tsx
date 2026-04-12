@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../lib/auth';
-import * as XLSX from 'xlsx';
+import { pushUndoAction } from '../../lib/undo-manager';
 import './FinancialsTab.css';
 
 interface FinancialRow {
@@ -21,133 +21,13 @@ interface FinancialRow {
 
 const CAT_LABEL: Record<string, string> = { budget: 'Budget', expense: 'Expense', revenue: 'Revenue' };
 const CAT_COLOR: Record<string, string> = {
-  budget:  'text-[#3b8eea] border-[#3b8eea]/30 bg-[#3b8eea]/8',
+  budget: 'text-[#3b8eea] border-[#3b8eea]/30 bg-[#3b8eea]/8',
   expense: 'text-[#e85555] border-[#e85555]/30 bg-[#e85555]/8',
   revenue: 'text-[#52c98e] border-[#52c98e]/30 bg-[#52c98e]/8',
-};
-const CAT_BAR: Record<string, string> = {
-  budget:  'bg-[#3b8eea]',
-  expense: 'bg-[#e85555]',
-  revenue: 'bg-[#52c98e]',
 };
 
 function fmt(n: number) {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-}
-
-function parseAmount(v: unknown): number {
-  if (v === null || v === undefined || v === '') return 0;
-  if (typeof v === 'number') return v;
-  const s = String(v).replace(/[$,\s]/g, '');
-  const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
-}
-
-function parseDate(v: unknown): string | null {
-  if (!v) return null;
-  if (typeof v === 'number') {
-    // Excel serial date
-    try {
-      const d = XLSX.SSF.parse_date_code(v);
-      return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
-    } catch { return null; }
-  }
-  const s = String(v).trim();
-  const m = s.match(/(\d{1,4})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-  if (!m) return null;
-  const [, a, b, c] = m;
-  if (a.length === 4) return `${a}-${b.padStart(2,'0')}-${c.padStart(2,'0')}`;
-  const year = c.length === 2 ? `20${c}` : c;
-  return `${year}-${a.padStart(2,'0')}-${b.padStart(2,'0')}`;
-}
-
-function inferCategory(sheetName: string, colCategory: string): 'budget' | 'expense' | 'revenue' {
-  const s = (sheetName + ' ' + colCategory).toLowerCase();
-  if (/budget|plan|alloc/.test(s)) return 'budget';
-  if (/revenue|income|earn|receipt/.test(s)) return 'revenue';
-  return 'expense';
-}
-
-/** Find the likely header row in a raw sheet (first row where most cells are non-numeric strings) */
-function findHeaderRow(aoa: unknown[][]): number {
-  for (let i = 0; i < Math.min(10, aoa.length); i++) {
-    const row = aoa[i];
-    const textCells = row.filter((c) => typeof c === 'string' && c.trim().length > 0);
-    if (textCells.length >= 2) return i;
-  }
-  return 0;
-}
-
-/** Parse an XLSX/CSV file and return rows ready for DB insert */
-function parseSpreadsheet(
-  buffer: ArrayBuffer,
-  fileName: string,
-): Omit<FinancialRow, 'id' | 'created_by'>[] {
-  const wb = XLSX.read(buffer, { type: 'array', cellDates: false });
-  const results: Omit<FinancialRow, 'id' | 'created_by'>[] = [];
-
-  for (const sheetName of wb.SheetNames) {
-    const ws = wb.Sheets[sheetName];
-    const aoa: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as unknown[][];
-    if (aoa.length < 2) continue;
-
-    const headerIdx = findHeaderRow(aoa);
-    const headers = (aoa[headerIdx] as unknown[]).map((h) => String(h ?? '').toLowerCase().trim());
-
-    // Map semantic column indices
-    const amountIdx   = headers.findIndex((h) => /amount|cost|price|total|budget|value|spend|expense|actual|est/i.test(h));
-    const labelIdx    = headers.findIndex((h) => /name|label|desc|item|title|task|activity|account|line/i.test(h));
-    const dateIdx     = headers.findIndex((h) => /date|when|period|month/i.test(h));
-    const categoryIdx = headers.findIndex((h) => /^(category|type|class|kind|group)$/i.test(h));
-    const noteIdx     = headers.findIndex((h) => /note|comment|remark|detail/i.test(h));
-
-    for (let r = headerIdx + 1; r < aoa.length; r++) {
-      const row = aoa[r] as unknown[];
-      const label  = labelIdx  >= 0 ? String(row[labelIdx]  ?? '').trim() : '';
-      const amount = amountIdx >= 0 ? parseAmount(row[amountIdx]) : 0;
-      if (!label && !amount) continue;
-
-      const catRaw   = categoryIdx >= 0 ? String(row[categoryIdx] ?? '').trim() : '';
-      const category = inferCategory(sheetName, catRaw);
-      const dateStr  = dateIdx >= 0 ? parseDate(row[dateIdx]) : null;
-      const note     = noteIdx >= 0 ? String(row[noteIdx] ?? '').trim() || null : null;
-      const finalLabel = label || `${sheetName} row ${r}`;
-
-      results.push({ label: finalLabel, amount, category, note, date: dateStr, sheet_name: sheetName });
-    }
-  }
-
-  // Fallback: CSV plain text
-  if (results.length === 0 && fileName.toLowerCase().endsWith('.csv')) {
-    const decoder = new TextDecoder();
-    const text = decoder.decode(buffer);
-    const lines = text.trim().split('\n');
-    if (lines.length >= 2) {
-      const header = lines[0].split(',').map((h) => h.trim().replace(/"/g, '').toLowerCase());
-      const labelI = header.findIndex((h) => /label|name|desc/.test(h));
-      const amtI   = header.findIndex((h) => /amount|cost|value/.test(h));
-      const catI   = header.findIndex((h) => /category/.test(h));
-      const dateI  = header.findIndex((h) => /date/.test(h));
-      const noteI  = header.findIndex((h) => /note/.test(h));
-      for (let i = 1; i < lines.length; i++) {
-        const cols = lines[i].split(',').map((c) => c.trim().replace(/"/g, ''));
-        const label  = labelI >= 0 ? cols[labelI] ?? '' : '';
-        const amount = parseAmount(amtI >= 0 ? cols[amtI] : '0');
-        if (!label) continue;
-        const catRaw = catI >= 0 ? cols[catI] : '';
-        results.push({
-          label,
-          amount,
-          category: inferCategory('', catRaw),
-          note: noteI >= 0 ? cols[noteI] || null : null,
-          date: dateI >= 0 ? parseDate(cols[dateI]) : null,
-          sheet_name: null,
-        });
-      }
-    }
-  }
-
-  return results;
 }
 
 // ── Simple SVG chart helpers ──────────────────────────────────────────────────
@@ -205,20 +85,44 @@ export default function FinancialsTab({ projectId }: Props) {
   // ── Clear all data ────────────────────────────────────────────────────────
   const handleClearAll = async () => {
     if (!window.confirm('Delete ALL financial data for this project? This cannot be undone.')) return;
+    const deletedRows = [...rows];
+    const previousActiveSheet = activeSheet;
     setClearing(true);
     await supabase.from('project_financials').delete().eq('project_id', projectId);
     setRows([]);
     setActiveSheet(null);
     setClearing(false);
+    if (deletedRows.length === 0) return;
+    pushUndoAction({
+      label: `Deleted ${deletedRows.length} financial entr${deletedRows.length === 1 ? 'y' : 'ies'}`,
+      undo: async () => {
+        const { error } = await supabase.from('project_financials').insert(deletedRows);
+        if (error) throw error;
+        setRows(deletedRows);
+        setActiveSheet(previousActiveSheet);
+      },
+    });
   };
 
   // ── Delete a single sheet's rows ─────────────────────────────────────────
   const handleDeleteSheet = async (name: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!window.confirm(`Remove all rows from sheet "${name}"? This cannot be undone.`)) return;
+    const deletedRows = rows.filter((row) => row.sheet_name === name);
     await supabase.from('project_financials').delete().eq('project_id', projectId).eq('sheet_name', name);
-    if (activeSheet === name) setActiveSheet(null);
-    fetchRows();
+    const nextActiveSheet = activeSheet === name ? null : activeSheet;
+    setRows((prev) => prev.filter((row) => row.sheet_name !== name));
+    setActiveSheet(nextActiveSheet);
+    if (deletedRows.length === 0) return;
+    pushUndoAction({
+      label: `Deleted financial sheet ${name}`,
+      undo: async () => {
+        const { error } = await supabase.from('project_financials').insert(deletedRows);
+        if (error) throw error;
+        setRows((prev) => [...prev, ...deletedRows].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? '')));
+        setActiveSheet(activeSheet);
+      },
+    });
   };
 
   // ── Sheet tabs (derived from data) ───────────────────────────────────────
@@ -298,24 +202,52 @@ export default function FinancialsTab({ projectId }: Props) {
 
   // ── Delete row ────────────────────────────────────────────────────────────
   const deleteRow = async (id: string) => {
+    const rowIndex = rows.findIndex((row) => row.id === id);
+    const deletedRow = rowIndex >= 0 ? rows[rowIndex] ?? null : null;
     await supabase.from('project_financials').delete().eq('id', id);
-    fetchRows();
+    setRows((prev) => prev.filter((row) => row.id !== id));
+    if (!deletedRow) return;
+    pushUndoAction({
+      label: `Deleted financial row ${deletedRow.label}`,
+      undo: async () => {
+        const { data, error } = await supabase
+          .from('project_financials')
+          .insert(deletedRow)
+          .select()
+          .single();
+        if (error) throw error;
+        setRows((prev) => {
+          if (prev.some((row) => row.id === deletedRow.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(rowIndex, next.length), 0, data as FinancialRow);
+          return next;
+        });
+      },
+    });
   };
 
   // ── File import (CSV or XLSX) ─────────────────────────────────────────────
   const handleFile = async (file: File) => {
     setSaving(true); setError(null);
     try {
-      const buffer = await file.arrayBuffer();
-      const parsed = parseSpreadsheet(buffer, file.name);
-      if (!parsed.length) {
-        setError('No valid rows found. Ensure the file has amount and label/name columns.');
-        setSaving(false);
-        return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('You must be signed in to import financial data.');
+
+      const form = new FormData();
+      form.append('file', file);
+
+      const res = await fetch(`/api/projects/${projectId}/financials/import`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: form,
+      });
+      const payload = await res.json().catch(() => ({ error: 'Failed to import financial data.' })) as { error?: string };
+      if (!res.ok) {
+        throw new Error(payload.error ?? 'Failed to import financial data.');
       }
-      const inserts = parsed.map((r) => ({ ...r, project_id: projectId, created_by: user?.id ?? null }));
-      const { error: err } = await supabase.from('project_financials').insert(inserts);
-      if (err) setError(err.message); else { fetchRows(); }
+      fetchRows();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to parse file');
     }
@@ -425,7 +357,7 @@ export default function FinancialsTab({ projectId }: Props) {
             ref={fileRef}
             type="file"
             title="Import file"
-            accept=".csv,.xlsx,.xls"
+            accept=".csv,.xlsx"
             className="hidden"
             onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
           />

@@ -13,6 +13,7 @@ create table public.profiles (
   display_name text,
   avatar_url  text,
   email       text,
+  thesis_page_snapshot jsonb not null default '{}'::jsonb,
   created_at  timestamptz default now()
 );
 

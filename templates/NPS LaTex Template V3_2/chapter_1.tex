@@ -1,0 +1,296 @@
+\chapter{Introduction}\label{ch:common}
+
+This is the beginning of Chapter~\ref{ch:common}. 
+Always have text between every head and subhead. You have a lot of control over the placement of your figures and tables. Examine the source files for the lines of code used to create the figures and tables exampled in this template. 
+
+\section{A Bit of History}
+
+This NPS \LaTeX{} thesis template was created in 2011 by faculty members in the Computer Science Department. NPS technical report NPS-CS-11-011 by Garfinkel and Axtell (find it in the NPS library!) provides an introduction to \LaTeX{} and the basic structure of the thesis template. However, this template has evolved since 2011 in a somewhat {\it ad hoc} manner, and some of the information in Garfinkel and Axtell's technical report is outdated.
+
+\section{References}
+The reference style is the most noticeable difference between the IEEE and INFORMS styles.
+The NPS thesis template has \LaTeX{} use the \BibTeX{} engine to build the references list.
+All references go into a .bib file.  This template uses references.bib.  Only the references that you cite in your document will appear in the references list.  This enables you to use one .bib file for multiple projects.
+
+\subsection{Citing References}
+To cite your references, you create a reference key for each source entry in your .bib file.  For example, if your \BibTeX{} entry is of the form {\tt @article\{Jones:1989,\dots}, then you can cite this reference with the key {\tt Jones:1989}.
+\begin{itemize}
+    \item \textbf{IEEE} users need to use the \verb|\cite{[key]}| command.
+    \item \textbf{INFORMS} users need to use either the \verb|\citep{[key]}| command for a parenthetical citation or \verb|\citet{[key]}| for an author-in-text citation.
+\end{itemize}
+
+% For the sake of this template, we use either the \citep{} or \citet{} commands but need to change all of them here to the \cite{} command for IEEE:
+\ifinforms
+\else
+\let\citep\cite
+\let\citet\cite
+\fi
+
+\subsubsection{Start with [1] for IEEE!}\label{sec:firstone}
+The references should begin with citation \citep{pollan_2006} in your main thesis body. If they start with another number, it is most likely caused by citation numbers in your figure captions or table titles, which appear ``first'' in the List of Figures and List of Tables, since these appear before your first chapter. To fix this, use a \underline{two-part caption}; see the caption for Figure \ref{fig:dragon}. If references in the executive summary are causing it, see how to use the ``bibunit'' environment in the ``exec\_sum\_with\_refs.tex'' file in the ``additional\_resources'' folder of this template.
+
+For a couple tips on citing in the IEEE style with \LaTeX{}:
+\begin{enumerate}
+    \item When citing multiple references as a group, \LaTeX{} delineates them with commas, even if they appear consecutively in the references list~\cite{pollan_2006,Crabtree:Chaplin:2013,DOD.8570.01-M}.
+    \item Sometimes you will notice a \verb|~| preceding a \verb|\cite| command in the source of this template.  The \verb|~| acts as a non-breaking space.  It is optional, but can be helpful to prevent a citation's number from word wrapping to its own line.
+\end{enumerate}
+
+\subsubsection{How to Cite in Text Using INFORMS Style}
+See the SETUP file for instructions on switching this template to INFORMS style. There are several ways of citing references. \textbf{If you still have this template configured for IEEE, some of these examples will look wrong.}
+\begin{enumerate}
+    \item {\it With the author(s) as a noun (e.g., the subject) in a sentence:}
+    In \citet{pollan_2006}, renewed interest was expressed in eating anything and everything, even if in an {\it ad hoc} manner; see \citet{Crabtree:Chaplin:2013} for a general treatment.  
+    \item {\it As a parenthetic reference supporting a statement:} 
+    An important contribution in the development of DOD information assurance policy is the connection to game theory \citep{DOD.8570.01-M}. 
+    \item {\it A reference that is part of a longer parenthetic statement:} 
+    Understanding the way in which pizza becomes a ``locally optimal'' strategy when weighed against other foods is a topic for future consideration \ifinforms\citep[see][for a discussion]{Yoshi:1988}\else\verb|\citep[see][for a discussion]{Yoshi:1988}|\fi.
+    \item {\it Multiple citations:} 
+    Tutorial material is available from several sources \citep{Monster:1985, Nekeip:2008, pollan_2006}
+\end{enumerate}
+
+\subsection{Example Library References}
+The citation format approved by the Thesis Processing Office is shown online at \url{https://libguides.nps.edu/citation/bibtex}. This template samples each of its entries. Match the source type below to the entry in the List of References at the end of this template.
+
+\begin{itemize}
+    \item Blog:  \citep{locke_2020}
+    \item Book Chapter (in edited book), one author, one editor:  \citep{haynes_2009}
+    \item Electronic book:  \citep{bonds_2014,krishnan_2008,Crabtree:Chaplin:2013}
+    \item Book (print), one author:  \citep{pollan_2006}
+    \item Book (print), two authors:  \citep{strindberg_warn_2011}
+    \item Book (print), three authors:  \citep{Cordesman:2009}
+    \item Book (in series):  \citep{abramowitz_64}
+    \item Book (portion):  \citep{orend_2013}
+    \item Book (volume):  \citep{myer_77}
+    \item Book Chapter (in edited book), three authors, two editors:  \citep{Cordesman:2009}
+    \item Class Notes / Lecture, Published:  \citep{Blanche:2017}
+    \item Class Notes, Unpublished:  \citep{Houston:2016}
+    \item Lecture, Unpublished:  \citep{Norton:2014}
+    \item Presentation or Workshop:  \citep{Horse:2017}
+    \item Computer Program / Software, online:  \citep{comprehensive_2005}
+    \item Conference Proceedings (online):  \citep{morentz_2009}
+    \item Conference Proceedings (print):  \citep{katz_2007}
+    \item Paper Presented at Conference, Unpublished:  \citep{Teplin:EtAl:2005}
+    \item Data Set / Database, Published:  \citep{Suro:2004,nsa_ipac_2012}
+    \item Data Set, Unpublished:  \citep{Blanche:2006}
+    \item Dictionary / Encyclopedia:  \citep{merriam_2017}
+    \item Fact Sheet:  \citep{FLSA:2008}
+    \item Directive / Instruction:  \citep{DOD.8570.01-M}
+    \item Memorandum \citep{takai_2013}
+    \item Joint Doctrine:  \citep{JP-3-01}
+    \item Field Manual:  \citep{sniper_2011}
+    \item CRS or GAO Report:  \citep{erwin_2011}
+    \item Handbook (online):  \citep{TSP-168:1972}
+    \item Handbook (print):  \citep{transmission_comm_85}
+    \item Journal Article (online):  \citep{sanico_2018}
+    \item Journal Article (print):  \citep{Griffin:2009}
+    \item (IEEE only, citation not required for INFORMS) Public Law:  \citep{americans_1991}
+    \item Map:  \citep{Google_2017}
+    \item Multimedia/Video:  \citep{youtube_2014}
+    \item Magazine / Newspaper Article:  \citep{linguine_2016}
+    \item Magazine/ Newspaper Article, author known:  \citep{Beforebad:2014}
+    \item Patent:  \citep{bell_1876}
+    \item Personal Communication / Email:  \citep{Wunkerbunk:2002}
+    \item Interview:  \citep{Monster:1985}
+    \item Report / Technical Report / Working Paper / think tank:  \citep{dixon_2017,Wonka:1972}
+    \item Secondary Source:  \citep{Nicholson:2003}
+    \item Standard:  \citep{standard_1968}
+    \item Dissertation from school's archive such as Calhoun:  \citep{Yoshi:1988}
+    \item Thesis from commercial database:  \citep{Nekeip:2008}
+    \item Unpublished Work Accepted for Publication:  \citep{Horse:1996} 
+    \item Unpublished Work (print):  \citep{Horse:1995} 
+    \item Unpublished Work (arXiv):  \citep{simonyan-vgg16-2015}
+    \item Webpage, author and publication date given:  \citep{Sushi:1995}
+    \item Webpage, no author given, organization as author:  \citep{FBI_2017}
+    \item Webpage, no date given:  \citep{Python:2017}
+    \item Webpage, Janes example:  \citep{Janes_2017}
+    \item Wikipedia: \citep{wiki_2016}
+    \item Working Paper:  \citep{sushi_2021}    
+\end{itemize}
+
+\subsection{Best Practices in the {\tt bib} File}
+
+Refer to the {\tt references.bib} file for the coding used to produce entries exactly like those pictured on NPS's reference guide at \url{https://libguides.nps.edu/citation/bibtex}. Some of the tricks used are as follows:
+\begin{itemize}
+    \item \textbf {Underscores or \% in web addresses.} Underscores or \% in web addresses will corrupt the format of the entry, so always insert a backslash before each, like this: {\tt web\textbackslash\_address}, {\tt web\textbackslash\%address}
+    \item \textbf {Capital words.} Use braces to retain word capitalization when needed, especially around acronyms and around proper nouns in titles, as in: {\tt \{The summer when \{Bob\} grew up\}}
+    \item \textbf {Organization as author.} Use double braces around any organization names in the {\tt Author} field. This stops the {\tt bst} file from inverting it and reducing words to an initial, like it does to a person's name.
+    \item \textbf {``U.S.'' error.} If ``United States'' is part of the {\tt author} name, use double braces: {\tt \{\{United States Navy\}\}}. \textbf{Do not use ``U.S.'' in the {\tt Author} field}. Instead, SPELL OUT as ``United States.'' The bst file is hardwired to remove periods, to invert, and to use the first initial, so ``U.S. Navy'' or ``US Navy'' will output as ``Navy U'' (not good).
+    \item \textbf {Colons in titles.} If there is a colon in a title, note that \LaTeX{} will capitalize the first word after the colon.
+    \item \textbf {Don't forget those commas!} There must be a comma after every field (except for the last field of each entry). Without the comma, the fields that follow will not output.
+    \item \textbf {Recompile often}. Catch errors as you input data, rather than trying to catch errors by proofreading the entire list all at once (even the best eyes miss things). 
+\end{itemize}
+
+When creating a new \BibTeX{} entry, you do have several degrees of freedom in making things work:
+\begin{itemize}
+    \item You can choose different entry types (e.g., {\tt @manual} vs.~{\tt @misc}).
+    \item You have flexibility in the choice and format of fields within each entry (e.g., the {\tt note} field is often a ``catch all'' for information that doesn't naturally fit in other fields). 
+\end{itemize}
+
+There is no absolute right or wrong in the creation of these entries. All that matters is the final product: how the entry looks in the final List of References. The guesswork for many entry types, however, has been done for you; refer to the {\tt references.bib} file for the techniques that result in entries matching the format approved by the Thesis Processing Office. 
+
+\section{Sections}
+\LaTeX{} offers multiple outline levels.
+They are chapter, section, subsection, subsubsection, paragraph, subparagraph, and subsubparagraph.
+
+Sometimes you need to have a shortened version a section's title appear in the table of contents.
+To do this, use \verb|\chapter[]{}|, just like we use \verb|\caption[]{}| for the figure examples below.
+The square brackets contain the TOC entry and the curly braces contain the actual chapter/section title.
+You can also use this technique for keeping other macros, \textbf{like acronyms and footnotes}, out of the table of contents.
+
+
+\section{Acronym Management}
+This is a good way to manage acronyms throughout your thesis.
+This shows the acronym macro being used for \ac{TCP}, which is produced in its short form \ac{TCP} on all subsequent uses of the macro.
+Acronyms are reset after the abstract and executive summary, and will be shown in their long form in their first use by default.
+The acronym package has a lot of capability to use acronyms, including a short form \acs{TCP} and plural form \acp{SRWBR}; see the acronyms file and acronym package documentation for additional details.
+Here is another example using \ac{DOD} then \ac{DOD} or \ac{NPS} then \ac{NPS}.
+Finally, \ac{MASINT} as later appears as \ac{MASINT} and \ac{USN} likewise appears subsequently as \ac{USN}.
+You can read the \texttt{acronym} package documentation to learn more about other features, including how to have a different indefinite article preceding your acronym, appropriate for whether \LaTeX{} renders the long or short form.
+
+\section{Figure Formatting}\label{sec:figures}
+
+In the source code file, take a look at the code to produce Figure \ref{fig:dragon} and its placement.
+\begin{itemize}
+    \item Use an [H] float to place the figure exactly at that spot in your document, and to prevent figures from landing in the middle of paragraphs. 
+    \item Use a \verb+\vspace+ to add space between each figure and the text above it. 
+    \item You may also want or need to change the image size. Image scaling is also shown in Figure \ref{fig:dragon}.  
+    \item Refer to each figure by its number in the body text. Examine the source file in this section for how to label and then cross reference your figures.
+\end{itemize}
+
+Figures should be readable if the words in them are meant to be read. You may need to re-create images when the source text is too fuzzy to read. Each figure must be referred to by its number in the body text.
+See Section~\ref{sec:uncommon-figures} for examples of less common figures.
+
+\begin{figure}[H] % use an H float to place the figure at that specific spot, and to prevent a figure from landing in the middle of a paragraph.
+    \centering
+    \includegraphics[scale=.7]{figs/dragon.jpg}
+    \caption[Short caption for List of Figures only; full caption in main text.]{Compare this caption to its match in the List of Figures. The caption displays in full here, but only the text enclosed in the square brackets appears in the List of Figures. This is how to have longer captions, but a succinct list of figures. This method also prevents citations from appearing in the LoF and, for IEEE, ensuring the first citation will start at ``1'' in the main text.  Source:~\citet{pollan_2006}.}
+    \label{fig:dragon} % for cross referencing
+\end{figure}
+
+You can also use figures to display the source code for computer programs or scripts that you created to conduct your research.
+The \LaTeX{} \verb|listings| package (\url{https://www.ctan.org/pkg/listings}) will format (and, with some additional configuration, color) your code according to the language.
+See Figure~\ref{fig:python-short} for code that is shorter than one page and Section~\ref{sec:uncommon-figures} for code that is longer than one page.
+
+\begin{figure}[H] % use an H float to place the figure at that specific spot, and to prevent a figure from landing in the middle of a paragraph.
+    \centering
+    \lstinputlisting[language=Python,numbers=left,breaklines,frame=single]{figs/Python-short.py}
+    \caption{A Python Code Sample}
+    \label{fig:python-short} % for cross referencing
+\end{figure}
+
+\section{Table Formatting}\label{section:tableformat}
+See lines of code used to create Table \ref{table:sampletab} in the source document for format considerations regarding tables.      
+     
+\begin{table}[H] % H prevents table from landing in the middle of a paragraph
+    \centering
+    \caption[Table short title]{Table short title. Adapted from~\citet[table 5]{congress_1991}.} % note brackets and curly brackets to display citation here but not in the List of Tables; note also that this table is not entirely original and therefore requires an ``Adapted from'' in the table title.
+    \label{table:sampletab}
+    \begin{tabular}{ c c c }
+    \hline
+      1 & 2 & 3 \\ \hline
+      4 & 5 & 6 \\
+      7 & 8 & 9 \\
+      10 & 11 & 12 \\
+      13 & 14 & 15 \\
+    \hline
+    \end{tabular}
+\end{table}
+
+If you have more data to show in a table than will fit vertically on one page, consider using a long table, as demonstrated in Section~\ref{sec:uncommon-figures}.
+Other options for more advanced tables include the \texttt{tabularray} package.
+
+\section{Tips}
+Following the guidance here as you draft your thesis will save you time later in going back to implement it.
+
+\subsection{Examples}
+Look at the source \LaTeX{} code to see how to render these parts.
+
+\subsubsection{Footnotes}
+Here we demonstrate footnotes. Be sure to end all footnotes with a period.\footnote{This is a sample footnote.} See the bottom of the page for the footnote.
+Sometimes you need to use a footnote in a chapter or section title.
+To do this, use \verb|\chapter[]{}|, just like we use \verb|\caption[]{}| for Figure~\ref{fig:dragon}.
+
+Footnotes are also possible in tables, but you must consider whether you want a document-level footnote or a footnote that pertains just to the table, that is, a table note.  In most cases, table notes are most appropriate.
+
+\begin{table}[H] % H prevents table from landing in the middle of a paragraph
+    {\centering % For a table note, insert an opening brace { before the \centering command.
+    \caption{A Table with a Footnote and Table Note}
+    \label{table:sample}
+    \begin{tabular}{ c c c }
+    \hline
+      7 & 8 & 9 \\
+      4 & 5 & 6 \\
+      1 & 2 & 3 \\
+      0\footnotemark &  & . \\
+    \hline
+    \end{tabular} \par} % Insert "\par }" to tell LaTeX you want another paragraph after this (but still within the table float environment) and then provided the closing brace to end the portion that you want centered.
+    {\footnotesize\textit{Note:} Here is my note about something in the table.  You will need all the code in this line.  This table looks like a keyboard's number pad.\singlespacing} % If your note ends up being only one line long, then you may get an error when trying to use \singlespacing, in which case you will need to omit the \singlespacing command.
+\end{table}
+\footnotetext{This is for a footnote with broader scope than is appropriate for a table note.  Zero is an important number.}
+
+\subsubsection{Equations}
+A simple equation to check numbering.
+\begin{equation} \label{eq:pi-theory}
+a^2 + b^2 = c^2
+\end{equation}
+
+Another equation that follows Equation \ref{eq:pi-theory}:
+\begin{equation}
+    L' = {L}{\sqrt{1-\frac{v^2}{c^2}}}
+\end{equation}
+
+When an equation occurs in the middle of a sentence, such as this one involving $e \in \mathbb{R}$,
+\begin{eqnarray}
+ e^x &\approx& 1+x+x^2/2! \nonumber \\
+   && \hphantom{1} + x^3/3! + x^4/4! \nonumber \\
+   && \hphantom{1} + x^5/5!,
+\end{eqnarray}
+then we need proper punctuation (such as the comma above) and the sentence ends here, on the next line.
+
+\subsubsection{Quotes}
+Here is an example of a block quote:
+\begin{quote}
+    \lipsum[2] \citep{katz_2007}  
+\end{quote}
+
+To output curly (``smart'') quotes, versus undesirable straight quotes ("like this"), use two tildes for the opening quote mark, and two apostrophes for the closing quote mark. There are many examples in this template, including in this paragraph.
+Sometimes, a quote can exist within another quote.  To distinguish between the layers of quoting, you can use \verb|\,| to create a narrow space.  For example, ``He said, `Hello.'\,''
+
+\subsubsection{Widows and Orphans}
+Sometimes you will see just one line of a larger paragraph at the top or bottom of a page.  At the bottom of a page, it is called a widow, and at the top of a page, it is called an orphan; both are considered ``ugly.''
+To ensure that your thesis has no widows or orphans, we have \LaTeX{} do the work for you with using this line in your preamble:
+\begin{quote}\verb|\usepackage[defaultlines=2,all]{nowidow}|\end{quote}
+\ldots or you can control them manually with the \verb+\pagebreak+ command. For more ideas, \href{https://wiki.nps.edu/pages/viewpage.action?pageId=720175227}{\underline{click here}}.
+
+
+\subsection{Style and Formatting}
+Please consider the following guidelines to ensure a smoother process with the Thesis Processing Office:
+\begin{enumerate}
+    \item Punctuation (periods and commas) go inside quotation marks. 
+    \item The macros \verb+\etal+, \verb+\ie+, \verb+\eg+ and \verb+\etc+ force proper
+      American English convention for these (\ie a comma follows).
+      It is redundant and incorrect to use \etc at the end of a list of
+      examples (\eg apples, pears, \etc).
+    \item Chicago style recommends subordinate clauses using \verb+\ie+ and \verb+\eg+ be
+    separated from the main clause using parentheses (\eg, as shown above).
+    \item Use the \LaTeX{} \verb+\begin{figure}+ and \verb+\begin{table}+ environment to
+      create floating figures and tables. Use the \verb+\caption+ command
+      to create your captions. Label your captions with the
+      \verb+\label{foo}+ command inside the caption itself. Reference
+      these figures and tables with the \verb+\ref{foo}+ reference command.
+    \item Do not split text around a figure or table. 
+    \item Thesis Processing prefers periods in ``U.S.,'' for example, U.S. Navy.
+    Common acronyms do not appear in the list of acronyms (\eg, \ac{US}, \ac{FBI}, \ac{CIA}).
+    \item Master's degree has an apostrophe and Postgraduate is one word. 
+    \item Most acronyms do not need periods, like \ac{NPS}. Common acronyms need not appear in the list of acronyms (\eg, \ac{US}, \ac{FBI}, \ac{CIA}).
+    \item When typing a date, do not use ``st'' or ``th.'' Instead, just
+      note the date: July 4, 1776, is Independence Day. Commas go 
+    after month/date, year: both Jefferson and Adams died on July 4, 1826.
+    No comma between month/yr: \textit{Alice's Adventures in Wonderland} was published in July 1865.
+    \item In general, spell out numbers one through nine, and use numerals for 10 and greater.
+    \item Capitalize C in Chapter, F in Figure, T in Table and E in Equation when referring
+    to your own chapters, figures, tables and equations.
+    \item When there is more than one reference, put them both into the \verb+\cite+ command: \verb+\cite{john1,john2}+. It will render like this \citep{sanico_2018,Griffin:2009,linguine_2016}.
+    \item When typing equations in text, use ``where'' or ``if.'' Use Math Mode. 
+    \item When inserting symbols, use Math Mode.
+\end{enumerate}

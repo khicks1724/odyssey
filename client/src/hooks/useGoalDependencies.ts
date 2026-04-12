@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { pushUndoAction } from '../lib/undo-manager';
 import type { GoalDependency } from '../types';
 
 export function useGoalDependencies(goalId: string | undefined, projectId: string | undefined) {
@@ -34,6 +35,8 @@ export function useGoalDependencies(goalId: string | undefined, projectId: strin
   };
 
   const removeDependency = async (dependsOnGoalId: string) => {
+    const dependencyIndex = dependencies.findIndex((dependency) => dependency.depends_on_goal_id === dependsOnGoalId);
+    const deletedDependency = dependencyIndex >= 0 ? dependencies[dependencyIndex] ?? null : null;
     const { error } = await supabase
       .from('goal_dependencies')
       .delete()
@@ -41,6 +44,24 @@ export function useGoalDependencies(goalId: string | undefined, projectId: strin
       .eq('depends_on_goal_id', dependsOnGoalId);
     if (!error) {
       setDependencies(prev => prev.filter(d => d.depends_on_goal_id !== dependsOnGoalId));
+      if (!deletedDependency) return;
+      pushUndoAction({
+        label: 'Deleted task dependency',
+        undo: async () => {
+          const { data, error: restoreError } = await supabase
+            .from('goal_dependencies')
+            .insert(deletedDependency)
+            .select()
+            .single();
+          if (restoreError) throw restoreError;
+          setDependencies((prev) => {
+            if (prev.some((dependency) => dependency.id === deletedDependency.id)) return prev;
+            const next = [...prev];
+            next.splice(Math.min(dependencyIndex, next.length), 0, data as GoalDependency);
+            return next;
+          });
+        },
+      });
     }
   };
 

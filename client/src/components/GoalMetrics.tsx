@@ -252,6 +252,36 @@ export default function GoalMetrics({
   const avgProgress = totalGoals > 0
     ? Math.round(goals.reduce((s, g) => s + g.progress, 0) / totalGoals)
     : 0;
+  const today = new Date();
+  const twoWeeksFromNow = new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000);
+  const actualHoursByGoal = new Map<string, number>();
+  for (const log of timeLogs) {
+    actualHoursByGoal.set(log.goal_id, (actualHoursByGoal.get(log.goal_id) ?? 0) + log.logged_hours);
+  }
+  const plannedGoals = goals.filter((goal) => (goal.estimated_hours ?? 0) > 0 || (actualHoursByGoal.get(goal.id) ?? 0) > 0);
+  const plannedHours = plannedGoals.reduce((sum, goal) => sum + (goal.estimated_hours ?? 0), 0);
+  const actualHours = plannedGoals.reduce((sum, goal) => sum + (actualHoursByGoal.get(goal.id) ?? 0), 0);
+  const remainingHours = plannedGoals
+    .filter((goal) => goal.status !== 'complete')
+    .reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
+  const scheduleAtRisk = goals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) <= twoWeeksFromNow && goal.progress < 80).length;
+  const overdueOpen = goals.filter((goal) => goal.status !== 'complete' && goal.deadline && new Date(goal.deadline) < today).length;
+  const planningVariance = actualHours - plannedHours;
+  const activePlanningPeople = allPeople.map((person) => {
+    const assignedGoals = goals.filter((goal) => (goal.assignees?.length ? goal.assignees : goal.assigned_to ? [goal.assigned_to] : []).includes(person.user_id));
+    const recentHours = timeLogs
+      .filter((log) => log.user_id === person.user_id)
+      .reduce((sum, log) => sum + log.logged_hours, 0);
+    const plannedLoad = assignedGoals.reduce((sum, goal) => sum + Math.max((goal.estimated_hours ?? 0) - (actualHoursByGoal.get(goal.id) ?? 0), 0), 0);
+    const blockedOrLate = assignedGoals.filter((goal) => goal.status === 'at_risk' || goal.status === 'missed' || (goal.deadline && new Date(goal.deadline) < today)).length;
+    return {
+      ...person,
+      activeTasks: assignedGoals.filter((goal) => goal.status !== 'complete').length,
+      plannedLoad,
+      recentHours,
+      blockedOrLate,
+    };
+  }).filter((person) => person.activeTasks > 0 || person.plannedLoad > 0 || person.recentHours > 0);
 
   if (totalGoals === 0) {
     return (
@@ -467,6 +497,66 @@ export default function GoalMetrics({
           </div>
         </div>
       )}
+
+      {/* ── Planning Depth ── */}
+      <div className="border border-border bg-surface p-6">
+        <SectionHeader label="Planning Depth" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border mb-5">
+          {[
+            { label: 'Planned Hours', value: plannedHours.toFixed(1), color: 'text-accent2' },
+            { label: 'Actual Hours', value: actualHours.toFixed(1), color: 'text-heading' },
+            { label: 'Remaining Load', value: remainingHours.toFixed(1), color: 'text-accent3' },
+            { label: 'Schedule Risks', value: scheduleAtRisk + overdueOpen, color: 'text-accent' },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="bg-surface p-4">
+              <div className={`font-sans text-xl font-extrabold ${color}`}>{value}</div>
+              <div className="text-[10px] text-muted tracking-wider uppercase mt-0.5">{label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <div className="text-[10px] uppercase tracking-widest text-muted">Planned vs Actual</div>
+            <p className="text-xs text-muted leading-relaxed">
+              {plannedGoals.length > 0
+                ? `Tracked estimates cover ${plannedGoals.length} task${plannedGoals.length === 1 ? '' : 's'}. Variance is ${planningVariance >= 0 ? '+' : ''}${planningVariance.toFixed(1)}h against current estimates.`
+                : 'No task estimates are recorded yet. Add estimated hours on tasks to unlock variance tracking.'}
+            </p>
+            <MiniBar
+              pct={plannedHours > 0 ? Math.min(100, Math.round((actualHours / plannedHours) * 100)) : 0}
+              color={planningVariance > 0 ? 'bg-danger' : 'bg-accent2'}
+            />
+            <div className="text-[10px] text-muted font-mono">
+              {overdueOpen} overdue open task{overdueOpen === 1 ? '' : 's'} · {scheduleAtRisk} deadline-sensitive task{scheduleAtRisk === 1 ? '' : 's'} in the next 14 days
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-[10px] uppercase tracking-widest text-muted">Capacity and Allocation</div>
+            {activePlanningPeople.length === 0 ? (
+              <p className="text-xs text-muted">No member-level planning data yet.</p>
+            ) : (
+              activePlanningPeople
+                .sort((left, right) => right.plannedLoad - left.plannedLoad || right.recentHours - left.recentHours)
+                .slice(0, 5)
+                .map((person) => (
+                  <div key={person.user_id} className="rounded border border-border bg-surface2/60 px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-heading font-medium truncate">{person.display_name ?? person.user_id}</span>
+                      <span className={`text-[10px] font-mono ${person.blockedOrLate > 0 ? 'text-danger' : person.plannedLoad > Math.max(person.recentHours * 1.5, 12) ? 'text-accent' : 'text-accent3'}`}>
+                        {person.plannedLoad.toFixed(1)}h remaining
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[10px] text-muted font-mono">
+                      {person.activeTasks} active · {person.recentHours.toFixed(1)}h logged · {person.blockedOrLate} late/at-risk
+                    </div>
+                  </div>
+                ))
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* ── Time Tracking ── */}
       {timeLogs.length > 0 && (() => {
