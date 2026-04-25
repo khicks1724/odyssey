@@ -8,3 +8,9 @@ dist/
 deploy/odyssey.env
 deploy/supabase/.env
 export/
+generated_reports/
+
+# Personal local-only workspace folders
+personal/
+private-assets/
+scratch/
