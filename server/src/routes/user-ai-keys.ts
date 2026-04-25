@@ -29,8 +29,8 @@ import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { supabase } from '../lib/supabase.js';
 
-type Provider = 'anthropic' | 'openai' | 'google' | 'google_ai';
-const VALID_PROVIDERS: Provider[] = ['anthropic', 'openai', 'google', 'google_ai'];
+type Provider = 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4';
+const VALID_PROVIDERS: Provider[] = ['anthropic', 'openai', 'google', 'google_ai', 'nvidia', 'gemma4'];
 type OpenAiCredentialMode = 'openai' | 'azure_openai';
 type ProviderCredentialConfig = {
   mode?: OpenAiCredentialMode;
@@ -48,6 +48,8 @@ type StoredKeyRow = {
 };
 
 const TEST_OUTPUT_TOKENS = 16;
+const DEFAULT_NVIDIA_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
+const DEFAULT_GEMMA4_MODEL = 'google/gemma-4-31b-it';
 
 // ── Encryption helpers ─────────────────────────────────────────────────────
 
@@ -156,7 +158,52 @@ function normalizeEnabledModels(values: unknown): string[] {
   )];
 }
 
+function normalizeNvidiaApiKeys(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(
+    values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )];
+}
+
+function parseStoredNvidiaApiKeys(plaintext: string): string[] {
+  const trimmed = plaintext.trim();
+  if (!trimmed) return [];
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) {
+    return [trimmed];
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) return normalizeNvidiaApiKeys(parsed);
+    if (parsed && typeof parsed === 'object' && 'keys' in parsed) {
+      return normalizeNvidiaApiKeys((parsed as { keys?: unknown }).keys);
+    }
+  } catch {
+    return [trimmed];
+  }
+  return [];
+}
+
 function sanitizeConfig(provider: Provider, raw: unknown): ProviderCredentialConfig {
+  if (provider === 'nvidia' || provider === 'gemma4') {
+    if (!raw || typeof raw !== 'object') {
+      return {
+        preferredModel: provider === 'gemma4' ? DEFAULT_GEMMA4_MODEL : DEFAULT_NVIDIA_MODEL,
+        enabledModels: [provider],
+      };
+    }
+    const preferredModel = typeof (raw as { preferredModel?: unknown }).preferredModel === 'string'
+      ? normalizePreferredOpenAiModel((raw as { preferredModel: string }).preferredModel)
+      : provider === 'gemma4' ? DEFAULT_GEMMA4_MODEL : DEFAULT_NVIDIA_MODEL;
+    const enabledModels = normalizeEnabledModels((raw as { enabledModels?: unknown }).enabledModels);
+    return {
+      preferredModel: preferredModel || (provider === 'gemma4' ? DEFAULT_GEMMA4_MODEL : DEFAULT_NVIDIA_MODEL),
+      enabledModels: enabledModels.length > 0 ? enabledModels : [provider],
+    };
+  }
+
   if (provider !== 'openai' || !raw || typeof raw !== 'object') {
     if (provider === 'openai') return { mode: 'openai' };
     return raw && typeof raw === 'object'
@@ -190,6 +237,12 @@ function sanitizeConfig(provider: Provider, raw: unknown): ProviderCredentialCon
 
 function validateConfig(provider: Provider, raw: unknown): { config: ProviderCredentialConfig; error?: string } {
   const config = sanitizeConfig(provider, raw);
+  if (provider === 'nvidia' || provider === 'gemma4') {
+    if (!config.preferredModel?.trim()) {
+      return { config, error: provider === 'gemma4' ? 'A default Gemma 4 model ID is required.' : 'A default NVIDIA model ID is required.' };
+    }
+    return { config };
+  }
   if (provider !== 'openai') return { config };
 
   if (config.mode === 'azure_openai') {
@@ -310,6 +363,70 @@ async function testOpenAiCredential(apiKey: string, config: ProviderCredentialCo
   };
 }
 
+async function testNvidiaCredential(apiKeys: string[], config: ProviderCredentialConfig): Promise<{ message: string; model?: string }> {
+  const model = config.preferredModel?.trim() || DEFAULT_NVIDIA_MODEL;
+  let lastError: unknown = null;
+
+  for (const apiKey of apiKeys) {
+    const client = new OpenAI({
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      apiKey,
+    });
+
+    try {
+      await client.chat.completions.create({
+        model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: TEST_OUTPUT_TOKENS,
+        temperature: 1,
+        top_p: 0.95,
+        extra_body: {
+          chat_template_kwargs: { enable_thinking: true },
+          reasoning_budget: TEST_OUTPUT_TOKENS,
+        },
+      } as Parameters<typeof client.chat.completions.create>[0]);
+
+      return { message: 'NVIDIA API key set is valid.', model };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('NVIDIA credential test failed.');
+}
+
+async function testGemma4Credential(apiKeys: string[], config: ProviderCredentialConfig): Promise<{ message: string; model?: string }> {
+  const model = config.preferredModel?.trim() || DEFAULT_GEMMA4_MODEL;
+  let lastError: unknown = null;
+
+  for (const apiKey of apiKeys) {
+    const client = new OpenAI({
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+      apiKey,
+    });
+
+    try {
+      await client.chat.completions.create({
+        model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: TEST_OUTPUT_TOKENS,
+        temperature: 1,
+        top_p: 0.95,
+        extra_body: {
+          chat_template_kwargs: { enable_thinking: true },
+          reasoning_budget: TEST_OUTPUT_TOKENS,
+        },
+      } as Parameters<typeof client.chat.completions.create>[0]);
+
+      return { message: 'Gemma 4 API key set is valid.', model };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Gemma 4 credential test failed.');
+}
+
 async function testGeminiBearer(accessToken: string): Promise<{ message: string; model?: string }> {
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent', {
     method: 'POST',
@@ -355,6 +472,9 @@ async function testGoogleCredential(provider: Provider, credential: string): Pro
 
     if (!response.ok) {
       const text = await response.text();
+      if (text.startsWith('<!doctype') || text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+        throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. Odyssey tests this key from the server, and the Odyssey server could not reach GenAI.mil from an approved network. Move the server onto DoD/VPN access or use another model. (HTTP ${response.status})`);
+      }
       throw new Error(text || `GenAI.mil API ${response.status}`);
     }
 
@@ -384,6 +504,12 @@ async function testStoredCredential(provider: Provider, row: StoredKeyRow): Prom
   if (provider === 'openai') {
     return testOpenAiCredential(plaintext, config);
   }
+  if (provider === 'nvidia') {
+    return testNvidiaCredential(parseStoredNvidiaApiKeys(plaintext), config);
+  }
+  if (provider === 'gemma4') {
+    return testGemma4Credential(parseStoredNvidiaApiKeys(plaintext), config);
+  }
   return testGoogleCredential(provider, plaintext);
 }
 
@@ -393,6 +519,12 @@ async function testPlaintextCredential(provider: Provider, apiKey: string, confi
   }
   if (provider === 'openai') {
     return testOpenAiCredential(apiKey, config);
+  }
+  if (provider === 'nvidia') {
+    return testNvidiaCredential(normalizeNvidiaApiKeys([apiKey]), config);
+  }
+  if (provider === 'gemma4') {
+    return testGemma4Credential(normalizeNvidiaApiKeys([apiKey]), config);
   }
   return testGoogleCredential(provider, apiKey);
 }
@@ -439,18 +571,26 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
   });
 
   // PUT /api/user/ai-keys — store/update a provider API key or OAuth credential (encrypted)
-  server.put<{ Body: { provider: Provider; apiKey: string; credentialType?: 'api_key' | 'oauth'; config?: ProviderCredentialConfig } }>(
+  server.put<{ Body: { provider: Provider; apiKey?: string; apiKeys?: string[]; credentialType?: 'api_key' | 'oauth'; config?: ProviderCredentialConfig } }>(
     '/user/ai-keys',
     async (request, reply) => {
       const userId = await getUserFromRequest(request.headers.authorization);
       if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
 
-      const { provider, apiKey, credentialType = 'api_key', config: rawConfig } = request.body ?? {};
+      const { provider, apiKey, apiKeys, credentialType = 'api_key', config: rawConfig } = request.body ?? {};
 
       if (!provider || !VALID_PROVIDERS.includes(provider)) {
         return reply.status(400).send({ error: `provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
       }
-      if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
+      const normalizedApiKeys = provider === 'nvidia' || provider === 'gemma4'
+        ? normalizeNvidiaApiKeys(apiKeys ?? (typeof apiKey === 'string' ? [apiKey] : []))
+        : [];
+
+      if (provider === 'nvidia' || provider === 'gemma4') {
+        if (normalizedApiKeys.length === 0) {
+          return reply.status(400).send({ error: provider === 'gemma4' ? 'At least one Gemma 4 API key is required' : 'At least one NVIDIA API key is required' });
+        }
+      } else if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
         return reply.status(400).send({ error: 'apiKey must be a non-empty string' });
       }
 
@@ -459,7 +599,10 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
         return reply.status(400).send({ error: configError });
       }
 
-      const { encryptedKey, iv, authTag } = encryptKey(apiKey.trim());
+      const plaintextToStore = provider === 'nvidia' || provider === 'gemma4'
+        ? JSON.stringify(normalizedApiKeys)
+        : apiKey!.trim();
+      const { encryptedKey, iv, authTag } = encryptKey(plaintextToStore);
 
       const { error } = await supabase
         .from('user_ai_keys')
@@ -554,7 +697,7 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
     },
   );
 
-  server.post<{ Params: { provider: string }; Body: { apiKey?: string; config?: ProviderCredentialConfig } }>(
+  server.post<{ Params: { provider: string }; Body: { apiKey?: string; apiKeys?: string[]; config?: ProviderCredentialConfig } }>(
     '/user/ai-keys/:provider/test',
     async (request, reply) => {
       const userId = await getUserFromRequest(request.headers.authorization);
@@ -565,13 +708,27 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
         return reply.status(400).send({ error: `provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
       }
 
-      const { apiKey, config: rawConfig } = request.body ?? {};
+      const { apiKey, apiKeys, config: rawConfig } = request.body ?? {};
       const { config, error: configError } = validateConfig(provider as Provider, rawConfig);
       if (configError) {
         return reply.status(400).send({ error: configError });
       }
 
       try {
+        const normalizedApiKeys = provider === 'nvidia' || provider === 'gemma4'
+          ? normalizeNvidiaApiKeys(apiKeys ?? (typeof apiKey === 'string' ? [apiKey] : []))
+          : [];
+
+        if (provider === 'nvidia' && normalizedApiKeys.length > 0) {
+          const result = await testNvidiaCredential(normalizedApiKeys, config);
+          return { ok: true, provider, ...result };
+        }
+
+        if (provider === 'gemma4' && normalizedApiKeys.length > 0) {
+          const result = await testGemma4Credential(normalizedApiKeys, config);
+          return { ok: true, provider, ...result };
+        }
+
         if (typeof apiKey === 'string' && apiKey.trim().length > 0) {
           const result = await testPlaintextCredential(provider as Provider, apiKey.trim(), config);
           return { ok: true, provider, ...result };

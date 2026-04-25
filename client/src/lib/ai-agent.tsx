@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import { supabase } from './supabase';
 import { canonicalizeOpenAiModelId } from './openai-models';
 
-export type FixedAIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil';
+export type FixedAIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAIAgentValue = `openai:${string}`;
 export type AIProvider = FixedAIProvider | OpenAIAgentValue;
 export type AIAgentValue = AIProvider | 'auto';
@@ -47,7 +47,7 @@ const AIAgentContext = createContext<AIAgentContextType>({
 const STORAGE_KEY = 'odyssey-ai-agent-v2'; // v2 = auto default; bumped to clear old stored model
 const PROVIDERS_TTL_MS = 5 * 60 * 1000; // re-fetch at most once every 5 minutes
 let lastProvidersFetch = 0;
-const FIXED_VALUES: FixedAIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
+const FIXED_VALUES: FixedAIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil', 'nvidia', 'gemma4'];
 
 export function isOpenAIAgentValue(value: string): value is OpenAIAgentValue {
   return value.startsWith('openai:') && value.slice('openai:'.length).trim().length > 0;

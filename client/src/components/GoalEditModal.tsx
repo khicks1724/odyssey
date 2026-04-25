@@ -89,6 +89,7 @@ export default function GoalEditModal({
   // Initialize from saved guidance on the task; keeps text even while regenerating
   const [guidance,        setGuidance]        = useState<string | null>(goal.ai_guidance ?? null);
   const [guidanceLoading, setGuidanceLoading] = useState(false);
+  const [guidanceError,   setGuidanceError]   = useState<string | null>(null);
 
   // Dependency management
   const { dependencies, addDependency, removeDependency } = useGoalDependencies(goal.id, projectId);
@@ -100,6 +101,7 @@ export default function GoalEditModal({
   const fetchGuidance = async () => {
     if (!projectId) return;
     setGuidanceLoading(true);
+    setGuidanceError(null);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const authToken = sessionData.session?.access_token;
@@ -118,18 +120,30 @@ export default function GoalEditModal({
           taskLoe: loe || null,
         }),
       });
-      const data = await res.json();
-      const text = res.ok ? (data.guidance ?? null) : null;
+      const data = await res.json().catch(() => null) as { guidance?: string | null; error?: string } | null;
+      if (!res.ok) {
+        setGuidanceError(data?.error ?? `AI guidance failed (${res.status}).`);
+        return;
+      }
+      const text = typeof data?.guidance === 'string' && data.guidance.trim()
+        ? data.guidance
+        : null;
+      if (!text) {
+        setGuidanceError('AI returned an empty guidance response. Try again or switch models.');
+        return;
+      }
       setGuidance(text);
       // Auto-save guidance to the task so it persists for next open.
       // Use onSilentSave so the modal stays open (onSave closes the modal).
       if (text) {
         (onSilentSave ?? onSave)(goal.id, { ai_guidance: text }).catch(() => {});
       }
-    } catch {
+    } catch (error) {
+      setGuidanceError(error instanceof Error ? error.message : 'Network error while generating AI guidance.');
       // keep existing guidance on error
+    } finally {
+      setGuidanceLoading(false);
     }
-    setGuidanceLoading(false);
   };
 
   useEffect(() => {
@@ -419,6 +433,11 @@ export default function GoalEditModal({
                       <span className="text-[10px] tracking-[0.15em] uppercase text-[var(--color-accent)] font-semibold">AI Guidance</span>
                     </div>
                     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                      {guidanceError && (
+                        <div className="mb-3 rounded-md border border-[var(--color-danger)]/35 bg-[var(--color-danger)]/10 px-3 py-2 text-[11px] text-[var(--color-danger)]">
+                          {guidanceError}
+                        </div>
+                      )}
                       {guidanceLoading ? (
                         <div className="flex items-center gap-2 text-[var(--color-muted)]">
                           <Loader2 size={13} className="animate-spin text-[var(--color-accent)]" />

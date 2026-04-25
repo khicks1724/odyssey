@@ -260,7 +260,7 @@ function RFISection({ members, currentUserName, currentUserId, categoryLabels, l
   ];
 
   return (
-    <div className="border border-border bg-surface p-6 mb-8">
+    <div className="border border-border bg-surface p-6 mb-6">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <HelpCircle size={14} className="text-accent" />
@@ -587,7 +587,7 @@ function OverviewTab({
 
       {/* AI Insights Results */}
       {(insights || insightsLoading || insightsError) && (
-        <div className="border border-border bg-surface p-6 mb-8">
+        <div className="border border-border bg-surface p-6 mb-6">
           {/* Header row — always visible */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -627,7 +627,7 @@ function OverviewTab({
               </div>
             </div>
           ) : insights && (
-            <div className="space-y-6">
+            <div className="space-y-5">
 
               {/* Project Status */}
               <div>
@@ -702,7 +702,7 @@ function OverviewTab({
 
       {/* Standup Results */}
       {(standup || standupLoading || standupError) && (
-        <div className="border border-border bg-surface p-6 mb-8">
+        <div className="border border-border bg-surface p-6 mb-6">
           <div className="flex items-center gap-2 mb-4">
             <ClipboardList size={14} className="text-accent" />
             <h3 className="font-sans text-sm font-bold text-heading">2-Week Standup</h3>
@@ -822,7 +822,7 @@ function OverviewTab({
       )}
 
       {/* Timeline */}
-      <div className="border border-border bg-surface p-6 mb-8">
+      <div className="border border-border bg-surface p-6 mb-6">
         <Timeline
           goals={goals}
           members={[

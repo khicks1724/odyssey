@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil';
+export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAiProviderSelection = `openai:${string}`;
 export type AIProviderSelection = AIProvider | OpenAiProviderSelection;
 
@@ -22,6 +22,8 @@ interface ChatMessage {
   images?: ImageAttachment[];
   /** Request strict JSON output (OpenAI-compatible providers only) */
   jsonMode?: boolean;
+  /** Disable reasoning / thinking output when a provider supports it */
+  disableReasoning?: boolean;
   /** Enable web search via the provider's native search capability */
   webSearch?: boolean;
 }
@@ -42,16 +44,26 @@ export interface ChatResult {
 
 export interface OpenAiCredentialOverride {
   apiKey: string;
+  apiKeys?: string[];
   baseURL?: string;
   authMode?: 'bearer' | 'api-key';
   modelOverride?: string;
+  providerLabel?: 'openai' | 'nvidia' | 'gemma4';
+  extraBody?: Record<string, unknown>;
+  disableServerFallback?: boolean;
+  forceDisableReasoning?: boolean;
+  requestTimeoutMs?: number;
 }
 
 export type ProviderCredentialOverride = string | OpenAiCredentialOverride;
 
 function extractCredentialValue(credential?: ProviderCredentialOverride): string {
   if (!credential) return '';
-  return typeof credential === 'string' ? credential : credential.apiKey;
+  if (typeof credential === 'string') return credential;
+  if (Array.isArray(credential.apiKeys) && credential.apiKeys.length > 0) {
+    return credential.apiKeys.join('\n');
+  }
+  return credential.apiKey;
 }
 
 function normalizeBaseUrl(value: string): string {
@@ -195,6 +207,16 @@ function resolveOpenAiCredential(apiKeyOverride?: ProviderCredentialOverride): O
       baseURL: apiKeyOverride.baseURL,
       authMode: apiKeyOverride.authMode ?? 'bearer',
       modelOverride: apiKeyOverride.modelOverride,
+      disableServerFallback: apiKeyOverride.disableServerFallback,
+    };
+  }
+  if (apiKeyOverride) {
+    return {
+      apiKey: '',
+      baseURL: apiKeyOverride.baseURL,
+      authMode: apiKeyOverride.authMode ?? 'bearer',
+      modelOverride: apiKeyOverride.modelOverride,
+      disableServerFallback: apiKeyOverride.disableServerFallback,
     };
   }
   return getServerOpenAiCredential() ?? { apiKey: '', authMode: 'bearer' };
@@ -202,6 +224,71 @@ function resolveOpenAiCredential(apiKeyOverride?: ProviderCredentialOverride): O
 
 async function callGPT(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
   return callOpenAiModel('gpt-4o', msg, apiKeyOverride);
+}
+
+async function callNvidia(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  const tokenLimit = Math.min(msg.maxTokens || 500, 16384);
+  const override: OpenAiCredentialOverride = typeof apiKeyOverride === 'string'
+    ? {
+        apiKey: apiKeyOverride,
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        authMode: 'bearer',
+        modelOverride: 'nvidia/nemotron-3-super-120b-a12b',
+        providerLabel: 'nvidia',
+        requestTimeoutMs: 60000,
+        extraBody: {
+          chat_template_kwargs: { enable_thinking: true },
+          reasoning_budget: tokenLimit,
+        },
+      }
+    : {
+        apiKey: apiKeyOverride?.apiKey ?? '',
+        apiKeys: apiKeyOverride?.apiKeys,
+        baseURL: apiKeyOverride?.baseURL ?? 'https://integrate.api.nvidia.com/v1',
+        authMode: apiKeyOverride?.authMode ?? 'bearer',
+        modelOverride: apiKeyOverride?.modelOverride ?? 'nvidia/nemotron-3-super-120b-a12b',
+        providerLabel: 'nvidia',
+        requestTimeoutMs: apiKeyOverride?.requestTimeoutMs ?? 60000,
+        extraBody: {
+          chat_template_kwargs: { enable_thinking: true },
+          reasoning_budget: tokenLimit,
+          ...(apiKeyOverride?.extraBody ?? {}),
+        },
+      };
+
+  return callOpenAiModel(override.modelOverride ?? 'nvidia/nemotron-3-super-120b-a12b', msg, override);
+}
+
+async function callGemma4(msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
+  const override: OpenAiCredentialOverride = typeof apiKeyOverride === 'string'
+    ? {
+        apiKey: apiKeyOverride,
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        authMode: 'bearer',
+        modelOverride: 'google/gemma-4-31b-it',
+        providerLabel: 'gemma4',
+        forceDisableReasoning: true,
+        requestTimeoutMs: 45000,
+        extraBody: {
+          chat_template_kwargs: { enable_thinking: false },
+        },
+      }
+    : {
+        apiKey: apiKeyOverride?.apiKey ?? '',
+        apiKeys: apiKeyOverride?.apiKeys,
+        baseURL: apiKeyOverride?.baseURL ?? 'https://integrate.api.nvidia.com/v1',
+        authMode: apiKeyOverride?.authMode ?? 'bearer',
+        modelOverride: apiKeyOverride?.modelOverride ?? 'google/gemma-4-31b-it',
+        providerLabel: 'gemma4',
+        forceDisableReasoning: apiKeyOverride?.forceDisableReasoning ?? true,
+        requestTimeoutMs: apiKeyOverride?.requestTimeoutMs ?? 45000,
+        extraBody: {
+          chat_template_kwargs: { enable_thinking: false },
+          ...(apiKeyOverride?.extraBody ?? {}),
+        },
+      };
+
+  return callOpenAiModel(override.modelOverride ?? 'google/gemma-4-31b-it', msg, override);
 }
 
 function isOpenAiProviderSelection(provider: AIProviderSelection): provider is OpenAiProviderSelection {
@@ -214,83 +301,158 @@ function shouldRetryWithMaxCompletionTokens(error: unknown): boolean {
     || (/max_tokens/i.test(message) && /max_completion_tokens/i.test(message));
 }
 
+function getHostedProviderId(credential: OpenAiCredentialOverride, model: string): 'nvidia' | 'gemma4' | null {
+  const normalizedModel = model.trim().toLowerCase();
+  if (credential.providerLabel === 'gemma4' || normalizedModel.startsWith('google/gemma-4')) {
+    return 'gemma4';
+  }
+  if (
+    credential.providerLabel === 'nvidia'
+    || (credential.baseURL?.includes('integrate.api.nvidia.com') ?? false)
+    || normalizedModel.startsWith('nvidia/')
+  ) {
+    return 'nvidia';
+  }
+  return null;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  if (timeoutMs <= 0 || !Number.isFinite(timeoutMs)) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
+}
+
 async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?: ProviderCredentialOverride): Promise<ChatResult> {
   async function executeWithCredential(credential: OpenAiCredentialOverride): Promise<ChatResult> {
-    const apiKey = credential.apiKey;
-    if (!apiKey) throw new Error('No OpenAI API key configured. Add your key in Settings → AI Providers.');
-    const serverCredential = getServerOpenAiCredential();
-    const keySource: 'user' | 'server' = serverCredential && isSameOpenAiCredential(credential, serverCredential) ? 'server' : 'user';
+    const hostedProviderId = getHostedProviderId(credential, credential.modelOverride ?? model);
+    const isHostedNvidiaCompatible = hostedProviderId !== null;
+    const providerId: AIProvider = hostedProviderId ?? 'gpt-4o';
+    const candidateApiKeys = [...new Set([
+      ...(credential.apiKeys ?? []),
+      credential.apiKey,
+    ].map((value) => value.trim()).filter(Boolean))];
+    if (candidateApiKeys.length === 0) {
+      throw new Error(
+        credential.providerLabel === 'nvidia'
+          ? 'No NVIDIA API key configured. Add your key in Settings → AI Providers.'
+          : credential.providerLabel === 'gemma4'
+            ? 'No Gemma 4 API key configured. Add your key in Settings → AI Providers.'
+          : 'No OpenAI API key configured. Add your key in Settings → AI Providers.',
+      );
+    }
 
-    const openai = new OpenAI({
-      apiKey,
-      ...(credential.baseURL ? { baseURL: credential.baseURL } : {}),
-      ...(credential.authMode === 'api-key' ? { defaultHeaders: { 'api-key': apiKey } } : {}),
-    });
-    const userContent = msg.images?.length
-      ? [
-          ...msg.images.map((img) => ({
-            type: 'image_url' as const,
-            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
-          })),
-          { type: 'text' as const, text: msg.user },
-        ]
-      : msg.user;
+    let lastError: unknown = null;
+    for (const apiKey of candidateApiKeys) {
+      const currentCredential = { ...credential, apiKey };
+      const serverCredential = getServerOpenAiCredential();
+      const keySource: 'user' | 'server' = serverCredential && isSameOpenAiCredential(currentCredential, serverCredential) ? 'server' : 'user';
 
-    const isAzureOpenAi = !!credential.baseURL;
-    const resolvedModel = credential.modelOverride ?? model;
-    // Standard OpenAI can swap to the search-preview model. Azure must keep using the configured deployment name.
-    const effectiveModel = msg.webSearch && !isAzureOpenAi ? 'gpt-4o-search-preview' : resolvedModel;
-    const baseCompletionParams: Parameters<typeof openai.chat.completions.create>[0] = {
-      model: effectiveModel,
-      messages: [
-        { role: 'system', content: msg.system },
-        { role: 'user', content: userContent as any },
-      ],
-      ...(msg.jsonMode && !msg.webSearch ? { response_format: { type: 'json_object' } } : {}),
-    };
-    const tokenLimit = msg.maxTokens || 500;
-    const completionParams: Parameters<typeof openai.chat.completions.create>[0] = msg.webSearch
-      ? baseCompletionParams
-      : { ...baseCompletionParams, max_tokens: tokenLimit };
+      const openai = new OpenAI({
+        apiKey,
+        ...(credential.baseURL ? { baseURL: credential.baseURL } : {}),
+        ...(credential.authMode === 'api-key' ? { defaultHeaders: { 'api-key': apiKey } } : {}),
+      });
+      const userContent = msg.images?.length
+        ? [
+            ...msg.images.map((img) => ({
+              type: 'image_url' as const,
+              image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+            })),
+            { type: 'text' as const, text: msg.user },
+          ]
+        : msg.user;
 
-    try {
-      const completion = await openai.chat.completions.create({ ...completionParams, stream: false }) as Awaited<ReturnType<typeof openai.chat.completions.create>> & {
-        choices?: Array<{ message?: { content?: string | null } }>;
-        usage?: {
-          prompt_tokens?: number | null;
-          completion_tokens?: number | null;
-          total_tokens?: number | null;
-        };
-      };
-      clearProviderError('gpt-4o', credential);
-      return {
-        text: completion.choices?.[0]?.message?.content || '',
-        provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}`,
+      const isAzureOpenAi = !!credential.baseURL && !isHostedNvidiaCompatible;
+      const resolvedModel = credential.modelOverride ?? model;
+      const isCustomCompatibleProvider = isHostedNvidiaCompatible;
+      const effectiveModel = msg.webSearch && !isAzureOpenAi && !isCustomCompatibleProvider ? 'gpt-4o-search-preview' : resolvedModel;
+      const supportsJsonMode = !isHostedNvidiaCompatible;
+      const disableReasoning = isHostedNvidiaCompatible && (credential.forceDisableReasoning || msg.disableReasoning || msg.jsonMode);
+      const extraBody = credential.extraBody || disableReasoning ? { ...(credential.extraBody ?? {}) } : undefined;
+      if (disableReasoning) {
+        const existingTemplateKwargs = extraBody?.chat_template_kwargs;
+        const chatTemplateKwargs = existingTemplateKwargs && typeof existingTemplateKwargs === 'object'
+          ? { ...(existingTemplateKwargs as Record<string, unknown>) }
+          : {};
+        chatTemplateKwargs.enable_thinking = false;
+        if (extraBody) {
+          extraBody.chat_template_kwargs = chatTemplateKwargs;
+          delete extraBody.reasoning_budget;
+        }
+      }
+      const baseCompletionParams: Parameters<typeof openai.chat.completions.create>[0] = {
         model: effectiveModel,
-        usage: completion.usage
-          ? {
-              promptTokens: completion.usage.prompt_tokens ?? 0,
-              completionTokens: completion.usage.completion_tokens ?? 0,
-              totalTokens: completion.usage.total_tokens ?? 0,
-            }
-          : undefined,
-        keySource,
+        messages: [
+          { role: 'system', content: msg.system },
+          { role: 'user', content: userContent as any },
+        ],
+        ...(msg.jsonMode && !msg.webSearch && supportsJsonMode ? { response_format: { type: 'json_object' } } : {}),
+        ...(extraBody ? ({ extra_body: extraBody } as any) : {}),
       };
-    } catch (err: any) {
-      if (!msg.webSearch && shouldRetryWithMaxCompletionTokens(err)) {
-        const retryParams = { ...baseCompletionParams, max_completion_tokens: tokenLimit, stream: false } as Parameters<typeof openai.chat.completions.create>[0];
-        const completion = await openai.chat.completions.create(retryParams) as Awaited<ReturnType<typeof openai.chat.completions.create>> & {
-          choices?: Array<{ message?: { content?: string | null } }>;
+      const tokenLimit = msg.maxTokens || 500;
+      const nvidiaSampling = isHostedNvidiaCompatible
+        ? (msg.jsonMode
+            ? ({ temperature: 0, top_p: 1 } as const)
+            : ({ temperature: 1, top_p: 0.95 } as const))
+        : {};
+      const completionParams: Parameters<typeof openai.chat.completions.create>[0] = msg.webSearch
+        ? baseCompletionParams
+        : { ...baseCompletionParams, ...nvidiaSampling, max_tokens: tokenLimit };
+      const requestTimeoutMs = credential.requestTimeoutMs
+        ?? (hostedProviderId === 'gemma4' ? 45000 : hostedProviderId === 'nvidia' ? 60000 : 120000);
+      const requestTimeoutMessage = hostedProviderId === 'gemma4'
+        ? 'Gemma 4 timed out while generating a response. Retry the request or switch to another model.'
+        : hostedProviderId === 'nvidia'
+          ? 'NVIDIA hosted model timed out while generating a response. Retry the request or switch to another model.'
+          : 'AI request timed out while generating a response.';
+
+      const finalizeCompletion = async (
+        completion: Awaited<ReturnType<typeof openai.chat.completions.create>> & {
+          choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
           usage?: {
             prompt_tokens?: number | null;
             completion_tokens?: number | null;
             total_tokens?: number | null;
           };
-        };
-        clearProviderError('gpt-4o', credential);
+        },
+        currentTokenLimit: number,
+        expanded = false,
+      ): Promise<ChatResult> => {
+        const content = completion.choices?.[0]?.message?.content || '';
+        const finishReason = completion.choices?.[0]?.finish_reason ?? null;
+
+        if (!msg.webSearch && !expanded && !content.trim() && finishReason === 'length' && currentTokenLimit < 2000) {
+          const expandedTokenLimit = Math.max(2000, currentTokenLimit * 2);
+          const expandedCompletion = await withTimeout(
+            openai.chat.completions.create({
+              ...baseCompletionParams,
+              ...nvidiaSampling,
+              max_completion_tokens: expandedTokenLimit,
+              stream: false,
+            }) as Promise<typeof completion>,
+            requestTimeoutMs,
+            requestTimeoutMessage,
+          );
+          return finalizeCompletion(expandedCompletion, expandedTokenLimit, true);
+        }
+
+        clearProviderError(providerId, credential);
         return {
-          text: completion.choices?.[0]?.message?.content || '',
-          provider: effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}`,
+          text: content,
+          provider: hostedProviderId
+            ? hostedProviderId
+            : (effectiveModel === 'gpt-4o' ? 'gpt-4o' : `openai:${effectiveModel}`),
           model: effectiveModel,
           usage: completion.usage
             ? {
@@ -301,16 +463,62 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
             : undefined,
           keySource,
         };
-      }
+      };
 
-      const status = err?.status ?? err?.response?.status ?? 0;
-      const body = err?.message ?? String(err);
-      markProviderError('gpt-4o', status, body, credential);
-      if (isAzureOpenAi && status === 404 && /deployment/i.test(body)) {
-        throw new Error(`Azure OpenAI deployment "${resolvedModel}" was not found. Update the deployment name in Settings → AI Providers.`);
+      try {
+        const completion = await withTimeout(
+          openai.chat.completions.create({ ...completionParams, stream: false }) as Promise<Awaited<ReturnType<typeof openai.chat.completions.create>> & {
+            choices?: Array<{ message?: { content?: string | null } }>;
+            usage?: {
+              prompt_tokens?: number | null;
+              completion_tokens?: number | null;
+              total_tokens?: number | null;
+            };
+          }>,
+          requestTimeoutMs,
+          requestTimeoutMessage,
+        );
+        return finalizeCompletion(completion, tokenLimit);
+      } catch (err: any) {
+        if (!msg.webSearch && shouldRetryWithMaxCompletionTokens(err)) {
+          try {
+            const retryParams = { ...baseCompletionParams, ...nvidiaSampling, max_completion_tokens: tokenLimit, stream: false } as Parameters<typeof openai.chat.completions.create>[0];
+            const completion = await withTimeout(
+              openai.chat.completions.create(retryParams) as Promise<Awaited<ReturnType<typeof openai.chat.completions.create>> & {
+                choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
+                usage?: {
+                  prompt_tokens?: number | null;
+                  completion_tokens?: number | null;
+                  total_tokens?: number | null;
+                };
+              }>,
+              requestTimeoutMs,
+              requestTimeoutMessage,
+            );
+            return finalizeCompletion(completion, tokenLimit);
+          } catch (retryErr: any) {
+            lastError = retryErr;
+            const status = retryErr?.status ?? retryErr?.response?.status ?? 0;
+            const body = retryErr?.message ?? String(retryErr);
+            markProviderError(providerId, status, body, credential);
+            if (isAzureOpenAi && status === 404 && /deployment/i.test(body)) {
+              throw new Error(`Azure OpenAI deployment "${resolvedModel}" was not found. Update the deployment name in Settings → AI Providers.`);
+            }
+            continue;
+          }
+        }
+
+        lastError = err;
+        const status = err?.status ?? err?.response?.status ?? 0;
+        const body = err?.message ?? String(err);
+        markProviderError(providerId, status, body, credential);
+        if (isAzureOpenAi && status === 404 && /deployment/i.test(body)) {
+          throw new Error(`Azure OpenAI deployment "${resolvedModel}" was not found. Update the deployment name in Settings → AI Providers.`);
+        }
       }
-      throw err;
     }
+
+    throw lastError ?? new Error('OpenAI-compatible request failed.');
   }
 
   const primaryCredential = resolveOpenAiCredential(apiKeyOverride);
@@ -322,6 +530,7 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
     const serverCredential = getServerOpenAiCredential();
     const shouldTryServerFallback = !!apiKeyOverride
       && serverCredential?.apiKey
+      && !primaryCredential.disableServerFallback
       && !isSameOpenAiCredential(primaryCredential, serverCredential);
 
     if (!shouldTryServerFallback) throw primaryError;
@@ -410,7 +619,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
         if (r.status === 401 || r.status === 403) {
           throw new Error(`GenAI.mil authentication failed (HTTP ${r.status}). Check that your STARK API key is correct in Settings → AI Providers.`);
         }
-        throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. You must be on a DoD network or VPN to use this model. (HTTP ${r.status})`);
+        throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. Odyssey sends this request from the server, and the Odyssey server could not reach GenAI.mil from an approved network. Move the server onto DoD/VPN access or use another model. (HTTP ${r.status})`);
       }
       // Parse JSON error to extract unlock_url or clean message
       try {
@@ -660,6 +869,8 @@ const providers: Record<AIProvider, (msg: ChatMessage, apiKeyOverride?: Provider
   'gpt-4o': callGPT,
   'gemini-pro': callGemini,
   'genai-mil': callGenAiMilProvider,
+  'nvidia': callNvidia,
+  'gemma4': callGemma4,
 };
 
 // ── Provider credit/error status cache ─────────────────────────────────────
@@ -696,6 +907,8 @@ export function getAvailableProviders(): { id: AIProvider; name: string; availab
     { id: 'gpt-4o',        name: 'GPT-4o',             available: false, status: 'no_key' },
     { id: 'gemini-pro',    name: 'Gemini 2.5 Flash',   available: false, status: 'no_key' },
     { id: 'genai-mil',     name: 'GenAI.mil (STARK)',  available: false, status: 'no_key' },
+    { id: 'nvidia',        name: 'NVIDIA',             available: false, status: 'no_key' },
+    { id: 'gemma4',        name: 'Gemma 4',            available: false, status: 'no_key' },
   ];
 }
 

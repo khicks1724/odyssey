@@ -60,6 +60,28 @@ function buildDateParts(raw: string): DateParts | null {
   const cleaned = cleanRawDateInput(raw);
   if (!cleaned) return null;
 
+  const ocrSplitYearMatch = cleaned.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?[\s,/-]*(\d)(?:st|nd|rd|th)?[\s,/-]+(\d{5})\b/i);
+  if (ocrSplitYearMatch) {
+    const monthKey = ocrSplitYearMatch[1].toLowerCase().replace(/\.$/, '');
+    const month = MONTH_INDEX_BY_NAME.get(monthKey);
+    const dayLead = ocrSplitYearMatch[2];
+    const mergedYear = ocrSplitYearMatch[3];
+    const reconstructedDay = Number.parseInt(`${dayLead}${mergedYear[0] ?? ''}`, 10);
+    const reconstructedYear = mergedYear.slice(1);
+    if (
+      month !== undefined
+      && reconstructedDay >= 1
+      && reconstructedDay <= 31
+      && /^(19|20)\d{2}$/.test(reconstructedYear)
+    ) {
+      return {
+        year: reconstructedYear,
+        month,
+        day: reconstructedDay,
+      };
+    }
+  }
+
   const monthNameMatch = cleaned.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?[\s,/-]*(\d{1,2})?(?:st|nd|rd|th)?[\s,/-]*(\d{4})\b/i);
   if (monthNameMatch) {
     const monthKey = monthNameMatch[1].toLowerCase().replace(/\.$/, '');
@@ -70,6 +92,20 @@ function buildDateParts(raw: string): DateParts | null {
         year: monthNameMatch[3],
         month,
         day: day && day >= 1 && day <= 31 ? day : null,
+      };
+    }
+  }
+
+  const dayMonthNameMatch = cleaned.match(/\b(\d{1,2})(?:st|nd|rd|th)?[\s,/-]*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?[\s,/-]*(\d{4})\b/i);
+  if (dayMonthNameMatch) {
+    const monthKey = dayMonthNameMatch[2].toLowerCase().replace(/\.$/, '');
+    const month = MONTH_INDEX_BY_NAME.get(monthKey);
+    if (month !== undefined) {
+      const day = Number.parseInt(dayMonthNameMatch[1], 10);
+      return {
+        year: dayMonthNameMatch[3],
+        month,
+        day: day >= 1 && day <= 31 ? day : null,
       };
     }
   }
@@ -89,10 +125,41 @@ function buildDateParts(raw: string): DateParts | null {
     }
 
     if (numericMatch[3].length === 4) {
+      const looksLikeDayMonthYear = first > 12 && second >= 1 && second <= 12;
       return {
         year: String(third),
-        month: first >= 1 && first <= 12 ? first - 1 : null,
-        day: second >= 1 && second <= 31 ? second : null,
+        month: looksLikeDayMonthYear
+          ? (second >= 1 && second <= 12 ? second - 1 : null)
+          : (first >= 1 && first <= 12 ? first - 1 : null),
+        day: looksLikeDayMonthYear
+          ? (first >= 1 && first <= 31 ? first : null)
+          : (second >= 1 && second <= 31 ? second : null),
+      };
+    }
+  }
+
+  const compactNumericMatch = cleaned.match(/\b(\d{8})\b/);
+  if (compactNumericMatch) {
+    const value = compactNumericMatch[1];
+    if (/^(19|20)\d{6}$/.test(value)) {
+      const year = value.slice(0, 4);
+      const month = Number.parseInt(value.slice(4, 6), 10);
+      const day = Number.parseInt(value.slice(6, 8), 10);
+      return {
+        year,
+        month: month >= 1 && month <= 12 ? month - 1 : null,
+        day: day >= 1 && day <= 31 ? day : null,
+      };
+    }
+
+    const month = Number.parseInt(value.slice(0, 2), 10);
+    const day = Number.parseInt(value.slice(2, 4), 10);
+    const year = value.slice(4, 8);
+    if (/^(19|20)\d{2}$/.test(year)) {
+      return {
+        year,
+        month: month >= 1 && month <= 12 ? month - 1 : null,
+        day: day >= 1 && day <= 31 ? day : null,
       };
     }
   }

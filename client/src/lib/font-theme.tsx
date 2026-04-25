@@ -102,7 +102,7 @@ export const fontThemes: FontTheme[] = [
       fontUi: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif',
       fontSans: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif',
       fontSerif: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", Arial, sans-serif',
-      fontMono: 'Consolas, "Lucida Console", "Cascadia Mono", monospace',
+      fontMono: '"Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif',
       fontScale: '1.01',
       fontTracking: '0.035em',
     },

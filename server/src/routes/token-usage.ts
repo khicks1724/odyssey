@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import type { ChatResult } from '../ai-providers.js';
+import {
+  getAuthorizedServerFallbackAdmin,
+  getServerFallbackPauseMap,
+  setServerFallbackPausedForUser,
+} from '../lib/server-fallback-controls.js';
 import { supabase } from '../lib/supabase.js';
 
 const TOKEN_USAGE_ADMIN_EMAILS = new Set([
@@ -176,12 +181,12 @@ async function getAuthorizedTokenUsageUser(authHeader: string | undefined) {
     typeof user.user_metadata?.email === 'string' ? user.user_metadata.email.trim().toLowerCase() : '',
   ];
   const authorizedEmail = emailCandidates.find((value) => TOKEN_USAGE_ADMIN_EMAILS.has(value));
-  if (!authorizedEmail) return null;
 
   return {
     userId: user.id,
-    email: authorizedEmail,
+    email: authorizedEmail ?? emailCandidates.find(Boolean) ?? '',
     displayName: (profile?.display_name ?? '').trim(),
+    isAdmin: Boolean(authorizedEmail),
   };
 }
 
@@ -278,10 +283,18 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
       logsQuery.eq('key_source', keySource);
     }
 
-    const [profilesRes, logsRes] = await Promise.all([
-      supabase.from('profiles').select('id, display_name, email').order('display_name', { ascending: true }),
-      logsQuery,
-    ]);
+    if (!authorized.isAdmin) {
+      logsQuery.eq('user_id', authorized.userId);
+    }
+
+    const profilesQuery = supabase.from('profiles').select('id, display_name, email');
+    if (authorized.isAdmin) {
+      profilesQuery.order('display_name', { ascending: true });
+    } else {
+      profilesQuery.eq('id', authorized.userId);
+    }
+
+    const [profilesRes, logsRes] = await Promise.all([profilesQuery, logsQuery]);
 
     if (profilesRes.error) {
       server.log.error({ err: profilesRes.error }, 'Failed to load profiles for token usage');
@@ -294,6 +307,7 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
 
     const profileRows = (profilesRes.data ?? []) as TokenUsageProfileRow[];
     const profileMap = new Map(profileRows.map((profile) => [profile.id, profile]));
+    const pausedFallbackMap = await getServerFallbackPauseMap(profileRows.map((profile) => profile.id));
     const usageMap = new Map<string, {
       userId: string;
       displayName: string;
@@ -374,13 +388,24 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
       bucket.requestCount += 1;
     }
 
-    const users = profileRows
+    const userRows = profileRows.length > 0
+      ? profileRows
+      : [{
+        id: authorized.userId,
+        display_name: authorized.displayName || null,
+        email: authorized.email || null,
+      }];
+
+    const users = userRows
       .map((profile) => {
         const usage = usageMap.get(profile.id);
+        const fallbackName = usage?.displayName || authorized.displayName || authorized.email || profile.id;
+        const fallbackEmail = usage?.email || authorized.email;
         return {
           userId: profile.id,
-          displayName: profile.display_name?.trim() || profile.email?.trim() || profile.id,
-          email: profile.email?.trim().toLowerCase() ?? '',
+          displayName: profile.display_name?.trim() || profile.email?.trim() || fallbackName,
+          email: profile.email?.trim().toLowerCase() || fallbackEmail,
+          serverFallbackPaused: pausedFallbackMap.get(profile.id) === true,
           totalTokens: usage?.totalTokens ?? 0,
           promptTokens: usage?.promptTokens ?? 0,
           completionTokens: usage?.completionTokens ?? 0,
@@ -408,5 +433,51 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
         requestCount: users.reduce((sum, user) => sum + user.requestCount, 0),
       },
     };
+  });
+
+  server.patch<{
+    Params: { userId: string };
+    Body: { paused?: boolean };
+  }>('/admin/token-usage/server-fallback/:userId', async (request, reply) => {
+    const authorizedAdmin = await getAuthorizedServerFallbackAdmin(request.headers.authorization);
+    if (!authorizedAdmin) {
+      return reply.status(404).send({ error: 'Not found' });
+    }
+
+    const userId = request.params.userId?.trim();
+    const paused = request.body?.paused === true;
+    if (!userId) {
+      return reply.status(400).send({ error: 'User id is required.' });
+    }
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('id, display_name, email')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error) {
+      server.log.error({ err: error, userId }, 'Failed to load profile for server fallback control');
+      return reply.status(500).send({ error: 'Failed to update server fallback control.' });
+    }
+    if (!profile?.id) {
+      return reply.status(404).send({ error: 'User not found.' });
+    }
+
+    try {
+      await setServerFallbackPausedForUser(userId, paused, authorizedAdmin.userId);
+      return {
+        ok: true,
+        userId,
+        paused,
+        user: {
+          displayName: profile.display_name?.trim() || profile.email?.trim() || profile.id,
+          email: profile.email?.trim().toLowerCase() ?? '',
+        },
+      };
+    } catch (updateError) {
+      server.log.error({ err: updateError, userId, paused }, 'Failed to update server fallback control');
+      return reply.status(500).send({ error: 'Failed to update server fallback control.' });
+    }
   });
 }

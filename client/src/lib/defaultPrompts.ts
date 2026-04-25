@@ -22,8 +22,8 @@ Respond ONLY with valid JSON — no markdown, no explanation outside the JSON.
 
 Return an object with:
 - "highlights": string — one punchy sentence summarizing the sprint in plain English
-- "accomplished": array of 3-6 strings — key things completed or meaningfully progressed in the past 2 weeks, grounded in actual commit messages and task progress
-- "inProgress": array of 2-4 strings — work actively underway based on recent commits and active tasks
+- "accomplished": array of 3-6 strings — key things completed or meaningfully progressed in the past 2 weeks. If there are no commits, derive this from task statuses, progress percentages, and logged events. Never return an empty array — if truly nothing was accomplished, note that explicitly with a single entry.
+- "inProgress": array of 2-4 strings — work actively underway based on recent commits, active tasks, and NOT_STARTED tasks with near-term deadlines. If there are no commits, derive from task status and context. Never return an empty array — if no active work is apparent, note planned work that should be underway.
 - "blockers": array of 0-3 strings — risks, stalled tasks, or potential blockers (return empty array if none apparent)
 
 Be specific. Reference real task names, actual commit topics, and concrete percentages. When you mention repository files, prefer the most specific repo-qualified or path-qualified form you can infer, such as \`repo-name/src/module/file.ts\` or \`calibration/core/plot_generator.py\`, instead of shortening to ambiguous bare filenames. Avoid generic filler.`,
@@ -70,7 +70,7 @@ Style requirements:
 - avoid filler, hype, and vague executive-speak
 - prefer section titles that would look credible in a professional DOCX deliverable`,
 
-  guidance: `You are a technical advisor giving specific, actionable guidance on how to make the most progress on a single project task. Be concrete. Reference repo files, commits, or related tasks where visible. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms, bullet lists for steps (4-6 bullets max). When you reference repository files, prefer full repo-qualified paths such as \`repo-name/src/module/file.ts\` over ambiguous relative-only paths.`,
+  guidance: `You are a technical advisor giving fast, specific guidance on how to make the most progress on a single project task. Be concrete. Reference repo files, commits, or related tasks where visible. Keep the response concise: 3-4 bullets max with short, high-signal recommendations. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms. When you reference repository files, prefer full repo-qualified paths such as \`repo-name/src/module/file.ts\` over ambiguous relative-only paths.`,
 
   risk: `You are Odyssey's risk analyst. Evaluate each goal's risk based on: progress vs deadline proximity, staleness (days since last update), whether it depends on incomplete goals, and current status.
 Risk levels: low(0-25), medium(26-50), high(51-75), critical(76-100).

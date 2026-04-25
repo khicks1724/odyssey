@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { FileRef } from '../hooks/useProjectFilePaths';
+import { replaceTaskIdsWithTitles } from '../lib/task-refs';
 
 export interface TaskRef { id: string; title: string }
 
@@ -126,6 +127,11 @@ export default function MarkdownWithFileLinks({
     if (Array.isArray(githubRepo)) return githubRepo.filter(Boolean);
     return githubRepo ? [githubRepo] : [];
   }, [githubRepo]);
+
+  const sanitizedChildren = useMemo(
+    () => replaceTaskIdsWithTitles(children, tasks),
+    [children, tasks],
+  );
 
   const taskMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -288,7 +294,7 @@ export default function MarkdownWithFileLinks({
           ...extraComponents,
         }}
       >
-        {children}
+        {sanitizedChildren}
       </ReactMarkdown>
     </Root>
   );

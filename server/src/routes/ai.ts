@@ -10,8 +10,9 @@ import { getInternalRequestHeaders, getUserFromAuthHeader, userHasProjectAccess 
 import { getGitLabToken } from '../lib/gitlab-token.js';
 import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
 import { logAiTokenUsage } from './token-usage.js';
+import { isServerFallbackPausedForUser } from '../lib/server-fallback-controls.js';
 
-const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil'];
+const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil', 'nvidia', 'gemma4'];
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 type OpenAiCredentialMode = 'openai' | 'azure_openai';
 type OpenAiUserConfig = {
@@ -38,10 +39,12 @@ function isOpenAiProviderSelection(provider: string): provider is OpenAiProvider
 }
 
 // Map provider selection to the service name stored in user_ai_keys table
-function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai' | 'google' | 'google_ai' {
+function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4' {
   if (provider === 'gpt-4o' || isOpenAiProviderSelection(provider)) return 'openai';
   if (provider === 'gemini-pro') return 'google_ai'; // Google AI Studio keys (AIza…)
   if (provider === 'genai-mil') return 'google';     // DoD STARK keys still live in 'google' slot
+  if (provider === 'nvidia') return 'nvidia';
+  if (provider === 'gemma4') return 'gemma4';
   return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
 }
 
@@ -125,6 +128,27 @@ function normalizeConfiguredModelIds(values: unknown): string[] {
   )];
 }
 
+function parseStoredNvidiaApiKeys(plaintext: string): string[] {
+  const trimmed = plaintext.trim();
+  if (!trimmed) return [];
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return [trimmed];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return [...new Set(parsed.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))];
+    }
+    if (parsed && typeof parsed === 'object' && 'keys' in parsed) {
+      const values = (parsed as { keys?: unknown }).keys;
+      if (Array.isArray(values)) {
+        return [...new Set(values.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))];
+      }
+    }
+  } catch {
+    return [trimmed];
+  }
+  return [];
+}
+
 function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
   return [...new Set(
     values
@@ -132,6 +156,55 @@ function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string
       .map((value) => value.trim())
       .filter(Boolean),
   )];
+}
+
+const TASK_ID_PATTERN = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
+const TASK_REFERENCE_PATTERNS = [
+  new RegExp(`\\[task_id:(${TASK_ID_PATTERN})\\]`, 'g'),
+  new RegExp(`\\btask\\s+(${TASK_ID_PATTERN})\\b`, 'gi'),
+  new RegExp(`\\b(?:task_id:|goal_id:|goalId:|ID:)?(${TASK_ID_PATTERN})\\b`, 'g'),
+];
+
+function replaceTaskIdsWithTitles(text: string, taskTitleById: Map<string, string>): string {
+  if (!text || taskTitleById.size === 0) return text;
+
+  let sanitized = text;
+  for (const pattern of TASK_REFERENCE_PATTERNS) {
+    sanitized = sanitized.replace(pattern, (match, rawTaskId: string) => {
+      const replacement = taskTitleById.get(rawTaskId.toLowerCase());
+      return replacement || match;
+    });
+  }
+  return sanitized;
+}
+
+function sanitizeSuggestionVisibleFields<T extends { title?: unknown; reasoning?: unknown; args?: Record<string, unknown> }>(
+  suggestion: T,
+  taskTitleById: Map<string, string>,
+): T {
+  if (taskTitleById.size === 0) return suggestion;
+
+  const args = suggestion.args && typeof suggestion.args === 'object'
+    ? { ...suggestion.args }
+    : suggestion.args;
+
+  if (args && typeof args === 'object') {
+    if (typeof args.goalTitle === 'string') args.goalTitle = replaceTaskIdsWithTitles(args.goalTitle, taskTitleById);
+    if (typeof args.reason === 'string') args.reason = replaceTaskIdsWithTitles(args.reason, taskTitleById);
+    if (typeof args.summary === 'string') args.summary = replaceTaskIdsWithTitles(args.summary, taskTitleById);
+    if (args.updates && typeof args.updates === 'object') {
+      const updates = { ...(args.updates as Record<string, unknown>) };
+      if (typeof updates.title === 'string') updates.title = replaceTaskIdsWithTitles(updates.title, taskTitleById);
+      args.updates = updates;
+    }
+  }
+
+  return {
+    ...suggestion,
+    title: typeof suggestion.title === 'string' ? replaceTaskIdsWithTitles(suggestion.title, taskTitleById) : suggestion.title,
+    reasoning: typeof suggestion.reasoning === 'string' ? replaceTaskIdsWithTitles(suggestion.reasoning, taskTitleById) : suggestion.reasoning,
+    args,
+  };
 }
 
 function emailLocalPart(email: string | null | undefined): string | null {
@@ -196,7 +269,17 @@ function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): stri
 }
 
 // Prefer order when auto-selecting from stored user keys
-const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gemini-pro', 'gpt-4o'];
+const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gemini-pro', 'gemma4', 'nvidia', 'gpt-4o', 'genai-mil'];
+
+function getConfiguredOpenAiSelection(config: unknown): OpenAiProviderSelection {
+  const raw = config && typeof config === 'object'
+    ? config as { preferredModel?: unknown; enabledModels?: unknown }
+    : {};
+  const preferredModel = typeof raw.preferredModel === 'string' ? raw.preferredModel : '';
+  const enabledModels = normalizeConfiguredModelIds(raw.enabledModels);
+  const model = getPrimaryModelSelection(enabledModels, preferredModel) || getServerOpenAiPrimaryModel(OPENAI_FALLBACK_MODEL);
+  return `openai:${model}`;
+}
 
 /**
  * Resolve the best available provider for a given auth token.
@@ -223,13 +306,22 @@ async function resolveAutoProvider(authHeader: string | undefined, fallback: AIP
           if (!storedServices.has(service)) continue;
 
           const configuredVisibleModels = getEnabledModelsFromConfig(configsByService.get(service));
+          if (service === 'openai') {
+            return getConfiguredOpenAiSelection(configsByService.get(service));
+          }
           if (service === 'anthropic' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes(p)) continue;
           if (service === 'google_ai' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemini-pro')) continue;
           if (service === 'google' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('genai-mil')) continue;
+          if (service === 'nvidia' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('nvidia')) continue;
+          if (service === 'gemma4' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemma4')) continue;
 
           return p;
         }
       }
+      if (!(await isServerFallbackPausedForUser(user.id)) && getServerOpenAiCredential()?.apiKey) {
+        return `openai:${getServerOpenAiPrimaryModel(OPENAI_FALLBACK_MODEL)}`;
+      }
+      return fallback;
     }
   }
   if (getServerOpenAiCredential()?.apiKey) {
@@ -254,6 +346,7 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
   const token = authHeader.slice(7);
   const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
   if (authErr || !user) return undefined;
+  const serverFallbackPaused = await isServerFallbackPausedForUser(user.id);
 
   const service = providerToService(provider);
   const { data, error } = await supabase
@@ -263,13 +356,47 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
     .eq('provider', service)
     .maybeSingle();
 
-  if (error || !data) return undefined;
+  if (error || !data) {
+    if (service === 'openai' && serverFallbackPaused) {
+      return {
+        apiKey: '',
+        authMode: 'bearer',
+        disableServerFallback: true,
+      };
+    }
+    return undefined;
+  }
 
   try {
     const apiKey = decryptUserKey(data.encrypted_key, data.iv, data.auth_tag);
+    if (service === 'nvidia' || service === 'gemma4') {
+      const config = (data.config ?? {}) as { preferredModel?: string; enabledModels?: unknown };
+      const apiKeys = parseStoredNvidiaApiKeys(apiKey);
+      if (apiKeys.length === 0) return undefined;
+      const modelOverride = getPrimaryModelSelection(
+        normalizeConfiguredModelIds(config.enabledModels),
+        config.preferredModel,
+      ) || (service === 'gemma4' ? 'google/gemma-4-31b-it' : 'nvidia/nemotron-3-super-120b-a12b');
+      return {
+        apiKey: apiKeys[0] ?? '',
+        apiKeys,
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+        authMode: 'bearer',
+        modelOverride,
+        providerLabel: service,
+        extraBody: {
+          chat_template_kwargs: { enable_thinking: true },
+          reasoning_budget: 16384,
+        },
+      };
+    }
     if (service !== 'openai') return apiKey;
 
-    const config = (data.config ?? {}) as { mode?: string; endpoint?: string };
+    const config = (data.config ?? {}) as { mode?: string; endpoint?: string; preferredModel?: string; enabledModels?: unknown };
+    const modelOverride = getPrimaryModelSelection(
+      normalizeConfiguredModelIds(config.enabledModels),
+      config.preferredModel,
+    ) || undefined;
     if (config.mode === 'azure_openai') {
       const endpoint = typeof config.endpoint === 'string' ? normalizeEndpoint(config.endpoint) : '';
       if (endpoint) {
@@ -277,11 +404,26 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
           apiKey,
           baseURL: endpoint,
           authMode: 'api-key',
+          disableServerFallback: serverFallbackPaused,
+          ...(modelOverride ? { modelOverride } : {}),
         };
       }
     }
 
-    return apiKey;
+    if (modelOverride) {
+      return {
+        apiKey,
+        authMode: 'bearer',
+        disableServerFallback: serverFallbackPaused,
+        modelOverride,
+      };
+    }
+
+    return {
+      apiKey,
+      authMode: 'bearer',
+      disableServerFallback: serverFallbackPaused,
+    };
   } catch {
     return undefined;
   }
@@ -340,6 +482,8 @@ async function listOpenAiModels(credential: ProviderCredentialOverride | undefin
 
 async function getOpenAiModelsForRequest(authHeader: string | undefined): Promise<string[]> {
   const userConfig = await getOpenAiUserConfig(authHeader);
+  const userId = await getUserFromAuthHeader(authHeader);
+  const serverFallbackPaused = await isServerFallbackPausedForUser(userId);
   const configuredAzureDeployments = mergeOpenAiModels(
     normalizeConfiguredModelIds(userConfig?.enabledModels ?? []),
     userConfig?.preferredModel,
@@ -350,7 +494,7 @@ async function getOpenAiModelsForRequest(authHeader: string | undefined): Promis
   }
 
   const userCredential = await getUserApiKey(authHeader, 'gpt-4o');
-  const credential = userCredential ?? getServerOpenAiCredential();
+  const credential = userCredential ?? (serverFallbackPaused ? undefined : getServerOpenAiCredential());
 
   if (!credential) {
     const merged = mergeOpenAiModels([], userConfig?.preferredModel);
@@ -365,6 +509,11 @@ async function getOpenAiModelsForRequest(authHeader: string | undefined): Promis
     }
   } catch {
     // Fall through to the standard fallback model below.
+  }
+
+  if (serverFallbackPaused) {
+    const merged = mergeOpenAiModels([], userConfig?.preferredModel);
+    return normalizeOpenAiModelIds(merged);
   }
 
   const merged = mergeOpenAiModels([getServerOpenAiPrimaryModel(OPENAI_FALLBACK_MODEL)], userConfig?.preferredModel);
@@ -401,6 +550,79 @@ function extractJson(text: string): string {
   raw = raw.replace(/,(\s*[}\]])/g, '$1');
 
   return raw.trim();
+}
+
+function stripStructuredValuePrefix(value: string): string {
+  return value
+    .replace(/^\s*[:;\-–—]+\s*/, '')
+    .replace(/^\s*(?:json|response|answer)\s*:\s*/i, '')
+    .trim();
+}
+
+function normalizeStructuredText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return stripStructuredValuePrefix(value);
+}
+
+function normalizeStructuredList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => normalizeStructuredText(item))
+    .filter((item) => item.length > 0);
+}
+
+function sanitizeStoredStructuredPayload<T extends {
+  status?: unknown;
+  highlights?: unknown;
+  nextSteps?: unknown;
+  futureFeatures?: unknown;
+  codeInsights?: unknown;
+  accomplished?: unknown;
+  inProgress?: unknown;
+  blockers?: unknown;
+}>(value: T): T {
+  return {
+    ...value,
+    ...(value.status !== undefined ? { status: normalizeStructuredText(value.status) } : {}),
+    ...(value.highlights !== undefined ? { highlights: normalizeStructuredText(value.highlights) } : {}),
+    ...(value.nextSteps !== undefined ? { nextSteps: normalizeStructuredList(value.nextSteps) } : {}),
+    ...(value.futureFeatures !== undefined ? { futureFeatures: normalizeStructuredList(value.futureFeatures) } : {}),
+    ...(value.codeInsights !== undefined ? { codeInsights: normalizeStructuredList(value.codeInsights) } : {}),
+    ...(value.accomplished !== undefined ? { accomplished: normalizeStructuredList(value.accomplished) } : {}),
+    ...(value.inProgress !== undefined ? { inProgress: normalizeStructuredList(value.inProgress) } : {}),
+    ...(value.blockers !== undefined ? { blockers: normalizeStructuredList(value.blockers) } : {}),
+  };
+}
+
+function isNvidiaCompatibleSelection(
+  provider: AIProviderSelection,
+  credential?: ProviderCredentialOverride,
+): boolean {
+  if (provider === 'nvidia') return true;
+  if (provider === 'gemma4') return true;
+  if (isOpenAiProviderSelection(provider) && provider.slice('openai:'.length).trim().toLowerCase().startsWith('google/gemma-4')) return true;
+  if (isOpenAiProviderSelection(provider) && provider.slice('openai:'.length).trim().toLowerCase().startsWith('nvidia/')) return true;
+  if (!credential || typeof credential === 'string') return false;
+  return credential.providerLabel === 'nvidia'
+    || credential.providerLabel === 'gemma4'
+    || (credential.baseURL?.includes('integrate.api.nvidia.com') ?? false)
+    || (credential.modelOverride?.trim().toLowerCase().startsWith('nvidia/') ?? false)
+    || (credential.modelOverride?.trim().toLowerCase().startsWith('google/gemma-4') ?? false);
+}
+
+function buildStandupFallbackHighlights(totalCommits: number, accomplished: string[], inProgress: string[]): string {
+  if (accomplished.length > 0 && inProgress.length > 0) {
+    return `The team made progress on ${accomplished[0].replace(/\.$/, '')} while continuing work on ${inProgress[0].replace(/\.$/, '')}.`;
+  }
+  if (accomplished.length > 0) {
+    return `The last two weeks focused on ${accomplished[0].replace(/\.$/, '')}${totalCommits > 0 ? ` across ${totalCommits} recent commits` : ''}.`;
+  }
+  if (inProgress.length > 0) {
+    return `The team is primarily focused on ${inProgress[0].replace(/\.$/, '')}${totalCommits > 0 ? ` with ${totalCommits} recent commits in the period` : ''}.`;
+  }
+  return totalCommits > 0
+    ? `The project stayed active over the last two weeks with ${totalCommits} recent commits, but the model did not produce a usable summary.`
+    : 'The project had limited visible delivery activity over the last two weeks, so the standup was derived from task and event data.';
 }
 
 // Resolve the provider from the request body.
@@ -584,6 +806,7 @@ export async function aiRoutes(server: FastifyInstance) {
         .from('user_ai_keys')
         .select('provider, encrypted_key, iv, auth_tag, config')
         .eq('user_id', user.id);
+      const openAiFallbackPaused = await isServerFallbackPausedForUser(user.id);
 
       const userServices = new Set((keys ?? []).map((k: { provider: string }) => k.provider));
       const anthropicRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'anthropic') as
@@ -599,6 +822,10 @@ export async function aiRoutes(server: FastifyInstance) {
       let userStarkKey: string | undefined;
       let userGoogleAiCredential: string | undefined;
       let userGoogleAiKeyPresent = userServices.has('google_ai');
+      let userNvidiaCredential: ProviderCredentialOverride | undefined;
+      let userNvidiaKeyPresent = userServices.has('nvidia');
+      let userGemma4Credential: ProviderCredentialOverride | undefined;
+      let userGemma4KeyPresent = userServices.has('gemma4');
       const openAiRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'openai') as
         { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: OpenAiUserConfig } | undefined;
       const openAiPreferredModel = normalizeOpenAiPreferredModel(openAiRow?.config?.preferredModel);
@@ -628,6 +855,66 @@ export async function aiRoutes(server: FastifyInstance) {
           if (isGenAiMilKey(decrypted)) userStarkKey = decrypted;
         } catch { /* decryption failure — treat as absent */ }
       }
+      const nvidiaRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'nvidia') as
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { preferredModel?: string; enabledModels?: unknown } } | undefined;
+      if (nvidiaRow) {
+        try {
+          const decrypted = decryptUserKey(nvidiaRow.encrypted_key, nvidiaRow.iv, nvidiaRow.auth_tag);
+          const apiKeys = parseStoredNvidiaApiKeys(decrypted);
+          if (apiKeys.length > 0) {
+            const preferredModel = getPrimaryModelSelection(
+              normalizeConfiguredModelIds(nvidiaRow.config?.enabledModels),
+              typeof nvidiaRow.config?.preferredModel === 'string' ? nvidiaRow.config.preferredModel : undefined,
+            ) || 'nvidia/nemotron-3-super-120b-a12b';
+            userNvidiaCredential = {
+              apiKey: apiKeys[0] ?? '',
+              apiKeys,
+              baseURL: 'https://integrate.api.nvidia.com/v1',
+              authMode: 'bearer',
+              modelOverride: preferredModel,
+              providerLabel: 'nvidia',
+              extraBody: {
+                chat_template_kwargs: { enable_thinking: true },
+                reasoning_budget: 16384,
+              },
+            };
+          } else {
+            userNvidiaKeyPresent = false;
+          }
+        } catch {
+          userNvidiaKeyPresent = false;
+        }
+      }
+      const gemma4Row = (keys ?? []).find((k: { provider: string }) => k.provider === 'gemma4') as
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { preferredModel?: string; enabledModels?: unknown } } | undefined;
+      if (gemma4Row) {
+        try {
+          const decrypted = decryptUserKey(gemma4Row.encrypted_key, gemma4Row.iv, gemma4Row.auth_tag);
+          const apiKeys = parseStoredNvidiaApiKeys(decrypted);
+          if (apiKeys.length > 0) {
+            const preferredModel = getPrimaryModelSelection(
+              normalizeConfiguredModelIds(gemma4Row.config?.enabledModels),
+              typeof gemma4Row.config?.preferredModel === 'string' ? gemma4Row.config.preferredModel : undefined,
+            ) || 'google/gemma-4-31b-it';
+            userGemma4Credential = {
+              apiKey: apiKeys[0] ?? '',
+              apiKeys,
+              baseURL: 'https://integrate.api.nvidia.com/v1',
+              authMode: 'bearer',
+              modelOverride: preferredModel,
+              providerLabel: 'gemma4',
+              extraBody: {
+                chat_template_kwargs: { enable_thinking: true },
+                reasoning_budget: 16384,
+              },
+            };
+          } else {
+            userGemma4KeyPresent = false;
+          }
+        } catch {
+          userGemma4KeyPresent = false;
+        }
+      }
 
       const genaiMilModel = userStarkKey ? (process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash') : undefined;
       const openAiMode = openAiRow?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai';
@@ -644,8 +931,16 @@ export async function aiRoutes(server: FastifyInstance) {
       const openAiEnabledModels = getConfiguredVisibleModels(openAiConfiguredModelsCanonical, openAiModels, openAiPreferredModelCanonical);
       const googleAiEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(googleAiRow?.config), ['gemini-pro']);
       const genAiEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(googleRow?.config), ['genai-mil']);
+      const nvidiaEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(nvidiaRow?.config), ['nvidia']);
+      const gemma4EnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(gemma4Row?.config), ['gemma4']);
       const openAiPrimaryModel = getPrimaryModelSelection(openAiEnabledModels, openAiPreferredModelCanonical)
         || getPrimaryModelSelection(openAiModels, openAiPreferredModelCanonical);
+      const nvidiaActiveModel = typeof nvidiaRow?.config?.preferredModel === 'string' && nvidiaRow.config.preferredModel.trim()
+        ? nvidiaRow.config.preferredModel.trim()
+        : 'nvidia/nemotron-3-super-120b-a12b';
+      const gemma4ActiveModel = typeof gemma4Row?.config?.preferredModel === 'string' && gemma4Row.config.preferredModel.trim()
+        ? gemma4Row.config.preferredModel.trim()
+        : 'google/gemma-4-31b-it';
 
       const geminiProStatus = userGoogleAiCredential
         ? (getCachedProviderStatus('gemini-pro', userGoogleAiCredential) ?? 'ready')
@@ -655,7 +950,15 @@ export async function aiRoutes(server: FastifyInstance) {
         ? (getCachedProviderStatus('genai-mil', userStarkKey) ?? 'ready')
         : 'no_key';
       const genAiMilAvailable = !!userStarkKey && genAiMilStatus === 'ready';
-      const effectiveOpenAiCredential = openAiCredential ?? serverOpenAiCredential;
+      const nvidiaStatus = userNvidiaCredential
+        ? (getCachedProviderStatus('nvidia', userNvidiaCredential) ?? 'ready')
+        : 'no_key';
+      const nvidiaAvailable = !!userNvidiaCredential && nvidiaStatus === 'ready';
+      const gemma4Status = userGemma4Credential
+        ? (getCachedProviderStatus('gemma4', userGemma4Credential) ?? 'ready')
+        : 'no_key';
+      const gemma4Available = !!userGemma4Credential && gemma4Status === 'ready';
+      const effectiveOpenAiCredential = openAiCredential ?? (openAiFallbackPaused ? undefined : serverOpenAiCredential);
       const openAiStatus = effectiveOpenAiCredential
         ? (getCachedProviderStatus('gpt-4o', effectiveOpenAiCredential) ?? 'ready')
         : 'no_key';
@@ -684,6 +987,30 @@ export async function aiRoutes(server: FastifyInstance) {
           };
         }
 
+        if (p.id === 'nvidia') {
+          return {
+            ...p,
+            available: nvidiaAvailable,
+            status: nvidiaStatus,
+            userKeyLinked: userNvidiaKeyPresent,
+            keySource: userNvidiaKeyPresent ? 'user' : 'none',
+            visibleModels: nvidiaEnabledModels,
+            activeModel: nvidiaActiveModel,
+          };
+        }
+
+        if (p.id === 'gemma4') {
+          return {
+            ...p,
+            available: gemma4Available,
+            status: gemma4Status,
+            userKeyLinked: userGemma4KeyPresent,
+            keySource: userGemma4KeyPresent ? 'user' : 'none',
+            visibleModels: gemma4EnabledModels,
+            activeModel: gemma4ActiveModel,
+          };
+        }
+
         const service = providerToService(p.id as AIProvider);
         const hasUserKey = userServices.has(service);
         const status: typeof p.status = service === 'anthropic'
@@ -698,7 +1025,7 @@ export async function aiRoutes(server: FastifyInstance) {
           status,
           userKeyLinked: hasUserKey,
           keySource: service === 'openai'
-            ? (hasUserKey ? 'user' : effectiveOpenAiCredential ? 'server' : 'none')
+            ? (hasUserKey ? 'user' : (!openAiFallbackPaused && effectiveOpenAiCredential) ? 'server' : 'none')
             : (hasUserKey ? 'user' : 'none'),
           ...(service === 'anthropic' ? { visibleModels: anthropicEnabledModels.includes(p.id) ? [p.id] : [] } : {}),
           ...(p.id === 'gpt-4o'
@@ -1026,41 +1353,70 @@ Analyze which goals are completed and suggest new goals.`,
       : await resolveAutoProvider(request.headers.authorization, 'claude-sonnet');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
     const ctx = await getCachedContext(projectId, userId);
-
-    try {
-      const result = await chatWithAudit(request.headers.authorization, provider, {
-        system: `You are Odyssey's deep project intelligence engine. You have access to ACTUAL SOURCE CODE FILES and REAL COMMIT DIFFS — not just commit messages. Use them to give a technically grounded analysis.
+    const useNvidiaStructuredMode = isNvidiaCompatibleSelection(provider, userApiKey);
+    const baseSystemPrompt = `You are Odyssey's deep project intelligence engine. You have access to ACTUAL SOURCE CODE FILES and REAL COMMIT DIFFS — not just commit messages. Use them to give a technically grounded analysis.
 
 Analyze the project as a whole, not just the single loudest repository or diff. Synthesize across ALL available context: project tasks, planning signals, recent activity, uploaded documents, and every linked GitHub and GitLab repository. When multiple repos are present, intentionally diversify your observations and recommendations across the repo portfolio and the project's goals/tasks unless the evidence clearly shows the work is concentrated in one place. If the evidence is uneven, say that explicitly, but still account for the broader project context instead of collapsing the analysis onto one repo.
 
-	Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
-	
-	Return an object with exactly four keys:
-	Use backtick markdown formatting for all file paths, function names, module names, variable names, and code identifiers (e.g. \`server/src/routes/ai.ts\`, \`resolveProvider()\`, \`GITHUB_TOKEN\`). When referencing repository files, prefer full repo-qualified paths such as \`repo-name/src/components/File.tsx\` instead of ambiguous relative-only paths like \`src/components/File.tsx\`. Use **bold** for emphasis on key terms.
-	- "status": 3-4 sentences on the project's current health. Cover overall project health across the active repos, the planning/task layer, and recent delivery signals. Reference specific files, modules, or components you can see actively changing in the diffs. Note velocity trends.
+Respond ONLY with valid JSON — no markdown fences, no explanation outside the JSON.
+
+Return an object with exactly four keys:
+Use backtick markdown formatting for all file paths, function names, module names, variable names, and code identifiers (e.g. \`server/src/routes/ai.ts\`, \`resolveProvider()\`, \`GITHUB_TOKEN\`). When referencing repository files, prefer full repo-qualified paths such as \`repo-name/src/components/File.tsx\` instead of ambiguous relative-only paths like \`src/components/File.tsx\`. Use **bold** for emphasis on key terms.
+- "status": 3-4 sentences on the project's current health. Cover overall project health across the active repos, the planning/task layer, and recent delivery signals. Reference specific files, modules, or components you can see actively changing in the diffs. Note velocity trends.
 - "nextSteps": Array of 4-6 strings. Each must be a specific, actionable task grounded in what you see in the code and the planning data — reference actual file names, function names, planning hotspots, or modules using backtick formatting. No generic advice. The set of next steps should reflect the most important spread of work across the project rather than clustering on one repo unless that is clearly justified by the evidence.
 - "futureFeatures": Array of 3-5 strings. Suggest concrete features based on gaps you can identify in the current codebase structure and what the README/tasks describe but the code doesn't yet implement.
-- "codeInsights": Array of 4-6 strings. Deep technical observations spanning the repo portfolio where possible: which modules are most actively developed (from diffs), cross-repo patterns you notice, potential technical debt, architectural observations, areas that look incomplete or missing tests, and any planning depth gaps visible in task estimates/logged hours. Be specific — name files and patterns using backtick formatting.`,
-        user: buildProjectInsightsEvidence(ctx),
-        maxTokens: 3000,
-        jsonMode: true,
-      }, userApiKey, { feature: 'project-insights', routePath: '/api/ai/project-insights', projectId, userId });
+- "codeInsights": Array of 4-6 strings. Deep technical observations spanning the repo portfolio where possible: which modules are most actively developed (from diffs), cross-repo patterns you notice, potential technical debt, architectural observations, areas that look incomplete or missing tests, and any planning depth gaps visible in task estimates/logged hours. Be specific — name files and patterns using backtick formatting.`;
+    const nvidiaStructuredSuffix = `
 
-      let raw = extractJson(result.text);
-      // If the response was truncated mid-JSON, attempt to close it gracefully
-      let parsed: any;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        const lastBrace = raw.lastIndexOf('}');
-        if (lastBrace > 0) raw = raw.slice(0, lastBrace + 1);
-        parsed = JSON.parse(raw);
+NVIDIA structured-output compatibility rules:
+- Return one JSON object only.
+- Do not prefix any string value with ":" or label text.
+- Every array must contain concrete strings, never null values.
+- Put all reasoning directly into the final JSON fields.`;
+
+    try {
+      const runInsightsRequest = async (repair = false) => {
+        const result = await chatWithAudit(request.headers.authorization, provider, {
+          system: `${baseSystemPrompt}${useNvidiaStructuredMode ? nvidiaStructuredSuffix : ''}${repair ? '\nReturn fully populated fields now. Do not leave any array empty if the evidence supports at least one specific item.' : ''}`,
+          user: buildProjectInsightsEvidence(ctx),
+          maxTokens: 3000,
+          jsonMode: true,
+          disableReasoning: useNvidiaStructuredMode,
+        }, userApiKey, { feature: 'project-insights', routePath: '/api/ai/project-insights', projectId, userId });
+
+        let raw = extractJson(result.text);
+        let parsed: any;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          const lastBrace = raw.lastIndexOf('}');
+          if (lastBrace > 0) raw = raw.slice(0, lastBrace + 1);
+          parsed = JSON.parse(raw);
+        }
+        return { parsed, result };
+      };
+
+      let { parsed, result } = await runInsightsRequest();
+      let normalized = {
+        status: normalizeStructuredText(parsed.status),
+        nextSteps: normalizeStructuredList(parsed.nextSteps),
+        futureFeatures: normalizeStructuredList(parsed.futureFeatures),
+        codeInsights: normalizeStructuredList(parsed.codeInsights),
+      };
+      if (useNvidiaStructuredMode && !normalized.status && normalized.nextSteps.length === 0 && normalized.futureFeatures.length === 0 && normalized.codeInsights.length === 0) {
+        ({ parsed, result } = await runInsightsRequest(true));
+        normalized = {
+          status: normalizeStructuredText(parsed.status),
+          nextSteps: normalizeStructuredList(parsed.nextSteps),
+          futureFeatures: normalizeStructuredList(parsed.futureFeatures),
+          codeInsights: normalizeStructuredList(parsed.codeInsights),
+        };
       }
       return {
-        status: parsed.status || '',
-        nextSteps: parsed.nextSteps || [],
-        futureFeatures: parsed.futureFeatures || [],
-        codeInsights: parsed.codeInsights || [],
+        status: normalized.status,
+        nextSteps: normalized.nextSteps,
+        futureFeatures: normalized.futureFeatures,
+        codeInsights: normalized.codeInsights,
         provider: result.provider,
       };
     } catch (err: any) {
@@ -2522,7 +2878,7 @@ For any action that targets an existing task, copy the exact task_id from TASK A
     coverageLabel: string;
     userPrompt: string;
     pass1Summary: string;
-    goalsText: string;
+    tasksText: string;
     membersText: string;
     planningSummaryText: string;
     eventsText: string;
@@ -2541,27 +2897,27 @@ For any action that targets an existing task, copy the exact task_id from TASK A
 
     if (/(executive|overview|summary|health)/.test(title)) {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 2200),
+        buildPromptSection('TASKS', input.tasksText, 2200),
         buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1600),
         buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
         buildPromptSection('SUPPORTING DOCUMENTS', input.documentsText, 1200),
       );
     } else if (/(task|progress|status|timeline|milestone|next step|upcoming)/.test(title)) {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 4200),
+        buildPromptSection('TASKS', input.tasksText, 4200),
         buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1800),
         buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
       );
     } else if (/(risk|blocker|issue|constraint|dependency)/.test(title)) {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 3800),
+        buildPromptSection('TASKS', input.tasksText, 3800),
         buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 2000),
         buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
         buildPromptSection('SUPPORTING DOCUMENTS', input.documentsText, 1200),
       );
     } else if (/(accomplishment|achievement|completed|delivery)/.test(title)) {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 2600),
+        buildPromptSection('TASKS', input.tasksText, 2600),
         buildPromptSection('RECENT ACTIVITY', input.eventsText, 2200),
         buildPromptSection('GITHUB', input.githubText, 2200),
         buildPromptSection('GITLAB', input.gitlabText, 2200),
@@ -2574,19 +2930,19 @@ For any action that targets an existing task, copy the exact task_id from TASK A
       );
     } else if (/(code|repo|repository|engineering|implementation|commit)/.test(title)) {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 1800),
+        buildPromptSection('TASKS', input.tasksText, 1800),
         buildPromptSection('RECENT ACTIVITY', input.eventsText, 1200),
         buildPromptSection('GITHUB', input.githubText, 4200),
         buildPromptSection('GITLAB', input.gitlabText, 4200),
       );
     } else if (/(category|loe|line of effort|workstream)/.test(title)) {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 4200),
+        buildPromptSection('TASKS', input.tasksText, 4200),
         buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1500),
       );
     } else {
       blocks.push(
-        buildPromptSection('TASKS', input.goalsText, 2600),
+        buildPromptSection('TASKS', input.tasksText, 2600),
         buildPromptSection('RECENT ACTIVITY', input.eventsText, 1800),
         buildPromptSection('PLANNING SUMMARY', input.planningSummaryText, 1200),
         buildPromptSection('SUPPORTING DOCUMENTS', input.documentsText, 1200),
@@ -2614,13 +2970,14 @@ For any action that targets an existing task, copy the exact task_id from TASK A
       buildPromptSection('PLANNING', ctx.planningSummaryText, 1800),
       buildPromptSection('RECENT ACTIVITY', ctx.eventsText, 1500),
       buildPromptSection('DOCUMENT SIGNALS', ctx.documentsContext, 1200),
-      buildPromptSection('GITHUB (commits + diffs + source)', ctx.githubContext, 8000),
-      buildPromptSection('GITLAB (commits + diffs + source)', ctx.gitlabContext, 8000),
+      buildPromptSection('GITHUB (commits + diffs + source)', ctx.githubContext, 80000),
+      buildPromptSection('GITLAB (commits + diffs + source)', ctx.gitlabContext, 80000),
     ].filter(Boolean).join('\n\n');
   }
 
   function buildIntelligentUpdateEvidence(ctx: {
     project?: { name?: string | null } | null;
+    tasksText: string;
     goalsText: string;
     membersText: string;
     eventsText: string;
@@ -2630,7 +2987,8 @@ For any action that targets an existing task, copy the exact task_id from TASK A
   }, goalCount: number): string {
     return [
       `PROJECT: ${ctx.project?.name ?? 'Unknown'}`,
-      buildPromptSection(`TASKS (${goalCount} total)`, ctx.goalsText || 'None — project has no tasks yet.', 7000),
+      buildPromptSection(`TASKS (${goalCount} total)`, ctx.tasksText || 'None — project has no tasks yet.', 4500),
+      buildPromptSection('TASK ACTION TARGETS (for args only; never show IDs in visible text)', ctx.goalsText || 'None — project has no tasks yet.', 3500),
       buildPromptSection('TEAM', ctx.membersText, 1200),
       buildPromptSection('RECENT ACTIVITY', ctx.eventsText, 1800),
       buildPromptSection('DOCUMENT SIGNALS', ctx.documentsContext, 1800),
@@ -2746,7 +3104,7 @@ REPORT COVERAGE PERIOD: ${coverageLabel}
 USER REQUEST: ${prompt}
 
 TASKS (${ctx.goals.length} total):
-${ctx.goalsText}
+${ctx.tasksText}
 
 TEAM (${ctx.members.length} members):
 ${ctx.membersText}
@@ -2873,7 +3231,7 @@ QUALITY REQUIREMENTS:
             coverageLabel,
             userPrompt: prompt,
             pass1Summary,
-            goalsText: ctx.goalsText,
+            tasksText: ctx.tasksText,
             membersText: ctx.membersText,
             planningSummaryText: ctx.planningSummaryText,
             eventsText: trimmedEvents,
@@ -2952,6 +3310,7 @@ QUALITY REQUIREMENTS:
       ? resolveProvider(request.body, 'claude-haiku')
       : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
+    const useNvidiaStructuredMode = isNvidiaCompatibleSelection(provider, userApiKey);
 
     const now = new Date();
     const since = new Date(now);
@@ -3041,19 +3400,63 @@ QUALITY REQUIREMENTS:
       return `${label} (${r.count} commits):\n${r.commits.slice(0, 20).map((m) => `  - ${m}`).join('\n')}`;
     }).join('\n\n') || 'No commits in this period';
 
+    const deriveAccomplishedFallback = (): string[] => {
+      const completedGoals = (goals ?? [])
+        .filter((g) => ['done', 'completed', 'review'].includes(String(g.status).toLowerCase()) || Number(g.progress ?? 0) >= 75)
+        .slice(0, 3)
+        .map((g) => `${g.title} (${g.progress}% complete${g.status ? `, ${String(g.status).toLowerCase()}` : ''})`);
+      if (completedGoals.length > 0) return completedGoals;
+
+      const commitTopics = commitsByRepo
+        .flatMap((repo) => repo.commits.slice(0, 3).map((message) => `${repo.repo.split('/').pop()}: ${message}`))
+        .slice(0, 3);
+      if (commitTopics.length > 0) return commitTopics;
+
+      const eventTopics = (events ?? [])
+        .slice(0, 3)
+        .map((event) => `${event.title ?? event.event_type}${event.summary ? ` — ${event.summary}` : ''}`);
+      if (eventTopics.length > 0) return eventTopics;
+
+      return ['No completed work was clearly evidenced in commits, tasks, or logged events during this period.'];
+    };
+
+    const deriveInProgressFallback = (): string[] => {
+      const activeGoals = (goals ?? [])
+        .filter((g) => ['in_progress', 'review', 'not_started'].includes(String(g.status).toLowerCase()) || (Number(g.progress ?? 0) > 0 && Number(g.progress ?? 0) < 100))
+        .slice(0, 4)
+        .map((g) => `${g.title} (${g.progress}% complete${g.deadline ? `, due ${g.deadline}` : ''})`);
+      if (activeGoals.length > 0) return activeGoals;
+
+      const commitRepos = commitsByRepo
+        .filter((repo) => repo.count > 0)
+        .slice(0, 3)
+        .map((repo) => `${repo.repo.split('/').pop()} remains active (${repo.count} commits in the last 14 days)`);
+      if (commitRepos.length > 0) return commitRepos;
+
+      return ['No active work was obvious from the AI response; use the task list to identify the next work item to advance.'];
+    };
+
     try {
-      const result = await chatWithAudit(request.headers.authorization, provider, {
-        system: `You are Odyssey's standup generator. Based on the project's commit activity, tasks, and logged events from the past 14 days, produce a concise team standup summary.
+      const baseSystemPrompt = `You are Odyssey's standup generator. Based on the project's commit activity, tasks, and logged events from the past 14 days, produce a concise team standup summary.
 
 Respond ONLY with valid JSON — no markdown, no explanation outside the JSON.
 
 Return an object with:
 - "highlights": string — one punchy sentence summarizing the sprint in plain English
-- "accomplished": array of 3-6 strings — key things completed or meaningfully progressed in the past 2 weeks, grounded in actual commit messages and task progress
-- "inProgress": array of 2-4 strings — work actively underway based on recent commits and active tasks
+- "accomplished": array of 3-6 strings — key things completed or meaningfully progressed in the past 2 weeks. If there are no commits, derive this from task statuses, progress percentages, and logged events. Never return an empty array — if truly nothing was accomplished, note that explicitly with a single entry.
+- "inProgress": array of 2-4 strings — work actively underway based on recent commits, active tasks, and NOT_STARTED tasks with near-term deadlines. If there are no commits, derive from task status and context. Never return an empty array — if no active work is apparent, note planned work that should be underway.
 - "blockers": array of 0-3 strings — risks, stalled tasks, or potential blockers (return empty array if none apparent)
 
-Be specific. Reference real task names, actual commit topics, and concrete percentages. When you mention repository files, prefer the most specific repo-qualified or path-qualified form you can infer, such as \`repo-name/src/module/file.ts\` or \`calibration/core/plot_generator.py\`, instead of shortening to ambiguous bare filenames. Avoid generic filler.`,
+Be specific. Reference real task names, actual commit topics, and concrete percentages. When you mention repository files, prefer the most specific repo-qualified or path-qualified form you can infer, such as \`repo-name/src/module/file.ts\` or \`calibration/core/plot_generator.py\`, instead of shortening to ambiguous bare filenames. Avoid generic filler.`;
+      const nvidiaStructuredSuffix = `
+
+NVIDIA structured-output compatibility rules:
+- Return one JSON object only.
+- Do not prefix any string value with ":" or label text.
+- Do not leave "accomplished" or "inProgress" empty.
+- Put all reasoning directly into the final JSON fields.`;
+      const runStandupRequest = async (repair = false) => chatWithAudit(request.headers.authorization, provider, {
+        system: `${baseSystemPrompt}${useNvidiaStructuredMode ? nvidiaStructuredSuffix : ''}${repair ? '\nReturn fully populated `accomplished` and `inProgress` arrays now, using the project evidence directly.' : ''}`,
         user: `Project: ${project?.name ?? 'Unknown'}${project?.description ? `\nDescription: ${project.description}` : ''}
 Period: ${sinceDate} → ${toDate} (14 days)
 Total commits: ${totalCommits}
@@ -3070,17 +3473,46 @@ ${eventsText}
 Generate the standup summary.`,
         maxTokens: 800,
         jsonMode: true,
+        disableReasoning: useNvidiaStructuredMode,
       }, userApiKey, { feature: 'standup', routePath: '/api/ai/standup', projectId, userId });
 
-      const raw = extractJson(result.text);
-      const parsed = JSON.parse(raw);
+      const parseStandupPayload = (text: string) => {
+        let raw = extractJson(text);
+        try {
+          return JSON.parse(raw);
+        } catch {
+          const lastBrace = raw.lastIndexOf('}');
+          if (lastBrace > 0) raw = raw.slice(0, lastBrace + 1);
+          return JSON.parse(raw);
+        }
+      };
+
+      let result = await runStandupRequest();
+      let parsed = parseStandupPayload(result.text);
+      let highlights = normalizeStructuredText(parsed.highlights);
+      let accomplished = normalizeStructuredList(parsed.accomplished);
+      let inProgress = normalizeStructuredList(parsed.inProgress);
+      let blockers = normalizeStructuredList(parsed.blockers);
+
+      if (useNvidiaStructuredMode && (!highlights || accomplished.length === 0 || inProgress.length === 0)) {
+        result = await runStandupRequest(true);
+        parsed = parseStandupPayload(result.text);
+        highlights = normalizeStructuredText(parsed.highlights);
+        accomplished = normalizeStructuredList(parsed.accomplished);
+        inProgress = normalizeStructuredList(parsed.inProgress);
+        blockers = normalizeStructuredList(parsed.blockers);
+      }
+
+      if (accomplished.length === 0) accomplished = deriveAccomplishedFallback();
+      if (inProgress.length === 0) inProgress = deriveInProgressFallback();
+      if (!highlights) highlights = buildStandupFallbackHighlights(totalCommits, accomplished, inProgress);
 
       const generatedAt = new Date().toISOString();
       const standupResult = {
-        highlights: parsed.highlights ?? '',
-        accomplished: parsed.accomplished ?? [],
-        inProgress: parsed.inProgress ?? [],
-        blockers: parsed.blockers ?? [],
+        highlights,
+        accomplished,
+        inProgress,
+        blockers,
         period: { from: sinceDate, to: toDate },
         commitSummary: commitsByRepo.map((r) => ({ source: r.source, repo: r.repo, count: r.count })),
         totalCommits,
@@ -3187,6 +3619,7 @@ Generate the standup summary.`,
     }
 
     const intelligentUpdateEvidence = buildIntelligentUpdateEvidence(ctx, goalCount);
+    const taskTitleById = new Map(ctx.goals.map((goal) => [goal.id.toLowerCase(), goal.title]));
 
     try {
       const result = await chatWithAudit(request.headers.authorization, provider, {
@@ -3227,7 +3660,8 @@ CONTEXT SIGNALS (use to calibrate):
 - Document context available: ${hasDocs ? 'yes (' + Math.round(docContextLen / 1000) + 'k chars)' : 'no'}
 	- Project age: ${projectAgeDays <= 1 ? 'brand new (today)' : projectAgeDays + ' days old'}
 	
-	Be specific and reference actual task IDs, names, dates, file names, and commit messages from the context.`,
+	Be specific and reference actual task names, dates, file names, and commit messages from the context.
+	Use internal task IDs only inside \`args.goalId\`. Never include raw task IDs in \`title\`, \`reasoning\`, \`args.goalTitle\`, or any other user-visible field.`,
         user: `${intelligentUpdateEvidence}
 
 Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list from scratch based on all available context.' : 'Suggest specific improvements to the task structure, deadlines, and coverage.'} Remember: every create_goal MUST have deadline, category, and loe filled in.`,
@@ -3280,7 +3714,7 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
         }
 
         return true;
-      });
+      }).map((s: any) => sanitizeSuggestionVisibleFields(s, taskTitleById));
 
       return { suggestions, provider: result.provider };
     } catch (err: any) {
@@ -3302,7 +3736,7 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
       .eq('project_id', projectId)
       .maybeSingle();
     if (error || !data) return reply.status(404).send({ error: 'No standup found' });
-    return {
+    return sanitizeStoredStructuredPayload({
       highlights:    data.highlights,
       accomplished:  data.accomplished,
       inProgress:    data.in_progress,
@@ -3312,7 +3746,7 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
       totalCommits:  data.total_commits,
       provider:      data.provider,
       generatedAt:   data.generated_at,
-    };
+    });
   });
 
   // ── Per-task AI guidance ──────────────────────────────────────────────────
@@ -3339,25 +3773,25 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
     const ctx = await getCachedContext(projectId, userId);
 
     const repoCtx = [
-      ctx.githubContext ? `GITHUB COMMITS & README:\n${ctx.githubContext.slice(0, 3000)}` : '',
-      ctx.gitlabContext ? `GITLAB CONTEXT:\n${ctx.gitlabContext.slice(0, 3000)}` : '',
+      ctx.githubContext ? `GITHUB COMMITS & README:\n${ctx.githubContext.slice(0, 1800)}` : '',
+      ctx.gitlabContext ? `GITLAB CONTEXT:\n${ctx.gitlabContext.slice(0, 1800)}` : '',
     ].filter(Boolean).join('\n\n');
 
     try {
       const result = await chatWithAudit(request.headers.authorization, provider, {
-        system: `You are a technical advisor giving specific, actionable guidance on how to make the most progress on a single project task. Be concrete. Reference repo files, commits, or related tasks where visible. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms, bullet lists for steps (4-6 bullets max). When you reference repository files, prefer full repo-qualified paths such as \`repo-name/src/module/file.ts\` over ambiguous relative-only paths.`,
+        system: `You are a technical advisor giving fast, specific guidance for a single project task. Be concrete and pragmatic. Reference repo files, commits, or related tasks where visible. Keep the response a bit shorter than a typical deep analysis: 3-4 bullets max, one short paragraph or sentence per bullet, no filler. Prioritize the highest-leverage next actions first. No emojis. Use rich markdown: \`backticks\` for file names and identifiers, **bold** for key terms. When you reference repository files, prefer full repo-qualified paths such as \`repo-name/src/module/file.ts\` over ambiguous relative-only paths. Always refer to other tasks by title, never by internal ID.`,
         user: `TASK: "${taskTitle}"
 Status: ${taskStatus} (${taskProgress}% complete)
 Category: ${taskCategory ?? 'unspecified'}
 Line of Effort: ${taskLoe ?? 'unspecified'}
 
 OTHER PROJECT TASKS:
-${ctx.goalsText?.slice(0, 800) ?? 'none'}
+${ctx.tasksText?.slice(0, 500) ?? 'none'}
 
 ${repoCtx}
 
-Give me the 4-6 most impactful next steps to make concrete progress on this task right now.`,
-        maxTokens: 500,
+Give me the 3-4 most impactful next steps to make concrete progress on this task right now. Keep it concise and implementation-focused.`,
+        maxTokens: 450,
       }, userApiKey, { feature: 'task-guidance', routePath: '/api/ai/task-guidance', projectId, userId });
       return { guidance: result.text, provider: result.provider };
     } catch (err: any) {

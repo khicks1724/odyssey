@@ -729,7 +729,7 @@ function ProjectNameForm({
               </button>
             </div>
 
-            <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
               <div className="flex items-center justify-center border border-border bg-surface2 p-5">
                 <div
                   className={`relative h-[22rem] w-[22rem] overflow-hidden border border-border bg-surface shadow-inner ${cropDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
@@ -1358,7 +1358,7 @@ function SettingsTab({
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Project Name & Description */}
       <ProjectNameForm project={project} updateProject={updateProject} isOwner={isOwner} imageUploading={imageUploading} handleImageUpload={handleImageUpload} />
 

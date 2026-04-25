@@ -12,6 +12,8 @@ const fixedAgentMeta: Record<'auto' | FixedAIProvider, { name: string; shortName
   'gpt-4o':        { name: 'GPT-4o',            shortName: 'GPT-4o',  description: 'OpenAI fallback model',                           colorClass: 'aid-gpt4o',   provider: 'OpenAI' },
   'gemini-pro':    { name: 'Gemini 2.5 Flash',  shortName: 'Gemini',  description: 'Google AI Studio · Gemini 2.5 Flash',            colorClass: 'aid-gemini',  provider: 'Google' },
   'genai-mil':     { name: 'GenAI.mil',         shortName: 'GenAI.mil', description: 'DoD GenAI.mil · requires STARK API key',         colorClass: 'aid-genaimil', provider: 'DoD / GenAI.mil' },
+  'nvidia':        { name: 'NVIDIA',            shortName: 'NVIDIA',  description: 'NVIDIA hosted models via user API keys',          colorClass: 'aid-gpt4o',   provider: 'NVIDIA' },
+  'gemma4':        { name: 'Gemma 4',           shortName: 'Gemma 4', description: 'Google Gemma 4 via NVIDIA-hosted API keys',       colorClass: 'aid-gemini',  provider: 'Google / NVIDIA' },
 };
 
 function getAgentMeta(agent: AIAgentValue) {
@@ -79,13 +81,17 @@ function buildProviderGroups(providers: ProviderInfo[]): { label: string; ids: A
   const openai = toAgentValues(providers.find((provider) => provider.id === 'gpt-4o')?.visibleModels);
   const google = toAgentValues(providers.find((provider) => provider.id === 'gemini-pro')?.visibleModels);
   const genai = toAgentValues(providers.find((provider) => provider.id === 'genai-mil')?.visibleModels);
+  const nvidia = toAgentValues(providers.find((provider) => provider.id === 'nvidia')?.visibleModels);
+  const gemma4 = toAgentValues(providers.find((provider) => provider.id === 'gemma4')?.visibleModels);
 
   return [
     { label: 'Auto', ids: ['auto' as AIAgentValue] },
     { label: 'Anthropic', ids: anthropic },
     { label: 'OpenAI', ids: openai },
     { label: 'Google', ids: google },
+    { label: 'Gemma 4', ids: gemma4 },
     { label: 'DoD / GenAI.mil', ids: genai },
+    { label: 'NVIDIA', ids: nvidia },
   ].filter((group) => group.label === 'Auto' || group.ids.length > 0);
 }
 

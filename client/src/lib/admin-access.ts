@@ -9,8 +9,12 @@ function normalizeEmail(value: string | null | undefined) {
 }
 
 export function canViewTokenUsagePage(
-  emailCandidates: Array<string | null | undefined>,
+  _emailCandidates: Array<string | null | undefined>,
   _displayNameCandidates: Array<string | null | undefined>,
 ) {
+  return true;
+}
+
+export function isTokenUsageAdmin(emailCandidates: Array<string | null | undefined>) {
   return emailCandidates.some((value) => TOKEN_USAGE_ADMIN_EMAILS.includes(normalizeEmail(value) as (typeof TOKEN_USAGE_ADMIN_EMAILS)[number]));
 }

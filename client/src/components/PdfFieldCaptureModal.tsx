@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Check, ChevronLeft, ChevronRight, FileSearch, X } from 'lucide-react';
 import { GlobalWorkerOptions, getDocument, TextLayer, type PDFDocumentProxy } from 'pdfjs-dist';
 import { getPublicationDatePlaceholder, normalizePublicationDate } from '../lib/citation-date';
@@ -6,13 +6,14 @@ import 'pdfjs-dist/web/pdf_viewer.css';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
-type CaptureFieldId = 'title' | 'credit' | 'contextField' | 'year';
+type CaptureFieldId = 'title' | 'credit' | 'contextField' | 'year' | 'locator';
 
 type CaptureValues = {
   title: string;
   credit: string;
   contextField: string;
   year: string;
+  locator: string;
 };
 
 type CaptureFieldDefinition = {
@@ -64,10 +65,18 @@ const EMPTY_CAPTURE_METADATA: CaptureMetadataMap = {
   credit: { pageNumber: null, preview: '' },
   contextField: { pageNumber: null, preview: '' },
   year: { pageNumber: null, preview: '' },
+  locator: { pageNumber: null, preview: '' },
 };
 
 function sanitizeSelectionText(value: string) {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeLocatorValue(value: string) {
+  return sanitizeSelectionText(value)
+    .replace(/^available\s*:\s*/i, '')
+    .replace(/[<>]+/g, '')
+    .trim();
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -165,14 +174,18 @@ function PdfSelectionPage({
   useEffect(() => {
     let cancelled = false;
     let activeTextLayer: TextLayer | null = null;
+    let activeRenderTask: { cancel: () => void; promise: Promise<unknown> } | null = null;
 
     const renderPage = async () => {
       const page = await pdfDocument.getPage(pageNumber);
       if (cancelled) return;
 
-      const baseViewport = page.getViewport({ scale: 1 });
+      // Some scanned PDFs arrive with a 180-degree page rotation flag even
+      // though users expect the intake preview to stay upright.
+      const normalizedRotation = page.rotate === 180 ? 0 : page.rotate;
+      const baseViewport = page.getViewport({ scale: 1, rotation: normalizedRotation });
       const scale = Math.min(1.8, PAGE_TARGET_WIDTH / baseViewport.width);
-      const viewport = page.getViewport({ scale });
+      const viewport = page.getViewport({ scale, rotation: normalizedRotation });
 
       setPageWidth(viewport.width);
       setPageHeight(viewport.height);
@@ -189,13 +202,19 @@ function PdfSelectionPage({
       canvas.height = Math.floor(viewport.height * outputScale);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
-      context.setTransform(outputScale, 0, 0, outputScale, 0, 0);
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      textLayerNode.style.width = `${viewport.width}px`;
+      textLayerNode.style.height = `${viewport.height}px`;
+      textLayerNode.style.setProperty('--scale-factor', `${viewport.scale}`);
 
-      await page.render({
-        canvas,
+      activeRenderTask = page.render({
+        canvas: null,
         canvasContext: context,
         viewport,
-      }).promise;
+        transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
+      });
+      await activeRenderTask.promise;
       if (cancelled) return;
 
       const textContent = await page.getTextContent();
@@ -217,6 +236,7 @@ function PdfSelectionPage({
     void renderPage();
     return () => {
       cancelled = true;
+      activeRenderTask?.cancel();
       activeTextLayer?.cancel();
     };
   }, [onRenderMeta, pageNumber, pdfDocument]);
@@ -352,7 +372,15 @@ export default function PdfFieldCaptureModal({
   const [pageTextCounts, setPageTextCounts] = useState<Record<number, number>>({});
   const [currentPage, setCurrentPage] = useState(1);
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const fieldListRef = useRef<HTMLDivElement | null>(null);
   const pageNodesRef = useRef<Record<number, HTMLDivElement | null>>({});
+  const fieldCardRefs = useRef<Record<CaptureFieldId, HTMLDivElement | null>>({
+    title: null,
+    credit: null,
+    contextField: null,
+    year: null,
+    locator: null,
+  });
 
   const fields = useMemo<CaptureFieldDefinition[]>(() => ([
     {
@@ -378,6 +406,12 @@ export default function PdfFieldCaptureModal({
       label: 'Publication date',
       hint: 'Draw a box around the publication date text. Odyssey will clean symbols and normalize it to the thesis citation style.',
       placeholder: getPublicationDatePlaceholder(bibliographyFormat),
+    },
+    {
+      id: 'locator',
+      label: 'Available at',
+      hint: 'Draw a box around the DOI, repository URL, or Available link so Odyssey can append it to IEEE citations.',
+      placeholder: 'https://doi.org/... or https://...',
     },
   ]), [bibliographyFormat, contextLabel, creditLabel]);
 
@@ -459,16 +493,45 @@ export default function PdfFieldCaptureModal({
     return () => window.clearTimeout(timeoutId);
   }, [captureNotice]);
 
+  useEffect(() => {
+    const container = fieldListRef.current;
+    const activeCard = fieldCardRefs.current[activeFieldId];
+    if (!container || !activeCard) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const cardRect = activeCard.getBoundingClientRect();
+      const topPadding = 12;
+      const bottomPadding = 12;
+      const cardTop = activeCard.offsetTop;
+      const nextScrollTop = Math.max(0, cardTop - topPadding);
+      const cardAboveView = cardRect.top < containerRect.top + topPadding;
+      const cardBelowView = cardRect.bottom > containerRect.bottom - bottomPadding;
+
+      if (cardAboveView || cardBelowView) {
+        container.scrollTo({
+          top: nextScrollTop,
+          behavior: 'smooth',
+        });
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeFieldId]);
+
   const completedCount = fields.filter((field) => capturedValues[field.id].trim()).length;
   const activeField = fields.find((field) => field.id === activeFieldId) ?? fields[0];
   const selectablePages = Object.keys(pageTextCounts).length;
   const hasSelectableText = Object.values(pageTextCounts).some((count) => count > 0);
   const showScannedPdfNotice = !loading && pdfDocument && selectablePages === pageCount && !hasSelectableText;
 
-  const updateFieldValue = (fieldId: CaptureFieldId, nextValue: string) => {
+  const updateFieldValue = (fieldId: CaptureFieldId, nextValue: string, options?: { normalize?: boolean }) => {
+    const shouldNormalize = options?.normalize ?? false;
     const normalizedValue = fieldId === 'year'
-      ? normalizePublicationDate(nextValue, bibliographyFormat)
-      : nextValue;
+      ? (shouldNormalize ? normalizePublicationDate(nextValue, bibliographyFormat) : nextValue)
+      : fieldId === 'locator'
+        ? (shouldNormalize ? normalizeLocatorValue(nextValue) : nextValue)
+        : nextValue;
     setCapturedValues((current) => {
       const nextValues = { ...current, [fieldId]: normalizedValue };
       onApply(nextValues);
@@ -485,14 +548,14 @@ export default function PdfFieldCaptureModal({
     setActiveFieldId(fieldId);
   };
 
-  const scrollToPage = (pageNumber: number) => {
+  const scrollToPage = useCallback((pageNumber: number) => {
     const pageNode = pageNodesRef.current[pageNumber];
     if (!pageNode) return;
     setCurrentPage(pageNumber);
     pageNode.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
+  }, []);
 
-  const handleRegionCapture = (pageNumber: number, extractedText: string) => {
+  const handleRegionCapture = useCallback((pageNumber: number, extractedText: string) => {
     if (!extractedText) {
       setCaptureNotice(`No selectable text was found inside the box on page ${pageNumber}.`);
       return;
@@ -502,7 +565,9 @@ export default function PdfFieldCaptureModal({
 
     const normalizedCapture = activeFieldId === 'year'
       ? normalizePublicationDate(extractedText, bibliographyFormat)
-      : extractedText;
+      : activeFieldId === 'locator'
+        ? normalizeLocatorValue(extractedText)
+        : extractedText;
 
     setCapturedValues((current) => {
       const nextValues = { ...current, [activeFieldId]: normalizedCapture };
@@ -525,7 +590,19 @@ export default function PdfFieldCaptureModal({
     }));
 
     setCaptureNotice(`${activeField?.label ?? 'Field'} captured from a box on page ${pageNumber}.`);
-  };
+  }, [activeFieldId, bibliographyFormat, fields, onApply]);
+
+  const handleRenderMeta = useCallback((pageNumber: number, textItemCount: number) => {
+    setPageTextCounts((current) => (
+      current[pageNumber] === textItemCount
+        ? current
+        : { ...current, [pageNumber]: textItemCount }
+    ));
+  }, []);
+
+  const handleRegisterPageNode = useCallback((pageNumber: number, node: HTMLDivElement | null) => {
+    pageNodesRef.current[pageNumber] = node;
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[70] bg-[rgba(2,6,23,0.96)]">
@@ -590,7 +667,7 @@ export default function PdfFieldCaptureModal({
                 )}
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+              <div ref={fieldListRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                 <div className="space-y-3">
                   {fields.map((field) => {
                     const active = field.id === activeFieldId;
@@ -600,6 +677,9 @@ export default function PdfFieldCaptureModal({
                     return (
                       <div
                         key={field.id}
+                        ref={(node) => {
+                          fieldCardRefs.current[field.id] = node;
+                        }}
                         className={`border p-3 transition-colors ${
                           active
                             ? 'border-accent bg-accent/10'
@@ -655,6 +735,7 @@ export default function PdfFieldCaptureModal({
                               type="text"
                               value={value}
                               onChange={(event) => updateFieldValue(field.id, event.target.value)}
+                              onBlur={(event) => updateFieldValue(field.id, event.target.value, { normalize: field.id === 'year' || field.id === 'locator' })}
                               placeholder={field.placeholder}
                               className="w-full border border-border bg-surface px-3 py-2 text-sm text-heading outline-none transition-colors placeholder:text-muted/70 focus:border-accent"
                             />
@@ -767,17 +848,9 @@ export default function PdfFieldCaptureModal({
                         key={`${file.name}-${index + 1}`}
                         pdfDocument={pdfDocument}
                         pageNumber={index + 1}
-                        onRenderMeta={(pageNumber, textItemCount) => {
-                          setPageTextCounts((current) => (
-                            current[pageNumber] === textItemCount
-                              ? current
-                              : { ...current, [pageNumber]: textItemCount }
-                          ));
-                        }}
+                        onRenderMeta={handleRenderMeta}
                         onCaptureRegion={handleRegionCapture}
-                        registerPageNode={(pageNumber, node) => {
-                          pageNodesRef.current[pageNumber] = node;
-                        }}
+                        registerPageNode={handleRegisterPageNode}
                       />
                     ))}
                   </div>

@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { ChatMessageRow, ChatThread } from '../types';
+
+export const CHAT_THREAD_READ_EVENT = 'odyssey:chat-thread-read';
 
 export interface ChatParticipant {
   id: string;
@@ -25,7 +28,29 @@ export interface ChatThreadState {
   unread_count: number;
 }
 
-export function useChatThreads() {
+function applyLocalThreadRead(
+  threadId: string,
+  readAt: string,
+  setThreadStateByThread: Dispatch<SetStateAction<Record<string, ChatThreadState>>>,
+) {
+  setThreadStateByThread((prev) => ({
+    ...prev,
+    [threadId]: {
+      ...(prev[threadId] ?? {
+        thread_id: threadId,
+        last_read_at: null,
+        hidden_at: null,
+        unread_count: 0,
+      }),
+      thread_id: threadId,
+      last_read_at: readAt,
+      hidden_at: null,
+      unread_count: 0,
+    },
+  }));
+}
+
+function useChatThreadsState() {
   const { user } = useAuth();
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [threadIds, setThreadIds] = useState<string[]>([]);
@@ -33,9 +58,13 @@ export function useChatThreads() {
   const [lastMessageByThread, setLastMessageByThread] = useState<Record<string, ChatThreadPreview | null>>({});
   const [threadStateByThread, setThreadStateByThread] = useState<Record<string, ChatThreadState>>({});
   const [loading, setLoading] = useState(true);
+  const fetchSequenceRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
 
   const fetchThreads = useCallback(async () => {
     if (!user) {
+      fetchSequenceRef.current += 1;
+      hasLoadedOnceRef.current = false;
       setThreads([]);
       setThreadIds([]);
       setParticipantsByThread({});
@@ -44,7 +73,11 @@ export function useChatThreads() {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    const fetchSequence = ++fetchSequenceRef.current;
+    const isInitialLoad = !hasLoadedOnceRef.current;
+    if (isInitialLoad) {
+      setLoading(true);
+    }
     const syncResult = await supabase.rpc('sync_my_project_chat_memberships');
     if (syncResult.error) {
       const msg = syncResult.error.message.toLowerCase();
@@ -58,12 +91,17 @@ export function useChatThreads() {
       .from('chat_thread_members')
       .select('thread_id')
       .eq('user_id', user.id);
+    if (fetchSequence !== fetchSequenceRef.current) return;
     const ids = (memberships ?? []).map((m) => m.thread_id);
     setThreadIds(ids);
     if (ids.length === 0) {
-      setThreads([]);
-      setParticipantsByThread({});
-      setLastMessageByThread({});
+      if (isInitialLoad) {
+        setThreads([]);
+        setParticipantsByThread({});
+        setLastMessageByThread({});
+        setThreadStateByThread({});
+      }
+      hasLoadedOnceRef.current = true;
       setLoading(false);
       return;
     }
@@ -83,6 +121,7 @@ export function useChatThreads() {
         .eq('user_id', user.id)
         .in('thread_id', threadIds),
     ]);
+    if (fetchSequence !== fetchSequenceRef.current) return;
 
     const rawThreads = (threadsData ?? []) as ChatThread[];
     const stateMap = new Map(
@@ -101,6 +140,7 @@ export function useChatThreads() {
     const { data: profiles } = memberIds.length
       ? await supabase.from('profiles').select('id, display_name, avatar_url').in('id', memberIds)
       : { data: [] as { id: string; display_name: string | null; avatar_url: string | null }[] };
+    if (fetchSequence !== fetchSequenceRef.current) return;
     const profileMap = new Map((profiles ?? []).map((p) => [p.id, p]));
 
     const nextParticipants = (memberRows ?? []).reduce<Record<string, ChatParticipant[]>>((acc, row) => {
@@ -146,6 +186,7 @@ export function useChatThreads() {
     setThreads(
       rawThreads.filter((thread) => !(thread.kind === 'direct' && nextThreadState[thread.id]?.hidden_at)),
     );
+    hasLoadedOnceRef.current = true;
     setLoading(false);
   }, [user]);
 
@@ -233,6 +274,31 @@ export function useChatThreads() {
     };
   }, [user, threadIds]);
 
+  useEffect(() => {
+    const handleThreadRead = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId?: string; readAt?: string }>).detail;
+      const threadId = detail?.threadId;
+      if (!threadId) return;
+      const readAt = detail.readAt ?? new Date().toISOString();
+      setThreadStateByThread((prev) => {
+        const existing = prev[threadId];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [threadId]: {
+            ...existing,
+            last_read_at: readAt,
+            hidden_at: null,
+            unread_count: 0,
+          },
+        };
+      });
+    };
+
+    window.addEventListener(CHAT_THREAD_READ_EVENT, handleThreadRead as EventListener);
+    return () => window.removeEventListener(CHAT_THREAD_READ_EVENT, handleThreadRead as EventListener);
+  }, []);
+
   const createDirectThread = async (otherUserId: string, relatedProjectId?: string | null) => {
     const { data, error } = await supabase.rpc('create_direct_chat_thread', {
       p_other_user_id: otherUserId,
@@ -251,19 +317,23 @@ export function useChatThreads() {
 
   const markThreadRead = async (threadId: string) => {
     if (!user) return;
-    const { data, error } = await supabase.rpc('mark_chat_thread_read', { p_thread_id: threadId });
-    if (error) throw error;
-    if ((data as { error?: string } | null)?.error) throw new Error((data as { error: string }).error);
     const now = new Date().toISOString();
-    setThreadStateByThread((prev) => ({
-      ...prev,
-      [threadId]: {
-        thread_id: threadId,
-        last_read_at: now,
-        hidden_at: null,
-        unread_count: 0,
+    applyLocalThreadRead(threadId, now, setThreadStateByThread);
+    window.dispatchEvent(new CustomEvent(CHAT_THREAD_READ_EVENT, {
+      detail: {
+        threadId,
+        readAt: now,
       },
     }));
+    const { data, error } = await supabase.rpc('mark_chat_thread_read', { p_thread_id: threadId });
+    if (error) {
+      void fetchThreads();
+      throw error;
+    }
+    if ((data as { error?: string } | null)?.error) {
+      void fetchThreads();
+      throw new Error((data as { error: string }).error);
+    }
   };
 
   const hideDirectThread = async (threadId: string) => {
@@ -292,6 +362,21 @@ export function useChatThreads() {
     hideDirectThread,
     refetch: fetchThreads,
   };
+}
+
+const ChatThreadsContext = createContext<ReturnType<typeof useChatThreadsState> | null>(null);
+
+export function ChatThreadsProvider({ children }: { children: ReactNode }) {
+  const value = useChatThreadsState();
+  return createElement(ChatThreadsContext.Provider, { value }, children);
+}
+
+export function useChatThreads() {
+  const context = useContext(ChatThreadsContext);
+  if (!context) {
+    throw new Error('useChatThreads must be used within ChatThreadsProvider');
+  }
+  return context;
 }
 
 export function useChatMessages(threadId: string | null) {

@@ -49,6 +49,7 @@ import {
   type ThesisWorkspaceFile,
   type ThesisWorkspace,
 } from '../lib/thesis-paper';
+import { parseSourceVenueMetadata, type SourceVenueKind } from '../lib/bibliography-metadata';
 import { pushUndoAction } from '../lib/undo-manager';
 import ThesisFileExplorer from './ThesisFileExplorer';
 import type { BibliographyFormat, SourceLibraryItem } from '../pages/ThesisPage';
@@ -79,6 +80,13 @@ type ThesisOverleafEditorMode = 'source' | 'visual';
 type ThesisPaneLayout = 'preview-left' | 'editor-left';
 type ToolbarTooltipTone = 'default' | 'success';
 type PreviewDisplayMode = 'pdf' | 'text' | 'image' | 'binary' | 'error';
+type InsertSourceTargetRange = {
+  filePath: string;
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+};
 
 const overleafEngineOptions: Array<{ value: ThesisOverleafEngine; label: string }> = [
   { value: 'auto', label: 'Auto' },
@@ -102,6 +110,16 @@ const PREVIEW_ZOOM_OPTIONS = [50, 67, 80, 90, 100, 110, 125, 150, 175, 200] as c
 const DEFAULT_PREVIEW_ZOOM = 67;
 const PREVIEW_TEXT_SIZE_OPTIONS = [6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20] as const;
 const DEFAULT_PREVIEW_TEXT_SIZE = 10;
+const AUTOFIX_EDITOR_DECORATION_CSS = `
+.monaco-editor .odyssey-autofix-line {
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.monaco-editor .odyssey-autofix-gutter {
+  border-left: 3px solid rgba(34, 197, 94, 0.92);
+  margin-left: 4px;
+}
+`;
 
 interface LatexPreviewDiagnostic extends ThesisRenderDiagnostic {
   startLineNumber: number;
@@ -116,6 +134,22 @@ interface LatexPreviewErrorDetails {
   diagnostics: LatexPreviewDiagnostic[];
 }
 
+interface LatexAutofixChange {
+  startLineNumber: number;
+  endLineNumber: number;
+  description: string;
+}
+
+interface LatexAutofixResult {
+  nextSource: string;
+  summary: string;
+  changes: LatexAutofixChange[];
+}
+
+interface WorkspaceLatexAutofixResult extends LatexAutofixResult {
+  filePath: string;
+}
+
 interface ThesisPaperTabProps {
   sourceLibrary: SourceLibraryItem[];
   bibliographyFormat: BibliographyFormat;
@@ -124,6 +158,7 @@ interface ThesisPaperTabProps {
 type InsertableSourceLibraryItem = Pick<
   SourceLibraryItem,
   | 'id'
+  | 'citeKey'
   | 'title'
   | 'type'
   | 'sourceKind'
@@ -545,9 +580,14 @@ function isBibFilePath(path: string | null) {
   return /\.bib$/i.test(path ?? '');
 }
 
+function isTexFilePath(path: string | null) {
+  return /\.tex$/i.test(path ?? '');
+}
+
 function normalizeBibtexText(value: string) {
   return value
     .replace(/\r\n/g, '\n')
+    .replace(/([A-Za-z])-\s+([A-Za-z])/g, '$1$2')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -575,16 +615,97 @@ function looksLikeOrganization(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return false;
   if (/[A-Z]{2,}/.test(trimmed) && !/[a-z]/.test(trimmed)) return true;
-  return /\b(agency|department|office|committee|commission|command|center|centre|university|college|school|laboratory|lab|institute|administration|association|society|bureau|ministry|corps|navy|army|air force|marine|marines|government|council|press|publisher|organization|division)\b/i.test(trimmed);
+  return /\b(agency|department|office|committee|commission|command|center|centre|university|college|school|laboratory|lab|institute|administration|association|society|bureau|ministry|corps|navy|army|air force|marine|marines|government|council|press|publisher|organization|division|company|corporation|corp|inc|incorporated|llc|ltd|limited|plc|gmbh|group|holdings|systems|technologies|industries|international)\b/i.test(trimmed);
+}
+
+function normalizeBibtexPersonName(value: string) {
+  return normalizeBibtexText(value)
+    .replace(/\\&/g, '&')
+    .replace(/\s+/g, ' ')
+    .replace(/^[,;]+|[,;]+$/g, '')
+    .trim();
+}
+
+function normalizeBibtexDisplayName(value: string) {
+  const normalized = normalizeBibtexPersonName(value);
+  const parts = normalized.split(/\s*,\s*/).filter(Boolean);
+  if (parts.length === 2) {
+    return normalizeBibtexText(`${parts[1]} ${parts[0]}`);
+  }
+  return normalized;
+}
+
+function countBibtexNameWords(value: string) {
+  return normalizeBibtexPersonName(value).split(/\s+/).filter(Boolean).length;
+}
+
+function isLikelySurnameFirstBibtexSequence(parts: string[]) {
+  if (parts.length < 4 || parts.length % 2 !== 0) return false;
+  const familyParts = parts.filter((_, index) => index % 2 === 0);
+  const givenParts = parts.filter((_, index) => index % 2 === 1);
+  const mostlyShortFamilyNames = familyParts.filter((part) => countBibtexNameWords(part) <= 2).length >= Math.ceil(familyParts.length * 0.8);
+  const mostlyShortGivenNames = givenParts.filter((part) => countBibtexNameWords(part) <= 3).length >= Math.ceil(givenParts.length * 0.8);
+  const manyFullNamesAlreadyPresent = parts.filter((part) => countBibtexNameWords(part) >= 2).length > Math.floor(parts.length / 2);
+  return mostlyShortFamilyNames && mostlyShortGivenNames && !manyFullNamesAlreadyPresent;
+}
+
+function extractBibtexPeople(value: string) {
+  const normalized = normalizeBibtexPersonName(value);
+  if (!normalized) return [];
+
+  const semicolonParts = normalized
+    .split(/\s*;\s*|\s*\n+\s*/)
+    .map((part) => normalizeBibtexDisplayName(part))
+    .filter(Boolean);
+  if (semicolonParts.length > 1) return semicolonParts;
+
+  const commaCandidate = normalized
+    .replace(/\s*,?\s*(?:and|&)\s+/gi, ', ')
+    .replace(/\s*,\s*,+/g, ', ');
+  const commaParts = commaCandidate
+    .split(/\s*,\s*/)
+    .map((part) => normalizeBibtexPersonName(part))
+    .filter(Boolean);
+  if (commaParts.length > 1 && commaParts.every((part) => part.split(/\s+/).filter(Boolean).length >= 2)) {
+    return commaParts.map((part) => normalizeBibtexDisplayName(part));
+  }
+  if (isLikelySurnameFirstBibtexSequence(commaParts)) {
+    const names: string[] = [];
+    for (let index = 0; index < commaParts.length; index += 2) {
+      const family = commaParts[index];
+      const given = commaParts[index + 1];
+      if (!family || !given) continue;
+      names.push(normalizeBibtexText(`${given} ${family}`));
+    }
+    if (names.length > 1) return names;
+  }
+
+  const conjunctionParts = normalized
+    .split(/\s+(?:and|&)\s+/i)
+    .map((part) => normalizeBibtexDisplayName(part))
+    .filter(Boolean);
+  if (conjunctionParts.length > 1) return conjunctionParts;
+
+  return [normalizeBibtexDisplayName(normalized)];
+}
+
+function formatBibtexPersonList(value: string) {
+  const people = [...new Set(extractBibtexPeople(value))];
+  if (people.length === 0) return '';
+  return people.map((person) => escapeBibtexFieldValue(person)).join(' and ');
 }
 
 function formatBibtexAuthorValue(value: string) {
-  const normalized = normalizeBibtexText(value).replace(/\s*;\s*/g, ' and ');
+  const normalized = normalizeBibtexText(value);
   if (!normalized) return '';
   if (looksLikeOrganization(normalized)) {
     return `{{${escapeBibtexFieldValue(normalized)}}}`;
   }
-  return escapeBibtexFieldValue(normalized);
+  return formatBibtexPersonList(normalized);
+}
+
+function cleanBibtexTitle(value: string) {
+  return normalizeBibtexText(value).replace(/\.\s*$/, '');
 }
 
 function slugBibtexKeyPart(value: string) {
@@ -601,8 +722,8 @@ function getBibtexAuthorKeyPart(source: InsertableSourceLibraryItem) {
   const credit = normalizeBibtexText(source.credit);
   if (!credit) return '';
   if (looksLikeOrganization(credit)) return slugBibtexKeyPart(credit.split(/\s+/)[0] ?? credit);
-  if (credit.includes(',')) return slugBibtexKeyPart(credit.split(',')[0] ?? credit);
-  const words = credit.split(/\s+/).filter(Boolean);
+  const firstPerson = extractBibtexPeople(credit)[0] ?? credit;
+  const words = firstPerson.split(/\s+/).filter(Boolean);
   return slugBibtexKeyPart(words[words.length - 1] ?? credit);
 }
 
@@ -615,6 +736,11 @@ function getBibtexTitleKeyPart(source: InsertableSourceLibraryItem) {
 }
 
 function buildBibtexCitationKey(source: InsertableSourceLibraryItem, usedKeys: Set<string>) {
+  if (source.citeKey.trim()) {
+    const storedKey = source.citeKey.trim().replace(/\s+/g, '_');
+    usedKeys.add(storedKey);
+    return storedKey;
+  }
   const authorPart = getBibtexAuthorKeyPart(source);
   const yearMatch = source.year.match(/\b\d{4}\b/);
   const yearPart = yearMatch ? yearMatch[0] : 'nd';
@@ -630,14 +756,31 @@ function buildBibtexCitationKey(source: InsertableSourceLibraryItem, usedKeys: S
   return candidate;
 }
 
+function inferThesisBibtexEntryType(source: InsertableSourceLibraryItem) {
+  const combined = `${source.title} ${source.venue} ${source.notes}`.toLowerCase();
+  if (/\b(ph\.?\s*d|doctor(?:al|ate)?|dissertation)\b/.test(combined)) {
+    return 'phdthesis';
+  }
+  if (/\b(m\.?\s*s|m\.?\s*a|master(?:'s)?|thesis)\b/.test(combined)) {
+    return 'mastersthesis';
+  }
+  return 'mastersthesis';
+}
+
 function inferBibtexEntryType(source: InsertableSourceLibraryItem) {
   switch (source.sourceKind) {
     case 'journal_article':
       return 'article';
+    case 'conference_paper':
+      return 'inproceedings';
+    case 'book':
+      return 'book';
     case 'book_chapter':
       return 'incollection';
     case 'government_report':
       return 'techreport';
+    case 'thesis_dissertation':
+      return inferThesisBibtexEntryType(source);
     case 'dataset':
       return 'misc';
     case 'interview_notes':
@@ -663,16 +806,74 @@ function getWebAccessNote(source: InsertableSourceLibraryItem, bibliographyForma
   return formattedDate ? `Accessed ${formattedDate}` : '';
 }
 
+function cleanVenueTerminalPeriod(value: string) {
+  return normalizeBibtexText(value).replace(/\.\s*$/, '');
+}
+
+function extractDoiFromLocator(locator: string) {
+  const normalized = normalizeBibtexText(locator)
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+    .replace(/^doi:\s*/i, '')
+    .trim();
+  return /^10\.\d{4,9}\/\S+$/i.test(normalized) ? normalized : '';
+}
+
+function findReferencesBibFile(workspace: ThesisWorkspace) {
+  return workspace.files.find((file) => /(?:^|\/)references\.bib$/i.test(file.path))
+    ?? workspace.files.find((file) => /\.bib$/i.test(file.path))
+    ?? null;
+}
+
+function hasBibtexKey(content: string, citeKey: string) {
+  const escapedKey = citeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`@\\w+\\s*\\{\\s*${escapedKey}\\s*,`, 'i').test(content);
+}
+
+function buildLatexCitationCommand(sourceIds: string[], bibliographyFormat: BibliographyFormat) {
+  const citeCommand = bibliographyFormat === 'informs' ? '\\citep' : '\\cite';
+  return `${citeCommand}{${sourceIds.join(',')}}`;
+}
+
+function hasLatexNoCiteAll(content: string) {
+  return /\\nocite\s*(?:\[[^\]]*\]\s*)*\{\s*\*\s*\}/i.test(content);
+}
+
+function ensureBibliographyRegistration(content: string, _citeKeys: string[]) {
+  if (hasLatexNoCiteAll(content)) return content;
+
+  const nociteCommand = '\\nocite{*}';
+  const bibliographyMatch = content.match(/^[ \t]*\\NPSbibliography(?:\[[^\]]*\])?\{[^}]+\}/m);
+  if (bibliographyMatch && typeof bibliographyMatch.index === 'number') {
+    const insertAt = bibliographyMatch.index;
+    const before = content.slice(0, insertAt).replace(/\s*$/, '');
+    const after = content.slice(insertAt);
+    return `${before}\n${nociteCommand}\n\n${after}`;
+  }
+
+  const beginDocumentMatch = content.match(/\\begin\{document\}/);
+  if (beginDocumentMatch && typeof beginDocumentMatch.index === 'number') {
+    const insertAt = beginDocumentMatch.index + beginDocumentMatch[0].length;
+    const before = content.slice(0, insertAt);
+    const after = content.slice(insertAt).replace(/^\s*/, '\n');
+    return `${before}\n${nociteCommand}\n${after}`;
+  }
+
+  const normalized = content.trimEnd();
+  return `${normalized}\n\n${nociteCommand}\n`;
+}
+
 function buildBibtexFields(source: InsertableSourceLibraryItem, bibliographyFormat: BibliographyFormat) {
   const entryType = inferBibtexEntryType(source);
+  const venueMetadata = parseSourceVenueMetadata(source.sourceKind as SourceVenueKind, source.venue);
   const fields: Array<[string, string]> = [];
   const authorValue = formatBibtexAuthorValue(source.credit);
-  const titleValue = escapeBibtexFieldValue(source.title || 'Untitled source');
-  const venueValue = escapeBibtexFieldValue(source.venue);
+  const titleValue = escapeBibtexFieldValue(cleanBibtexTitle(source.title || 'Untitled source'));
+  const venueValue = escapeBibtexFieldValue(cleanVenueTerminalPeriod(source.venue));
   const yearValue = escapeBibtexFieldValue(source.year);
-  const locatorValue = escapeBibtexFieldValue(source.locator);
+  const doiValue = escapeBibtexFieldValue(extractDoiFromLocator(source.locator));
+  const locatorValue = doiValue ? '' : escapeBibtexFieldValue(source.locator);
   const accessNote = getWebAccessNote(source, bibliographyFormat);
-  const noteSource = accessNote || normalizeBibtexText(source.notes) || normalizeBibtexText(source.abstract);
+  const noteSource = accessNote;
   const noteValue = noteSource ? escapeBibtexFieldValue(noteSource) : '';
 
   if (authorValue && entryType !== 'manual') {
@@ -682,29 +883,61 @@ function buildBibtexFields(source: InsertableSourceLibraryItem, bibliographyForm
 
   switch (entryType) {
     case 'article':
-      if (venueValue) fields.push(['journal', venueValue]);
+      if (venueMetadata.journal) fields.push(['journal', escapeBibtexFieldValue(venueMetadata.journal)]);
+      if (venueMetadata.volume) fields.push(['volume', escapeBibtexFieldValue(venueMetadata.volume)]);
+      if (venueMetadata.number) fields.push(['number', escapeBibtexFieldValue(venueMetadata.number)]);
+      if (venueMetadata.pages) fields.push(['pages', escapeBibtexFieldValue(venueMetadata.pages.replace(/\s*-\s*/g, '--'))]);
+      break;
+    case 'inproceedings':
+      if (venueMetadata.booktitle) fields.push(['booktitle', escapeBibtexFieldValue(venueMetadata.booktitle)]);
+      else if (venueValue) fields.push(['booktitle', venueValue]);
+      if (venueMetadata.pages) fields.push(['pages', escapeBibtexFieldValue(venueMetadata.pages.replace(/\s*-\s*/g, '--'))]);
+      if (venueMetadata.publisher) fields.push(['publisher', escapeBibtexFieldValue(venueMetadata.publisher)]);
+      if (venueMetadata.edition) fields.push(['edition', escapeBibtexFieldValue(venueMetadata.edition)]);
+      if (venueMetadata.organization) fields.push(['organization', escapeBibtexFieldValue(venueMetadata.organization)]);
       break;
     case 'incollection':
-      if (venueValue) fields.push(['booktitle', venueValue]);
+      if (venueMetadata.booktitle) fields.push(['booktitle', escapeBibtexFieldValue(venueMetadata.booktitle)]);
+      else if (venueValue) fields.push(['booktitle', venueValue]);
+      if (venueMetadata.pages) fields.push(['pages', escapeBibtexFieldValue(venueMetadata.pages.replace(/\s*-\s*/g, '--'))]);
+      if (venueMetadata.publisher) fields.push(['publisher', escapeBibtexFieldValue(venueMetadata.publisher)]);
+      if (venueMetadata.edition) fields.push(['edition', escapeBibtexFieldValue(venueMetadata.edition)]);
       break;
     case 'book':
-      if (venueValue) fields.push(['publisher', venueValue]);
+      if (venueMetadata.publisher) fields.push(['publisher', escapeBibtexFieldValue(venueMetadata.publisher)]);
+      else if (venueValue) fields.push(['publisher', venueValue]);
+      if (venueMetadata.edition) fields.push(['edition', escapeBibtexFieldValue(venueMetadata.edition)]);
+      break;
+    case 'mastersthesis':
+    case 'phdthesis':
+      if (venueMetadata.school) fields.push(['school', escapeBibtexFieldValue(venueMetadata.school)]);
+      else if (venueValue) fields.push(['school', venueValue]);
       break;
     case 'techreport':
-      if (venueValue) {
-        fields.push([looksLikeOrganization(source.credit) ? 'institution' : 'institution', venueValue]);
-      }
+      if (venueMetadata.institution) fields.push(['institution', escapeBibtexFieldValue(venueMetadata.institution)]);
+      else if (venueValue) fields.push(['institution', venueValue]);
+      if (venueMetadata.reportNumber) fields.push(['number', escapeBibtexFieldValue(venueMetadata.reportNumber)]);
       break;
     case 'manual':
       if (authorValue) {
         fields.push(['organization', authorValue.replace(/^\{\{|\}\}$/g, '')]);
+      } else if (venueMetadata.organization) {
+        fields.push(['organization', escapeBibtexFieldValue(venueMetadata.organization)]);
       } else if (venueValue) {
         fields.push(['organization', venueValue]);
       }
-      if (venueValue) fields.push(['howpublished', venueValue]);
+      if (venueMetadata.howpublished) fields.push(['howpublished', escapeBibtexFieldValue(venueMetadata.howpublished)]);
+      else if (venueMetadata.reportNumber) fields.push(['howpublished', escapeBibtexFieldValue(venueMetadata.reportNumber)]);
+      else if (venueValue) fields.push(['howpublished', venueValue]);
+      if (venueMetadata.edition) fields.push(['edition', escapeBibtexFieldValue(venueMetadata.edition)]);
       break;
     case 'misc':
-      if (venueValue) fields.push(['howpublished', venueValue]);
+      if (venueMetadata.howpublished) fields.push(['howpublished', escapeBibtexFieldValue(venueMetadata.howpublished)]);
+      else if (venueMetadata.organization) fields.push(['howpublished', escapeBibtexFieldValue(venueMetadata.organization)]);
+      else if (venueValue) fields.push(['howpublished', venueValue]);
+      if (venueMetadata.organization && !fields.some(([field]) => field === 'organization')) {
+        fields.push(['organization', escapeBibtexFieldValue(venueMetadata.organization)]);
+      }
       if (source.sourceKind === 'dataset') {
         fields.push(['note', escapeBibtexFieldValue(noteSource || 'Dataset')]);
       }
@@ -719,6 +952,9 @@ function buildBibtexFields(source: InsertableSourceLibraryItem, bibliographyForm
   if (yearValue) {
     fields.push(['year', yearValue]);
   }
+  if (doiValue) {
+    fields.push(['doi', doiValue]);
+  }
   if (locatorValue) {
     fields.push(['url', locatorValue]);
   }
@@ -729,6 +965,46 @@ function buildBibtexFields(source: InsertableSourceLibraryItem, bibliographyForm
   return { entryType, fields };
 }
 
+function shouldKeepBibtexNoteField(
+  source: InsertableSourceLibraryItem,
+  bibliographyFormat: BibliographyFormat,
+  entryType: string,
+) {
+  if (entryType === 'unpublished') return true;
+  if (source.sourceKind === 'dataset') return true;
+  const accessNote = getWebAccessNote(source, bibliographyFormat);
+  return Boolean(accessNote);
+}
+
+function sanitizeInsertedBibtexEntry(
+  entryText: string,
+  source: InsertableSourceLibraryItem,
+  bibliographyFormat: BibliographyFormat,
+) {
+  const entryType = inferBibtexEntryType(source);
+  const keepNote = shouldKeepBibtexNoteField(source, bibliographyFormat, entryType);
+  let nextEntry = entryText;
+
+  if (!keepNote) {
+    nextEntry = nextEntry.replace(/\n\s*note\s*=\s*\{[\s\S]*?\},?/gi, '');
+  }
+
+  const normalizedAuthorValue = formatBibtexAuthorValue(source.credit);
+  if (normalizedAuthorValue) {
+    const authorFieldPattern = /\n(\s*)author\s*=\s*\{[\s\S]*?\},?/i;
+    if (authorFieldPattern.test(nextEntry)) {
+      nextEntry = nextEntry.replace(
+        authorFieldPattern,
+        (_match, indent: string) => `\n${indent}author = {${normalizedAuthorValue}},`,
+      );
+    }
+  }
+
+  return nextEntry
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/,\n(\s*\})/g, '\n$1');
+}
+
 function buildBibtexEntry(source: InsertableSourceLibraryItem, bibliographyFormat: BibliographyFormat, usedKeys: Set<string>) {
   const citationKey = buildBibtexCitationKey(source, usedKeys);
   const { entryType, fields } = buildBibtexFields(source, bibliographyFormat);
@@ -736,8 +1012,16 @@ function buildBibtexEntry(source: InsertableSourceLibraryItem, bibliographyForma
     .filter(([, value]) => value.trim().length > 0)
     .map(([field, value], index, collection) => `  ${field} = {${value}}${index === collection.length - 1 ? '' : ','}`)
     .join('\n');
+  const entryText = sanitizeInsertedBibtexEntry(
+    `@${entryType}{${citationKey},\n${formattedFields}\n}`,
+    source,
+    bibliographyFormat,
+  );
 
-  return `@${entryType}{${citationKey},\n${formattedFields}\n}`;
+  return {
+    citationKey,
+    entryText,
+  };
 }
 
 function collectExistingBibtexKeys(content: string) {
@@ -747,6 +1031,275 @@ function collectExistingBibtexKeys(content: string) {
     if (key) keys.add(key);
   }
   return keys;
+}
+
+function replaceBibtexEntry(content: string, citeKey: string, nextEntry: string) {
+  const escapedKey = citeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const entryPattern = new RegExp(
+    String.raw`@\w+\s*\{\s*${escapedKey}\s*,[\s\S]*?(?=^\s*@\w+\s*\{|\s*\Z)`,
+    'im',
+  );
+
+  if (entryPattern.test(content)) {
+    return content.replace(entryPattern, nextEntry);
+  }
+
+  const normalized = content.trimEnd();
+  return `${normalized}${normalized ? '\n\n' : ''}${nextEntry}\n`;
+}
+
+function removeBibtexEntry(content: string, citeKey: string, marker?: string) {
+  const escapedKey = citeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const entryPattern = new RegExp(
+    String.raw`@\w+\s*\{\s*${escapedKey}\s*,[\s\S]*?(?=^\s*@\w+\s*\{|\s*\Z)`,
+    'im',
+  );
+
+  const match = content.match(entryPattern);
+  if (!match || typeof match.index !== 'number') {
+    return content;
+  }
+
+  const entryText = match[0];
+  const replacement = marker && entryText.includes(marker) ? marker : '';
+  return `${content.slice(0, match.index)}${replacement}${content.slice(match.index + entryText.length)}`
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+function insertBibtexEntriesAtMarker(content: string, marker: string, entryText: string) {
+  const markerIndex = content.indexOf(marker);
+  if (markerIndex < 0) return content;
+
+  const before = content.slice(0, markerIndex);
+  const after = content.slice(markerIndex + marker.length);
+  const needsLeadingSpacing = before.trim().length > 0 && !/\n\s*\n\s*$/.test(before);
+  const needsTrailingSpacing = after.trim().length > 0 && !/^\s*\n\s*\n/.test(after);
+  const insertText = `${needsLeadingSpacing ? '\n\n' : ''}${entryText}${needsTrailingSpacing ? '\n\n' : ''}`;
+  return `${before}${insertText}${after}`;
+}
+
+type BibtexCitationSuggestion = {
+  key: string;
+  title: string;
+  entryType: string;
+  filePath: string;
+  authors?: string;
+  year?: string;
+  venue?: string;
+};
+
+function normalizeBibtexDisplayValue(value: string) {
+  return value
+    .replace(/^\{+|\}+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function collectBibtexCitationSuggestions(workspace: ThesisWorkspace, sourceLibrary: SourceLibraryItem[]) {
+  const suggestions = new Map<string, BibtexCitationSuggestion>();
+
+  for (const file of workspace.files.filter((item) => /\.bib$/i.test(item.path))) {
+    const entryMatches = file.content.matchAll(/@(\w+)\s*\{\s*([^,\s]+)\s*,([\s\S]*?)(?=^\s*@\w+\s*\{|\s*\Z)/gm);
+    for (const match of entryMatches) {
+      const entryType = match[1]?.trim() || 'misc';
+      const key = match[2]?.trim();
+      const body = match[3] ?? '';
+      if (!key || suggestions.has(key)) continue;
+
+      const titleMatch = body.match(/\btitle\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\}|"[^"]*")/i);
+      const authorMatch = body.match(/\bauthor\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\}|"[^"]*")/i);
+      const yearMatch = body.match(/\byear\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\}|"[^"]*")/i);
+      const venueMatch = body.match(/\b(?:journal|booktitle|publisher|school|institution|howpublished)\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\}|"[^"]*")/i);
+      const title = normalizeBibtexDisplayValue(titleMatch?.[1] ?? '');
+      suggestions.set(key, {
+        key,
+        title: title || key,
+        entryType,
+        filePath: file.path,
+        authors: normalizeBibtexDisplayValue(authorMatch?.[1] ?? ''),
+        year: normalizeBibtexDisplayValue(yearMatch?.[1] ?? ''),
+        venue: normalizeBibtexDisplayValue(venueMatch?.[1] ?? ''),
+      });
+    }
+  }
+
+  for (const source of sourceLibrary) {
+    const key = source.citeKey.trim();
+    if (!key || suggestions.has(key)) continue;
+    suggestions.set(key, {
+      key,
+      title: source.title.trim() || key,
+      entryType: inferBibtexEntryType(source),
+      filePath: findReferencesBibFile(workspace)?.path ?? 'references.bib',
+      authors: source.credit.trim(),
+      year: source.year.trim(),
+      venue: source.venue.trim(),
+    });
+  }
+
+  return [...suggestions.values()].sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function getLatexCitationContext(
+  model: MonacoEditor.ITextModel,
+  position: { lineNumber: number; column: number },
+) {
+  const textBeforeCursor = model.getValueInRange({
+    startLineNumber: 1,
+    startColumn: 1,
+    endLineNumber: position.lineNumber,
+    endColumn: position.column,
+  });
+  const match = textBeforeCursor.match(/\\(?:no)?cite[a-zA-Z]*\s*(?:\[[^\]]*\]\s*)*\{([^}]*)$/s);
+  if (!match) return null;
+
+  const braceContent = match[1] ?? '';
+  const rawSegment = braceContent.split(',').at(-1) ?? '';
+  const leadingWhitespace = rawSegment.match(/^\s*/)?.[0] ?? '';
+  const query = rawSegment.slice(leadingWhitespace.length);
+  const replaceStartColumn = Math.max(1, position.column - query.length);
+
+  return {
+    query,
+    range: {
+      startLineNumber: position.lineNumber,
+      startColumn: replaceStartColumn,
+      endLineNumber: position.lineNumber,
+      endColumn: position.column,
+    },
+  };
+}
+
+function getLatexCitationKeyAtPosition(
+  model: MonacoEditor.ITextModel,
+  position: { lineNumber: number; column: number },
+) {
+  const lineText = model.getLineContent(position.lineNumber);
+  const linePrefix = lineText.slice(0, Math.max(0, position.column - 1));
+  const commandStart = linePrefix.lastIndexOf('\\');
+  if (commandStart < 0) return null;
+
+  const commandSegment = linePrefix.slice(commandStart);
+  const commandMatch = commandSegment.match(/^\\(?:no)?cite[a-zA-Z]*\s*(?:\[[^\]]*\]\s*)*\{([^}]*)$/);
+  if (!commandMatch) return null;
+
+  const citeListText = commandMatch[1] ?? '';
+  const citeListStartIndex = commandSegment.lastIndexOf('{') + 1;
+  const keyStartInLine = commandStart + citeListStartIndex;
+  const cursorIndexInLine = Math.max(0, position.column - 1);
+  const relativeCursor = cursorIndexInLine - keyStartInLine;
+  if (relativeCursor < 0) return null;
+
+  let segmentStart = 0;
+  for (let index = 0; index < citeListText.length; index += 1) {
+    const char = citeListText[index];
+    if (char === ',') {
+      if (relativeCursor <= index) {
+        const rawKey = citeListText.slice(segmentStart, index);
+        const trimmedLeft = rawKey.match(/^\s*/)?.[0].length ?? 0;
+        const trimmedRight = rawKey.match(/\s*$/)?.[0].length ?? 0;
+        const key = rawKey.trim();
+        if (!key) return null;
+        return {
+          key,
+          range: {
+            startLineNumber: position.lineNumber,
+            startColumn: keyStartInLine + segmentStart + trimmedLeft + 1,
+            endLineNumber: position.lineNumber,
+            endColumn: keyStartInLine + index - trimmedRight + 1,
+          },
+        };
+      }
+      segmentStart = index + 1;
+    }
+  }
+
+  const rawKey = citeListText.slice(segmentStart);
+  const trimmedLeft = rawKey.match(/^\s*/)?.[0].length ?? 0;
+  const trimmedRight = rawKey.match(/\s*$/)?.[0].length ?? 0;
+  const key = rawKey.trim();
+  if (!key) return null;
+  const segmentEnd = citeListText.length - trimmedRight;
+  if (relativeCursor > segmentEnd) return null;
+
+  return {
+    key,
+    range: {
+      startLineNumber: position.lineNumber,
+      startColumn: keyStartInLine + segmentStart + trimmedLeft + 1,
+      endLineNumber: position.lineNumber,
+      endColumn: keyStartInLine + segmentEnd + 1,
+    },
+  };
+}
+
+function buildCitationHoverMarkdown(item: BibtexCitationSuggestion) {
+  const lines = [
+    `**${item.key}**`,
+    '',
+    item.title,
+    item.authors ? `Authors: ${item.authors}` : null,
+    item.year ? `Year: ${item.year}` : null,
+    item.venue ? `Source: ${item.venue}` : null,
+    `Type: ${item.entryType}`,
+    `File: ${item.filePath}`,
+  ].filter(Boolean);
+
+  return lines.join('  \n');
+}
+
+function collectLatexCitationHoverDecorations(
+  model: MonacoEditor.ITextModel,
+  suggestions: BibtexCitationSuggestion[],
+  monaco: Monaco,
+) {
+  const suggestionMap = new Map(suggestions.map((item) => [item.key, item]));
+  const decorations: MonacoEditor.IModelDeltaDecoration[] = [];
+  const source = model.getValue();
+  const commandPattern = /\\(?:no)?cite[a-zA-Z]*\s*(?:\[[^\]]*\]\s*)*\{([^}]*)\}/g;
+
+  for (const match of source.matchAll(commandPattern)) {
+    const citeList = match[1] ?? '';
+    const fullMatch = match[0] ?? '';
+    const matchIndex = match.index ?? -1;
+    if (matchIndex < 0) continue;
+    const braceOffset = fullMatch.lastIndexOf('{');
+    if (braceOffset < 0) continue;
+    const citeListStart = matchIndex + braceOffset + 1;
+
+    let segmentStart = 0;
+    for (const segment of citeList.split(',')) {
+      const trimmedLeft = segment.match(/^\s*/)?.[0].length ?? 0;
+      const trimmedRight = segment.match(/\s*$/)?.[0].length ?? 0;
+      const key = segment.trim();
+      const entry = suggestionMap.get(key);
+      const keyStartOffset = citeListStart + segmentStart + trimmedLeft;
+      const keyEndOffset = citeListStart + segmentStart + segment.length - trimmedRight;
+
+      if (entry && keyStartOffset < keyEndOffset) {
+        const startPosition = model.getPositionAt(keyStartOffset);
+        const endPosition = model.getPositionAt(keyEndOffset);
+        decorations.push({
+          range: new monaco.Range(
+            startPosition.lineNumber,
+            startPosition.column,
+            endPosition.lineNumber,
+            endPosition.column,
+          ),
+          options: {
+            inlineClassName: 'odyssey-citation-hover-target',
+            hoverMessage: {
+              value: buildCitationHoverMarkdown(entry),
+            },
+          },
+        });
+      }
+
+      segmentStart += segment.length + 1;
+    }
+  }
+
+  return decorations;
 }
 
 function buildLineDiagnostic(
@@ -785,6 +1338,207 @@ function mapLatexDiagnostics(source: string, diagnostics: ThesisRenderDiagnostic
       diagnostic.message,
       diagnostic.severity,
     ));
+}
+
+function isBlankOrCommentLine(line: string) {
+  const trimmed = line.trim();
+  return trimmed.length === 0 || trimmed.startsWith('%');
+}
+
+function isLikelyLatexBodyStart(line: string) {
+  return /^\\(?:begin\{[^}]+\}|maketitle|chapter|section|subsection|subsubsection|paragraph|subparagraph|part|frontmatter|mainmatter|backmatter|appendix|tableofcontents|listoffigures|listoftables|printbibliography|bibliography|nocite|input|include)\b/.test(line);
+}
+
+function isLikelyLatexPreambleCommand(line: string) {
+  return /^\\(?:documentclass|usepackage|title|author|date|thanks|newcommand|renewcommand|providecommand|DeclareMathOperator|DeclareRobustCommand|DeclarePairedDelimiter|newtheorem|theoremstyle|numberwithin|counterwithin|setcounter|setlength|addtolength|geometry|graphicspath|hypersetup|captionsetup|pagestyle|bibliographystyle|makeindex|makeglossaries|onehalfspacing|doublespacing|singlespacing|linespread|input@path|lstset|floatstyle|restylefloat|definecolor)\b/.test(line);
+}
+
+function findLatexDocumentBodyInsertionIndex(lines: string[], documentclassIndex: number) {
+  for (let index = documentclassIndex + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (isBlankOrCommentLine(lines[index])) continue;
+    if (isLikelyLatexBodyStart(trimmed)) return index;
+  }
+
+  for (let index = documentclassIndex + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (isBlankOrCommentLine(lines[index])) continue;
+    if (!isLikelyLatexPreambleCommand(trimmed)) return index;
+  }
+
+  const endDocumentIndex = lines.findIndex((line, index) => index > documentclassIndex && /\\end\{document\}/.test(line));
+  return endDocumentIndex >= 0 ? endDocumentIndex : lines.length;
+}
+
+function computeLatexAutofix(
+  source: string,
+  diagnostics: LatexPreviewDiagnostic[],
+  renderError: string | null,
+): LatexAutofixResult | null {
+  if (!source.trim()) return null;
+
+  const issueText = [renderError ?? '', ...diagnostics.map((diagnostic) => diagnostic.message)].join('\n');
+  const documentclassMatch = source.match(/\\documentclass(?:\[[^\]]*\])?\{[^}]+\}/);
+  if (!documentclassMatch) return null;
+
+  const nextLines = source.split('\n');
+  const changes: LatexAutofixChange[] = [];
+  const summaryParts: string[] = [];
+  const documentclassLineNumber = source.slice(0, documentclassMatch.index ?? 0).split('\n').length;
+  const documentclassIndex = Math.max(0, documentclassLineNumber - 1);
+
+  const hasBeginDocument = nextLines.some((line) => /\\begin\{document\}/.test(line));
+  const hasEndDocument = nextLines.some((line) => /\\end\{document\}/.test(line));
+  const needsBeginDocument = !hasBeginDocument && /Missing \\begin\{document\}/i.test(issueText);
+
+  if (needsBeginDocument) {
+    const movedLineIndexes = nextLines
+      .slice(0, documentclassIndex)
+      .map((line, index) => ({ line, index }))
+      .filter(({ line }) => !isBlankOrCommentLine(line))
+      .map(({ index }) => index);
+
+    const movedLines = movedLineIndexes.map((index) => nextLines[index]);
+    if (movedLineIndexes.length > 0) {
+      for (const index of movedLineIndexes) {
+        nextLines[index] = '';
+      }
+      changes.push({
+        startLineNumber: movedLineIndexes[0] + 1,
+        endLineNumber: movedLineIndexes[movedLineIndexes.length - 1] + 1,
+        description: movedLines.length === 1
+          ? 'Moved leading content below \\begin{document}.'
+          : 'Moved leading content block below \\begin{document}.',
+      });
+    }
+
+    const insertAt = findLatexDocumentBodyInsertionIndex(nextLines, documentclassIndex);
+    const insertedLines = [
+      '\\begin{document}',
+      ...(movedLines.length > 0 ? ['', ...movedLines, ''] : ['']),
+    ];
+    nextLines.splice(insertAt, 0, ...insertedLines);
+    changes.push({
+      startLineNumber: insertAt + 1,
+      endLineNumber: insertAt + insertedLines.length,
+      description: movedLines.length > 0
+        ? 'Inserted \\begin{document} and preserved leading content inside the document body.'
+        : 'Inserted \\begin{document}.',
+    });
+    summaryParts.push('inserted \\begin{document}');
+  }
+
+  const nextHasBeginDocument = nextLines.some((line) => /\\begin\{document\}/.test(line));
+  const nextHasEndDocument = nextLines.some((line) => /\\end\{document\}/.test(line));
+  const needsEndDocument = !hasEndDocument
+    && nextHasBeginDocument
+    && (
+      /no legal \\end found/i.test(issueText)
+      || /missing \\end\{document\}/i.test(issueText)
+      || /ended by end of file/i.test(issueText)
+      || /Emergency stop/i.test(issueText)
+    );
+
+  if (!nextHasEndDocument && needsEndDocument) {
+    const needsSpacerLine = nextLines.length > 0 && nextLines[nextLines.length - 1].trim().length > 0;
+    const insertAt = nextLines.length;
+    const appendedLines = needsSpacerLine ? ['', '\\end{document}'] : ['\\end{document}'];
+    nextLines.push(...appendedLines);
+    changes.push({
+      startLineNumber: insertAt + 1,
+      endLineNumber: insertAt + appendedLines.length,
+      description: 'Inserted \\end{document}.',
+    });
+    summaryParts.push('inserted \\end{document}');
+  }
+
+  const nextSource = nextLines.join('\n');
+  if (changes.length === 0 || nextSource === source) return null;
+
+  const summary = summaryParts.length > 0
+    ? `Autofix ${summaryParts.join(' and ')}.`
+    : 'Autofix applied minimal LaTeX changes.';
+
+  return {
+    nextSource,
+    summary,
+    changes,
+  };
+}
+
+function computeWorkspaceLatexAutofix(
+  workspace: ThesisWorkspace,
+  options: {
+    activeFilePath: string | null;
+    mainDocumentPath: string | null;
+    renderDiagnostics: ThesisRenderDiagnostic[];
+    renderError: string | null;
+  },
+): WorkspaceLatexAutofixResult | null {
+  const issueText = [options.renderError ?? '', ...options.renderDiagnostics.map((diagnostic) => diagnostic.message)].join('\n');
+  if (/can be used only in preamble/i.test(issueText)) {
+    const texFiles = workspace.files.filter((file) => /\.tex$/i.test(file.path) && !isBinaryWorkspaceFile(file));
+    for (const rootFile of texFiles) {
+      const frontMatterInputMatch = rootFile.content.match(/\\input\{([^}]*front-matter[^}]*)\}/);
+      if (!frontMatterInputMatch) continue;
+
+      const frontMatterReference = frontMatterInputMatch[1] ?? '';
+      const frontMatterFile = resolveWorkspaceInputPath(workspace, rootFile.path, frontMatterReference);
+      if (!frontMatterFile || isBinaryWorkspaceFile(frontMatterFile)) continue;
+      if (!/\\NPShyperref\b/.test(frontMatterFile.content) || !/\\begin\{document\}/.test(frontMatterFile.content)) continue;
+
+      const rootLines = rootFile.content.split('\n');
+      const inputLineIndex = rootLines.findIndex((line) => /\\input\{([^}]*front-matter[^}]*)\}/.test(line));
+      const beginLineIndex = rootLines.findIndex((line) => /\\begin\{document\}/.test(line));
+      if (inputLineIndex < 0 || beginLineIndex < 0 || beginLineIndex > inputLineIndex) continue;
+
+      const nextLines = [...rootLines];
+      nextLines.splice(beginLineIndex, 1);
+      return {
+        filePath: rootFile.path,
+        nextSource: nextLines.join('\n'),
+        summary: 'Autofix removed the duplicate \\begin{document} so front-matter can own the preamble boundary.',
+        changes: [{
+          startLineNumber: beginLineIndex + 1,
+          endLineNumber: beginLineIndex + 1,
+          description: 'Removed duplicate \\begin{document} before \\input{front-matter}.',
+        }],
+      };
+    }
+  }
+
+  const candidatePaths = [
+    ...options.renderDiagnostics
+      .map((diagnostic) => diagnostic.filePath)
+      .filter((filePath): filePath is string => Boolean(filePath && /\.tex$/i.test(filePath))),
+    options.mainDocumentPath,
+    options.activeFilePath,
+    ...workspace.files
+      .filter((file) => /\.tex$/i.test(file.path) && looksLikeLatexRoot(file.content))
+      .map((file) => file.path),
+  ].filter((filePath, index, collection): filePath is string => (
+    Boolean(filePath && /\.tex$/i.test(filePath)) && collection.indexOf(filePath) === index
+  ));
+
+  for (const filePath of candidatePaths) {
+    const file = workspace.files.find((workspaceFile) => workspaceFile.path === filePath);
+    if (!file || isBinaryWorkspaceFile(file)) continue;
+
+    const fileDiagnostics = mapLatexDiagnostics(
+      file.content,
+      options.renderDiagnostics.filter((diagnostic) => !diagnostic.filePath || diagnostic.filePath === filePath),
+      filePath,
+    );
+    const autofix = computeLatexAutofix(file.content, fileDiagnostics, options.renderError);
+    if (!autofix) continue;
+
+    return {
+      ...autofix,
+      filePath,
+    };
+  }
+
+  return null;
 }
 
 function createPdfPreviewUrl(base64: string) {
@@ -1115,6 +1869,45 @@ function buildWorkspaceStructureSignature(workspace: ThesisWorkspace) {
     files: workspace.files.map((file) => ({ id: file.id, path: file.path })),
     folders: workspace.folders.map((folder) => folder.path),
   });
+}
+
+function hashWorkspaceFileContent(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function buildWorkspaceFileStorageSignature(file: ThesisWorkspaceFile) {
+  return [
+    file.path,
+    file.encoding ?? 'utf-8',
+    file.mimeType ?? '',
+    file.content.length,
+    hashWorkspaceFileContent(file.content),
+  ].join(':');
+}
+
+function buildWorkspaceFileStorageSignatures(workspace: ThesisWorkspace) {
+  return new Map(workspace.files.map((file) => [file.id, buildWorkspaceFileStorageSignature(file)]));
+}
+
+function computeWorkspacePersistedState(workspace: ThesisWorkspace, savedSignatures: ReadonlyMap<string, string>) {
+  const savedFileIds = new Set<string>();
+  let allSaved = savedSignatures.size === workspace.files.length;
+
+  for (const file of workspace.files) {
+    const currentSignature = buildWorkspaceFileStorageSignature(file);
+    if (savedSignatures.get(file.id) === currentSignature) {
+      savedFileIds.add(file.id);
+      continue;
+    }
+    allSaved = false;
+  }
+
+  return { savedFileIds, allSaved };
 }
 
 function readBalancedBraces(input: string, openBraceIndex: number) {
@@ -1824,11 +2617,16 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   const [previewDisplayMode, setPreviewDisplayMode] = useState<PreviewDisplayMode>('pdf');
   const [renderError, setRenderError] = useState<string | null>(null);
   const [latexDiagnostics, setLatexDiagnostics] = useState<LatexPreviewDiagnostic[]>([]);
+  const [renderDiagnostics, setRenderDiagnostics] = useState<ThesisRenderDiagnostic[]>([]);
+  const [autofixHighlights, setAutofixHighlights] = useState<LatexAutofixChange[]>([]);
+  const [isApplyingAutofix, setIsApplyingAutofix] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [remoteReady, setRemoteReady] = useState(false);
   const [remoteSaveState, setRemoteSaveState] = useState<ThesisRemoteSaveState>('idle');
   const [remoteSaveMessage, setRemoteSaveMessage] = useState<string | null>(null);
   const [remoteRepoWarning, setRemoteRepoWarning] = useState<string | null>(null);
+  const [savedFileIds, setSavedFileIds] = useState<Set<string>>(() => new Set());
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [previewWidthPercent, setPreviewWidthPercent] = useState(DEFAULT_PREVIEW_WIDTH_PERCENT);
   const [explorerWidthPx, setExplorerWidthPx] = useState(DEFAULT_EXPLORER_WIDTH_PX);
   const [explorerCollapsed, setExplorerCollapsed] = useState(() => window.localStorage.getItem(THESIS_EXPLORER_COLLAPSED_STORAGE_KEY) === 'true');
@@ -1869,16 +2667,23 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const insertSourceActionRef = useRef<IDisposable | null>(null);
+  const citationCompletionProviderRef = useRef<IDisposable | null>(null);
+  const citationHoverProviderRef = useRef<IDisposable | null>(null);
   const insertSourceContextKeyRef = useRef<{ set: (value: boolean) => void } | null>(null);
+  const insertSourceTargetRangeRef = useRef<InsertSourceTargetRange | null>(null);
   const editorDecorationIdsRef = useRef<string[]>([]);
+  const autofixDecorationIdsRef = useRef<string[]>([]);
   const editorListenersRef = useRef<IDisposable[]>([]);
   const editorSyncFrameRef = useRef<number | null>(null);
   const suppressNextEditorChangeRef = useRef(false);
   const activePointerIdRef = useRef<number | null>(null);
   const activeResizeHandleRef = useRef<'preview' | 'explorer' | null>(null);
   const selectedExplorerNodeIdRef = useRef<string | null>(initialActiveFile?.id ?? null);
+  const savedFileIdsRef = useRef<Set<string>>(new Set());
+  const lastRemoteSavedFileSignaturesRef = useRef<Map<string, string>>(new Map());
   const lastLocalSnapshotUpdateRef = useRef<number | null>(null);
   const latestWorkspaceRef = useRef<ThesisWorkspace>(initialWorkspace);
+  const latestSourceLibraryRef = useRef<SourceLibraryItem[]>(sourceLibrary);
   const lastSavedWorkspaceStructureRef = useRef<string>(buildWorkspaceStructureSignature(initialWorkspace));
   const localChangesDuringHydrationRef = useRef(false);
   const previewRenderJobRef = useRef(0);
@@ -1907,6 +2712,19 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   );
   const workspaceStructureSignature = useMemo(() => buildWorkspaceStructureSignature(workspace), [workspace]);
   const overleafMainDocument = useMemo(() => resolveOverleafMainDocument(workspace, activeFilePath), [workspace, activeFilePath]);
+  const availableAutofix = useMemo(
+    () => (
+      renderError
+        ? computeWorkspaceLatexAutofix(workspace, {
+            activeFilePath,
+            mainDocumentPath: overleafMainDocument,
+            renderDiagnostics,
+            renderError,
+          })
+        : null
+    ),
+    [activeFilePath, overleafMainDocument, renderDiagnostics, renderError, workspace],
+  );
   const previewOnLeft = paneLayout === 'preview-left';
   const canControlPdfPreview = previewDisplayMode === 'pdf' && Boolean(previewPdfUrl);
   const canControlTextPreview = previewDisplayMode === 'text';
@@ -1928,6 +2746,11 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     () => sourceLibrary.filter((source) => selectedInsertSourceIds.includes(source.id)),
     [selectedInsertSourceIds, sourceLibrary],
   );
+  const insertSourceMode = isBibFilePath(activeFilePath)
+    ? 'bib'
+    : isTexFilePath(activeFilePath)
+      ? 'tex'
+      : 'unsupported';
 
   const persistSnapshot = (partial: Partial<ThesisPaperSnapshot>) => {
     const currentSnapshot = readStoredThesisPaperSnapshot();
@@ -1939,6 +2762,40 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     lastLocalSnapshotUpdateRef.current = nextSnapshot.updatedAt;
     writeStoredThesisPaperSnapshot(nextSnapshot);
     return nextSnapshot;
+  };
+
+  const applySavedFileIds = (nextSavedFileIds: Set<string>) => {
+    savedFileIdsRef.current = nextSavedFileIds;
+    setSavedFileIds(nextSavedFileIds);
+  };
+
+  const commitRemoteSavedWorkspace = (nextWorkspace: ThesisWorkspace) => {
+    lastRemoteSavedFileSignaturesRef.current = buildWorkspaceFileStorageSignatures(nextWorkspace);
+    applySavedFileIds(new Set(nextWorkspace.files.map((file) => file.id)));
+    setHasUnsavedChanges(false);
+  };
+
+  const reconcilePersistedWorkspace = (nextWorkspace: ThesisWorkspace) => {
+    const persistedState = computeWorkspacePersistedState(nextWorkspace, lastRemoteSavedFileSignaturesRef.current);
+    applySavedFileIds(persistedState.savedFileIds);
+    setHasUnsavedChanges(!persistedState.allSaved);
+  };
+
+  const updateActiveFilePersistedState = (nextFile: ThesisWorkspaceFile | null, nextWorkspace: ThesisWorkspace) => {
+    const nextSavedFileIds = new Set(savedFileIdsRef.current);
+    if (nextFile) {
+      const currentSignature = buildWorkspaceFileStorageSignature(nextFile);
+      if (lastRemoteSavedFileSignaturesRef.current.get(nextFile.id) === currentSignature) {
+        nextSavedFileIds.add(nextFile.id);
+      } else {
+        nextSavedFileIds.delete(nextFile.id);
+      }
+    }
+    applySavedFileIds(nextSavedFileIds);
+    setHasUnsavedChanges(
+      nextSavedFileIds.size !== nextWorkspace.files.length
+      || lastRemoteSavedFileSignaturesRef.current.size !== nextWorkspace.files.length,
+    );
   };
 
   const clearPreviewObjectUrl = () => {
@@ -1971,7 +2828,106 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
         : [],
     );
 
-    editorDecorationIdsRef.current = editor.deltaDecorations(editorDecorationIdsRef.current, []);
+    const citationDecorations = activeEditorLanguage === 'latex'
+      ? collectLatexCitationHoverDecorations(
+          model,
+          collectBibtexCitationSuggestions(latestWorkspaceRef.current, latestSourceLibraryRef.current),
+          monaco,
+        )
+      : [];
+
+    editorDecorationIdsRef.current = editor.deltaDecorations(editorDecorationIdsRef.current, citationDecorations);
+  };
+
+  const applyAutofixDecorations = (changes: LatexAutofixChange[]) => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    const model = editor?.getModel();
+    if (!editor || !monaco || !model || activeEditorLanguage !== 'latex') return;
+
+    const decorations = changes.map((change) => ({
+      range: new monaco.Range(
+        change.startLineNumber,
+        1,
+        change.endLineNumber,
+        model.getLineMaxColumn(change.endLineNumber),
+      ),
+      options: {
+        isWholeLine: true,
+        className: 'odyssey-autofix-line',
+        linesDecorationsClassName: 'odyssey-autofix-gutter',
+        hoverMessage: { value: change.description },
+        overviewRuler: {
+          color: 'rgba(34, 197, 94, 0.85)',
+          position: monaco.editor.OverviewRulerLane.Left,
+        },
+        stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+      },
+    }));
+
+    autofixDecorationIdsRef.current = editor.deltaDecorations(autofixDecorationIdsRef.current, decorations);
+
+    const firstChange = changes[0];
+    if (!firstChange) return;
+
+    editor.setSelection(new monaco.Range(
+      firstChange.startLineNumber,
+      1,
+      firstChange.startLineNumber,
+      1,
+    ));
+    editor.revealLineInCenter(firstChange.startLineNumber);
+    editor.focus();
+  };
+
+  const clearAutofixFeedback = () => {
+    setAutofixHighlights([]);
+
+    const editor = editorRef.current;
+    if (!editor || autofixDecorationIdsRef.current.length === 0) return;
+    autofixDecorationIdsRef.current = editor.deltaDecorations(autofixDecorationIdsRef.current, []);
+  };
+
+  const handleAutofixRenderFailure = () => {
+    if (!availableAutofix) return;
+
+    setIsApplyingAutofix(true);
+    const previousWorkspace = workspace;
+    const previousSelectedNodeId = selectedExplorerNodeIdRef.current;
+    const targetFile = workspace.files.find((file) => file.path === availableAutofix.filePath) ?? null;
+    if (!targetFile) {
+      setIsApplyingAutofix(false);
+      return;
+    }
+    const nextWorkspace = {
+      ...workspace,
+      activeFileId: targetFile.id,
+      files: workspace.files.map((file) => (
+        file.path === availableAutofix.filePath ? { ...file, content: availableAutofix.nextSource } : file
+      )),
+    } satisfies ThesisWorkspace;
+
+    pushUndoAction({
+      label: 'Applied thesis LaTeX autofix',
+      undo: () => {
+        applyWorkspaceUpdate(previousWorkspace, {
+          openFileId: previousWorkspace.activeFileId,
+          selectedNodeId: previousSelectedNodeId,
+        });
+        clearAutofixFeedback();
+      },
+    });
+
+    applyWorkspaceUpdate(nextWorkspace, {
+      openFileId: targetFile.id,
+      selectedNodeId: previousSelectedNodeId,
+    });
+
+    setAutofixHighlights(availableAutofix.changes);
+    window.requestAnimationFrame(() => {
+      applyAutofixDecorations(availableAutofix.changes);
+      setIsApplyingAutofix(false);
+    });
   };
 
   const applySnapshotToTab = (snapshot: ThesisPaperSnapshot) => {
@@ -1979,11 +2935,13 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     const nextActiveFile = getThesisWorkspaceActiveFile(nextWorkspace);
     latestWorkspaceRef.current = nextWorkspace;
     lastSavedWorkspaceStructureRef.current = buildWorkspaceStructureSignature(nextWorkspace);
+    reconcilePersistedWorkspace(nextWorkspace);
     setWorkspace(nextWorkspace);
     setSelectedExplorerNodeId(resolveExplorerSelection(nextWorkspace, selectedExplorerNodeIdRef.current));
     setDraft(nextActiveFile?.content ?? snapshot.draft);
     setRenderError(snapshot.renderError ?? null);
     setLatexDiagnostics([]);
+    setRenderDiagnostics([]);
     if (editorRef.current && editorRef.current.getValue() !== (nextActiveFile?.content ?? snapshot.draft)) {
       suppressNextEditorChangeRef.current = true;
       editorRef.current.setValue(
@@ -2024,6 +2982,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     setSelectedExplorerNodeId(fileId);
     setDraft(nextFile.content);
     setRenderError(null);
+    setRenderDiagnostics([]);
     persistSnapshot({
       draft: nextFile.content,
       renderError: null,
@@ -2062,6 +3021,8 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     setSelectedExplorerNodeId(resolveExplorerSelection(resolvedWorkspace, options?.selectedNodeId ?? selectedExplorerNodeIdRef.current));
     setDraft(nextDraft);
     setRenderError(null);
+    setRenderDiagnostics([]);
+    reconcilePersistedWorkspace(resolvedWorkspace);
     persistSnapshot({
       draft: nextDraft,
       renderError: null,
@@ -2098,6 +3059,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
           selectedExplorerNodeId: selectedExplorerNodeIdRef.current,
         },
       });
+      commitRemoteSavedWorkspace(nextWorkspace);
       setRemoteSaveState('saved');
       setRemoteSaveMessage(null);
       setRemoteRepoWarning(result.repoSyncStatus === 'error' ? (result.repoSyncError ?? 'Repository mirror failed.') : null);
@@ -2111,6 +3073,10 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   useEffect(() => {
     latestWorkspaceRef.current = workspace;
   }, [workspace]);
+
+  useEffect(() => {
+    latestSourceLibraryRef.current = sourceLibrary;
+  }, [sourceLibrary]);
 
   useEffect(() => {
     persistSnapshot({
@@ -2238,8 +3204,9 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   }, [toolbarTooltip]);
 
   useEffect(() => {
-    insertSourceContextKeyRef.current?.set(isBibFilePath(activeFilePath));
-    if (!isBibFilePath(activeFilePath) && insertSourceModalOpen) {
+    const isSupportedInsertFile = isBibFilePath(activeFilePath) || isTexFilePath(activeFilePath);
+    insertSourceContextKeyRef.current?.set(isSupportedInsertFile);
+    if (!isSupportedInsertFile && insertSourceModalOpen) {
       setInsertSourceModalOpen(false);
       setInsertSourceError(null);
       setInsertSourceSearch('');
@@ -2286,6 +3253,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
           if (!localSnapshot.updatedAt || remoteUpdatedAt >= localSnapshot.updatedAt || !localSnapshot.draft.trim()) {
             const hydratedSnapshot = applyRemoteThesisDocument(remoteDocument);
             applySnapshotToTab(hydratedSnapshot);
+            commitRemoteSavedWorkspace(getThesisWorkspaceFromSnapshot(hydratedSnapshot, hydratedSnapshot.draft || DEFAULT_LATEX_TEMPLATE));
             setEditorTheme(normalizeEditorThemeId(remoteDocument.editorTheme));
           } else {
             const localWorkspace = getThesisWorkspaceFromSnapshot(localSnapshot, localSnapshot.draft || DEFAULT_LATEX_TEMPLATE);
@@ -2417,6 +3385,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
             setPreviewStats({ pages: 1, words: 0 });
             setRenderError(null);
             setLatexDiagnostics([]);
+            setRenderDiagnostics([]);
             persistSnapshot({
               draft: deferredDraft,
               previewStatus: 'live',
@@ -2437,6 +3406,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
             setPreviewStats({ pages: 1, words: 0 });
             setRenderError(null);
             setLatexDiagnostics([]);
+            setRenderDiagnostics([]);
             persistSnapshot({
               draft: deferredDraft,
               previewStatus: 'live',
@@ -2464,6 +3434,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
             setPreviewStats({ pages: 1, words: previewWordCount });
             setRenderError(null);
             setLatexDiagnostics([]);
+            setRenderDiagnostics([]);
             persistSnapshot({
               draft: deferredDraft,
               previewStatus: 'live',
@@ -2497,6 +3468,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
             setPreviewStats({ pages: 1, words: 0 });
             setRenderError(message);
             setLatexDiagnostics(previewError.diagnostics);
+            setRenderDiagnostics(result.diagnostics);
             persistSnapshot({
               draft: deferredDraft,
               previewStatus: 'error',
@@ -2514,6 +3486,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
           setPreviewPdfUrl(nextPreviewPdfUrl);
           setRenderError(null);
           setLatexDiagnostics(mappedDiagnostics);
+          setRenderDiagnostics(result.diagnostics);
           setPreviewStats({ pages: Math.max(1, result.pageCount || 1), words: result.wordCount });
           persistSnapshot({
             draft: deferredDraft,
@@ -2533,6 +3506,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
           setPreviewStats({ pages: 1, words: 0 });
           setRenderError(message);
           setLatexDiagnostics([]);
+          setRenderDiagnostics([]);
           persistSnapshot({
             draft: deferredDraft,
             previewStatus: 'error',
@@ -2565,7 +3539,21 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
 
   useEffect(() => {
     applyEditorDiagnostics(latexDiagnostics);
-  }, [activeEditorLanguage, draft, latexDiagnostics]);
+  }, [activeEditorLanguage, draft, latexDiagnostics, sourceLibrary, workspace]);
+
+  useEffect(() => {
+    if (autofixHighlights.length === 0) {
+      const editor = editorRef.current;
+      if (!editor || autofixDecorationIdsRef.current.length === 0) return;
+      autofixDecorationIdsRef.current = editor.deltaDecorations(autofixDecorationIdsRef.current, []);
+      return;
+    }
+    applyAutofixDecorations(autofixHighlights);
+  }, [activeEditorLanguage, autofixHighlights, draft]);
+
+  useEffect(() => {
+    clearAutofixFeedback();
+  }, [activeFilePath]);
 
   const stats = useMemo(() => {
     if (isActiveBinaryFile) {
@@ -2601,6 +3589,8 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
         window.cancelAnimationFrame(editorSyncFrameRef.current);
       }
       insertSourceActionRef.current?.dispose();
+      citationCompletionProviderRef.current?.dispose();
+      citationHoverProviderRef.current?.dispose();
       insertSourceContextKeyRef.current = null;
       for (const listener of editorListenersRef.current) {
         listener.dispose();
@@ -2733,13 +3723,18 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     editorRef.current = editor;
     monacoRef.current = monaco;
     insertSourceActionRef.current?.dispose();
-    insertSourceContextKeyRef.current = editor.createContextKey('odysseyBibFileActive', isBibFilePath(activeFilePath));
+    citationCompletionProviderRef.current?.dispose();
+    citationHoverProviderRef.current?.dispose();
+    insertSourceContextKeyRef.current = editor.createContextKey(
+      'odysseyCitationInsertionFileActive',
+      isBibFilePath(activeFilePath) || isTexFilePath(activeFilePath),
+    );
     insertSourceActionRef.current = editor.addAction({
       id: 'odyssey.insert-source-from-library',
       label: 'Insert Citation from Sources Library',
       contextMenuGroupId: 'navigation',
       contextMenuOrder: 1.1,
-      precondition: 'odysseyBibFileActive',
+      precondition: 'odysseyCitationInsertionFileActive',
       run: () => {
         setInsertSourceError(null);
         setInsertSourceSearch('');
@@ -2748,10 +3743,110 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
         return;
       },
     });
+    citationCompletionProviderRef.current = monaco.languages.registerCompletionItemProvider('latex', {
+      triggerCharacters: ['{', ',', '_'],
+      provideCompletionItems: (model: MonacoEditor.ITextModel, position: { lineNumber: number; column: number }) => {
+        if (!/\.tex$/i.test(model.uri.path)) {
+          return { suggestions: [] };
+        }
+
+        const citationContext = getLatexCitationContext(model, position);
+        if (!citationContext) {
+          return { suggestions: [] };
+        }
+
+        const normalizedQuery = citationContext.query.trim().toLowerCase();
+        const suggestions = collectBibtexCitationSuggestions(
+          latestWorkspaceRef.current,
+          latestSourceLibraryRef.current,
+        )
+          .filter((item) => {
+            if (!normalizedQuery) return true;
+            return item.key.toLowerCase().includes(normalizedQuery)
+              || item.title.toLowerCase().includes(normalizedQuery);
+          })
+          .slice(0, 50)
+          .map((item) => ({
+            label: item.key,
+            kind: monaco.languages.CompletionItemKind.Reference,
+            detail: item.entryType,
+            documentation: {
+              value: `${item.title}\n\n${item.filePath}`,
+            },
+            insertText: item.key,
+            range: citationContext.range,
+            filterText: `${item.key} ${item.title}`,
+            sortText: item.key,
+            commitCharacters: [',', '}'],
+          }));
+
+        return { suggestions };
+      },
+    });
+    citationHoverProviderRef.current = monaco.languages.registerHoverProvider('latex', {
+      provideHover: (model: MonacoEditor.ITextModel, position: { lineNumber: number; column: number }) => {
+        if (!/\.tex$/i.test(model.uri.path)) {
+          return null;
+        }
+
+        const citationTarget = getLatexCitationKeyAtPosition(model, position);
+        if (!citationTarget) {
+          return null;
+        }
+
+        const citationEntry = collectBibtexCitationSuggestions(
+          latestWorkspaceRef.current,
+          latestSourceLibraryRef.current,
+        ).find((item) => item.key === citationTarget.key);
+        if (!citationEntry) {
+          return null;
+        }
+
+        return {
+          range: citationTarget.range,
+          contents: [
+            {
+              value: buildCitationHoverMarkdown(citationEntry),
+            },
+          ],
+        };
+      },
+    });
     for (const listener of editorListenersRef.current) {
       listener.dispose();
     }
     editorListenersRef.current = [];
+    editorListenersRef.current.push(editor.onContextMenu((event) => {
+      const position = event.target.position;
+      const model = editor.getModel();
+      if (!position || !model) return;
+      const clickedRange = new monaco.Range(
+        position.lineNumber,
+        position.column,
+        position.lineNumber,
+        position.column,
+      );
+      insertSourceTargetRangeRef.current = {
+        filePath: model.uri.path,
+        startLineNumber: clickedRange.startLineNumber,
+        startColumn: clickedRange.startColumn,
+        endLineNumber: clickedRange.endLineNumber,
+        endColumn: clickedRange.endColumn,
+      };
+      editor.setPosition(position);
+      editor.setSelection(clickedRange);
+      editor.revealPositionInCenterIfOutsideViewport(position);
+    }));
+    editorListenersRef.current.push(editor.onDidChangeModelContent((event) => {
+      const latestChange = event.changes.at(-1);
+      const text = latestChange?.text ?? '';
+      if ((text !== '{' && text !== ',') || editor.getModel()?.uri.path.match(/\.tex$/i) === null) return;
+      const model = editor.getModel();
+      const position = editor.getPosition();
+      if (!model || !position) return;
+      if (!getLatexCitationContext(model, position)) return;
+      editor.trigger('odyssey-citation-complete', 'editor.action.triggerSuggest', {});
+    }));
     applyEditorDiagnostics(latexDiagnostics);
   };
 
@@ -2770,8 +3865,8 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       setInsertSourceError('The editor is not ready yet.');
       return;
     }
-    if (!isBibFilePath(activeFilePath)) {
-      setInsertSourceError('Insert Source is only available while editing a .bib file.');
+    if (insertSourceMode === 'unsupported' || !activeFilePath) {
+      setInsertSourceError('Open a `.tex` or `.bib` file to insert from the Sources Library.');
       return;
     }
     const selectedSources = sourceLibrary.filter((source) => selectedInsertSourceIds.includes(source.id));
@@ -2780,28 +3875,106 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       return;
     }
 
+    const pendingInsertRange = insertSourceTargetRangeRef.current;
     const selection = editor.getSelection();
-    const range = selection ?? new monacoRef.current!.Range(1, 1, 1, 1);
+    const range = pendingInsertRange && pendingInsertRange.filePath === model.uri.path
+      ? new monacoRef.current!.Range(
+          pendingInsertRange.startLineNumber,
+          pendingInsertRange.startColumn,
+          pendingInsertRange.endLineNumber,
+          pendingInsertRange.endColumn,
+        )
+      : selection ?? new monacoRef.current!.Range(1, 1, 1, 1);
     const sourceText = model.getValue();
     const startOffset = model.getOffsetAt({ lineNumber: range.startLineNumber, column: range.startColumn });
     const endOffset = model.getOffsetAt({ lineNumber: range.endLineNumber, column: range.endColumn });
     const before = sourceText.slice(0, startOffset);
     const after = sourceText.slice(endOffset);
-    const usedKeys = collectExistingBibtexKeys(sourceText);
-    const entryText = selectedSources
-      .map((source) => buildBibtexEntry(source, bibliographyFormat, usedKeys))
-      .join('\n\n');
-    const needsLeadingSpacing = before.trim().length > 0 && !/\n\s*\n\s*$/.test(before);
-    const needsTrailingSpacing = after.trim().length > 0 && !/^\s*\n\s*\n/.test(after);
-    const insertText = `${needsLeadingSpacing ? '\n\n' : ''}${entryText}${needsTrailingSpacing ? '\n\n' : ''}`;
+    const nextCurrentFileContent = (() => {
+      if (insertSourceMode === 'bib') {
+        const usedKeys = collectExistingBibtexKeys(sourceText);
+        const insertionMarker = '__ODYSSEY_BIB_INSERTION_POINT__';
+        let nextSourceText = `${before}${insertionMarker}${after}`;
+        const newEntries: string[] = [];
+        for (const source of selectedSources) {
+          const entry = buildBibtexEntry(source, bibliographyFormat, usedKeys);
+          nextSourceText = removeBibtexEntry(nextSourceText, entry.citationKey, insertionMarker);
+          newEntries.push(entry.entryText);
+        }
+        if (newEntries.length > 0) {
+          nextSourceText = insertBibtexEntriesAtMarker(nextSourceText, insertionMarker, newEntries.join('\n\n'));
+        } else {
+          nextSourceText = nextSourceText.replace(insertionMarker, '');
+        }
+        return nextSourceText;
+      }
 
-    editor.pushUndoStop();
-    editor.executeEdits('odyssey-insert-source', [{
-      range,
-      text: insertText,
-      forceMoveMarkers: true,
-    }]);
-    editor.pushUndoStop();
+      const citationCommand = buildLatexCitationCommand(
+        selectedSources.map((source) => source.citeKey),
+        bibliographyFormat,
+      );
+      return `${before}${citationCommand}${after}`;
+    })();
+
+    let nextWorkspace = {
+      ...workspace,
+      files: workspace.files.map((file) => (
+        file.path === activeFilePath ? { ...file, content: nextCurrentFileContent } : file
+      )),
+    } satisfies ThesisWorkspace;
+
+    if (insertSourceMode === 'tex') {
+      const referencesFile = findReferencesBibFile(nextWorkspace);
+      if (!referencesFile) {
+        setInsertSourceError('No `references.bib` file was found in the thesis workspace.');
+        return;
+      }
+      const usedKeys = collectExistingBibtexKeys(referencesFile.content);
+      let nextReferencesContent = referencesFile.content;
+      for (const source of selectedSources) {
+        const entry = buildBibtexEntry(source, bibliographyFormat, usedKeys);
+        nextReferencesContent = replaceBibtexEntry(nextReferencesContent, entry.citationKey, entry.entryText);
+      }
+      if (nextReferencesContent !== referencesFile.content) {
+        nextWorkspace = {
+          ...nextWorkspace,
+          files: nextWorkspace.files.map((file) => (
+            file.id === referencesFile.id ? { ...file, content: nextReferencesContent } : file
+          )),
+        };
+      }
+    }
+
+    if (insertSourceMode === 'bib') {
+      const mainDocumentPath = resolveOverleafMainDocument(nextWorkspace, overleafMainDocument ?? activeFilePath);
+      if (!mainDocumentPath) {
+        setInsertSourceError('No root `.tex` document was found to register the bibliography entries.');
+        return;
+      }
+      const mainDocument = nextWorkspace.files.find((file) => file.path === mainDocumentPath) ?? null;
+      if (!mainDocument) {
+        setInsertSourceError('The root `.tex` document could not be found in the workspace.');
+        return;
+      }
+      const nextMainDocumentContent = ensureBibliographyRegistration(
+        mainDocument.content,
+        selectedSources.map((source) => source.citeKey),
+      );
+      if (nextMainDocumentContent !== mainDocument.content) {
+        nextWorkspace = {
+          ...nextWorkspace,
+          files: nextWorkspace.files.map((file) => (
+            file.path === mainDocument.path ? { ...file, content: nextMainDocumentContent } : file
+          )),
+        };
+      }
+    }
+
+    applyWorkspaceUpdate(nextWorkspace, {
+      openFileId: workspace.activeFileId,
+      selectedNodeId: selectedExplorerNodeIdRef.current,
+    });
+    insertSourceTargetRangeRef.current = null;
     editor.focus();
     setInsertSourceModalOpen(false);
     setInsertSourceError(null);
@@ -3357,10 +4530,23 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
                 Rendering
               </span>
             ) : renderError ? (
-              <span className="inline-flex items-center gap-1.5 border border-danger/30 bg-danger/8 px-2 py-1 text-danger">
-                <FileText size={11} />
-                Render Failed
-              </span>
+              <>
+                {availableAutofix ? (
+                  <button
+                    type="button"
+                    onClick={handleAutofixRenderFailure}
+                    disabled={isApplyingAutofix}
+                    className="inline-flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/12 px-2.5 py-1 text-emerald-700 transition-colors hover:bg-emerald-500/18 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isApplyingAutofix ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                    Autofix
+                  </button>
+                ) : null}
+                <span className="inline-flex items-center gap-1.5 border border-danger/30 bg-danger/8 px-2 py-1 text-danger">
+                  <FileText size={11} />
+                  Render Failed
+                </span>
+              </>
             ) : (
               <span className="inline-flex items-center gap-1.5 border border-accent2/30 bg-accent2/8 px-2 py-1 text-accent2">
                 <CheckCircle2 size={11} />
@@ -3409,7 +4595,6 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
             <div className="min-w-[7rem] text-center">
               {previewStats.words} words
             </div>
-
             <div className="inline-flex h-7 shrink-0 items-center border border-border bg-surface">
               <button
                 type="button"
@@ -3506,6 +4691,11 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
               <>
                 <FileText size={11} className="text-danger" />
                 Save Failed
+              </>
+            ) : hasUnsavedChanges ? (
+              <>
+                <FileText size={11} className="text-amber-600" />
+                Pending
               </>
             ) : remoteSaveState === 'idle' ? (
               <>
@@ -3677,12 +4867,16 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
                 suppressNextEditorChangeRef.current = false;
                 return;
               }
+              if (autofixHighlights.length > 0) {
+                clearAutofixFeedback();
+              }
               const nextDraft = value ?? '';
               markLocalChangeDuringHydration();
               const nextWorkspace = syncWorkspaceDraft(nextDraft);
               latestWorkspaceRef.current = nextWorkspace;
               setDraft(nextDraft);
               setWorkspace(nextWorkspace);
+              updateActiveFilePersistedState(getThesisWorkspaceActiveFile(nextWorkspace), nextWorkspace);
             }}
             options={{
               minimap: { enabled: false },
@@ -3711,12 +4905,14 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
 
   return (
     <div className="min-h-[calc(100vh-12rem)]">
+      <style>{AUTOFIX_EDITOR_DECORATION_CSS}</style>
       {insertSourceModalOpen && (
         <div
           className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[2px]"
           onMouseDown={() => {
             setInsertSourceModalOpen(false);
             setInsertSourceError(null);
+            insertSourceTargetRangeRef.current = null;
           }}
         >
           <div
@@ -3732,7 +4928,11 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
                   Insert Citation from Sources Library
                 </h2>
                 <p className="mt-1 text-xs text-muted">
-                  Select one or more saved sources to insert into the active `.bib` file.
+                  {insertSourceMode === 'bib'
+                    ? 'Select one or more saved sources to insert into the active `.bib` file. Odyssey will also add `\\nocite{*}` to the root LaTeX document so the NPS bibliography can render everything currently saved in `references.bib` without a visible in-text citation.'
+                    : insertSourceMode === 'tex'
+                      ? 'Select one or more saved sources to cite in the active `.tex` file. Odyssey will also add any missing entries to `references.bib`.'
+                      : 'Open a `.tex` or `.bib` file to insert from the Sources Library.'}
                 </p>
               </div>
               <button
@@ -3740,6 +4940,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
                 onClick={() => {
                   setInsertSourceModalOpen(false);
                   setInsertSourceError(null);
+                  insertSourceTargetRangeRef.current = null;
                 }}
                 className="inline-flex h-9 w-9 items-center justify-center border border-border bg-surface text-heading transition-colors hover:bg-surface2"
                 aria-label="Close citation insertion window"
@@ -3872,6 +5073,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
                       onClick={() => {
                         setInsertSourceModalOpen(false);
                         setInsertSourceError(null);
+                        insertSourceTargetRangeRef.current = null;
                       }}
                       className="inline-flex h-10 items-center justify-center border border-border bg-surface px-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-heading transition-colors hover:bg-surface2"
                     >
@@ -3882,7 +5084,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
                       onClick={handleConfirmSourceInsert}
                       className="odyssey-fill-accent inline-flex h-10 min-w-[11rem] items-center justify-center px-4 text-[10px] font-semibold uppercase tracking-[0.18em] transition-colors hover:opacity-90"
                     >
-                      Confirm
+                      {insertSourceMode === 'bib' ? 'Insert Entries' : 'Insert Citation'}
                     </button>
                   </div>
                 </div>
@@ -3928,6 +5130,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
               workspace={workspace}
               activeFileId={workspace.activeFileId}
               selectedNodeId={selectedExplorerNodeId}
+              savedFileIds={savedFileIds}
               onOpenFile={openWorkspaceFile}
               onWorkspaceChange={(nextWorkspace, options) => {
                 applyWorkspaceUpdate(nextWorkspace, {

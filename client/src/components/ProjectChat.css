@@ -172,11 +172,8 @@
 
 /* Context menu popover */
 .pc-ctx-panel {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  z-index: 60;
-  width: min(420px, calc(100vw - 3rem));
+  position: relative;
+  width: min(260px, calc(100vw - 3rem));
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 8px;

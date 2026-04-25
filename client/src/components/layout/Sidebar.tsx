@@ -17,39 +17,43 @@ import { useAuth } from '../../lib/auth';
 import { useProfile } from '../../hooks/useProfile';
 import { useProjects } from '../../hooks/useProjects';
 import { useNotifications } from '../../hooks/useNotifications';
+import { useChatThreads } from '../../hooks/useChatThreads';
 import { getStoredSidebarCollapsed, setStoredSidebarCollapsed, SIDEBAR_COLLAPSE_EVENT } from '../../lib/sidebar-state';
-import { canViewTokenUsagePage } from '../../lib/admin-access';
 import UserAvatar from '../UserAvatar';
 import { useEffect, useRef, useState } from 'react';
+
+type SidebarNavItem = {
+  to: string;
+  icon: typeof LayoutDashboard;
+  label: string;
+  badge?: string;
+};
 
 export default function Sidebar() {
   const { user, signOut } = useAuth();
   const { profile } = useProfile();
   const { projects } = useProjects();
   const { unreadCount } = useNotifications();
+  const { threads, threadStateByThread } = useChatThreads();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => getStoredSidebarCollapsed());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const switcherRef = useRef<HTMLDivElement | null>(null);
-  const routeCollapsed = location.pathname.startsWith('/chat');
-  const sidebarCollapsed = routeCollapsed || collapsed;
+  const sidebarCollapsed = collapsed;
   const userLabel = profile?.display_name ?? user?.user_metadata?.user_name ?? user?.email ?? 'You';
   const userAvatar = profile?.avatar_url ?? user?.user_metadata?.avatar_url ?? null;
-  const canViewTokenUsage = canViewTokenUsagePage(
-    [user?.email, profile?.email, user?.user_metadata?.email],
-    [profile?.display_name, user?.user_metadata?.display_name, user?.user_metadata?.name, userLabel],
-  );
-  const navItems = [
+  const navItems: SidebarNavItem[] = [
     { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/projects', icon: FolderKanban, label: 'Projects' },
-    { to: '/thesis', icon: GraduationCap, label: 'Thesis', badge: 'In Progress' },
+    { to: '/thesis', icon: GraduationCap, label: 'Thesis' },
     { to: '/chat', icon: MessageSquare, label: 'Chat' },
-    ...(canViewTokenUsage ? [{ to: '/token-usage', icon: ChartNoAxesColumn, label: 'Token Usage' }] : []),
+    { to: '/token-usage', icon: ChartNoAxesColumn, label: 'Token Usage' },
     { to: '/notifications', icon: Bell, label: 'Notifications' },
     { to: '/settings', icon: Settings, label: 'Settings' },
   ];
+  const chatUnreadCount = threads.reduce((sum, thread) => sum + (threadStateByThread[thread.id]?.unread_count ?? 0), 0);
 
   // Detect current project from URL
   const projectMatch = location.pathname.match(/^\/projects\/([^/]+)/);
@@ -109,11 +113,9 @@ export default function Sidebar() {
         )}
         <button
           onClick={() => {
-            if (routeCollapsed) return;
             setStoredSidebarCollapsed(!collapsed);
           }}
           className="p-1 rounded hover:bg-surface2 text-muted hover:text-heading transition-colors shrink-0"
-          disabled={routeCollapsed}
         >
           <ChevronLeft
             size={16}
@@ -191,6 +193,11 @@ export default function Sidebar() {
               {to === '/notifications' && unreadCount > 0 && (
                 <span className="absolute -right-2.5 -top-2.5 z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-[#f3c7c7] text-[#a61b1b] border border-[#e7a8a8] shadow-sm text-[9px] font-semibold leading-[18px] text-center">
                   {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+              {to === '/chat' && chatUnreadCount > 0 && (
+                <span className="absolute -right-2.5 -top-2.5 z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-[var(--color-accent-fg)] border border-accent/30 shadow-sm text-[9px] font-semibold leading-[18px] text-center">
+                  {chatUnreadCount > 99 ? '99+' : chatUnreadCount}
                 </span>
               )}
             </span>

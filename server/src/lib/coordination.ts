@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import { chat, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProviderSelection, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { decryptUserKey } from '../routes/user-ai-keys.js';
 import { logAiTokenUsage } from '../routes/token-usage.js';
+import { isServerFallbackPausedForUser } from './server-fallback-controls.js';
 import { supabase } from './supabase.js';
 
 const NODE_TYPES = ['person', 'task', 'document', 'repo', 'file', 'concept', 'deliverable'] as const;
@@ -379,7 +380,7 @@ interface GraphInferenceSummary {
 }
 
 interface StoredAiKeyRow {
-  provider: 'anthropic' | 'openai' | 'google' | 'google_ai';
+  provider: 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4';
   encrypted_key: string;
   iv: string;
   auth_tag: string;
@@ -850,7 +851,7 @@ async function resolveGraphInferenceProvider(userId: string | null): Promise<{ p
   }
 
   const serverOpenAiCredential = getServerOpenAiCredential();
-  if (serverOpenAiCredential) {
+  if (serverOpenAiCredential && !(await isServerFallbackPausedForUser(userId))) {
     return {
       provider: `openai:${getServerOpenAiPrimaryModel('gpt-4o')}`,
       credential: serverOpenAiCredential,

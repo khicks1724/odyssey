@@ -1,10 +1,9 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   ArrowUpRight,
   BookOpen,
-  BrainCircuit,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -21,6 +20,7 @@ import {
   Loader2,
   Network,
   Plus,
+  AlertTriangle,
   Search,
   Settings2,
   SquarePen,
@@ -43,7 +43,6 @@ import {
   fetchThesisDocument,
   getThesisWorkspaceActiveFile,
   parseThesisSourceUrl,
-  queueThesisSource,
   saveThesisSources,
   signThesisSourceAttachment,
   uploadThesisDocumentAttachment,
@@ -58,13 +57,23 @@ import {
 import { setStoredSidebarCollapsed } from '../lib/sidebar-state';
 import { getCitationReferenceGuide, searchCitationReferenceChunks } from '../lib/citation-references';
 import { getPublicationDatePlaceholder, normalizePublicationDate } from '../lib/citation-date';
+import {
+  buildSourceVenueDisplay,
+  buildSourceVenueDisplayFromMetadata,
+  looksLikeCompleteArticleVenue,
+  normalizeBibliographyPages,
+  type ParsedSourceVenueMetadata,
+  type SourceVenueKind,
+} from '../lib/bibliography-metadata';
+import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { pushUndoAction } from '../lib/undo-manager';
-import ThesisSettingsTab from '../components/ThesisSettingsTab';
 
-const ThesisPaperTab = lazy(() => import('../components/ThesisPaperTab'));
-const PdfFieldCaptureModal = lazy(() => import('../components/PdfFieldCaptureModal'));
+const ThesisPaperTab = lazyWithRetry(() => import('../components/ThesisPaperTab'), 'thesis-paper-tab');
+const ThesisKnowledgeTab = lazyWithRetry(() => import('../components/ThesisKnowledgeTab'), 'thesis-knowledge-tab');
+const ThesisSettingsTab = lazyWithRetry(() => import('../components/ThesisSettingsTab'), 'thesis-settings-tab');
+const PdfFieldCaptureModal = lazyWithRetry(() => import('../components/PdfFieldCaptureModal'), 'thesis-pdf-field-capture-modal');
 
-type ThesisTabId = 'overview' | 'sources' | 'documents' | 'graph' | 'paper' | 'writing' | 'settings';
+type ThesisTabId = 'overview' | 'milestones' | 'sources' | 'documents' | 'graph' | 'paper' | 'settings';
 
 type ThesisMilestoneTask = {
   id: string;
@@ -108,8 +117,11 @@ type SourceIntakeMethod = 'url' | 'pdf' | 'manual';
 
 type SourceIntakeKind =
   | 'journal_article'
+  | 'conference_paper'
+  | 'book'
   | 'book_chapter'
   | 'government_report'
+  | 'thesis_dissertation'
   | 'dataset'
   | 'interview_notes'
   | 'archive_record'
@@ -122,6 +134,7 @@ export type BibliographyFormat = 'apa' | 'chicago' | 'ieee' | 'informs' | 'asme'
 
 export type SourceLibraryItem = {
   id: string;
+  citeKey: string;
   title: string;
   type: SourceLibraryType;
   acquisitionMethod: SourceIntakeMethod;
@@ -145,13 +158,25 @@ export type SourceLibraryItem = {
   attachmentUploadedAt: string;
 };
 
-type GraphCluster = {
-  id: string;
-  title: string;
-  count: number;
-  links: string[];
+type BibliographyReadiness = {
+  status: 'ready' | 'manual';
   summary: string;
+  details: string[];
+  exactChanges: Array<{
+    field: 'title' | 'credit' | 'venue' | 'year' | 'locator' | 'citation';
+    label: string;
+    suggestedValue: string;
+    reason: string;
+  }>;
+  autoFixPatch: Partial<Pick<SourceLibraryItem, 'title' | 'credit' | 'venue' | 'year' | 'locator' | 'citation'>>;
 };
+
+function cloneSourceLibraryItem(source: SourceLibraryItem): SourceLibraryItem {
+  return {
+    ...source,
+    tags: [...source.tags],
+  };
+}
 
 type ThesisSupportingDocument = {
   id: string;
@@ -189,11 +214,11 @@ type ThesisProfileSnapshot = {
 
 const tabs: { id: ThesisTabId; label: string; icon: typeof BookOpen }[] = [
   { id: 'overview', label: 'Overview', icon: GraduationCap },
+  { id: 'milestones', label: 'Milestones', icon: CheckCircle2 },
   { id: 'sources', label: 'Sources', icon: Upload },
   { id: 'documents', label: 'Documents', icon: FileText },
   { id: 'graph', label: 'Knowledge', icon: Network },
   { id: 'paper', label: 'Latex', icon: FileText },
-  { id: 'writing', label: 'Writing Plan', icon: FileText },
   { id: 'settings', label: 'Settings', icon: Settings2 },
 ];
 
@@ -357,20 +382,20 @@ const sourceIntakeMethods: {
   {
     id: 'url',
     label: 'Paste URL',
-    hint: 'Web pages, journals, reports, repositories',
-    detail: 'Capture source metadata from a live page, archive, DOI resolver, or repository landing page.',
+    hint: 'Web pages, reports, manuals, repositories',
+    detail: 'Capture source metadata from a live page, DOI landing page, digital archive, or repository record.',
   },
   {
     id: 'pdf',
     label: 'Upload PDF',
-    hint: 'Articles, scans, white papers, chapters',
-    detail: 'Bring in a local paper so Odyssey can extract citation details, claims, methods, and quoted passages.',
+    hint: 'Articles, proceedings, theses, reports, chapters',
+    detail: 'Bring in a local PDF so Odyssey can extract citation fields, quoted passages, and source evidence.',
   },
   {
     id: 'manual',
     label: 'Manual Entry',
-    hint: 'Notes, interviews, internal records',
-    detail: 'Use a structured intake when the source starts as notes, meeting records, or advisor-provided material.',
+    hint: 'Interviews, notes, books, internal records',
+    detail: 'Use a structured intake when the source starts as a non-web record, personal communication, or manually keyed bibliography item.',
   },
 ];
 
@@ -378,79 +403,85 @@ const sourceIntakeKinds: {
   id: SourceIntakeKind;
   label: string;
   hint: string;
+  bibtexTarget: string;
   recommendedMethods: SourceIntakeMethod[];
 }[] = [
   {
     id: 'journal_article',
-    label: 'Journal Article',
-    hint: 'Peer-reviewed scholarship, conference proceedings, formal literature review inputs.',
+    label: 'Published Paper (Journal)',
+    hint: 'Peer-reviewed journal papers and published articles that should save as an NPS `@article` entry.',
+    bibtexTarget: '@article',
     recommendedMethods: ['url', 'pdf'],
+  },
+  {
+    id: 'conference_paper',
+    label: 'Published Paper (Conference)',
+    hint: 'Conference papers, symposium papers, workshop papers, and proceedings entries that should save as `@inproceedings`.',
+    bibtexTarget: '@inproceedings',
+    recommendedMethods: ['url', 'pdf'],
+  },
+  {
+    id: 'book',
+    label: 'Book',
+    hint: 'Whole books or monographs that should save as an NPS `@book` entry.',
+    bibtexTarget: '@book',
+    recommendedMethods: ['url', 'pdf', 'manual'],
   },
   {
     id: 'book_chapter',
     label: 'Book Chapter',
-    hint: 'Edited volumes, monographs, historical or conceptual framing sources.',
+    hint: 'Edited-book chapters or contributed sections that should save as `@incollection`.',
+    bibtexTarget: '@incollection',
     recommendedMethods: ['url', 'pdf'],
   },
   {
     id: 'government_report',
-    label: 'Government / Lab Report',
-    hint: 'Program reviews, agency guidance, technical reports, public strategy documents.',
+    label: 'Government / Technical Report',
+    hint: 'Agency reports, RAND/GAO/CRS reports, lab studies, doctrine, or strategy documents that should save as `@techreport`.',
+    bibtexTarget: '@techreport',
     recommendedMethods: ['url', 'pdf'],
   },
   {
+    id: 'thesis_dissertation',
+    label: 'Thesis / Dissertation',
+    hint: 'Master’s theses and dissertations that should save as `@mastersthesis` or `@phdthesis`.',
+    bibtexTarget: '@mastersthesis / @phdthesis',
+    recommendedMethods: ['url', 'pdf', 'manual'],
+  },
+  {
     id: 'dataset',
-    label: 'Dataset',
-    hint: 'Spreadsheets, evidence tables, repositories, benchmark collections.',
+    label: 'Dataset / Repository Item',
+    hint: 'Datasets, repository records, and retrievable research artifacts that should save as `@misc`.',
+    bibtexTarget: '@misc',
     recommendedMethods: ['url', 'manual'],
   },
   {
     id: 'interview_notes',
-    label: 'Interview / Notes',
-    hint: 'Advisor notes, meeting summaries, interview transcripts, qualitative evidence.',
+    label: 'Interview / Personal Communication',
+    hint: 'Interviews, emails, advisor guidance, and meeting notes that map to `@misc` or `@unpublished` and often need manual review.',
+    bibtexTarget: '@misc / @unpublished',
     recommendedMethods: ['manual', 'pdf'],
   },
   {
     id: 'archive_record',
-    label: 'Archive Record',
-    hint: 'Archived pages, historical records, collections, accession-backed material.',
+    label: 'Archive / Collection Record',
+    hint: 'Archive pages, accession records, institutional repository pages, and collection records that should save as `@misc`.',
+    bibtexTarget: '@misc',
     recommendedMethods: ['url', 'pdf', 'manual'],
   },
   {
     id: 'web_article',
-    label: 'Web Article',
-    hint: 'Online articles, blog posts, essays, newsroom pieces, and general web references.',
+    label: 'Web Page / News / Blog',
+    hint: 'Webpages, blog posts, news stories, and online articles that should save as an NPS `@misc` entry.',
+    bibtexTarget: '@misc',
     recommendedMethods: ['url'],
   },
   {
     id: 'documentation',
-    label: 'Documentation',
-    hint: 'API docs, product docs, technical references, standards pages, and manuals.',
+    label: 'Manual / Standard / Documentation',
+    hint: 'Standards, manuals, doctrine, API docs, and technical references that should save as `@manual`.',
+    bibtexTarget: '@manual',
     recommendedMethods: ['url'],
-  },
-];
-
-const graphClusters: GraphCluster[] = [
-  {
-    id: 'cluster-1',
-    title: 'Trust Calibration',
-    count: 18,
-    links: ['Human factors', 'Operator training', 'Mission risk'],
-    summary: 'Central concept tying user behavior to whether technical evidence is actually used in decisions.',
-  },
-  {
-    id: 'cluster-2',
-    title: 'Verification Evidence',
-    count: 23,
-    links: ['Test coverage', 'Simulation realism', 'Failure modes'],
-    summary: 'Largest research cluster and likely backbone for the argument structure.',
-  },
-  {
-    id: 'cluster-3',
-    title: 'Operational Readiness',
-    count: 12,
-    links: ['Deployment gates', 'Policy constraints', 'Command confidence'],
-    summary: 'Bridges technical findings with the thesis’ real-world consequence claims.',
   },
 ];
 
@@ -756,27 +787,273 @@ function createSourceId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function slugCiteKeyPart(value: string) {
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized || 'source';
+}
+
+function normalizeSourceCreditText(value: string) {
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/\\&/g, '&')
+    .replace(/([A-Za-z])-\s+([A-Za-z])/g, '$1$2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[,;]+|[,;]+$/g, '');
+}
+
+function looksLikeOrganizationCredit(value: string) {
+  const trimmed = normalizeSourceCreditText(value);
+  if (!trimmed) return false;
+  if (/[A-Z]{2,}/.test(trimmed) && !/[a-z]/.test(trimmed)) return true;
+  return /\b(agency|department|office|committee|commission|command|center|centre|university|college|school|laboratory|lab|institute|administration|association|society|bureau|ministry|corps|navy|army|air force|marine|marines|government|council|press|publisher|organization|division|company|corporation|corp|inc|incorporated|llc|ltd|limited|plc|gmbh|group|holdings|systems|technologies|industries|international)\b/i.test(trimmed);
+}
+
+type ParsedCreditEntry =
+  | {
+      kind: 'person';
+      givenName: string;
+      familyName: string;
+    }
+  | {
+      kind: 'organization';
+      organizationName: string;
+    };
+
+function joinWithOxfordComma(values: string[]) {
+  if (values.length <= 1) return values[0] ?? '';
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(', ')}, and ${values.at(-1)}`;
+}
+
+function formatParsedCreditEntry(entry: ParsedCreditEntry) {
+  if (entry.kind === 'organization') return entry.organizationName;
+  return normalizeSourceCreditText(`${entry.givenName} ${entry.familyName}`);
+}
+
+function invertSurnameFirstCreditName(value: string) {
+  const normalized = normalizeSourceCreditText(value);
+  const parts = normalized.split(/\s*,\s*/).filter(Boolean);
+  if (parts.length === 2) {
+    return normalizeSourceCreditText(`${parts[1]} ${parts[0]}`);
+  }
+  return normalized;
+}
+
+function countCreditWords(value: string) {
+  return normalizeSourceCreditText(value).split(/\s+/).filter(Boolean).length;
+}
+
+function isLikelySurnameFirstCreditSequence(parts: string[]) {
+  if (parts.length < 4 || parts.length % 2 !== 0) return false;
+  const familyParts = parts.filter((_, index) => index % 2 === 0);
+  const givenParts = parts.filter((_, index) => index % 2 === 1);
+  const mostlyShortFamilyNames = familyParts.filter((part) => countCreditWords(part) <= 2).length >= Math.ceil(familyParts.length * 0.8);
+  const mostlyShortGivenNames = givenParts.filter((part) => countCreditWords(part) <= 3).length >= Math.ceil(givenParts.length * 0.8);
+  const manyFullNamesAlreadyPresent = parts.filter((part) => countCreditWords(part) >= 2).length > Math.floor(parts.length / 2);
+  return mostlyShortFamilyNames && mostlyShortGivenNames && !manyFullNamesAlreadyPresent;
+}
+
+function parsePersonCreditSegment(value: string): ParsedCreditEntry | null {
+  const normalized = invertSurnameFirstCreditName(value);
+  if (!normalized) return null;
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return null;
+  if (words.length === 1) {
+    return {
+      kind: 'person',
+      givenName: '',
+      familyName: words[0],
+    };
+  }
+  return {
+    kind: 'person',
+    givenName: words.slice(0, -1).join(' '),
+    familyName: words.at(-1) ?? '',
+  };
+}
+
+function parseSourceCreditEntries(value: string): ParsedCreditEntry[] {
+  const normalized = normalizeSourceCreditText(value);
+  if (!normalized) return [];
+  if (looksLikeOrganizationCredit(normalized) || /^https?:\/\//i.test(normalized)) {
+    return [{ kind: 'organization', organizationName: normalized }];
+  }
+
+  const semicolonParts = normalized
+    .split(/\s*;\s*|\s*\n+\s*/)
+    .map((part) => normalizeSourceCreditText(part))
+    .filter(Boolean);
+  if (semicolonParts.length > 1) {
+    return semicolonParts
+      .map((part) => parsePersonCreditSegment(part))
+      .filter((entry): entry is ParsedCreditEntry => Boolean(entry));
+  }
+
+  const commaExpandedParts = normalized
+    .replace(/\s*,?\s*(?:and|&)\s+/gi, ', ')
+    .replace(/\s*,\s*,+/g, ', ')
+    .split(/\s*,\s*/)
+    .map((part) => normalizeSourceCreditText(part))
+    .filter(Boolean);
+
+  if (isLikelySurnameFirstCreditSequence(commaExpandedParts)) {
+    const entries: ParsedCreditEntry[] = [];
+    for (let index = 0; index < commaExpandedParts.length; index += 2) {
+      const family = commaExpandedParts[index];
+      const given = commaExpandedParts[index + 1];
+      if (!family || !given) continue;
+      const entry = parsePersonCreditSegment(`${given} ${family}`);
+      if (entry) entries.push(entry);
+    }
+    if (entries.length > 0) return entries;
+  }
+
+  if (commaExpandedParts.length > 1) {
+    return commaExpandedParts
+      .map((part) => parsePersonCreditSegment(part))
+      .filter((entry): entry is ParsedCreditEntry => Boolean(entry));
+  }
+
+  const conjunctionParts = normalized
+    .split(/\s+(?:and|&)\s+/i)
+    .map((part) => normalizeSourceCreditText(part))
+    .filter(Boolean);
+  if (conjunctionParts.length > 1) {
+    return conjunctionParts
+      .map((part) => parsePersonCreditSegment(part))
+      .filter((entry): entry is ParsedCreditEntry => Boolean(entry));
+  }
+
+  const singleEntry = parsePersonCreditSegment(normalized);
+  return singleEntry ? [singleEntry] : [];
+}
+
+function serializeSourceCreditEntries(entries: ParsedCreditEntry[]) {
+  const normalizedEntries = entries
+    .map((entry) => {
+      if (entry.kind === 'organization') {
+        const organizationName = normalizeSourceCreditText(entry.organizationName);
+        return organizationName ? { kind: 'organization' as const, organizationName } : null;
+      }
+      const givenName = normalizeSourceCreditText(entry.givenName);
+      const familyName = normalizeSourceCreditText(entry.familyName);
+      if (!givenName && !familyName) return null;
+      return {
+        kind: 'person' as const,
+        givenName,
+        familyName,
+      };
+    })
+    .filter((entry): entry is ParsedCreditEntry => Boolean(entry));
+
+  if (normalizedEntries.length === 1 && normalizedEntries[0].kind === 'organization') {
+    return normalizedEntries[0].organizationName;
+  }
+
+  return normalizedEntries
+    .filter((entry): entry is Extract<ParsedCreditEntry, { kind: 'person' }> => entry.kind === 'person')
+    .map((entry) => formatParsedCreditEntry(entry))
+    .filter(Boolean)
+    .join('; ');
+}
+
+function extractCreditPeople(value: string) {
+  return parseSourceCreditEntries(value)
+    .filter((entry): entry is Extract<ParsedCreditEntry, { kind: 'person' }> => entry.kind === 'person')
+    .map((entry) => formatParsedCreditEntry(entry));
+}
+
+function normalizeSourceCreditValue(value: string) {
+  const normalized = normalizeSourceCreditText(value);
+  if (!normalized) return '';
+  const uniqueEntries = parseSourceCreditEntries(normalized).filter((entry, index, collection) => {
+    const label = formatParsedCreditEntry(entry);
+    return label && collection.findIndex((candidate) => formatParsedCreditEntry(candidate) === label) === index;
+  });
+  return serializeSourceCreditEntries(uniqueEntries) || normalized;
+}
+
+function formatSourceCreditDisplay(value: string) {
+  const entries = parseSourceCreditEntries(value);
+  if (entries.length === 0) return normalizeSourceCreditText(value);
+  if (entries.length === 1 && entries[0].kind === 'organization') {
+    return entries[0].organizationName;
+  }
+  return joinWithOxfordComma(entries.map((entry) => formatParsedCreditEntry(entry)));
+}
+
+function getPrimaryCreditKeyPart(value: string) {
+  const normalized = normalizeSourceCreditValue(value);
+  if (!normalized) return 'source';
+  if (looksLikeOrganizationCredit(normalized)) {
+    return slugCiteKeyPart(normalized.split(/\s+/)[0] ?? normalized);
+  }
+
+  const firstPerson = normalized.split(/\s*;\s*/).find(Boolean) ?? normalized;
+  const surname = firstPerson.split(/\s+/).filter(Boolean).at(-1) ?? firstPerson;
+  return slugCiteKeyPart(surname);
+}
+
+function buildSourceCiteKey(
+  source: Pick<SourceLibraryItem, 'title' | 'credit' | 'year'>,
+  existingKeys: Set<string>,
+) {
+  const normalizedCredit = normalizeSourceCreditValue(source.credit);
+  const normalizedTitle = source.title.trim();
+  const authorPart = normalizedCredit ? getPrimaryCreditKeyPart(normalizedCredit) : 'source';
+  const yearPart = source.year.match(/\b\d{4}\b/)?.[0] ?? 'nd';
+  const titlePart = slugCiteKeyPart(
+    normalizedTitle
+      .split(/\s+/)
+      .map((word) => word.replace(/[^A-Za-z0-9]/g, ''))
+      .find((word) => word.length >= 3) ?? normalizedTitle
+  );
+  const baseKey = [authorPart, yearPart, titlePart].filter(Boolean).join('_') || `source_${yearPart}`;
+  let candidate = baseKey;
+  let suffix = 2;
+  while (existingKeys.has(candidate)) {
+    candidate = `${baseKey}_${suffix}`;
+    suffix += 1;
+  }
+  existingKeys.add(candidate);
+  return candidate;
+}
+
 function readSourceLibraryItems(value: unknown, fallback: SourceLibraryItem[] = []): SourceLibraryItem[] {
   if (!Array.isArray(value)) return fallback;
+  const usedCiteKeys = new Set<string>();
   const items = value
     .filter((item): item is SourceLibraryItem => Boolean(item && typeof item === 'object'))
-    .map((item) => ({
-      ...item,
-      attachmentName: typeof item.attachmentName === 'string' ? item.attachmentName : '',
-      attachmentStoragePath: typeof item.attachmentStoragePath === 'string' ? item.attachmentStoragePath : '',
-      attachmentMimeType: typeof item.attachmentMimeType === 'string' ? item.attachmentMimeType : '',
-      attachmentUploadedAt: typeof item.attachmentUploadedAt === 'string' ? item.attachmentUploadedAt : '',
-    }))
-    .filter((item) => !LEGACY_SOURCE_LIBRARY_IDS.has(item.id));
+    .reduce<SourceLibraryItem[]>((collection, item) => {
+      if (LEGACY_SOURCE_LIBRARY_IDS.has(item.id)) return collection;
+      const citeKey = typeof item.citeKey === 'string' && item.citeKey.trim()
+        ? item.citeKey.trim()
+        : buildSourceCiteKey(item, usedCiteKeys);
+      usedCiteKeys.add(citeKey);
+      collection.push({
+        ...item,
+        citeKey,
+        credit: normalizeSourceCreditValue(typeof item.credit === 'string' ? item.credit : ''),
+        status: item.status === 'analyzed' ? 'analyzed' : 'tagged',
+        attachmentName: typeof item.attachmentName === 'string' ? item.attachmentName : '',
+        attachmentStoragePath: typeof item.attachmentStoragePath === 'string' ? item.attachmentStoragePath : '',
+        attachmentMimeType: typeof item.attachmentMimeType === 'string' ? item.attachmentMimeType : '',
+        attachmentUploadedAt: typeof item.attachmentUploadedAt === 'string' ? item.attachmentUploadedAt : '',
+      });
+      return collection;
+    }, []);
   return items.length > 0 ? items : fallback;
 }
 
 function readSourceQueueItems(value: unknown, fallback: SourceItem[] = []): SourceItem[] {
-  if (!Array.isArray(value)) return fallback;
-  const items = value
-    .filter((item): item is SourceItem => Boolean(item && typeof item === 'object'))
-    .filter((item) => !LEGACY_SOURCE_QUEUE_IDS.has(item.id));
-  return items.length > 0 ? items : fallback;
+  void value;
+  return fallback.length > 0 ? fallback : [];
 }
 
 function parseStoredSourceLibrary(rawValue: string | null): SourceLibraryItem[] {
@@ -1017,8 +1294,11 @@ function parseStoredSupportingDocuments(rawValue: string | null): ThesisSupporti
 }
 
 function mapSourceKindToLibraryType(method: SourceIntakeMethod, kind: SourceIntakeKind): SourceLibraryType {
+  if (kind === 'book') return 'book';
   if (kind === 'dataset') return 'dataset';
   if (kind === 'interview_notes') return 'notes';
+  if (kind === 'thesis_dissertation') return method === 'url' ? 'link' : 'paper';
+  if (kind === 'conference_paper') return method === 'url' ? 'link' : 'paper';
   if (kind === 'documentation' || kind === 'web_article') return 'link';
   if (kind === 'government_report' || kind === 'archive_record') return method === 'url' ? 'link' : 'report';
   if (kind === 'book_chapter') return 'book';
@@ -1026,18 +1306,10 @@ function mapSourceKindToLibraryType(method: SourceIntakeMethod, kind: SourceInta
   return 'paper';
 }
 
-function mapSourceKindToQueueType(kind: SourceIntakeKind): SourceItem['type'] {
-  if (kind === 'dataset') return 'dataset';
-  if (kind === 'interview_notes') return 'notes';
-  if (kind === 'documentation' || kind === 'web_article') return 'web';
-  if (kind === 'archive_record') return 'document';
-  return 'paper';
-}
-
 function statusTone(status: ThesisMilestone['status']) {
-  if (status === 'complete') return 'text-accent2 border-accent2/30 bg-accent2/10';
-  if (status === 'in_progress') return 'text-accent border-accent/30 bg-accent/10';
-  return 'text-muted border-border bg-surface2';
+  if (status === 'complete') return 'thesis-milestone-status thesis-milestone-status--complete';
+  if (status === 'in_progress') return 'thesis-milestone-status thesis-milestone-status--in-progress';
+  return 'thesis-milestone-status thesis-milestone-status--planned';
 }
 
 function formatShortDate(value: string | null | undefined) {
@@ -1170,7 +1442,41 @@ function getNumberedLatexExcerpt(source: string, lineStart: number, lineEnd: num
 }
 
 function formatSourceLabel(value: string) {
+  if (value === 'journal_article') return 'Published Paper (Journal)';
+  if (value === 'conference_paper') return 'Published Paper (Conference)';
+  if (value === 'government_report') return 'Government / Technical Report';
+  if (value === 'thesis_dissertation') return 'Thesis / Dissertation';
+  if (value === 'interview_notes') return 'Interview / Personal Communication';
+  if (value === 'archive_record') return 'Archive / Collection Record';
+  if (value === 'web_article') return 'Web Page / News / Blog';
   return value.replace(/_/g, ' ');
+}
+
+function getSourceKindBibtexTarget(kind: SourceIntakeKind | null) {
+  switch (kind) {
+    case 'journal_article':
+      return '@article';
+    case 'conference_paper':
+      return '@inproceedings';
+    case 'book':
+      return '@book';
+    case 'book_chapter':
+      return '@incollection';
+    case 'government_report':
+      return '@techreport';
+    case 'thesis_dissertation':
+      return '@mastersthesis / @phdthesis';
+    case 'documentation':
+      return '@manual';
+    case 'dataset':
+    case 'archive_record':
+    case 'web_article':
+      return '@misc';
+    case 'interview_notes':
+      return '@misc / @unpublished';
+    default:
+      return '@misc';
+  }
 }
 
 function truncateResourceText(value: string | null | undefined, limit: number) {
@@ -1197,13 +1503,16 @@ function getDepartmentCitationRecommendation(department: string) {
 }
 
 function getCitationReferenceQueryForSourceKind(kind: SourceIntakeKind | null) {
+  if (kind === 'conference_paper') return 'conference paper proceedings symposium workshop inproceedings';
+  if (kind === 'book') return 'book monograph publisher edition';
   if (kind === 'government_report') return 'government report military directive doctrine memorandum technical report';
-  if (kind === 'documentation') return 'website webpage documentation online source url retrieval date';
-  if (kind === 'dataset') return 'data set database unpublished retrievable personal communication';
+  if (kind === 'thesis_dissertation') return 'thesis dissertation calhoun proquest institutional archive';
+  if (kind === 'documentation') return 'manual standard doctrine handbook technical documentation';
+  if (kind === 'dataset') return 'data set database repository working paper retrievable record';
   if (kind === 'interview_notes') return 'personal communication interview email unpublished source not retrievable';
-  if (kind === 'archive_record') return 'thesis dissertation archive calhoun report';
+  if (kind === 'archive_record') return 'archive collection accession institutional repository finding aid';
   if (kind === 'book_chapter') return 'book chapter edited book page range quotation';
-  if (kind === 'web_article') return 'website webpage online source url page numbers';
+  if (kind === 'web_article') return 'website webpage online source url news blog';
   return 'journal article website government report thesis dissertation figures tables page numbers';
 }
 
@@ -1225,23 +1534,585 @@ function isBibliographyFormat(value: unknown): value is BibliographyFormat {
     || value === 'ams';
 }
 
-function formatBibliographyEntry(source: SourceLibraryItem, format: BibliographyFormat) {
-  if (source.citation.trim()) {
-    return source.citation.trim();
+function isHttpUrl(value: string) {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+function normalizeCitationLocator(value: string) {
+  return value.trim()
+    .replace(/^available\s*:\s*/i, '')
+    .replace(/[<>]+/g, '')
+    .trim();
+}
+
+function withTerminalPeriod(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return '';
+  return /[.?!]$/.test(normalized) ? normalized : `${normalized}.`;
+}
+
+function looksLikeDoiLocator(value: string) {
+  const normalized = value.trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+    .replace(/^doi:\s*/i, '');
+  return /^10\.\d{4,9}\/\S+$/i.test(normalized);
+}
+
+function looksLikeBibtexEntry(value: string) {
+  return /^\s*@\w+\s*\{[\s\S]+\}\s*$/i.test(value.trim());
+}
+
+function normalizeBibliographyWhitespace(value: string) {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeDoiLocatorValue(value: string) {
+  const normalized = value.trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+    .replace(/^doi:\s*/i, '');
+  return /^10\.\d{4,9}\/\S+$/i.test(normalized) ? `https://doi.org/${normalized}` : value.trim();
+}
+
+function normalizeBibliographyPersonText(value: string) {
+  return value
+    .replace(/\\&/g, '&')
+    .replace(/[{}]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[,;]+|[,;]+$/g, '')
+    .trim();
+}
+
+function normalizeBibliographyDisplayName(value: string) {
+  const normalized = normalizeBibliographyPersonText(value);
+  const parts = normalized.split(/\s*,\s*/).filter(Boolean);
+  if (parts.length === 2) return `${parts[1]} ${parts[0]}`.trim();
+  return normalized;
+}
+
+function extractBibliographyPeople(value: string) {
+  const normalized = normalizeBibliographyPersonText(value);
+  if (!normalized) return [];
+
+  const conjunctionParts = normalized
+    .split(/\s+(?:and|&)\s+/i)
+    .map((part) => normalizeBibliographyDisplayName(part))
+    .filter(Boolean);
+  if (conjunctionParts.length > 1) return conjunctionParts;
+
+  const semicolonParts = normalized
+    .split(/\s*;\s*|\s*\n+\s*/)
+    .map((part) => normalizeBibliographyDisplayName(part))
+    .filter(Boolean);
+  if (semicolonParts.length > 1) return semicolonParts;
+
+  const commaParts = normalized
+    .split(/\s*,\s*/)
+    .map((part) => normalizeBibliographyPersonText(part))
+    .filter(Boolean);
+  if (commaParts.length > 1 && commaParts.every((part) => part.split(/\s+/).filter(Boolean).length >= 2)) {
+    return commaParts.map((part) => normalizeBibliographyDisplayName(part));
   }
+
+  if (commaParts.length >= 4 && commaParts.length % 2 === 0) {
+    const pairedNames: string[] = [];
+    for (let index = 0; index < commaParts.length; index += 2) {
+      const family = commaParts[index];
+      const given = commaParts[index + 1];
+      if (!family || !given) continue;
+      pairedNames.push(`${given} ${family}`.trim());
+    }
+    if (pairedNames.length > 1) return pairedNames;
+  }
+
+  return [normalizeBibliographyDisplayName(normalized)];
+}
+
+function normalizeBibtexFieldDisplayValue(value: string) {
+  return normalizeBibliographyWhitespace(
+    value
+      .replace(/^\{+|\}+$/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\&/g, '&'),
+  );
+}
+
+function extractBibtexFieldValue(entry: string, field: string) {
+  const match = entry.match(new RegExp(`\\b${field}\\s*=\\s*(\\{(?:[^{}]|\\{[^{}]*\\})*\\}|\"[^\"]*\")`, 'i'));
+  if (!match?.[1]) return '';
+  return normalizeBibtexFieldDisplayValue(match[1]);
+}
+
+function buildJournalVenueFromBibtex(entry: string) {
+  const journal = extractBibtexFieldValue(entry, 'journal');
+  const volume = extractBibtexFieldValue(entry, 'volume');
+  const number = extractBibtexFieldValue(entry, 'number');
+  const pages = normalizeBibliographyPages(extractBibtexFieldValue(entry, 'pages'));
+  if (!journal) return '';
+  const parts = [journal];
+  if (volume && number) {
+    parts.push(`${volume} (${number})`);
+  } else if (volume) {
+    parts.push(volume);
+  }
+  if (pages) {
+    parts.push(`pp. ${pages}`);
+  }
+  return parts.join(', ');
+}
+
+function buildVenueMetadataFromBibtex(
+  sourceKind: SourceVenueKind,
+  entry: string,
+): ParsedSourceVenueMetadata {
+  return {
+    raw: '',
+    normalized: '',
+    journal: extractBibtexFieldValue(entry, 'journal'),
+    booktitle: extractBibtexFieldValue(entry, 'booktitle'),
+    publisher: extractBibtexFieldValue(entry, 'publisher'),
+    organization: extractBibtexFieldValue(entry, 'organization'),
+    institution: extractBibtexFieldValue(entry, 'institution'),
+    school: extractBibtexFieldValue(entry, 'school'),
+    howpublished: extractBibtexFieldValue(entry, 'howpublished'),
+    volume: extractBibtexFieldValue(entry, 'volume'),
+    number: extractBibtexFieldValue(entry, 'number'),
+    pages: normalizeBibliographyPages(extractBibtexFieldValue(entry, 'pages')),
+    edition: extractBibtexFieldValue(entry, 'edition'),
+    series: extractBibtexFieldValue(entry, 'series'),
+    reportNumber: extractBibtexFieldValue(entry, 'number'),
+    articleNumber: '',
+  };
+}
+
+function sanitizeBibtexCitationText(entry: string) {
+  const authorValue = extractBibtexFieldValue(entry, 'author');
+  const normalizedAuthors = extractBibliographyPeople(authorValue).join(' and ');
+  let nextEntry = entry;
+  if (normalizedAuthors) {
+    nextEntry = nextEntry.replace(
+      /\bauthor\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\}|"[^"]*")/i,
+      `author = {${normalizedAuthors}}`,
+    );
+  }
+  nextEntry = nextEntry.replace(
+    /\n\s*note\s*=\s*\{[\s\S]*?(?:Chapter target:|Verification:|Use this source to support)[\s\S]*?\},?/gi,
+    '',
+  );
+  return nextEntry
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/,\n(\s*\})/g, '\n$1')
+    .trim();
+}
+
+function deriveBibliographyAutoFixPatch(
+  source: Pick<SourceLibraryItem, 'sourceKind' | 'title' | 'credit' | 'venue' | 'year' | 'locator' | 'citation'>,
+) {
+  const patch: Partial<Pick<SourceLibraryItem, 'title' | 'credit' | 'venue' | 'year' | 'locator' | 'citation'>> = {};
+
+  if (looksLikeDoiLocator(source.locator) && source.locator.trim() !== normalizeDoiLocatorValue(source.locator)) {
+    patch.locator = normalizeDoiLocatorValue(source.locator);
+  }
+
+  if (!looksLikeBibtexEntry(source.citation)) {
+    return patch;
+  }
+
+  const sanitizedCitation = sanitizeBibtexCitationText(source.citation);
+  if (sanitizedCitation && sanitizedCitation !== source.citation.trim()) {
+    patch.citation = sanitizedCitation;
+  }
+
+  const citationTitle = extractBibtexFieldValue(source.citation, 'title');
+  if (citationTitle && citationTitle !== source.title.trim()) {
+    patch.title = citationTitle.replace(/\.\s*$/, '');
+  }
+
+  const citationAuthors = extractBibliographyPeople(extractBibtexFieldValue(source.citation, 'author')).join(', ');
+  if (citationAuthors && citationAuthors !== source.credit.trim()) {
+    patch.credit = citationAuthors;
+  }
+
+  const citationYear = extractBibtexFieldValue(source.citation, 'year');
+  if (citationYear && citationYear !== source.year.trim()) {
+    patch.year = citationYear;
+  }
+
+  const citationLocator = extractBibtexFieldValue(source.citation, 'doi')
+    || extractBibtexFieldValue(source.citation, 'url');
+  if (citationLocator) {
+    const normalizedLocator = normalizeDoiLocatorValue(citationLocator);
+    if (normalizedLocator !== source.locator.trim()) {
+      patch.locator = normalizedLocator;
+    }
+  }
+
+  if (source.sourceKind === 'journal_article') {
+    const citationVenue = buildJournalVenueFromBibtex(source.citation);
+    if (citationVenue && citationVenue !== source.venue.trim()) {
+      patch.venue = citationVenue;
+    }
+  } else {
+    const citationVenue = buildSourceVenueDisplayFromMetadata(
+      source.sourceKind as SourceVenueKind,
+      buildVenueMetadataFromBibtex(source.sourceKind as SourceVenueKind, source.citation),
+    );
+    if (citationVenue && citationVenue !== source.venue.trim()) {
+      patch.venue = citationVenue;
+    }
+  }
+
+  return patch;
+}
+
+function getNpsBibliographyReadiness(
+  source: Pick<SourceLibraryItem, 'sourceKind' | 'title' | 'credit' | 'venue' | 'year' | 'locator' | 'citation'>,
+): BibliographyReadiness {
+  const details: string[] = [];
+  const exactChanges: BibliographyReadiness['exactChanges'] = [];
+  const locator = source.locator.trim();
+  const venue = source.venue.trim();
+  const autoFixPatch = deriveBibliographyAutoFixPatch(source);
+
+  if (!source.title.trim()) {
+    details.push('Add the source title.');
+    exactChanges.push({
+      field: 'title',
+      label: 'Title',
+      suggestedValue: 'Enter the full source title exactly as published.',
+      reason: 'The bibliography entry cannot be generated without a title.',
+    });
+  }
+  if (!source.credit.trim()) {
+    details.push('Add the author, editor, organization, or other credit line.');
+    exactChanges.push({
+      field: 'credit',
+      label: 'Credit',
+      suggestedValue: 'Enter the author list or responsible organization.',
+      reason: 'NPS bibliography output needs an author or organization field.',
+    });
+  }
+  if (!source.year.trim()) {
+    details.push('Add the publication date or year.');
+    exactChanges.push({
+      field: 'year',
+      label: 'Year',
+      suggestedValue: 'Enter the publication year, for example `2012`.',
+      reason: 'The bibliography entry needs a publication year.',
+    });
+  }
+
+  switch (source.sourceKind) {
+    case 'journal_article':
+      if (!looksLikeCompleteArticleVenue(venue)) {
+        details.push('This option targets `@article`. Enter the journal title plus volume, issue, and page range in a pattern like "IEEE Transactions on ..., 61 (6), pp. 1625-1635".');
+        exactChanges.push({
+          field: 'venue',
+          label: 'Venue / publisher',
+          suggestedValue: autoFixPatch.venue || `${venue || 'Journal title'}, <volume> (<issue>), pp. <start>-<end>`,
+          reason: 'For `@article`, the context field should carry the journal title, volume, issue, and page range.',
+        });
+      }
+      break;
+    case 'conference_paper':
+      if (!venue) {
+        details.push('Conference papers target `@inproceedings`. Enter the proceedings or conference title in the context field.');
+        exactChanges.push({
+          field: 'venue',
+          label: 'Venue / publisher',
+          suggestedValue: 'Enter the proceedings or conference title.',
+          reason: 'This value maps to the BibTeX `booktitle` field.',
+        });
+      } else if (!/\b(conference|proceedings|symposium|workshop|meeting)\b/i.test(venue)) {
+        details.push('Conference papers target `@inproceedings`. Include the proceedings or conference title so the `booktitle` field can be generated cleanly.');
+        exactChanges.push({
+          field: 'venue',
+          label: 'Venue / publisher',
+          suggestedValue: autoFixPatch.venue || venue,
+          reason: 'The context should name the conference or proceedings explicitly.',
+        });
+      }
+      break;
+    case 'book':
+      if (!venue) {
+        details.push('Books target `@book`. Enter the publisher in the context field.');
+        exactChanges.push({
+          field: 'venue',
+          label: 'Venue / publisher',
+          suggestedValue: 'Enter the publisher name.',
+          reason: 'This value maps to the BibTeX `publisher` field.',
+        });
+      }
+      break;
+    case 'book_chapter':
+      details.push('Book chapters target `@incollection`. You will usually still need manual `references.bib` cleanup for editor name(s), publisher, and page range because the intake form only captures one context field.');
+      break;
+    case 'government_report':
+      details.push('Government and technical reports target `@techreport`. Include the report number and issuing institution in the context field, then verify them in `references.bib`.');
+      break;
+    case 'thesis_dissertation':
+      details.push('Theses and dissertations target `@mastersthesis` or `@phdthesis`. Enter the school, department, archive, or database name in the context field and verify the final degree type in `references.bib`.');
+      break;
+    case 'dataset':
+      details.push('Dataset and repository items target `@misc`. Include the repository name plus version, release label, or accession identifier in the context field and verify those manually in `references.bib`.');
+      break;
+    case 'interview_notes':
+      details.push('Interviews and personal communications usually map to `@misc` or `@unpublished`. Verify whether the source should appear in `references.bib` at all or should remain an in-text personal communication only.');
+      break;
+    case 'archive_record':
+      details.push('Archive and collection records target `@misc`. Include the collection name, accession identifier, and holding institution, then verify them manually in `references.bib`.');
+      break;
+    case 'documentation':
+      details.push('Manuals, standards, and documentation target `@manual`. Include the standard number, manual identifier, or publishing organization in the context field and verify the final wording in `references.bib`.');
+      break;
+    case 'web_article':
+      details.push('Web pages, news stories, and blogs target `@misc`. Include the website or publisher name in the context field.');
+      break;
+    default:
+      break;
+  }
+
+  if (!locator) {
+    details.push('Add a DOI, landing page URL, or other retrievable locator.');
+    exactChanges.push({
+      field: 'locator',
+      label: 'Available at',
+      suggestedValue: autoFixPatch.locator || 'https://doi.org/... or a stable source URL',
+      reason: 'The bibliography entry should include a retrievable DOI or URL.',
+    });
+  } else if (!isHttpUrl(locator) && !looksLikeDoiLocator(locator) && source.sourceKind !== 'interview_notes') {
+    details.push('Use a DOI or retrievable URL when possible so the NPS bibliography entry has a valid locator.');
+    exactChanges.push({
+      field: 'locator',
+      label: 'Available at',
+      suggestedValue: autoFixPatch.locator || locator,
+      reason: 'This field should be a DOI URL or a stable retrievable link.',
+    });
+  }
+
+  if (details.length === 0) {
+    return {
+      status: 'ready',
+      summary: 'This source is structurally compatible with the current Odyssey to NPS bibliography workflow.',
+      details: [
+        'You can still refine the final wording in `references.bib`, but this source should not require extra structural fields for the common NPS workflow.',
+      ],
+      exactChanges: [],
+      autoFixPatch,
+    };
+  }
+
+  return {
+    status: 'manual',
+    summary: Object.keys(autoFixPatch).length > 0
+      ? 'Odyssey can fix the common field issues it detected, and will list anything that still needs manual review.'
+      : 'This source will save, but it still needs specific field cleanup before it fully matches the NPS guide.',
+    details,
+    exactChanges,
+    autoFixPatch,
+  };
+}
+
+function formatBibliographyEntry(source: SourceLibraryItem, format: BibliographyFormat) {
+  const locator = normalizeCitationLocator(source.locator);
+  const creditDisplay = formatSourceCreditDisplay(source.credit);
+  const venueDisplay = buildSourceVenueDisplay(source.sourceKind as SourceVenueKind, source.venue);
   if (format === 'chicago') {
-    return `${source.credit}. "${source.title}." ${source.venue} (${source.year}). ${source.locator}.`;
+    return `${creditDisplay}. "${source.title}." ${venueDisplay} (${source.year}). ${withTerminalPeriod(locator)}`.trim();
   }
   if (format === 'ieee') {
-    return `${source.credit}, "${source.title}," ${source.venue}, ${source.year}. ${source.locator}.`;
+    const citationPrefix = `${creditDisplay}, "${source.title}," ${venueDisplay}, ${source.year}.`.trim();
+    if (!locator) return citationPrefix;
+    return `${citationPrefix} ${isHttpUrl(locator) ? `Available: ${locator}` : withTerminalPeriod(locator)}`.trim();
   }
   if (format === 'informs') {
-    return `${source.credit} (${source.year}), "${source.title}," ${source.venue}, ${source.locator}.`;
+    return `${creditDisplay} (${source.year}), "${source.title}," ${venueDisplay}, ${withTerminalPeriod(locator)}`.trim();
   }
   if (format === 'asme' || format === 'aiaa' || format === 'ams') {
-    return `${source.credit}, "${source.title}," ${source.venue}, ${source.year}. ${source.locator}.`;
+    return `${creditDisplay}, "${source.title}," ${venueDisplay}, ${source.year}. ${withTerminalPeriod(locator)}`.trim();
   }
-  return `${source.credit} (${source.year}). ${source.title}. ${source.venue}. ${source.locator}.`;
+  return `${creditDisplay} (${source.year}). ${source.title}. ${venueDisplay}. ${withTerminalPeriod(locator)}`.trim();
+}
+
+function CreditFieldEditor({
+  value,
+  label,
+  onChange,
+}: {
+  value: string;
+  label: string;
+  onChange: (nextValue: string) => void;
+}) {
+  const [modeOverride, setModeOverride] = useState<'people' | 'organization' | null>(null);
+
+  const parsedEntries = useMemo(() => parseSourceCreditEntries(value), [value]);
+  const personEntries = useMemo(
+    () => parsedEntries.filter((entry): entry is Extract<ParsedCreditEntry, { kind: 'person' }> => entry.kind === 'person'),
+    [parsedEntries],
+  );
+  const autoDetectedMode = useMemo<'people' | 'organization' | null>(() => {
+    if (parsedEntries.length === 1 && parsedEntries[0]?.kind === 'organization') return 'organization';
+    if (personEntries.length > 1) return 'people';
+    return null;
+  }, [parsedEntries, personEntries]);
+  const structuredMode = modeOverride ?? autoDetectedMode;
+  const [personDraftEntries, setPersonDraftEntries] = useState<{ kind: 'person'; givenName: string; familyName: string }[]>([]);
+
+  useEffect(() => {
+    if (structuredMode !== 'people' || personEntries.length === 0) return;
+    const nextSerialized = serializeSourceCreditEntries(personEntries);
+    const currentSerialized = serializeSourceCreditEntries(personDraftEntries);
+    if (currentSerialized !== nextSerialized) {
+      setPersonDraftEntries(personEntries);
+    }
+  }, [structuredMode, personEntries, personDraftEntries]);
+
+  const detectedPeopleCount = personDraftEntries.length;
+
+  const updatePersonEntry = (index: number, field: 'givenName' | 'familyName', nextValue: string) => {
+    const nextEntries = personDraftEntries.map((entry, entryIndex) => (
+      entryIndex === index ? { ...entry, [field]: nextValue } : entry
+    ));
+    setPersonDraftEntries(nextEntries);
+    onChange(serializeSourceCreditEntries(nextEntries));
+  };
+
+  const removePersonEntry = (index: number) => {
+    const nextEntries = personDraftEntries.filter((_, entryIndex) => entryIndex !== index);
+    setPersonDraftEntries(nextEntries);
+    onChange(serializeSourceCreditEntries(nextEntries));
+  };
+
+  const addPersonEntry = () => {
+    setModeOverride('people');
+    setPersonDraftEntries((current) => {
+      const nextEntries = [...current, { kind: 'person' as const, givenName: '', familyName: '' }];
+      onChange(serializeSourceCreditEntries(nextEntries));
+      return nextEntries;
+    });
+  };
+
+  const switchToOrganization = () => {
+    setModeOverride('organization');
+    setPersonDraftEntries([]);
+    onChange(value.trim() || '');
+  };
+
+  const switchToPeople = () => {
+    setModeOverride('people');
+    if (personEntries.length > 0) {
+      setPersonDraftEntries(personEntries);
+      onChange(serializeSourceCreditEntries(personEntries));
+      return;
+    }
+    setPersonDraftEntries([]);
+    onChange('');
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">{label}</span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {structuredMode === 'organization' ? (
+            <button
+              type="button"
+              onClick={switchToPeople}
+              className="inline-flex items-center gap-1 border border-border bg-surface px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:border-accent hover:text-accent"
+            >
+              <Users size={11} />
+              Switch To People
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={switchToOrganization}
+              className="inline-flex items-center gap-1 border border-border bg-surface px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:border-accent hover:text-accent"
+            >
+              <FileText size={11} />
+              Use Organization
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={addPersonEntry}
+            className="inline-flex items-center gap-1 border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-accent transition-colors hover:bg-accent/15"
+          >
+            <Plus size={11} />
+            Add Author
+          </button>
+        </div>
+      </div>
+
+      {structuredMode === 'organization' ? (
+        <textarea
+          rows={3}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Enter the responsible organization or issuing body."
+          className="w-full resize-y border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition-colors placeholder:text-muted/70 focus:border-accent"
+        />
+      ) : structuredMode === 'people' ? (
+        <div className="space-y-3">
+          {detectedPeopleCount > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] text-muted">
+                {detectedPeopleCount} contributor{detectedPeopleCount === 1 ? '' : 's'}. Edit any name before saving.
+              </p>
+              <p className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">
+                Saved as structured author list
+              </p>
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-2 xl:grid-cols-3">
+            {personDraftEntries.map((entry, index) => (
+              <div
+                key={index}
+                className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_2rem] gap-1.5 border border-border bg-surface2/30 px-2 py-2 items-end"
+              >
+                <label className="space-y-1 min-w-0">
+                  <span className="text-[9px] font-mono uppercase tracking-[0.14em] text-muted">First</span>
+                  <input
+                    type="text"
+                    value={entry.givenName}
+                    onChange={(event) => updatePersonEntry(index, 'givenName', event.target.value)}
+                    placeholder="Grace"
+                    className="h-8 w-full border border-border bg-surface px-2.5 text-sm text-heading outline-none transition-colors placeholder:text-muted/70 focus:border-accent"
+                  />
+                </label>
+                <label className="space-y-1 min-w-0">
+                  <span className="text-[9px] font-mono uppercase tracking-[0.14em] text-muted">Last</span>
+                  <input
+                    type="text"
+                    value={entry.familyName}
+                    onChange={(event) => updatePersonEntry(index, 'familyName', event.target.value)}
+                    placeholder="Hopper"
+                    className="h-8 w-full border border-border bg-surface px-2.5 text-sm text-heading outline-none transition-colors placeholder:text-muted/70 focus:border-accent"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => removePersonEntry(index)}
+                  className="inline-flex h-8 w-8 items-center justify-center border border-border bg-surface text-muted transition-colors hover:border-danger/40 hover:text-danger"
+                  aria-label={`Remove contributor ${index + 1}`}
+                  title={`Remove contributor ${index + 1}`}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <textarea
+          rows={3}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Paste or capture the full author line. Odyssey will split individual contributors below."
+          className="w-full resize-y border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition-colors placeholder:text-muted/70 focus:border-accent"
+        />
+      )}
+    </div>
+  );
 }
 
 export default function ThesisPage() {
@@ -1252,6 +2123,7 @@ export default function ThesisPage() {
   const projectPickerRef = useRef<HTMLDivElement>(null);
   const thesisPdfInputRef = useRef<HTMLInputElement>(null);
   const thesisDocumentInputRef = useRef<HTMLInputElement>(null);
+  const thesisDocumentEditorRef = useRef<HTMLDivElement>(null);
   const { projects, loading: projectsLoading } = useProjects();
   const { profile, loading: profileLoading, updateProfile } = useProfile();
   const { register, unregister } = useChatPanel();
@@ -1285,6 +2157,7 @@ export default function ThesisPage() {
   const [sourceIntakeMethod, setSourceIntakeMethod] = useState<SourceIntakeMethod>('url');
   const [sourceIntakeKind, setSourceIntakeKind] = useState<SourceIntakeKind | null>(null);
   const [sourceUrl, setSourceUrl] = useState('');
+  const [sourceAccessUrl, setSourceAccessUrl] = useState('');
   const [uploadedPdfName, setUploadedPdfName] = useState('');
   const [uploadedPdfFile, setUploadedPdfFile] = useState<File | null>(null);
   const [parsedUrlSource, setParsedUrlSource] = useState<ParsedThesisSourceRecord | null>(null);
@@ -1300,7 +2173,6 @@ export default function ThesisPage() {
   const [verificationState, setVerificationState] = useState<'verified' | 'provisional' | 'restricted'>('verified');
   const [sourceRole, setSourceRole] = useState<'primary' | 'secondary' | 'contextual'>('secondary');
   const [chapterTarget, setChapterTarget] = useState<'literature_review' | 'methods' | 'findings' | 'appendix'>('literature_review');
-  const [analysisPlan, setAnalysisPlan] = useState<'citation_only' | 'claim_extraction' | 'full_ingest'>('full_ingest');
   const [researchUseNote, setResearchUseNote] = useState('Use this source to support the literature review and identify reusable claims for later drafting.');
   const [sourceLibrary, setSourceLibrary] = useState<SourceLibraryItem[]>(() => (
     typeof window === 'undefined'
@@ -1333,7 +2205,12 @@ export default function ThesisPage() {
   const [documentAttachmentOpeningId, setDocumentAttachmentOpeningId] = useState<string | null>(null);
   const [citationReferenceViewer, setCitationReferenceViewer] = useState<{ title: string; url: string } | null>(null);
   const [selectedLibrarySourceId, setSelectedLibrarySourceId] = useState<string | null>(null);
+  const [selectedLibrarySourceDraft, setSelectedLibrarySourceDraft] = useState<SourceLibraryItem | null>(null);
+  const [selectedLibrarySourceUndoStack, setSelectedLibrarySourceUndoStack] = useState<SourceLibraryItem[]>([]);
+  const [selectedLibrarySourceRedoStack, setSelectedLibrarySourceRedoStack] = useState<SourceLibraryItem[]>([]);
+  const [pendingLibrarySourceDelete, setPendingLibrarySourceDelete] = useState<SourceLibraryItem | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
   const [librarySort, setLibrarySort] = useState<'recent' | 'title' | 'year' | 'type' | 'status'>('recent');
   const [libraryEditMode, setLibraryEditMode] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
@@ -1389,7 +2266,7 @@ export default function ThesisPage() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const requestedTab = params.get('tab');
-    if (requestedTab === 'overview' || requestedTab === 'sources' || requestedTab === 'documents' || requestedTab === 'graph' || requestedTab === 'paper' || requestedTab === 'writing' || requestedTab === 'settings') {
+    if (requestedTab === 'overview' || requestedTab === 'milestones' || requestedTab === 'sources' || requestedTab === 'documents' || requestedTab === 'graph' || requestedTab === 'paper' || requestedTab === 'settings') {
       setActiveTab(requestedTab);
     }
   }, [location.search]);
@@ -1773,39 +2650,45 @@ export default function ThesisPage() {
     [sourceIntakeKind],
   );
   const sourceKindCreditLabel = useMemo(() => {
+    if (sourceIntakeKind === 'conference_paper') return 'Author or presenter';
+    if (sourceIntakeKind === 'book') return 'Author or editor';
     if (sourceIntakeKind === 'dataset') return 'Owning lab or repository';
-    if (sourceIntakeKind === 'interview_notes') return 'Interviewee, advisor, or note owner';
-    if (sourceIntakeKind === 'archive_record') return 'Archive or collection name';
-    if (sourceIntakeKind === 'government_report') return 'Issuing organization';
-    if (sourceIntakeKind === 'documentation') return 'Authoring team or publisher';
+    if (sourceIntakeKind === 'interview_notes') return 'Interviewee, advisor, or correspondent';
+    if (sourceIntakeKind === 'archive_record') return 'Author, archive, or collection owner';
+    if (sourceIntakeKind === 'government_report') return 'Issuing organization or author';
+    if (sourceIntakeKind === 'thesis_dissertation') return 'Author';
+    if (sourceIntakeKind === 'documentation') return 'Publisher, standards body, or authoring team';
     return 'Author, editor, or lead researcher';
   }, [sourceIntakeKind]);
   const sourceKindContextLabel = useMemo(() => {
+    if (sourceIntakeKind === 'conference_paper') return 'Conference or proceedings title';
+    if (sourceIntakeKind === 'book') return 'Publisher';
     if (sourceIntakeKind === 'dataset') return 'Dataset version, DOI, or release window';
-    if (sourceIntakeKind === 'interview_notes') return 'Meeting date or interview session';
-    if (sourceIntakeKind === 'archive_record') return 'Accession ID or archive reference';
-    if (sourceIntakeKind === 'government_report') return 'Report number, lab, or publishing body';
-    if (sourceIntakeKind === 'documentation') return 'Documentation site, standard, or product area';
+    if (sourceIntakeKind === 'interview_notes') return 'Interview date, medium, or session note';
+    if (sourceIntakeKind === 'archive_record') return 'Collection, accession ID, or holding institution';
+    if (sourceIntakeKind === 'government_report') return 'Report number, institution, or series';
+    if (sourceIntakeKind === 'thesis_dissertation') return 'School, department, archive, or database';
+    if (sourceIntakeKind === 'documentation') return 'Manual number, standard, or documentation site';
     return 'Journal, publisher, conference, or source venue';
   }, [sourceIntakeKind]);
   const sourceKindVerificationLabel = useMemo(() => {
+    if (sourceIntakeKind === 'conference_paper') return 'Proceedings and publication status';
+    if (sourceIntakeKind === 'book') return 'Edition and publication status';
     if (sourceIntakeKind === 'dataset') return 'Reuse and provenance status';
     if (sourceIntakeKind === 'interview_notes') return 'Consent and attribution status';
     if (sourceIntakeKind === 'archive_record') return 'Archive verification status';
     if (sourceIntakeKind === 'government_report') return 'Document provenance status';
+    if (sourceIntakeKind === 'thesis_dissertation') return 'Degree and archive status';
     if (sourceIntakeKind === 'documentation') return 'Version and source status';
     return 'Review and citation status';
   }, [sourceIntakeKind]);
   const activeParsedSource = sourceIntakeMethod === 'url' ? parsedUrlSource : null;
   const sourceLocatorValue = useMemo(() => {
     if (sourceIntakeMethod === 'url') return sourceUrl.trim();
-    if (sourceIntakeMethod === 'pdf') return uploadedPdfName.trim();
+    if (sourceIntakeMethod === 'pdf') return sourceAccessUrl.trim() || uploadedPdfName.trim();
     return manualSourceText.trim();
-  }, [manualSourceText, sourceIntakeMethod, sourceUrl, uploadedPdfName]);
-  const sourceHasMetadata = sourceTitle.trim().length > 0
-    && sourceCredit.trim().length > 0
-    && sourceContextField.trim().length > 0
-    && sourceYear.trim().length > 0;
+  }, [manualSourceText, sourceAccessUrl, sourceIntakeMethod, sourceUrl, uploadedPdfName]);
+  const sourceHasMetadata = sourceTitle.trim().length > 0;
   const sourceReadyForQueue = Boolean(sourceIntakeKind) && sourceLocatorValue.length > 0 && sourceHasMetadata;
   const publicationDatePlaceholder = useMemo(
     () => getPublicationDatePlaceholder(bibliographyFormat),
@@ -1819,12 +2702,13 @@ export default function ThesisPage() {
     const locator = sourceIntakeMethod === 'url'
       ? sourceUrl.trim()
       : sourceIntakeMethod === 'pdf'
-        ? uploadedPdfName.trim()
+        ? sourceAccessUrl.trim() || uploadedPdfName.trim()
         : manualSourceText.trim();
     if (!title && !credit && !venue && !year) return '';
 
     return formatBibliographyEntry({
       id: 'intake-preview',
+      citeKey: 'intake_preview',
       title,
       type: sourceIntakeMethod === 'pdf' ? 'pdf' : sourceIntakeMethod === 'url' ? 'link' : 'notes',
       acquisitionMethod: sourceIntakeMethod,
@@ -1852,12 +2736,29 @@ export default function ThesisPage() {
     manualSourceText,
     sourceContextField,
     sourceCredit,
+    sourceAccessUrl,
     sourceIntakeKind,
     sourceIntakeMethod,
     sourceTitle,
     sourceUrl,
     sourceYear,
     uploadedPdfName,
+  ]);
+  const intakeBibliographyReadiness = useMemo(() => getNpsBibliographyReadiness({
+    sourceKind: sourceIntakeKind ?? 'journal_article',
+    title: sourceTitle,
+    credit: sourceCredit,
+    venue: sourceContextField,
+    year: sourceYear,
+    locator: sourceLocatorValue,
+    citation: '',
+  }), [
+    sourceContextField,
+    sourceCredit,
+    sourceIntakeKind,
+    sourceLocatorValue,
+    sourceTitle,
+    sourceYear,
   ]);
   const sourceNextRequirement = useMemo(() => {
     if (!sourceIntakeKind) return 'Select the source type so the correct bibliography questions can appear.';
@@ -1870,7 +2771,7 @@ export default function ThesisPage() {
     if (!sourceCredit.trim()) return `Provide the ${sourceKindCreditLabel.toLowerCase()}.`;
     if (!sourceContextField.trim()) return `Provide the ${sourceKindContextLabel.toLowerCase()}.`;
     if (!sourceYear.trim()) return 'Add the publication date.';
-    return 'Ready to confirm the citation and queue the source.';
+    return 'Ready to confirm and save this citation to the library.';
   }, [
     sourceContextField,
     sourceCredit,
@@ -1947,6 +2848,19 @@ export default function ThesisPage() {
   const selectedLibrarySource = useMemo(
     () => sourceLibrary.find((source) => source.id === selectedLibrarySourceId) ?? null,
     [selectedLibrarySourceId, sourceLibrary],
+  );
+  const editableLibrarySource = selectedLibrarySourceDraft ?? selectedLibrarySource;
+  const selectedLibrarySourceDirty = useMemo(
+    () => Boolean(
+      selectedLibrarySource
+      && selectedLibrarySourceDraft
+      && JSON.stringify(selectedLibrarySourceDraft) !== JSON.stringify(selectedLibrarySource),
+    ),
+    [selectedLibrarySource, selectedLibrarySourceDraft],
+  );
+  const selectedLibrarySourceReadiness = useMemo(
+    () => (editableLibrarySource ? getNpsBibliographyReadiness(editableLibrarySource) : null),
+    [editableLibrarySource],
   );
   const libraryFilterSections = useMemo(() => ([
     {
@@ -2038,8 +2952,12 @@ export default function ThesisPage() {
 
     return [...filtered].sort((left, right) => right.addedOn.localeCompare(left.addedOn) || left.title.localeCompare(right.title));
   }, [documentSearch, sourceLibrary, supportingDocuments]);
+  const editingDocument = useMemo(
+    () => (editingDocumentId ? supportingDocuments.find((document) => document.id === editingDocumentId) ?? null : null),
+    [editingDocumentId, supportingDocuments],
+  );
   const documentReadyToSave = Boolean(
-    uploadedDocumentFile
+    (editingDocumentId || uploadedDocumentFile)
     && documentTitle.trim()
     && documentDescription.trim()
     && documentContribution.trim(),
@@ -2235,6 +3153,27 @@ export default function ThesisPage() {
   }, [location.search, sourceLibrary, supportingDocuments]);
 
   useEffect(() => {
+    if (!selectedLibrarySourceId) {
+      setSelectedLibrarySourceDraft(null);
+      setSelectedLibrarySourceUndoStack([]);
+      setSelectedLibrarySourceRedoStack([]);
+      return;
+    }
+
+    const source = sourceLibrary.find((item) => item.id === selectedLibrarySourceId);
+    if (!source) {
+      setSelectedLibrarySourceDraft(null);
+      setSelectedLibrarySourceUndoStack([]);
+      setSelectedLibrarySourceRedoStack([]);
+      return;
+    }
+
+    setSelectedLibrarySourceDraft(cloneSourceLibraryItem(source));
+    setSelectedLibrarySourceUndoStack([]);
+    setSelectedLibrarySourceRedoStack([]);
+  }, [selectedLibrarySourceId]);
+
+  useEffect(() => {
     if (!selectedDocumentId || activeTab !== 'documents') return;
     const element = document.getElementById(`thesis-document-${selectedDocumentId}`);
     if (!element) return;
@@ -2242,6 +3181,12 @@ export default function ThesisPage() {
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   }, [activeTab, selectedDocumentId, visibleSupportingDocuments]);
+
+  useEffect(() => {
+    if (!editingDocumentId) return;
+    if (editingDocument) return;
+    resetSupportingDocumentEditor();
+  }, [editingDocument, editingDocumentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2509,7 +3454,7 @@ export default function ThesisPage() {
         .map((source) => {
           const link = `/thesis?tab=sources&source=${encodeURIComponent(source.id)}`;
           const summary = truncateResourceText(source.abstract || source.notes || source.citation, 180);
-          return `- [${source.id}] ${source.title} | ${source.type} | ${source.credit} | ${source.year} | ${source.venue} | locator: ${truncateResourceText(source.locator, 100)}${summary ? ` | summary: ${summary}` : ''} | Odyssey link: ${link}`;
+          return `- [${source.id}] ${source.title} | ${source.type} | ${source.credit} | ${source.year} | ${source.venue} | available at: ${truncateResourceText(source.locator, 100)}${summary ? ` | summary: ${summary}` : ''} | Odyssey link: ${link}`;
         })
         .join('\n')
       : '- No saved sources in the thesis library yet.';
@@ -2706,6 +3651,31 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     setUploadedPdfFile(file);
     setPdfFieldCaptureOpen(true);
     setSourceTitle('');
+    setSourceAccessUrl('');
+  };
+
+  const resetSourceIntake = () => {
+    setSourceIntakeMethod('url');
+    setSourceIntakeKind(null);
+    setSourceUrl('');
+    setSourceAccessUrl('');
+    setUploadedPdfName('');
+    setUploadedPdfFile(null);
+    setParsedUrlSource(null);
+    setPdfFieldCaptureOpen(false);
+    setUrlAutofillStatus('idle');
+    setUrlAutofillError(null);
+    setManualSourceText('');
+    setSourceTitle('');
+    setSourceCredit('');
+    setSourceContextField('');
+    setSourceYear('');
+    setVerificationState('verified');
+    setSourceRole('secondary');
+    setChapterTarget('literature_review');
+    setResearchUseNote('Use this source to support the literature review and identify reusable claims for later drafting.');
+    setQueueNotice(null);
+    setQueueError(null);
   };
 
   const handleDocumentFileSelected = (file: File | null | undefined) => {
@@ -2720,6 +3690,33 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     setUploadedDocumentFile(file);
     setUploadedDocumentName(file.name);
     setDocumentTitle((current) => current.trim() || file.name.replace(/\.[^.]+$/, ''));
+  };
+
+  const resetSupportingDocumentEditor = () => {
+    setEditingDocumentId(null);
+    setUploadedDocumentFile(null);
+    setUploadedDocumentName('');
+    setDocumentTitle('');
+    setDocumentDescription('');
+    setDocumentContribution('');
+    setDocumentLinkedSourceId('');
+  };
+
+  const openSupportingDocumentEditor = (document: ThesisSupportingDocument) => {
+    setDocumentNotice(null);
+    setDocumentError(null);
+    setSelectedDocumentId(document.id);
+    setEditingDocumentId(document.id);
+    setUploadedDocumentFile(null);
+    setUploadedDocumentName(document.attachmentName);
+    setDocumentTitle(document.title);
+    setDocumentDescription(document.description);
+    setDocumentContribution(document.contribution);
+    setDocumentLinkedSourceId(document.linkedSourceId ?? '');
+    updateThesisRoute({ tab: 'documents', document: document.id, source: null });
+    window.requestAnimationFrame(() => {
+      thesisDocumentEditorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   };
 
   useEffect(() => {
@@ -2757,7 +3754,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
           setUrlAutofillStatus('ready');
           if (parsed.sourceKind) setSourceIntakeKind(parsed.sourceKind as SourceIntakeKind);
           setSourceTitle(parsed.title?.trim() || parsed.filename || normalizedUrl);
-          setSourceCredit((current) => parsed.credit?.trim() || current);
+          setSourceCredit((current) => normalizeSourceCreditValue(parsed.credit?.trim() || current));
           setSourceContextField((current) => parsed.contextField?.trim() || current);
           setSourceYear((current) => {
             const nextValue = parsed.year?.trim();
@@ -2779,35 +3776,29 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     };
   }, [bibliographyFormat, sourceIntakeMethod, sourceUrl]);
 
-  const handleQueueSource = async () => {
+  const handleConfirmSource = async () => {
     setQueueNotice(null);
     setQueueError(null);
 
     if (!sourceIntakeKind || !sourceReadyForQueue) {
-      setQueueError('Complete the required source fields before queueing analysis.');
+      setQueueError('Complete the required source fields before saving the source.');
       return;
     }
 
     const normalizedTitle = sourceTitle.trim();
-    const normalizedCredit = sourceCredit.trim();
+    const normalizedCredit = normalizeSourceCreditValue(sourceCredit);
     const normalizedContext = sourceContextField.trim();
     const normalizedYear = sourceYear.trim();
     const normalizedLocator = sourceLocatorValue.trim();
     const normalizedUseNote = researchUseNote.trim();
     const today = new Date().toISOString().slice(0, 10);
     const libraryType = mapSourceKindToLibraryType(sourceIntakeMethod, sourceIntakeKind);
-    const status: SourceLibraryItem['status'] = analysisPlan === 'citation_only' ? 'tagged' : 'queued';
-    const queueStatus: SourceItem['status'] = analysisPlan === 'citation_only' ? 'tagged' : 'queued';
     const keywordTags = activeParsedSource?.keywords ?? [];
-    const queueInsight = activeParsedSource?.summary?.trim()
-      || normalizedUseNote
-      || `Queued for ${analysisPlan.replace(/_/g, ' ')} analysis.`;
     const workflowNote = [
-      `Intake plan: ${analysisPlan.replace(/_/g, ' ')}.`,
       `Chapter target: ${formatSourceLabel(chapterTarget)}.`,
       `Verification: ${formatSourceLabel(verificationState)}.`,
     ].join(' ');
-    const combinedNotes = [normalizedUseNote, queueInsight, workflowNote]
+    const combinedNotes = [normalizedUseNote, workflowNote]
       .filter((value, index, array) => value && array.indexOf(value) === index)
       .join('\n\n');
     let attachment: ThesisSourceAttachment | null = null;
@@ -2818,13 +3809,20 @@ Thesis AI should help with literature synthesis, argument structure, methodology
         attachment = await uploadThesisSourcePdf(uploadedPdfFile);
       }
 
+      const citeKey = buildSourceCiteKey({
+        title: normalizedTitle,
+        credit: normalizedCredit,
+        year: normalizedYear,
+      }, new Set(sourceLibrary.map((item) => item.citeKey)));
+
       const nextLibraryItem: SourceLibraryItem = {
       id: createSourceId('lib'),
+      citeKey,
       title: normalizedTitle,
       type: libraryType,
       acquisitionMethod: sourceIntakeMethod,
       sourceKind: sourceIntakeKind,
-      status,
+      status: 'tagged',
       role: sourceRole,
       verification: verificationState,
       chapterTarget,
@@ -2842,24 +3840,13 @@ Thesis AI should help with literature synthesis, argument structure, methodology
       attachmentMimeType: attachment?.mimeType ?? '',
       attachmentUploadedAt: attachment?.uploadedAt ?? '',
       };
-      const nextQueueItem: SourceItem = {
-        id: createSourceId('src'),
-        title: normalizedTitle,
-        type: mapSourceKindToQueueType(sourceIntakeKind),
-        status: queueStatus,
-        insight: queueInsight,
-        librarySourceId: nextLibraryItem.id,
-      };
-      const response = await queueThesisSource({
-        libraryItem: nextLibraryItem,
-        queueItem: nextQueueItem,
-      });
-      setSourceLibrary(readSourceLibraryItems(response.sourceLibrary, [nextLibraryItem, ...sourceLibrary]));
-      setSourceQueueItems(readSourceQueueItems(response.sourceQueueItems, [nextQueueItem, ...sourceQueueItems]));
-      setSelectedLibrarySourceId(nextLibraryItem.id);
-      setQueueNotice(`Confirmed citation for "${normalizedTitle}" and queued it for ${analysisPlan.replace(/_/g, ' ')}.`);
+      setSourceLibrary((current) => readSourceLibraryItems([nextLibraryItem, ...current.filter((item) => item.id !== nextLibraryItem.id)]));
+      setSourceQueueItems([]);
+      setSourceIntakeOpen(false);
+      resetSourceIntake();
     } catch (error) {
-      setQueueError(error instanceof Error ? error.message : 'Failed to queue the source for ingest.');
+      const message = error instanceof Error ? error.message : 'Failed to save the source to the library.';
+      setQueueError(sourceIntakeMethod === 'pdf' ? `PDF upload failed: ${message}` : message);
     } finally {
       setQueueRequestPending(false);
     }
@@ -2869,7 +3856,39 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     setDocumentNotice(null);
     setDocumentError(null);
 
-    if (!documentReadyToSave || !uploadedDocumentFile) {
+    if (!documentReadyToSave) {
+      setDocumentError(editingDocumentId
+        ? 'Fill in the title, description, and thesis contribution before saving the document.'
+        : 'Upload a document and fill in the title, description, and thesis contribution first.');
+      return;
+    }
+
+    if (editingDocumentId) {
+      const existingDocument = supportingDocuments.find((document) => document.id === editingDocumentId);
+      if (!existingDocument) {
+        setDocumentError('That document could not be found anymore.');
+        setEditingDocumentId(null);
+        return;
+      }
+
+      const nextDocument: ThesisSupportingDocument = {
+        ...existingDocument,
+        title: documentTitle.trim(),
+        description: documentDescription.trim(),
+        contribution: documentContribution.trim(),
+        linkedSourceId: documentLinkedSourceId.trim() || null,
+      };
+
+      setSupportingDocuments((current) => current.map((document) => (
+        document.id === nextDocument.id ? nextDocument : document
+      )));
+      setSelectedDocumentId(nextDocument.id);
+      setDocumentNotice(`Saved changes to "${nextDocument.title}".`);
+      resetSupportingDocumentEditor();
+      return;
+    }
+
+    if (!uploadedDocumentFile) {
       setDocumentError('Upload a document and fill in the title, description, and thesis contribution first.');
       return;
     }
@@ -2892,12 +3911,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
       };
       setSupportingDocuments((current) => [nextDocument, ...current]);
       setDocumentNotice(`Saved "${nextDocument.title}" to thesis documents.`);
-      setUploadedDocumentFile(null);
-      setUploadedDocumentName('');
-      setDocumentTitle('');
-      setDocumentDescription('');
-      setDocumentContribution('');
-      setDocumentLinkedSourceId('');
+      resetSupportingDocumentEditor();
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : 'Failed to upload the thesis document.');
     } finally {
@@ -2965,28 +3979,143 @@ Thesis AI should help with literature synthesis, argument structure, methodology
   };
 
   const openLibrarySourceEditor = (sourceId: string) => {
+    if (selectedLibrarySourceId && selectedLibrarySourceId !== sourceId && selectedLibrarySource && selectedLibrarySourceDraft
+      && JSON.stringify(selectedLibrarySourceDraft) !== JSON.stringify(selectedLibrarySource)
+      && !window.confirm('Discard unsaved source edits?')) {
+      return;
+    }
     setSelectedLibrarySourceId(sourceId);
     setLibrarySearch('');
     updateThesisRoute({ tab: 'sources', source: sourceId, document: null });
   };
 
-  const updateLibrarySource = <K extends keyof SourceLibraryItem>(sourceId: string, field: K, value: SourceLibraryItem[K]) => {
-    let previousTitle = '';
-    setSourceLibrary((current) => current.map((source) => {
-      if (source.id !== sourceId) return source;
-      previousTitle = source.title;
-      return { ...source, [field]: value };
-    }));
+  const updateLibrarySourceDraft = <K extends keyof SourceLibraryItem>(field: K, value: SourceLibraryItem[K]) => {
+    setSelectedLibrarySourceDraft((current) => {
+      if (!current) return current;
+      const nextValue = field === 'credit'
+        ? normalizeSourceCreditValue(String(value))
+        : value;
+      if (current[field] === nextValue) {
+        return current;
+      }
+      setSelectedLibrarySourceUndoStack((history) => [...history, cloneSourceLibraryItem(current)]);
+      setSelectedLibrarySourceRedoStack([]);
+      return { ...current, [field]: nextValue };
+    });
+  };
 
-    if (field === 'title') {
-      const nextTitle = String(value);
+  const saveSelectedLibrarySourceDraft = () => {
+    if (!selectedLibrarySource || !selectedLibrarySourceDraft) return;
+    if (JSON.stringify(selectedLibrarySourceDraft) === JSON.stringify(selectedLibrarySource)) return;
+
+    const nextSource = cloneSourceLibraryItem({
+      ...selectedLibrarySourceDraft,
+      credit: normalizeSourceCreditValue(selectedLibrarySourceDraft.credit),
+    });
+    const previousTitle = selectedLibrarySource.title;
+
+    setSourceLibrary((current) => current.map((source) => (
+      source.id === nextSource.id ? nextSource : source
+    )));
+
+    if (previousTitle !== nextSource.title) {
       setSourceQueueItems((current) => current.map((item) => (
-        item.librarySourceId === sourceId || item.title === previousTitle
-          ? { ...item, title: nextTitle }
+        item.librarySourceId === nextSource.id || item.title === previousTitle
+          ? { ...item, title: nextSource.title }
           : item
       )));
     }
+
+    setSelectedLibrarySourceDraft(nextSource);
+    setSelectedLibrarySourceUndoStack([]);
+    setSelectedLibrarySourceRedoStack([]);
   };
+
+  const closeSelectedLibrarySourceEditor = () => {
+    if (selectedLibrarySourceDirty && !window.confirm('Discard unsaved source edits?')) {
+      return;
+    }
+    setSelectedLibrarySourceId(null);
+    updateThesisRoute({ source: null });
+  };
+
+  const applyLibrarySourceAutoFix = (
+    patch: Partial<Pick<SourceLibraryItem, 'title' | 'credit' | 'venue' | 'year' | 'locator' | 'citation'>>,
+  ) => {
+    if (Object.keys(patch).length === 0) return;
+    setSelectedLibrarySourceDraft((current) => {
+      if (!current) return current;
+      const nextSource = cloneSourceLibraryItem({
+        ...current,
+        ...patch,
+        credit: patch.credit ? normalizeSourceCreditValue(patch.credit) : current.credit,
+      });
+      if (JSON.stringify(nextSource) === JSON.stringify(current)) {
+        return current;
+      }
+      setSelectedLibrarySourceUndoStack((history) => [...history, cloneSourceLibraryItem(current)]);
+      setSelectedLibrarySourceRedoStack([]);
+      return nextSource;
+    });
+  };
+
+  useEffect(() => {
+    if (!selectedLibrarySourceDraft) return undefined;
+
+    function handleSelectedLibrarySourceKeyDown(event: KeyboardEvent) {
+      const isModifierPressed = event.metaKey || event.ctrlKey;
+      if (!isModifierPressed) return;
+
+      const normalizedKey = event.key.toLowerCase();
+      if (normalizedKey === 's') {
+        event.preventDefault();
+        saveSelectedLibrarySourceDraft();
+        return;
+      }
+
+      if (normalizedKey === 'z' && !event.shiftKey) {
+        if (selectedLibrarySourceUndoStack.length === 0) return;
+        event.preventDefault();
+        setSelectedLibrarySourceDraft((current) => {
+          if (!current) return current;
+          const previous = selectedLibrarySourceUndoStack[selectedLibrarySourceUndoStack.length - 1];
+          setSelectedLibrarySourceUndoStack((history) => history.slice(0, -1));
+          setSelectedLibrarySourceRedoStack((history) => [...history, cloneSourceLibraryItem(current)]);
+          return cloneSourceLibraryItem(previous);
+        });
+        return;
+      }
+
+      if ((normalizedKey === 'z' && event.shiftKey) || normalizedKey === 'y') {
+        if (selectedLibrarySourceRedoStack.length === 0) return;
+        event.preventDefault();
+        setSelectedLibrarySourceDraft((current) => {
+          if (!current) return current;
+          const next = selectedLibrarySourceRedoStack[selectedLibrarySourceRedoStack.length - 1];
+          setSelectedLibrarySourceRedoStack((history) => history.slice(0, -1));
+          setSelectedLibrarySourceUndoStack((history) => [...history, cloneSourceLibraryItem(current)]);
+          return cloneSourceLibraryItem(next);
+        });
+      }
+    }
+
+    window.addEventListener('keydown', handleSelectedLibrarySourceKeyDown);
+    return () => window.removeEventListener('keydown', handleSelectedLibrarySourceKeyDown);
+  }, [saveSelectedLibrarySourceDraft, selectedLibrarySourceDraft, selectedLibrarySourceRedoStack, selectedLibrarySourceUndoStack]);
+
+  useEffect(() => {
+    if (!pendingLibrarySourceDelete) return undefined;
+
+    const handlePendingSourceDeleteKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cancelDeleteLibrarySource();
+      }
+    };
+
+    window.addEventListener('keydown', handlePendingSourceDeleteKeyDown);
+    return () => window.removeEventListener('keydown', handlePendingSourceDeleteKeyDown);
+  }, [pendingLibrarySourceDelete]);
 
   const deleteLibrarySource = (source: SourceLibraryItem) => {
     const sourceIndex = sourceLibrary.findIndex((item) => item.id === source.id);
@@ -3024,12 +4153,26 @@ Thesis AI should help with literature synthesis, argument structure, methodology
         ? { ...item, linkedSourceId: null }
         : item
     )));
+    setPendingLibrarySourceDelete((current) => (current?.id === source.id ? null : current));
     if (selectedLibrarySourceId === source.id) {
       setSelectedLibrarySourceId(null);
     }
     if (new URLSearchParams(location.search).get('source') === source.id) {
       updateThesisRoute({ source: null });
     }
+  };
+
+  const requestDeleteLibrarySource = (source: SourceLibraryItem) => {
+    setPendingLibrarySourceDelete(source);
+  };
+
+  const cancelDeleteLibrarySource = () => {
+    setPendingLibrarySourceDelete(null);
+  };
+
+  const confirmDeleteLibrarySource = () => {
+    if (!pendingLibrarySourceDelete) return;
+    deleteLibrarySource(pendingLibrarySourceDelete);
   };
 
   const deleteSupportingDocument = (documentId: string) => {
@@ -3058,6 +4201,9 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     });
 
     setSupportingDocuments((current) => current.filter((item) => item.id !== documentId));
+    if (editingDocumentId === documentId) {
+      resetSupportingDocumentEditor();
+    }
     if (selectedDocumentId === documentId) {
       setSelectedDocumentId(null);
     }
@@ -3103,7 +4249,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
           <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">Thesis Workspace</p>
           <h1 className="font-sans text-3xl font-extrabold text-heading tracking-tight">Research, Analysis, and Delivery</h1>
           <p className="mt-1 max-w-[90rem] text-sm leading-relaxed text-muted">
-            Organize source material, structure AI-assisted analysis, and track the work needed to turn research into a defensible thesis.
+            Organize source material, structure AI-assisted analysis, and track the work needed to turn research into a presentable thesis.
           </p>
         </div>
 
@@ -3187,15 +4333,71 @@ Thesis AI should help with literature synthesis, argument structure, methodology
 
       {activeTab === 'overview' && (
         <div className="space-y-8">
+          <div className="border border-border bg-surface p-6">
+            <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
+              <div className="flex items-center gap-2">
+                <Link2 size={14} className="text-accent3" />
+                <h2 className="font-sans text-sm font-bold text-heading">Linked Odyssey Context</h2>
+              </div>
+              {linkedProjects.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {linkedProjects.map((project) => (
+                    <button
+                      key={project.id}
+                      type="button"
+                      onClick={() => navigate(`/projects/${project.id}`)}
+                      className="inline-flex items-center gap-2 px-3 py-2 border border-accent3/30 text-accent3 text-[10px] font-semibold tracking-wider uppercase hover:bg-accent3/5 transition-colors"
+                    >
+                      <ArrowUpRight size={12} />
+                      {project.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {linkedProjects.length === 0 && (
+              <div className="border border-dashed border-border bg-surface2/40 px-5 py-6 text-sm text-muted leading-relaxed">
+                Link one or more projects to pull their task inventory, deadlines, and recent activity into this thesis workspace. That gives the thesis page live execution context while keeping direct routes back to each project for edits and follow-through.
+              </div>
+            )}
+
+            {linkedProjects.length > 0 && linkedContextLoading && (
+              <div className="border border-border bg-surface2/40 px-5 py-6 text-sm text-muted">
+                Loading linked project tasks and activity...
+              </div>
+            )}
+
+            {linkedProjects.length > 0 && linkedContextError && (
+              <div className="border border-danger/30 bg-danger/5 px-5 py-6 text-sm text-danger">
+                {linkedContextError}
+              </div>
+            )}
+
+            {linkedProjects.length > 0 && !linkedContextLoading && !linkedContextError && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-px border border-border bg-border sm:grid-cols-2 xl:grid-cols-4">
+                  {linkedContextCards.map((card) => (
+                    <div key={card.id} className="bg-surface">
+                      <div
+                        className="p-4"
+                      >
+                        <p className="mb-1.5 text-[10px] font-mono tracking-[0.18em] uppercase text-muted">{card.label}</p>
+                        <p className={`text-2xl font-bold ${card.tone}`}>{card.value}</p>
+                        <p className="mt-1.5 text-xs leading-relaxed text-muted">{card.detail}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <div className="border border-border bg-surface p-5">
             <div className="mb-3 flex flex-wrap items-start gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <GraduationCap size={14} className="text-accent" />
                   <h2 className="font-sans text-sm font-bold text-heading">Thesis Details</h2>
-                  <p className="text-xs leading-relaxed text-muted">
-                    Summary, members, and progress in one place.
-                  </p>
                 </div>
               </div>
             </div>
@@ -3385,19 +4587,19 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">
                       {members.length} total
                     </span>
-                    <div className="group relative flex flex-col items-center">
-                      <button
-                        type="button"
-                        onClick={addThesisMember}
-                        className="inline-flex h-6 w-6 items-center justify-center border border-accent bg-accent text-surface transition-colors hover:bg-accent/90 focus:outline-none focus:ring-1 focus:ring-accent/35"
-                        aria-label="Add member"
-                      >
+                    <button
+                      type="button"
+                      onClick={addThesisMember}
+                      className="inline-flex h-6 items-center gap-2 border border-accent bg-accent px-2 text-surface transition-colors hover:bg-accent/90 focus:outline-none focus:ring-1 focus:ring-accent/35"
+                      aria-label="Add member"
+                    >
+                      <span className="inline-flex h-6 w-4 items-center justify-center">
                         <Plus size={11} />
-                      </button>
-                      <span className="pointer-events-none absolute top-full mt-1 whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.18em] text-accent opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                      </span>
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-surface">
                         Add Member
                       </span>
-                    </div>
+                    </button>
                   </div>
                 </div>
                 <div className="space-y-3">
@@ -3500,6 +4702,11 @@ Thesis AI should help with literature synthesis, argument structure, methodology
             </div>
           </div>
 
+        </div>
+      )}
+
+      {activeTab === 'milestones' && (
+        <div className="space-y-8">
           <div className="border border-border bg-surface p-6">
             <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-2">
@@ -3537,7 +4744,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       setSelectedMilestoneId(item.id);
                     }
                   }}
-                  className="flex min-h-[15.5rem] cursor-pointer flex-col border border-border bg-surface p-4 text-left shadow-[0_14px_30px_rgba(15,23,42,0.12)] transition-[background-color,border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-accent/30 hover:bg-surface hover:shadow-[0_18px_36px_rgba(15,23,42,0.16)] focus:outline-none focus:ring-1 focus:ring-accent/35"
+                  className={`thesis-milestone-card ${item.status === 'complete' ? 'thesis-milestone-card--complete' : ''} flex min-h-[15.5rem] cursor-pointer flex-col border border-border p-4 text-left transition-[background-color,border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-accent/30 focus:outline-none focus:ring-1 focus:ring-accent/35`}
                 >
                   <div className="mb-3 flex items-center justify-between gap-3 text-[10px] font-mono uppercase tracking-[0.16em] text-muted">
                     <div className="inline-flex items-center gap-2">
@@ -3558,7 +4765,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       <p className="text-sm font-semibold text-heading">{item.label}</p>
                       <p className="mt-1 text-xs leading-relaxed text-muted">{item.note || 'No milestone summary added yet.'}</p>
                     </div>
-                    <span className={`shrink-0 px-2 py-1 border bg-surface2/60 text-[10px] font-mono uppercase ${statusTone(item.status)}`}>
+                    <span className={`shrink-0 px-2 py-1 border text-[10px] font-mono uppercase ${statusTone(item.status)}`}>
                       {item.status.replace('_', ' ')}
                     </span>
                   </div>
@@ -3573,7 +4780,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     </div>
                   </div>
                   <div className="mt-auto pt-4">
-                    <div className="mb-3 border border-border bg-surface2/55 px-3 py-3">
+                    <div className="thesis-milestone-card-panel mb-3 border border-border px-3 py-3">
                       {nextPendingTask ? (
                         <div className="flex items-start gap-3">
                           <button
@@ -3627,247 +4834,6 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               );})}
             </div>
           </div>
-
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Link2 size={14} className="text-accent3" />
-                <h2 className="font-sans text-sm font-bold text-heading">Linked Odyssey Context</h2>
-              </div>
-              {linkedProjects.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {linkedProjects.map((project) => (
-                    <button
-                      key={project.id}
-                      type="button"
-                      onClick={() => navigate(`/projects/${project.id}`)}
-                      className="inline-flex items-center gap-2 px-3 py-2 border border-accent3/30 text-accent3 text-[10px] font-semibold tracking-wider uppercase hover:bg-accent3/5 transition-colors"
-                    >
-                      <ArrowUpRight size={12} />
-                      {project.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {linkedProjects.length === 0 && (
-              <div className="border border-dashed border-border bg-surface2/40 px-5 py-6 text-sm text-muted leading-relaxed">
-                Link one or more projects to pull their task inventory, deadlines, and recent activity into this thesis workspace. That gives the thesis page live execution context while keeping direct routes back to each project for edits and follow-through.
-              </div>
-            )}
-
-            {linkedProjects.length > 0 && linkedContextLoading && (
-              <div className="border border-border bg-surface2/40 px-5 py-6 text-sm text-muted">
-                Loading linked project tasks and activity...
-              </div>
-            )}
-
-            {linkedProjects.length > 0 && linkedContextError && (
-              <div className="border border-danger/30 bg-danger/5 px-5 py-6 text-sm text-danger">
-                {linkedContextError}
-              </div>
-            )}
-
-            {linkedProjects.length > 0 && !linkedContextLoading && !linkedContextError && (
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 gap-px border border-border bg-border sm:grid-cols-2 xl:grid-cols-4">
-                  {linkedContextCards.map((card) => (
-                    <div key={card.id} className="group relative bg-surface">
-                      <div
-                        tabIndex={0}
-                        className="h-full p-5 outline-none transition-colors hover:bg-surface2/45 focus:bg-surface2/45"
-                      >
-                        <p className="mb-2 text-[10px] font-mono tracking-[0.18em] uppercase text-muted">{card.label}</p>
-                        <p className={`text-2xl font-bold ${card.tone}`}>{card.value}</p>
-                        <p className="mt-2 text-xs leading-relaxed text-muted">{card.detail}</p>
-                        <div className="mt-4 flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.16em] text-muted">
-                          <span className="h-1.5 w-1.5 rounded-full bg-accent/80" />
-                          Hover for detail
-                        </div>
-                      </div>
-
-                      <div className="pointer-events-none invisible absolute inset-x-0 top-full z-20 -mt-px border border-border bg-surface/98 opacity-0 shadow-[0_20px_44px_rgba(15,23,42,0.22)] backdrop-blur transition-all duration-150 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
-                        <div className="max-h-[26rem] overflow-y-auto p-4">
-                          {card.id === 'projects' && (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-heading">Linked workspace rollup</p>
-                                <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">{linkedProjects.length} total</span>
-                              </div>
-                              {linkedProjectRollups.map((project) => (
-                                <div key={project.id} className="border border-border bg-surface2/45 p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <p className="text-sm font-semibold text-heading">{project.name}</p>
-                                      <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-muted">
-                                        {project.active} open · {project.completed} done
-                                      </p>
-                                    </div>
-                                    <span className="text-sm font-semibold text-accent">{project.averageProgress}%</span>
-                                  </div>
-                                  <div className="mt-3 h-2 overflow-hidden border border-border bg-surface">
-                                    <div
-                                      className="h-full bg-[linear-gradient(90deg,var(--color-accent),var(--color-accent2))]"
-                                      style={{ width: `${project.averageProgress}%` }}
-                                    />
-                                  </div>
-                                  {(project.nextDueGoal || project.latestEvent) && (
-                                    <div className="mt-3 space-y-2 text-[11px] text-muted">
-                                      {project.nextDueGoal && (
-                                        <div className="flex items-start justify-between gap-3 border border-border bg-surface px-3 py-2">
-                                          <div className="min-w-0">
-                                            <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">Next due task</p>
-                                            <p className="mt-1 truncate text-heading">{project.nextDueGoal.title}</p>
-                                          </div>
-                                          <span className="shrink-0 text-[10px] font-mono uppercase tracking-[0.16em] text-accent2">
-                                            {formatRelativeDate(project.nextDueGoal.deadline)}
-                                          </span>
-                                        </div>
-                                      )}
-                                      {project.latestEvent && (
-                                        <div className="border border-border bg-surface px-3 py-2">
-                                          <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">Latest activity</p>
-                                          <p className="mt-1 text-heading">{project.latestEvent.title?.trim() || 'Project update'}</p>
-                                          <p className="mt-1 text-muted">{formatRelativeDate(project.latestEvent.occurred_at)}</p>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                              <div className="border border-border bg-surface px-3 py-2 text-xs text-muted">
-                                Update task execution on the project pages; this thesis workspace reads that progress back in as working context.
-                              </div>
-                            </div>
-                          )}
-
-                          {card.id === 'execution' && (
-                            <div className="space-y-4">
-                              <div className="grid grid-cols-3 gap-2">
-                                <div className="border border-border bg-surface2/45 px-3 py-3 text-center">
-                                  <p className="text-lg font-bold text-accent">{linkedGoalStats.averageProgress}%</p>
-                                  <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.16em] text-muted">Average progress</p>
-                                </div>
-                                <div className="border border-border bg-surface2/45 px-3 py-3 text-center">
-                                  <p className="text-lg font-bold text-accent2">{linkedGoalStats.completed}</p>
-                                  <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.16em] text-muted">Completed</p>
-                                </div>
-                                <div className="border border-border bg-surface2/45 px-3 py-3 text-center">
-                                  <p className="text-lg font-bold text-accent3">{linkedGoalStats.dueSoon}</p>
-                                  <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.16em] text-muted">Due in 14d</p>
-                                </div>
-                              </div>
-                              <div className="border border-border bg-surface2/45 p-3">
-                                <div className="mb-3 flex items-center justify-between gap-3">
-                                  <p className="text-xs font-semibold text-heading">Per-project execution signal</p>
-                                  <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">{linkedGoals.length} linked tasks</span>
-                                </div>
-                                <div className="space-y-3">
-                                  {linkedProjectRollups.map((project) => (
-                                    <div key={project.id}>
-                                      <div className="flex items-center justify-between gap-3 text-[11px]">
-                                        <span className="truncate text-heading">{project.name}</span>
-                                        <span className="shrink-0 text-accent">{project.averageProgress}%</span>
-                                      </div>
-                                      <div className="mt-2 h-2 overflow-hidden border border-border bg-surface">
-                                        <div
-                                          className="h-full bg-[linear-gradient(90deg,var(--color-accent),var(--color-accent2))]"
-                                          style={{ width: `${project.averageProgress}%` }}
-                                        />
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-2 text-xs text-muted">
-                                <div className="border border-border bg-surface px-3 py-2">
-                                  <span className="text-heading font-semibold">{linkedGoalStats.active}</span> tasks are still active across linked workstreams.
-                                </div>
-                                <div className="border border-border bg-surface px-3 py-2">
-                                  <span className="text-heading font-semibold">{linkedGoalStats.completed}</span> tasks have already converted into completed execution signal.
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {card.id === 'pressure' && (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-heading">Top tasks shaping thesis work</p>
-                                <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">{linkedFocusGoals.length} shown</span>
-                              </div>
-                              {linkedFocusGoals.length > 0 ? linkedFocusGoals.map((goal) => (
-                                <div key={goal.id} className="border border-border bg-surface2/45 p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <p className="text-sm font-semibold text-heading">{goal.title}</p>
-                                      <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-muted">
-                                        {normalizeGoalStatus(goal.status)} · {linkedProjectNameById[goal.project_id] ?? 'Linked project'}
-                                      </p>
-                                    </div>
-                                    <span className="shrink-0 text-sm font-semibold text-accent2">{goal.progress}%</span>
-                                  </div>
-                                  <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-muted">
-                                    <span>{goal.deadline ? `Due ${formatShortDate(goal.deadline)}` : 'No deadline'}</span>
-                                    <span>{goal.deadline ? formatRelativeDate(goal.deadline) : 'Unscheduled'}</span>
-                                  </div>
-                                  <div className="mt-2 h-2 overflow-hidden border border-border bg-surface">
-                                    <div
-                                      className="h-full bg-[linear-gradient(90deg,var(--color-accent2),var(--color-accent))]"
-                                      style={{ width: `${goal.progress}%` }}
-                                    />
-                                  </div>
-                                  {goal.description?.trim() && (
-                                    <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-muted">{goal.description.trim()}</p>
-                                  )}
-                                </div>
-                              )) : (
-                                <div className="border border-dashed border-border bg-surface px-4 py-5 text-sm text-muted">
-                                  No active linked tasks yet. As project tasks come online, the most relevant ones will surface here.
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {card.id === 'activity' && (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-heading">Recent linked activity</p>
-                                <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">{recentLinkedActivity.length} entries</span>
-                              </div>
-                              {recentLinkedActivity.length > 0 ? recentLinkedActivity.map((event) => (
-                                <div key={event.id} className="border border-border bg-surface2/45 p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <p className="text-sm font-semibold text-heading">{event.title?.trim() || 'Project update'}</p>
-                                      <p className="mt-1 text-[10px] font-mono uppercase tracking-[0.18em] text-muted">
-                                        {linkedProjectNameById[event.project_id] ?? 'Linked project'} · {event.source}
-                                      </p>
-                                    </div>
-                                    <span className="shrink-0 text-[10px] font-mono uppercase tracking-[0.16em] text-accent3">
-                                      {formatRelativeDate(event.occurred_at)}
-                                    </span>
-                                  </div>
-                                  <p className="mt-2 text-xs leading-relaxed text-muted">
-                                    {event.summary?.trim() || `${event.source} ${event.event_type.replace(/_/g, ' ')} recorded for the linked project workspace.`}
-                                  </p>
-                                </div>
-                              )) : (
-                                <div className="border border-dashed border-border bg-surface px-4 py-5 text-sm text-muted">
-                                  No recent activity yet. This will fill with project updates, reports, meetings, and other execution events.
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       )}
 
@@ -3888,7 +4854,10 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               </div>
               <button
                 type="button"
-                onClick={() => setSourceIntakeOpen(false)}
+                onClick={() => {
+                  resetSourceIntake();
+                  setSourceIntakeOpen(false);
+                }}
                 className="inline-flex h-10 items-center gap-2 border border-border bg-surface px-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
               >
                 <X size={14} />
@@ -4022,11 +4991,16 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                         >
                           <div className="flex items-center justify-between gap-3">
                             <p className="text-sm font-semibold text-heading">{kind.label}</p>
-                            <span className={`text-[10px] uppercase tracking-[0.18em] font-mono ${
-                              recommended ? 'text-accent2' : 'text-muted'
-                            }`}>
-                              {recommended ? 'Best fit' : 'Allowed'}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="border border-border bg-surface2 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-heading font-mono">
+                                {kind.bibtexTarget}
+                              </span>
+                              <span className={`text-[10px] uppercase tracking-[0.18em] font-mono ${
+                                recommended ? 'text-accent2' : 'text-muted'
+                              }`}>
+                                {recommended ? 'Best fit' : 'Allowed'}
+                              </span>
+                            </div>
                           </div>
                           <p className="text-xs text-muted mt-2 leading-relaxed">{kind.hint}</p>
                         </button>
@@ -4047,7 +5021,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                   </div>
                   <div className="space-y-4">
                     {!sourceIntakeKind && (
-                      <p className="text-sm text-muted">Paste the source first if you want Odyssey to infer whether it is a journal article, documentation page, report, dataset, or another supported source type.</p>
+                      <p className="text-sm text-muted">Choose the NPS bibliography shape first or let Odyssey infer whether this should behave like an article, proceedings paper, book, report, thesis, manual, or `@misc` web source.</p>
                     )}
                       {sourceIntakeMethod === 'url' && (
                         <div className="space-y-2">
@@ -4088,7 +5062,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                                       parsedUrlSource.credit,
                                       parsedUrlSource.year,
                                       parsedUrlSource.contextField,
-                                    ].filter(Boolean).join(' · ') || 'Review the extracted fields below before queueing the source.'}
+                                    ].filter(Boolean).join(' · ') || 'Review the extracted fields below before saving the source.'}
                                   </p>
                                 </div>
                                 <span className="border border-accent2/30 bg-surface px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-accent2 font-mono">
@@ -4225,16 +5199,13 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                             className="w-full border border-border bg-surface px-4 py-3 text-sm text-heading placeholder:text-muted/70 outline-none focus:border-accent"
                           />
                         </label>
-                        <label className="space-y-2">
-                          <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">{sourceKindCreditLabel}</span>
-                          <input
-                            type="text"
+                        <div className="space-y-2 md:col-span-2">
+                          <CreditFieldEditor
                             value={sourceCredit}
-                            onChange={(event) => setSourceCredit(event.target.value)}
-                            placeholder={sourceKindCreditLabel}
-                            className="w-full border border-border bg-surface px-4 py-3 text-sm text-heading placeholder:text-muted/70 outline-none focus:border-accent"
+                            label={sourceKindCreditLabel}
+                            onChange={(nextValue) => setSourceCredit(normalizeSourceCreditValue(nextValue))}
                           />
-                        </label>
+                        </div>
                         <label className="space-y-2">
                           <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">{sourceKindContextLabel}</span>
                           <input
@@ -4245,14 +5216,27 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                             className="w-full border border-border bg-surface px-4 py-3 text-sm text-heading placeholder:text-muted/70 outline-none focus:border-accent"
                           />
                         </label>
+                        {sourceIntakeMethod === 'pdf' && (
+                          <label className="space-y-2">
+                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Access URL</span>
+                            <input
+                              type="url"
+                              value={sourceAccessUrl}
+                              onChange={(event) => setSourceAccessUrl(event.target.value)}
+                              placeholder="https://doi.org/... or repository URL"
+                              className="w-full border border-border bg-surface px-4 py-3 text-sm text-heading placeholder:text-muted/70 outline-none focus:border-accent"
+                            />
+                          </label>
+                        )}
                         <label className="space-y-2">
                           <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Publication date</span>
-                          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,16rem)_auto] md:items-end">
-                            <div className="space-y-2">
+                          <div className="flex flex-col gap-3 md:flex-row md:items-start">
+                            <div className="w-full max-w-[16rem] space-y-2">
                               <input
                                 type="text"
                                 value={sourceYear}
-                                onChange={(event) => setSourceYear(normalizePublicationDate(event.target.value, bibliographyFormat))}
+                                onChange={(event) => setSourceYear(event.target.value)}
+                                onBlur={(event) => setSourceYear(normalizePublicationDate(event.target.value, bibliographyFormat))}
                                 placeholder={publicationDatePlaceholder}
                                 className="w-full border border-border bg-surface px-4 py-3 text-sm text-heading placeholder:text-muted/70 outline-none focus:border-accent"
                               />
@@ -4264,9 +5248,9 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                               type="button"
                               disabled={!sourceReadyForQueue || queueRequestPending}
                               onClick={() => {
-                                void handleQueueSource();
+                                void handleConfirmSource();
                               }}
-                              className={`inline-flex min-h-[3rem] items-center justify-center border px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] transition-colors ${
+                              className={`inline-flex min-h-[2.75rem] w-full items-center justify-center self-start border px-4 py-3 text-[10px] font-semibold uppercase tracking-[0.18em] transition-colors md:mt-[1.7rem] md:w-[16rem] ${
                                 sourceReadyForQueue && !queueRequestPending
                                   ? 'border-accent bg-accent text-white hover:bg-accent/90'
                                   : 'border-border bg-surface text-muted cursor-not-allowed'
@@ -4276,6 +5260,31 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                             </button>
                           </div>
                         </label>
+                      </div>
+                      <div className={`mt-4 border px-4 py-4 ${
+                        intakeBibliographyReadiness.status === 'ready'
+                          ? 'border-accent2/30 bg-accent2/6'
+                          : 'border-amber-500/30 bg-amber-500/8'
+                      }`}>
+                        <div className="flex items-start gap-3">
+                          {intakeBibliographyReadiness.status === 'ready' ? (
+                            <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-accent2" />
+                          ) : (
+                            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600" />
+                          )}
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">NPS bibliography readiness</p>
+                            <p className="mt-1 text-sm font-semibold text-heading">{intakeBibliographyReadiness.summary}</p>
+                            <div className="mt-3 space-y-2 text-xs leading-relaxed text-muted">
+                              {intakeBibliographyReadiness.details.map((detail) => (
+                                <p key={detail}>{detail}</p>
+                              ))}
+                            </div>
+                            <p className="mt-3 text-xs text-muted">
+                              Rendering still requires both pieces: a BibTeX entry in `references.bib` and a matching citation command in a `.tex` file.
+                            </p>
+                          </div>
+                        </div>
                       </div>
                       {(queueNotice || queueError) && (
                         <div className="mt-4 space-y-3">
@@ -4305,35 +5314,24 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                   <BookOpen size={14} className="text-accent2" />
                   <h2 className="font-sans text-sm font-bold text-heading">Sources Library</h2>
                 </div>
-                <p className="mt-2 max-w-[46rem] text-[12px] leading-relaxed text-muted">
-                  Review every source already in the thesis workspace, sort the library, and open any record to inspect or edit its full bibliography metadata.
-                </p>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center xl:justify-start">
-              <button
-                type="button"
-                onClick={() => setSourceIntakeOpen(true)}
-                className="inline-flex h-11 items-center gap-2 border border-accent bg-accent px-4 text-[10px] font-semibold tracking-[0.18em] text-[var(--color-accent-fg)] transition-colors hover:bg-accent/90"
-              >
-                <Plus size={14} />
-                Add A Source
-              </button>
-              <label className="flex min-w-[14rem] items-center gap-2 border border-border bg-surface px-3 py-2 text-xs text-muted">
-                <Search size={14} className="text-accent" />
-                <input
-                  type="search"
-                  value={librarySearch}
-                  onChange={(event) => setLibrarySearch(event.target.value)}
-                  placeholder="Search sources"
-                  className="w-full bg-transparent text-sm text-heading outline-none placeholder:text-muted"
-                />
-              </label>
-              <label className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">
-                <span>Sort by</span>
-                <select
+                <label className="flex h-11 min-w-[19rem] items-center gap-2 border border-border bg-surface px-4 text-xs text-muted">
+                  <Search size={16} className="text-accent" />
+                  <input
+                    type="search"
+                    value={librarySearch}
+                    onChange={(event) => setLibrarySearch(event.target.value)}
+                    placeholder="Search sources"
+                    className="w-full bg-transparent text-sm text-heading outline-none placeholder:text-muted"
+                  />
+                </label>
+                <label className="flex h-11 items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">
+                  <span className="shrink-0">Sort by</span>
+                  <select
                     value={librarySort}
                     onChange={(event) => setLibrarySort(event.target.value as typeof librarySort)}
-                    className="min-w-36 border border-border bg-surface2 px-3 py-2 text-[11px] text-heading outline-none focus:border-accent"
+                    className="h-11 min-w-40 border border-border bg-surface2 px-4 text-[11px] text-heading outline-none focus:border-accent"
                   >
                     <option value="recent">Recently added</option>
                     <option value="title">Title</option>
@@ -4345,6 +5343,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                 <FilterDropdown
                   placeholder="Filter sources"
                   sections={libraryFilterSections}
+                  buttonClassName="h-11 min-w-[13rem] px-4 py-0 text-[11px]"
                   onChange={(sectionKey, selected) => {
                     if (sectionKey === 'type') setLibraryTypeFilters(selected);
                     if (sectionKey === 'role') setLibraryRoleFilters(selected);
@@ -4352,17 +5351,27 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     if (sectionKey === 'verification') setLibraryVerificationFilters(selected);
                   }}
                 />
+                {sourceLibrary.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setLibraryEditMode((current) => !current)}
+                    className={`inline-flex h-11 items-center gap-2 border px-4 text-[10px] font-semibold tracking-[0.18em] transition-colors ${
+                      libraryEditMode
+                        ? 'border-accent bg-accent text-[var(--color-accent-fg)]'
+                        : 'border-border bg-surface text-muted hover:bg-surface2 hover:text-heading'
+                    }`}
+                  >
+                    <SquarePen size={14} />
+                    {libraryEditMode ? 'Done editing' : 'Edit Sources'}
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => setLibraryEditMode((current) => !current)}
-                  className={`inline-flex h-11 items-center gap-2 border px-4 text-[10px] font-semibold tracking-[0.18em] transition-colors ${
-                    libraryEditMode
-                      ? 'border-accent bg-accent text-[var(--color-accent-fg)]'
-                      : 'border-border bg-surface text-muted hover:bg-surface2 hover:text-heading'
-                  }`}
+                  onClick={() => setSourceIntakeOpen(true)}
+                  className="inline-flex h-11 items-center gap-2 border border-accent bg-accent px-4 text-[10px] font-semibold tracking-[0.18em] text-[var(--color-accent-fg)] transition-colors hover:bg-accent/90"
                 >
-                  <SquarePen size={14} />
-                  {libraryEditMode ? 'Done editing' : 'Edit Sources'}
+                  <Plus size={14} />
+                  Add A Source
                 </button>
               </div>
             </div>
@@ -4434,7 +5443,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            deleteLibrarySource(source);
+                            requestDeleteLibrarySource(source);
                           }}
                           className="inline-flex items-center gap-1.5 border border-danger/30 bg-danger/8 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-danger transition-colors hover:bg-danger/12"
                         >
@@ -4456,23 +5465,36 @@ Thesis AI should help with literature synthesis, argument structure, methodology
             </div>
           </div>
 
-          {selectedLibrarySource && (
+          {editableLibrarySource && selectedLibrarySource && (
             <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm">
               <div className="flex h-screen w-screen flex-col bg-surface">
                 <div className="sticky top-0 z-10 border-b border-border bg-surface/95 px-6 py-5 backdrop-blur">
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
-                      <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">{selectedLibrarySource.type} · {formatSourceLabel(selectedLibrarySource.sourceKind)}</p>
-                      <h3 className="mt-1 text-xl font-semibold text-heading">{selectedLibrarySource.title}</h3>
-                      <p className="mt-2 text-sm text-muted">{selectedLibrarySource.credit} · {selectedLibrarySource.year} · {selectedLibrarySource.venue}</p>
+                      <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">
+                        {getSourceKindBibtexTarget(editableLibrarySource.sourceKind)} · {formatSourceLabel(editableLibrarySource.sourceKind)}
+                      </p>
+                      <h3 className="mt-1 text-xl font-semibold text-heading">{editableLibrarySource.title}</h3>
+                      <p className="mt-2 text-sm text-muted">{formatSourceCreditDisplay(editableLibrarySource.credit)} · {editableLibrarySource.year} · {editableLibrarySource.venue}</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="hidden border border-border bg-surface2 px-3 py-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted md:block">
-                        Autosaves to thesis
-                      </div>
                       <button
                         type="button"
-                        onClick={() => deleteLibrarySource(selectedLibrarySource)}
+                        onClick={saveSelectedLibrarySourceDraft}
+                        disabled={!selectedLibrarySourceDirty}
+                        className={`hidden items-center gap-2 border px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] transition-colors md:inline-flex ${
+                          selectedLibrarySourceDirty
+                            ? 'border-accent bg-accent text-[var(--color-accent-fg)] hover:bg-accent/90'
+                            : 'border-border bg-surface2 text-muted'
+                        }`}
+                        title="Save source edits to the thesis record"
+                      >
+                        <Check size={14} />
+                        {selectedLibrarySourceDirty ? 'Save changes' : 'Saved to thesis'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => requestDeleteLibrarySource(selectedLibrarySource)}
                         className="inline-flex items-center gap-2 border border-danger/30 bg-danger/8 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-danger transition-colors hover:bg-danger/12"
                       >
                         <Trash2 size={14} />
@@ -4480,10 +5502,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          setSelectedLibrarySourceId(null);
-                          updateThesisRoute({ source: null });
-                        }}
+                        onClick={closeSelectedLibrarySourceEditor}
                         className="inline-flex h-10 w-10 items-center justify-center border border-border text-muted transition-colors hover:bg-surface2 hover:text-heading"
                         aria-label="Close source editor"
                       >
@@ -4494,38 +5513,48 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-6 py-6">
-                  <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.35fr)_24rem]">
-                    <div className="space-y-6">
-                      <div className="border border-border bg-surface2/40 p-5">
-                        <div className="mb-4 flex items-center gap-2">
+                  <div className="space-y-6">
+                    <div className="border border-border bg-surface2/40 p-5">
+                      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
                           <SquarePen size={14} className="text-accent" />
                           <h4 className="text-sm font-semibold text-heading">Source Metadata</h4>
                         </div>
+                        {editableLibrarySource.attachmentStoragePath && (
+                          <button
+                            type="button"
+                            onClick={() => { void handleOpenLibraryAttachment(selectedLibrarySource); }}
+                            disabled={libraryAttachmentOpening}
+                            className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent transition-colors hover:bg-accent/15 disabled:opacity-60"
+                          >
+                            <FileText size={12} />
+                            {libraryAttachmentOpening ? 'Opening PDF...' : 'Open PDF'}
+                          </button>
+                        )}
+                      </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <label className="space-y-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Title</span>
                         <input
                           type="text"
-                          value={selectedLibrarySource.title}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'title', event.target.value)}
+                          value={editableLibrarySource.title}
+                          onChange={(event) => updateLibrarySourceDraft('title', event.target.value)}
                           className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
                         />
                       </label>
-                      <label className="space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Credit</span>
-                        <input
-                          type="text"
-                          value={selectedLibrarySource.credit}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'credit', event.target.value)}
-                          className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
+                      <div className="space-y-2 md:col-span-2">
+                        <CreditFieldEditor
+                          value={editableLibrarySource.credit}
+                          label="Credit"
+                          onChange={(nextValue) => updateLibrarySourceDraft('credit', normalizeSourceCreditValue(nextValue))}
                         />
-                      </label>
+                      </div>
                       <label className="space-y-2">
                         <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Venue / publisher</span>
                         <input
                           type="text"
-                          value={selectedLibrarySource.venue}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'venue', event.target.value)}
+                          value={editableLibrarySource.venue}
+                          onChange={(event) => updateLibrarySourceDraft('venue', event.target.value)}
                           className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
                         />
                       </label>
@@ -4533,134 +5562,110 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                         <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Year</span>
                         <input
                           type="text"
-                          value={selectedLibrarySource.year}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'year', event.target.value)}
+                          value={editableLibrarySource.year}
+                          onChange={(event) => updateLibrarySourceDraft('year', event.target.value)}
                           className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
                         />
                       </label>
                     </div>
 
-                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                      <label className="space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Type</span>
-                        <select
-                          value={selectedLibrarySource.type}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'type', event.target.value as SourceLibraryType)}
-                          className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
-                        >
-                          <option value="pdf">PDF</option>
-                          <option value="link">Link</option>
-                          <option value="book">Book</option>
-                          <option value="paper">Paper</option>
-                          <option value="report">Report</option>
-                          <option value="notes">Notes</option>
-                          <option value="dataset">Dataset</option>
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Role</span>
-                        <select
-                          value={selectedLibrarySource.role}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'role', event.target.value as SourceLibraryItem['role'])}
-                          className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
-                        >
-                          <option value="primary">Primary evidence</option>
-                          <option value="secondary">Secondary literature</option>
-                          <option value="contextual">Context / background</option>
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Verification</span>
-                        <select
-                          value={selectedLibrarySource.verification}
-                          onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'verification', event.target.value as SourceLibraryItem['verification'])}
-                          className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
-                        >
-                          <option value="verified">Verified</option>
-                          <option value="provisional">Provisional</option>
-                          <option value="restricted">Restricted / needs review</option>
-                        </select>
-                      </label>
-                    </div>
-
-                        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                          <label className="space-y-2 block">
-                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Locator</span>
-                      <input
-                        type="text"
-                        value={selectedLibrarySource.locator}
-                        onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'locator', event.target.value)}
-                        className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
-                      />
-                    </label>
+                        <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] xl:items-end">
+                          <div>
+                            <label className="space-y-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Type</span>
+                              <select
+                                value={editableLibrarySource.type}
+                                onChange={(event) => updateLibrarySourceDraft('type', event.target.value as SourceLibraryType)}
+                                className="w-full border border-border bg-surface2 px-3 py-2.5 text-sm text-heading outline-none focus:border-accent"
+                              >
+                                <option value="pdf">PDF</option>
+                                <option value="link">Link</option>
+                                <option value="book">Book</option>
+                                <option value="paper">Paper</option>
+                                <option value="report">Report</option>
+                                <option value="notes">Notes</option>
+                                <option value="dataset">Dataset</option>
+                              </select>
+                            </label>
+                          </div>
 
                           <label className="space-y-2 block">
-                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Saved citation</span>
-                      <textarea
-                        rows={4}
-                        value={selectedLibrarySource.citation}
-                        onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'citation', event.target.value)}
-                        className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent resize-y"
-                      >
-                      </textarea>
-                    </label>
+                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Available at</span>
+                            <input
+                              type="url"
+                              value={editableLibrarySource.locator}
+                              onChange={(event) => updateLibrarySourceDraft('locator', event.target.value)}
+                              placeholder="https://doi.org/... or source URL"
+                              className="w-full border border-border bg-surface2 px-4 py-2.5 text-sm text-heading outline-none focus:border-accent"
+                            />
+                          </label>
                         </div>
-
-                        <label className="mt-4 space-y-2 block">
-                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Abstract / summary</span>
-                      <textarea
-                        rows={4}
-                        value={selectedLibrarySource.abstract}
-                        onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'abstract', event.target.value)}
-                        className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent resize-y"
-                      >
-                      </textarea>
-                    </label>
 
                         <label className="mt-4 space-y-2 block">
                       <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Thesis use notes</span>
                       <textarea
                         rows={5}
-                        value={selectedLibrarySource.notes}
-                        onChange={(event) => updateLibrarySource(selectedLibrarySource.id, 'notes', event.target.value)}
+                        value={editableLibrarySource.notes}
+                        onChange={(event) => updateLibrarySourceDraft('notes', event.target.value)}
                         className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent resize-y"
                       >
                       </textarea>
                     </label>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 border border-border bg-surface2/40 p-5">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">NPS bibliography readiness</p>
+                        <h4 className="mt-1 text-sm font-semibold text-heading">
+                          {selectedLibrarySourceReadiness?.summary}
+                        </h4>
                       </div>
                     </div>
-
-                    <div className="space-y-4">
-                      <div className="border border-border bg-surface2/50 p-4">
-                        <p className="mb-3 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Record Snapshot</p>
-                      <div className="space-y-3 text-xs text-muted">
-                        <div className="border border-border bg-surface px-3 py-3"><span className="text-heading font-semibold">Status:</span> {selectedLibrarySource.status}</div>
-                        <div className="border border-border bg-surface px-3 py-3"><span className="text-heading font-semibold">Acquired via:</span> {selectedLibrarySource.acquisitionMethod}</div>
-                        <div className="border border-border bg-surface px-3 py-3"><span className="text-heading font-semibold">Chapter target:</span> {formatSourceLabel(selectedLibrarySource.chapterTarget)}</div>
-                        {selectedLibrarySource.attachmentStoragePath && (
-                          <div className="border border-border bg-surface px-3 py-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <span className="text-heading font-semibold">Attached PDF:</span>{' '}
-                                <span className="truncate">{selectedLibrarySource.attachmentName || 'Open attachment'}</span>
+                    {selectedLibrarySourceReadiness && (
+                      <div className={`border px-4 py-4 ${
+                        selectedLibrarySourceReadiness.status === 'ready'
+                          ? 'border-accent2/30 bg-accent2/6'
+                          : 'border-amber-500/30 bg-amber-500/8'
+                      }`}>
+                        <div className="flex items-start gap-3">
+                          {selectedLibrarySourceReadiness.status === 'ready' ? (
+                            <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-accent2" />
+                          ) : (
+                            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600" />
+                          )}
+                          <div className="min-w-0 space-y-2 text-xs leading-relaxed text-muted">
+                            {selectedLibrarySourceReadiness.details.map((detail) => (
+                              <p key={detail}>{detail}</p>
+                            ))}
+                            {selectedLibrarySourceReadiness.exactChanges.length > 0 && (
+                              <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                                <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">Exact changes</p>
+                                {selectedLibrarySourceReadiness.exactChanges.map((change) => (
+                                  <div key={`${change.field}-${change.reason}`} className="border border-border/70 bg-surface/70 px-3 py-3">
+                                    <p className="font-semibold text-heading">{change.label}</p>
+                                    <p className="mt-1">{change.reason}</p>
+                                    <p className="mt-2 font-mono text-[11px] text-heading break-words">{change.suggestedValue}</p>
+                                  </div>
+                                ))}
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => { void handleOpenLibraryAttachment(selectedLibrarySource); }}
-                                disabled={libraryAttachmentOpening}
-                                className="shrink-0 border border-accent/30 bg-accent/10 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent hover:bg-accent/15 transition-colors disabled:opacity-60"
-                              >
-                                {libraryAttachmentOpening ? 'Opening...' : 'Open PDF'}
-                              </button>
-                            </div>
+                            )}
+                            {Object.keys(selectedLibrarySourceReadiness.autoFixPatch).length > 0 && (
+                              <div className="pt-2">
+                                <button
+                                  type="button"
+                                  onClick={() => applyLibrarySourceAutoFix(selectedLibrarySourceReadiness.autoFixPatch)}
+                                  className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent transition-colors hover:bg-accent/15"
+                                >
+                                  Apply Odyssey Autofix
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        )}
-                        <div className="border border-border bg-surface px-3 py-3">
-                          <span className="text-heading font-semibold">Tags:</span> {selectedLibrarySource.tags.join(', ')}
                         </div>
                       </div>
-                    </div>
-                    </div>
+                    )}
                   </div>
 
                   <div className="mt-6 border border-border bg-surface2/40 p-5">
@@ -4686,11 +5691,9 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                         </div>
                     </div>
                     <div className="border border-border bg-surface px-5 py-5">
-                      <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">
-                        {selectedLibrarySource.citation.trim() ? 'Saved Citation' : bibliographyFormat.toUpperCase()}
-                      </p>
+                      <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">{bibliographyFormat.toUpperCase()}</p>
                       <p className="text-sm leading-relaxed text-heading">
-                        {formatBibliographyEntry(selectedLibrarySource, bibliographyFormat)}
+                        {formatBibliographyEntry(editableLibrarySource, bibliographyFormat)}
                       </p>
                     </div>
                   </div>
@@ -4730,29 +5733,72 @@ Thesis AI should help with literature synthesis, argument structure, methodology
             />
 
             <div className="space-y-6">
-              <div className="border border-border bg-surface2/40 p-5">
+              <div ref={thesisDocumentEditorRef} className="border border-border bg-surface2/40 p-5">
                 <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Add document</p>
-                    <h3 className="mt-1 text-sm font-semibold text-heading">Upload and describe the file</h3>
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">{editingDocumentId ? 'Edit document' : 'Add document'}</p>
+                    <h3 className="mt-1 text-sm font-semibold text-heading">
+                      {editingDocumentId ? 'Update metadata and source link' : 'Upload and describe the file'}
+                    </h3>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => thesisDocumentInputRef.current?.click()}
-                    className="inline-flex items-center gap-2 self-start border border-border bg-surface px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-heading transition-colors hover:bg-surface2"
-                  >
-                    <Upload size={14} />
-                    Upload file
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    {!editingDocumentId && (
+                      <button
+                        type="button"
+                        onClick={() => thesisDocumentInputRef.current?.click()}
+                        className="inline-flex items-center gap-2 self-start border border-border bg-surface px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-heading transition-colors hover:bg-surface2"
+                      >
+                        <Upload size={14} />
+                        Upload file
+                      </button>
+                    )}
+                    {editingDocumentId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDocumentNotice(null);
+                          setDocumentError(null);
+                          resetSupportingDocumentEditor();
+                        }}
+                        className="inline-flex items-center gap-2 self-start border border-border bg-surface px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-heading transition-colors hover:bg-surface2"
+                      >
+                        <X size={14} />
+                        Cancel edit
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)]">
-                  <div className="border border-border bg-surface px-4 py-3">
-                    <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Selected file</p>
-                    <p className="mt-1 truncate text-sm text-heading">{uploadedDocumentName || 'No document selected yet'}</p>
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-6">
+                  <div className="space-y-2 xl:col-span-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">
+                        {editingDocumentId ? 'Attached file' : 'Selected file'}
+                      </span>
+                      {!editingDocumentId && uploadedDocumentName && (
+                        <button
+                          type="button"
+                          onClick={() => handleDocumentFileSelected(null)}
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted transition-colors hover:text-heading"
+                        >
+                          <X size={11} />
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex h-[50px] items-center border border-border bg-surface px-4">
+                      <p className="w-full truncate text-sm text-heading">
+                        {uploadedDocumentName || (editingDocumentId ? 'No attached file name available' : 'No document selected yet')}
+                      </p>
+                    </div>
+                    {editingDocumentId && (
+                      <p className="text-xs text-muted">
+                        Editing updates the saved metadata and linked source for this upload.
+                      </p>
+                    )}
                   </div>
 
-                  <label className="block space-y-2">
+                  <label className="block space-y-2 xl:col-span-2">
                     <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Document title</span>
                     <input
                       type="text"
@@ -4763,7 +5809,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     />
                   </label>
 
-                  <label className="block space-y-2">
+                  <label className="block space-y-2 xl:col-span-2">
                     <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Link to source</span>
                     <select
                       value={documentLinkedSourceId}
@@ -4779,7 +5825,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     </select>
                   </label>
 
-                  <label className="block space-y-2 xl:col-span-2">
+                  <label className="block space-y-2 xl:col-span-3">
                     <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">What this document is</span>
                     <textarea
                       rows={3}
@@ -4791,7 +5837,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     </textarea>
                   </label>
 
-                  <label className="block space-y-2 xl:col-span-2">
+                  <label className="block space-y-2 xl:col-span-3">
                     <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">What it contributes to</span>
                     <textarea
                       rows={3}
@@ -4829,8 +5875,8 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     disabled={!documentReadyToSave || documentSavePending}
                     className="inline-flex h-11 items-center justify-center gap-2 border border-accent bg-accent px-5 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-accent-fg)] transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {documentSavePending ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-                    Save document
+                    {documentSavePending ? <Loader2 size={14} className="animate-spin" /> : editingDocumentId ? <SquarePen size={14} /> : <Upload size={14} />}
+                    {editingDocumentId ? 'Save changes' : 'Save document'}
                   </button>
                 </div>
               </div>
@@ -4859,14 +5905,26 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       ? sourceLibrary.find((source) => source.id === document.linkedSourceId) ?? null
                       : null;
                     const isHighlighted = selectedDocumentId === document.id;
+                    const isEditing = editingDocumentId === document.id;
                     return (
                       <div
                         key={document.id}
                         id={`thesis-document-${document.id}`}
-                        className={`border bg-surface px-4 py-3 transition-colors ${
-                          isHighlighted
-                            ? 'border-accent/40 shadow-[inset_0_0_0_1px_rgba(30,58,95,0.18)]'
-                            : 'border-border'
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openSupportingDocumentEditor(document)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            openSupportingDocumentEditor(document);
+                          }
+                        }}
+                        className={`border bg-surface px-4 py-3 text-left transition-colors ${
+                          isEditing
+                            ? 'border-accent shadow-[inset_0_0_0_1px_rgba(30,58,95,0.22)]'
+                            : isHighlighted
+                              ? 'border-accent/40 shadow-[inset_0_0_0_1px_rgba(30,58,95,0.18)]'
+                              : 'border-border hover:border-accent/30'
                         }`}
                       >
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -4874,13 +5932,30 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                               <p className="truncate text-sm font-semibold text-heading">{document.title}</p>
                               <span className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">{document.addedOn}</span>
+                              {isEditing && (
+                                <span className="border border-accent/20 bg-accent/8 px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.14em] text-accent">
+                                  Editing
+                                </span>
+                              )}
                             </div>
                             <p className="mt-0.5 truncate text-xs text-muted">{document.attachmentName}</p>
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={() => {
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openSupportingDocumentEditor(document);
+                              }}
+                              className="inline-flex items-center gap-2 border border-border bg-surface2 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-heading transition-colors hover:bg-surface"
+                            >
+                              <SquarePen size={12} />
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
                                 setSelectedDocumentId(document.id);
                                 updateThesisRoute({ tab: 'documents', document: document.id, source: null });
                                 void handleOpenSupportingDocument(document);
@@ -4893,7 +5968,10 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                             </button>
                             <button
                               type="button"
-                              onClick={() => deleteSupportingDocument(document.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                deleteSupportingDocument(document.id);
+                              }}
                               className="inline-flex items-center gap-2 border border-danger/30 bg-danger/8 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-danger transition-colors hover:bg-danger/12"
                             >
                               <Trash2 size={12} />
@@ -4940,119 +6018,46 @@ Thesis AI should help with literature synthesis, argument structure, methodology
       )}
 
       {activeTab === 'graph' && (
-        <div className="grid grid-cols-1 xl:grid-cols-[0.85fr_1.15fr] gap-8">
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <Network size={14} className="text-accent" />
-              <h2 className="font-sans text-sm font-bold text-heading">Topic Clusters</h2>
+        <Suspense
+          fallback={(
+            <div className="flex items-center justify-center gap-2 border border-border bg-surface px-6 py-16 text-xs text-muted">
+              <Loader2 size={14} className="animate-spin" />
+              Loading knowledge workspace…
             </div>
-            <div className="space-y-4">
-              {graphClusters.map((cluster) => (
-                <div key={cluster.id} className="border border-border bg-surface2/50 p-4">
-                  <div className="flex items-center justify-between gap-4 mb-2">
-                    <p className="text-sm font-semibold text-heading">{cluster.title}</p>
-                    <span className="text-[10px] font-mono text-accent">{cluster.count} nodes</span>
-                  </div>
-                  <p className="text-xs text-muted leading-relaxed mb-3">{cluster.summary}</p>
-                  <div className="flex gap-2 flex-wrap">
-                    {cluster.links.map((link) => (
-                      <span key={link} className="px-2 py-1 border border-border bg-surface text-[10px] font-mono text-muted">
-                        {link}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <Link2 size={14} className="text-accent2" />
-              <h2 className="font-sans text-sm font-bold text-heading">Graph Purpose</h2>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                {
-                  title: 'Find Contradictions',
-                  body: 'Surface where two sources make similar claims with different assumptions or evidence strength.',
-                },
-                {
-                  title: 'Track Evidence Chains',
-                  body: 'See which thesis claims depend on single points of evidence and which are genuinely corroborated.',
-                },
-                {
-                  title: 'Promote Reusable Concepts',
-                  body: 'Reuse extracted entities, methods, and arguments across literature review, findings, and slides.',
-                },
-                {
-                  title: 'Expose Research Gaps',
-                  body: 'Identify under-supported questions before they become weak sections in the final defense.',
-                },
-              ].map((item) => (
-                <div key={item.title} className="border border-border bg-surface2/40 p-4">
-                  <p className="text-sm font-semibold text-heading mb-2">{item.title}</p>
-                  <p className="text-xs text-muted leading-relaxed">{item.body}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'writing' && (
-        <div className="grid grid-cols-1 xl:grid-cols-[1.05fr_0.95fr] gap-8">
-          <div className="border border-border bg-surface p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <FileText size={14} className="text-accent" />
-              <h2 className="font-sans text-sm font-bold text-heading">Chapter Pipeline</h2>
-            </div>
-            <div className="space-y-4">
-              {chapterPlan.map((chapter) => (
-                <div key={chapter.chapter} className="border border-border bg-surface2/50 p-4">
-                  <div className="flex items-center justify-between gap-4 mb-2">
-                    <p className="text-sm font-semibold text-heading">{chapter.chapter}</p>
-                    <span className="text-[10px] font-mono uppercase text-muted">{chapter.status}</span>
-                  </div>
-                  <p className="text-xs text-muted mb-3">{chapter.focus}</p>
-                  <div className="flex items-center justify-between text-[11px] text-muted mb-2">
-                    <span>Readiness</span>
-                    <span>{chapter.progress}%</span>
-                  </div>
-                  <div className="h-2 bg-surface border border-border overflow-hidden">
-                    <div className="h-full bg-[linear-gradient(90deg,var(--color-accent),var(--color-accent3))]" style={{ width: `${chapter.progress}%` }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div className="border border-border bg-surface p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <BrainCircuit size={14} className="text-accent2" />
-                <h2 className="font-sans text-sm font-bold text-heading">AI Drafting Jobs</h2>
-              </div>
-              <div className="space-y-3 text-xs text-muted">
-                <div className="border border-border bg-surface2 px-4 py-3">Convert graph clusters into literature review subsections.</div>
-                <div className="border border-border bg-surface2 px-4 py-3">Generate citation-backed claim outlines for each chapter section.</div>
-                <div className="border border-border bg-surface2 px-4 py-3">Produce counterargument checks before chapter revisions are finalized.</div>
-              </div>
-            </div>
-
-            <div className="border border-border bg-surface p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <CheckCircle2 size={14} className="text-accent3" />
-                <h2 className="font-sans text-sm font-bold text-heading">Revision Checklist</h2>
-              </div>
-              <ul className="space-y-2 text-xs text-muted">
-                <li className="border border-border bg-surface2 px-4 py-3">Every major claim should map to at least one high-confidence source.</li>
-                <li className="border border-border bg-surface2 px-4 py-3">Methods section should explain why excluded evidence was excluded.</li>
-                <li className="border border-border bg-surface2 px-4 py-3">Conclusion should state implications without overstating certainty.</li>
-              </ul>
-            </div>
-          </div>
-        </div>
+          )}
+        >
+          <ThesisKnowledgeTab
+            sourceLibrary={sourceLibrary}
+            supportingDocuments={supportingDocuments}
+            linkedProjects={linkedProjects.map((project) => ({
+              id: project.id,
+              name: project.name,
+              description: project.description,
+              github_repo: project.github_repo,
+              github_repos: project.github_repos,
+            }))}
+            linkedGoals={linkedGoals.map((goal) => ({
+              id: goal.id,
+              project_id: goal.project_id,
+              title: goal.title,
+              description: goal.description ?? null,
+              deadline: goal.deadline,
+              status: goal.status,
+              progress: goal.progress,
+              category: goal.category,
+              loe: goal.loe,
+            }))}
+            linkedEvents={linkedEvents.map((event) => ({
+              id: event.id,
+              project_id: event.project_id,
+              source: event.source,
+              event_type: event.event_type,
+              title: event.title,
+              summary: event.summary,
+              occurred_at: event.occurred_at,
+            }))}
+          />
+        </Suspense>
       )}
 
       {activeTab === 'paper' && (
@@ -5072,11 +6077,20 @@ Thesis AI should help with literature synthesis, argument structure, methodology
       )}
 
       {activeTab === 'settings' && (
-        <ThesisSettingsTab
-          paperSnapshotUpdatedAt={paperSnapshot.updatedAt}
-          linkedProjects={linkedProjects.map((project) => ({ id: project.id, name: project.name }))}
-          workspaceFiles={paperSnapshot.workspace?.files.map((file) => ({ id: file.id, path: file.path })) ?? []}
-        />
+        <Suspense
+          fallback={(
+            <div className="flex items-center justify-center gap-2 border border-border bg-surface px-6 py-16 text-xs text-muted">
+              <Loader2 size={14} className="animate-spin" />
+              Loading thesis settings…
+            </div>
+          )}
+        >
+          <ThesisSettingsTab
+            paperSnapshotUpdatedAt={paperSnapshot.updatedAt}
+            linkedProjects={linkedProjects.map((project) => ({ id: project.id, name: project.name }))}
+            workspaceFiles={paperSnapshot.workspace?.files.map((file) => ({ id: file.id, path: file.path })) ?? []}
+          />
+        </Suspense>
       )}
 
       {pdfFieldCaptureOpen && uploadedPdfFile && (
@@ -5097,14 +6111,16 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               credit: sourceCredit,
               contextField: sourceContextField,
               year: sourceYear,
+              locator: sourceAccessUrl,
             }}
             creditLabel={sourceKindCreditLabel}
             contextLabel={sourceKindContextLabel}
             onApply={(captured) => {
               setSourceTitle(captured.title);
-              setSourceCredit(captured.credit);
+              setSourceCredit(normalizeSourceCreditValue(captured.credit));
               setSourceContextField(captured.contextField);
-              setSourceYear(normalizePublicationDate(captured.year, bibliographyFormat));
+              setSourceYear(captured.year);
+              setSourceAccessUrl(captured.locator);
             }}
             onClose={() => setPdfFieldCaptureOpen(false)}
           />
@@ -5144,6 +6160,53 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               src={citationReferenceViewer.url}
               className="h-full w-full border border-border bg-white"
             />
+          </div>
+        </div>
+      )}
+
+      {pendingLibrarySourceDelete && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+          onMouseDown={cancelDeleteLibrarySource}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-source-delete-title"
+            className="w-full max-w-md border border-border bg-surface shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="border-b border-border bg-surface2 px-5 py-4">
+              <p className="text-[10px] font-mono uppercase tracking-[0.16em] text-danger">Confirm Delete</p>
+              <h3 id="confirm-source-delete-title" className="mt-1 text-base font-semibold text-heading">
+                Delete this source?
+              </h3>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-sm text-muted">
+                <span className="font-semibold text-heading">{pendingLibrarySourceDelete.title}</span> will be removed from this thesis source library.
+              </p>
+              <p className="mt-2 text-sm text-muted">
+                This affects linked source references here, but you can still undo it immediately after deletion.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-4">
+              <button
+                type="button"
+                onClick={cancelDeleteLibrarySource}
+                className="inline-flex items-center justify-center border border-border bg-surface2 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-heading transition-colors hover:bg-surface"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteLibrarySource}
+                className="inline-flex items-center gap-2 border border-danger/30 bg-danger/10 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-danger transition-colors hover:bg-danger/14"
+              >
+                <Trash2 size={12} />
+                Delete Source
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -5225,9 +6288,11 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                           className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
                         />
                       </label>
-                      <div className="space-y-2">
+                      <div className="space-y-3">
                         <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Status</span>
-                        <div className={`inline-flex px-3 py-2 border text-[10px] font-mono uppercase ${statusTone(selectedMilestone.status)}`}>
+                        <div
+                          className={`inline-flex min-h-[2.75rem] min-w-[8.5rem] items-center justify-center border px-4 py-2.5 text-xs font-mono uppercase tracking-[0.16em] ${statusTone(selectedMilestone.status)}`}
+                        >
                           {selectedMilestone.status.replace('_', ' ')}
                         </div>
                       </div>

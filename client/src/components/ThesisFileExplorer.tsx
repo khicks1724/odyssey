@@ -93,6 +93,7 @@ interface ThesisFileExplorerProps {
   workspace: ThesisWorkspace;
   activeFileId: string | null;
   selectedNodeId: string | null;
+  savedFileIds: ReadonlySet<string>;
   onOpenFile: (fileId: string) => void;
   onWorkspaceChange: (
     workspace: ThesisWorkspace,
@@ -542,6 +543,7 @@ export default function ThesisFileExplorer({
   workspace,
   activeFileId,
   selectedNodeId,
+  savedFileIds,
   onOpenFile,
   onWorkspaceChange,
   onSelectedNodeIdChange,
@@ -1725,6 +1727,15 @@ export default function ThesisFileExplorer({
                 <span className="w-[13px] shrink-0" />
                 <FileText size={14} className={`shrink-0 ${isActiveFile ? 'text-accent' : 'text-muted'}`} />
                 <span className={`min-w-0 flex-1 truncate text-sm ${isActiveFile ? 'font-semibold' : ''}`}>{node.name}</span>
+                {savedFileIds.has(node.id) && (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/8 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-[0.12em] text-emerald-700"
+                    title="Saved in Odyssey storage"
+                  >
+                    <Check size={10} />
+                    Saved
+                  </span>
+                )}
               </button>
             )}
           </div>

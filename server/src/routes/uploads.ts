@@ -20,13 +20,20 @@ const ALLOWED_MIME = new Set([
   'application/msword',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/step',
+  'application/x-step',
+  'model/step',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
   'text/plain',
   'text/markdown',
   'text/csv',
   'application/json',
 ]);
 
-const TEXT_EXTS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.html', '.log', '.yaml', '.yml']);
+const TEXT_EXTS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.html', '.log', '.yaml', '.yml', '.step', '.stp']);
 const MAX_EXTRACTED_CHARS = 50_000; // ~12k tokens
 const MAX_PREVIEW_CHARS = 2_000;
 const MAX_SUMMARY_CHARS = 320;
@@ -578,14 +585,32 @@ function isDangerousPathSegment(value: string): boolean {
 }
 
 function detectBufferMimeType(buffer: Buffer, fallback: string, filename: string): string {
+  const lower = filename.toLowerCase();
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return 'image/png';
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (buffer.length >= 12 && buffer.subarray(0, 4).equals(Buffer.from('RIFF')) && buffer.subarray(8, 12).equals(Buffer.from('WEBP'))) {
+    return 'image/webp';
+  }
+  if (buffer.length >= 6) {
+    const header = buffer.subarray(0, 6).toString('ascii');
+    if (header === 'GIF87a' || header === 'GIF89a') {
+      return 'image/gif';
+    }
+  }
   if (buffer.length >= 5 && buffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
     return 'application/pdf';
   }
   if (buffer.length >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
-    const lower = filename.toLowerCase();
     if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     if (lower.endsWith('.pptx')) return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
     if (lower.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
+  if (lower.endsWith('.step') || lower.endsWith('.stp')) {
+    return 'application/step';
   }
   return fallback || 'application/octet-stream';
 }
@@ -643,7 +668,7 @@ function validateFileShape(filename: string, mimeType: string, buffer: Buffer, m
 
   const normalizedMime = detectBufferMimeType(buffer, mimeType, trimmedFilename);
   if (!isAllowedFileType(trimmedFilename, normalizedMime)) {
-    throw new Error('Unsupported file type. Use PDF, DOCX, PPTX, TXT, Markdown, CSV, JSON, or similar text files.');
+    throw new Error('Unsupported file type. Use PDF, DOCX, PPTX, STEP, PNG, JPG, WEBP, GIF, TXT, Markdown, CSV, JSON, or similar text files.');
   }
   if (normalizedMime === 'application/json') {
     try {

@@ -5,7 +5,6 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
-  Scale,
   Search,
   Share2,
   Target,
@@ -80,13 +79,41 @@ type VisibleGraphNode = CoordinationGraphNode & {
   cardHeight: number;
 };
 
-type KnowledgeGraphStyle = 'odyssey' | 'rowboat';
-
 type GraphClusterAnchor = {
   nodeType: string;
   x: number;
   y: number;
   radius: number;
+};
+
+type StringStyleLaneConfig = {
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  columns: number;
+  maxColumns: number;
+};
+
+const STRING_STYLE_LANE_CONFIGS: Record<(typeof GRAPH_TYPE_ORDER)[number], StringStyleLaneConfig> = {
+  person: { label: 'People', x: 36, y: 104, width: 184, height: 404, columns: 1, maxColumns: 1 },
+  concept: { label: 'Concepts', x: 246, y: 60, width: 234, height: 200, columns: 1, maxColumns: 2 },
+  task: { label: 'Tasks', x: 246, y: 288, width: 356, height: 220, columns: 2, maxColumns: 3 },
+  deliverable: { label: 'Deliverables', x: 628, y: 60, width: 150, height: 200, columns: 1, maxColumns: 1 },
+  repo: { label: 'Repos', x: 628, y: 288, width: 150, height: 92, columns: 1, maxColumns: 1 },
+  file: { label: 'Files', x: 628, y: 408, width: 150, height: 100, columns: 1, maxColumns: 1 },
+  document: { label: 'Documents', x: 804, y: 104, width: 360, height: 404, columns: 1, maxColumns: 2 },
+};
+
+const STRING_STYLE_NODE_LIMITS: Record<(typeof GRAPH_TYPE_ORDER)[number], number> = {
+  person: 4,
+  concept: 5,
+  task: 6,
+  deliverable: 3,
+  repo: Number.MAX_SAFE_INTEGER,
+  file: 2,
+  document: 5,
 };
 
 function formatDateTime(value: string): string {
@@ -181,6 +208,253 @@ function getGraphInfoBoxPosition(
       12,
       GRAPH_VIEWBOX.height - box.height - 12,
     ),
+  };
+}
+
+function getStringStyleNodeDimensions(node: VisibleGraphNode, maxWidth: number) {
+  const baseWidth = node.nodeType === 'task'
+    ? 138
+    : node.nodeType === 'document'
+      ? 176
+      : node.nodeType === 'concept'
+        ? 142
+        : 136;
+  const width = clampGraphCoordinate(baseWidth + Math.max(0, node.displayLabel.length - 12) * 1.85, 124, maxWidth);
+  const height = node.nodeType === 'task' || node.nodeType === 'deliverable' ? 54 : 50;
+  return { width, height };
+}
+
+function getStringStyleCardTitle(node: VisibleGraphNode) {
+  const approxChars = Math.max(12, Math.floor((node.cardWidth - 48) / 7));
+  return node.displayLabel.length > approxChars ? `${node.displayLabel.slice(0, approxChars - 1)}...` : node.displayLabel;
+}
+
+function getStringStyleCardMeta(node: VisibleGraphNode) {
+  const label = (GRAPH_TYPE_LABELS[node.nodeType] ?? node.nodeType).replace(/s$/i, '').toUpperCase();
+  return label.length > 10 ? `${label.slice(0, 10)}.` : label;
+}
+
+type StringStyleCellRect = {
+  nodeType: string;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function buildStringStyleProjectLayout(nodes: VisibleGraphNode[], selectedNodeId: string | null): {
+  nodes: VisibleGraphNode[];
+  cells: StringStyleCellRect[];
+} {
+  const lanePaddingX = 14;
+  const lanePaddingY = 18;
+  const gapX = 12;
+  const gapY = 12;
+  // Vertical gap between stacked cells in the same column
+  const cellStackGap = 24;
+  // Top margin before the first cell in each column
+  const columnTopY = 60;
+
+  // Group lane types by their x-column (same x = same column, stacked vertically)
+  const columnGroups: Map<number, (keyof typeof STRING_STYLE_LANE_CONFIGS)[]> = new Map();
+  for (const nodeType of GRAPH_TYPE_ORDER) {
+    const config = STRING_STYLE_LANE_CONFIGS[nodeType];
+    const existing = columnGroups.get(config.x) ?? [];
+    existing.push(nodeType as keyof typeof STRING_STYLE_LANE_CONFIGS);
+    columnGroups.set(config.x, existing);
+  }
+
+  // For each lane, compute the content height needed based on actual nodes
+  function computeLaneContentHeight(
+    ordered: VisibleGraphNode[],
+    config: StringStyleLaneConfig,
+  ): { contentHeight: number; columns: number; rowHeights: number[]; dimensions: Array<{ width: number; height: number }>; columnWidth: number } {
+    if (ordered.length === 0) return { contentHeight: 0, columns: config.columns, rowHeights: [], dimensions: [], columnWidth: 0 };
+    const availableWidth = Math.max(80, config.width - lanePaddingX * 2);
+
+    let bestLayout: {
+      columns: number;
+      rowHeights: number[];
+      dimensions: Array<{ width: number; height: number }>;
+      columnWidth: number;
+      totalHeight: number;
+    } | null = null;
+
+    for (let cols = config.columns; cols <= config.maxColumns; cols += 1) {
+      const columnWidth = (availableWidth - gapX * (cols - 1)) / cols;
+      if (columnWidth < 108) continue;
+      const dimensions = ordered.map((node) => getStringStyleNodeDimensions(node, columnWidth));
+      const rowCount = Math.ceil(ordered.length / cols);
+      const rowHeights = new Array(rowCount).fill(0) as number[];
+      dimensions.forEach((dimension, index) => {
+        const row = Math.floor(index / cols);
+        rowHeights[row] = Math.max(rowHeights[row], dimension.height);
+      });
+      const totalHeight = rowHeights.reduce((sum, h) => sum + h, 0) + gapY * Math.max(0, rowHeights.length - 1);
+      if (!bestLayout || totalHeight < bestLayout.totalHeight) {
+        bestLayout = { columns: cols, rowHeights, dimensions, columnWidth, totalHeight };
+      }
+    }
+
+    if (!bestLayout) return { contentHeight: 0, columns: config.columns, rowHeights: [], dimensions: [], columnWidth: 0 };
+    return {
+      contentHeight: bestLayout.totalHeight,
+      columns: bestLayout.columns,
+      rowHeights: bestLayout.rowHeights,
+      dimensions: bestLayout.dimensions,
+      columnWidth: bestLayout.columnWidth,
+    };
+  }
+
+  // Sort nodes per lane
+  const orderedByType = new Map<string, VisibleGraphNode[]>();
+  for (const nodeType of GRAPH_TYPE_ORDER) {
+    const ordered = nodes
+      .filter((node) => node.nodeType === nodeType)
+      .sort((left, right) => {
+        const leftMatched = left.matched ? 1 : 0;
+        const rightMatched = right.matched ? 1 : 0;
+        if (rightMatched !== leftMatched) return rightMatched - leftMatched;
+        if (right.degree !== left.degree) return right.degree - left.degree;
+        return left.label.localeCompare(right.label);
+      })
+      .slice(0, STRING_STYLE_NODE_LIMITS[nodeType]);
+    orderedByType.set(nodeType, ordered);
+  }
+
+  const laidOutNodes: VisibleGraphNode[] = [];
+  const cells: StringStyleCellRect[] = [];
+
+  // Process each column: stack lanes top-to-bottom with computed heights
+  for (const [colX, laneTypes] of columnGroups) {
+    let currentY = columnTopY;
+
+    for (const nodeType of laneTypes) {
+      const config = STRING_STYLE_LANE_CONFIGS[nodeType];
+      const ordered = orderedByType.get(nodeType) ?? [];
+
+      if (ordered.length === 0) continue;
+
+      const { contentHeight, columns, rowHeights, dimensions, columnWidth } = computeLaneContentHeight(ordered, config);
+      const cellHeight = contentHeight + lanePaddingY * 2;
+
+      cells.push({
+        nodeType,
+        label: config.label,
+        x: colX,
+        y: currentY,
+        width: config.width,
+        height: cellHeight,
+      });
+
+      const startY = currentY + lanePaddingY;
+      const rowOffsets: number[] = [];
+      let rowY = startY;
+      rowHeights.forEach((rowHeight, index) => {
+        rowOffsets[index] = rowY;
+        rowY += rowHeight + gapY;
+      });
+
+      ordered.forEach((node, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        const dimensionsForNode = dimensions[index] ?? getStringStyleNodeDimensions(node, columnWidth);
+        const columnStart = colX + lanePaddingX + column * (columnWidth + gapX);
+        const rowStart = rowOffsets[row] ?? startY;
+
+        laidOutNodes.push({
+          ...node,
+          x: columnStart + columnWidth / 2,
+          y: rowStart + (rowHeights[row] ?? dimensionsForNode.height) / 2,
+          radius: Math.min(node.radius, 10),
+          showCard: true,
+          cardWidth: dimensionsForNode.width,
+          cardHeight: dimensionsForNode.height,
+        });
+      });
+
+      currentY += cellHeight + cellStackGap;
+    }
+  }
+
+  return { nodes: laidOutNodes, cells };
+}
+
+function buildStringStyleProjectEdgePath(from: VisibleGraphNode, to: VisibleGraphNode) {
+  const direction = from.x <= to.x ? 1 : -1;
+  const deltaX = Math.abs(to.x - from.x);
+  const curvature = clampGraphCoordinate(deltaX * 0.34, 72, 190);
+  const controlX1 = from.x + curvature * direction;
+  const controlY1 = from.y;
+  const controlX2 = to.x - curvature * direction;
+  const controlY2 = to.y;
+  return `M ${from.x} ${from.y} C ${controlX1} ${controlY1}, ${controlX2} ${controlY2}, ${to.x} ${to.y}`;
+}
+
+function getStringStyleNodePalette(node: VisibleGraphNode, selected: boolean) {
+  if (selected) {
+    return {
+      fill: 'var(--color-accent)',
+      stroke: 'var(--color-accent)',
+      text: 'var(--color-accent-fg)',
+      meta: 'rgba(255,255,255,0.86)',
+    };
+  }
+
+  if (node.nodeType === 'person') {
+    return {
+      fill: 'rgba(111, 183, 255, 0.42)',
+      stroke: 'rgba(111, 183, 255, 0.72)',
+      text: '#edf5ff',
+      meta: 'rgba(206, 226, 255, 0.88)',
+    };
+  }
+  if (node.nodeType === 'task') {
+    return {
+      fill: 'rgba(124, 227, 178, 0.34)',
+      stroke: 'rgba(124, 227, 178, 0.64)',
+      text: '#eefdf6',
+      meta: 'rgba(203, 245, 224, 0.86)',
+    };
+  }
+  if (node.nodeType === 'deliverable') {
+    return {
+      fill: 'rgba(245, 198, 106, 0.36)',
+      stroke: 'rgba(245, 198, 106, 0.66)',
+      text: '#fff7e3',
+      meta: 'rgba(255, 232, 184, 0.88)',
+    };
+  }
+  if (node.nodeType === 'concept') {
+    return {
+      fill: 'rgba(185, 161, 255, 0.36)',
+      stroke: 'rgba(185, 161, 255, 0.66)',
+      text: '#f5f0ff',
+      meta: 'rgba(226, 215, 255, 0.86)',
+    };
+  }
+  if (node.nodeType === 'document') {
+    return {
+      fill: 'rgba(168, 141, 255, 0.32)',
+      stroke: 'rgba(168, 141, 255, 0.6)',
+      text: '#f6f2ff',
+      meta: 'rgba(225, 215, 255, 0.86)',
+    };
+  }
+  if (node.nodeType === 'repo') {
+    return {
+      fill: 'rgba(139, 208, 246, 0.34)',
+      stroke: 'rgba(139, 208, 246, 0.62)',
+      text: '#effaff',
+      meta: 'rgba(214, 241, 255, 0.85)',
+    };
+  }
+  return {
+    fill: 'rgba(139, 149, 167, 0.3)',
+    stroke: 'rgba(139, 149, 167, 0.56)',
+    text: '#f5f7fb',
+    meta: 'rgba(221, 228, 240, 0.84)',
   };
 }
 
@@ -754,22 +1028,17 @@ function buildCurvedGraphEdgePath(
 
 function buildVisibleGraph(
   graph: CoordinationGraph | null,
-  activeType: string,
   searchTerm: string,
   graphMode: 'overview' | 'ownership' | 'expertise' | 'deliverables',
-  density: 'focused' | 'balanced' | 'expanded',
   selectedNodeId: string | null,
-  showInferred: boolean,
 ): {
   nodes: VisibleGraphNode[];
   edges: CoordinationGraphEdge[];
 } {
   if (!graph) return { nodes: [], edges: [] };
 
-  const inferredNodeIds = new Set(graph.inferredNodeIds ?? []);
-  const inferredEdgeIds = new Set(graph.inferredEdgeIds ?? []);
-  const sourceNodes = showInferred ? graph.nodes : graph.nodes.filter((node) => !inferredNodeIds.has(node.id));
-  const sourceEdges = showInferred ? graph.edges : graph.edges.filter((edge) => !inferredEdgeIds.has(edge.id));
+  const sourceNodes = graph.nodes;
+  const sourceEdges = graph.edges;
   const degreeMap = buildDegreeMap({ ...graph, nodes: sourceNodes, edges: sourceEdges }, true);
   const normalizedQuery = searchTerm.trim().toLowerCase();
   const allowedEdgeTypes = graphMode === 'ownership'
@@ -779,7 +1048,7 @@ function buildVisibleGraph(
       : graphMode === 'deliverables'
         ? new Set(['covers', 'derived_from', 'contributes_to', 'depends_on', 'blocked_by'])
         : null;
-  const densityLimit = density === 'focused' ? 24 : density === 'expanded' ? 72 : 48;
+  const densityLimit = 72;
 
   const visibleEdgesByMode = allowedEdgeTypes
     ? sourceEdges.filter((edge) => allowedEdgeTypes.has(edge.edgeType))
@@ -806,30 +1075,30 @@ function buildVisibleGraph(
   const addNodeId = (nodeId: string) => {
     if (visibleNodeIds.size < densityLimit || visibleNodeIds.has(nodeId)) visibleNodeIds.add(nodeId);
   };
+  const addPinnedNodeId = (nodeId: string) => {
+    visibleNodeIds.add(nodeId);
+  };
 
-  if (selectedNodeId) addNodeId(selectedNodeId);
-  for (const nodeId of matchedNodeIds) addNodeId(nodeId);
+  if (selectedNodeId) addPinnedNodeId(selectedNodeId);
+  for (const nodeId of matchedNodeIds) addPinnedNodeId(nodeId);
+  for (const node of sourceNodes) {
+    if (node.nodeType === 'repo') addPinnedNodeId(node.id);
+  }
   for (const { node } of rankedNodes) {
     if (visibleNodeIds.size >= densityLimit) break;
-    if (activeType !== 'all' && node.nodeType !== activeType) continue;
     addNodeId(node.id);
   }
 
   for (const edge of visibleEdgesByMode) {
     if (matchedNodeIds.has(edge.fromNodeId) || matchedNodeIds.has(edge.toNodeId) || edge.fromNodeId === selectedNodeId || edge.toNodeId === selectedNodeId) {
-      addNodeId(edge.fromNodeId);
-      addNodeId(edge.toNodeId);
+      addPinnedNodeId(edge.fromNodeId);
+      addPinnedNodeId(edge.toNodeId);
     }
   }
 
   const visibleNodes = sourceNodes.filter((node) => {
     if (!visibleNodeIds.has(node.id)) return false;
-    if (activeType === 'all') return true;
-    return node.nodeType === activeType
-      || visibleEdgesByMode.some((edge) =>
-        (edge.fromNodeId === node.id && graphNodesByMode.get(edge.toNodeId)?.nodeType === activeType)
-        || (edge.toNodeId === node.id && graphNodesByMode.get(edge.fromNodeId)?.nodeType === activeType),
-      );
+    return true;
   });
   const finalVisibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   const visibleEdges = visibleEdgesByMode.filter((edge) => finalVisibleNodeIds.has(edge.fromNodeId) && finalVisibleNodeIds.has(edge.toNodeId));
@@ -896,7 +1165,7 @@ function buildVisibleGraph(
       x: xBase,
       y: yBase,
       radius: Math.max(8, Math.min(18, 8 + degree * 1.2)),
-      dimmed: activeType !== 'all' && node.nodeType !== activeType,
+      dimmed: false,
       matched: matchedNodeIds.has(node.id),
       displayLabel: node.nodeType === 'repo' ? trimRepoLabel(node.label, repoPrefix) : node.label,
       showCard: matchedNodeIds.has(node.id)
@@ -915,14 +1184,10 @@ function buildVisibleGraph(
 }
 
 function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
-  const [activeType, setActiveType] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [graphMode, setGraphMode] = useState<'overview' | 'ownership' | 'expertise' | 'deliverables'>('overview');
-  const [graphStyle, setGraphStyle] = useState<KnowledgeGraphStyle>('odyssey');
-  const [density, setDensity] = useState<'focused' | 'balanced' | 'expanded'>('balanced');
-  const [showInferred, setShowInferred] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -932,20 +1197,12 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
   const inlineGraphRef = useRef<HTMLDivElement | null>(null);
   const expandedGraphRef = useRef<HTMLDivElement | null>(null);
 
-  const degreeMap = buildDegreeMap(graph, showInferred);
-  const { nodes, edges } = buildVisibleGraph(graph, activeType, searchTerm, graphMode, density, selectedNodeId, showInferred);
-  const baseNodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const rowboatFocusNodeId = hoveredNodeId && baseNodeMap.has(hoveredNodeId)
-    ? hoveredNodeId
-    : selectedNodeId && baseNodeMap.has(selectedNodeId)
-      ? selectedNodeId
-      : nodes.find((node) => node.matched)?.id
-        ?? [...nodes]
-          .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label))[0]?.id
-        ?? null;
-  const rowboatLayout = buildRowboatLayout(nodes, edges, rowboatFocusNodeId, selectedNodeId);
-  const renderedNodes = graphStyle === 'rowboat' ? rowboatLayout.nodes : nodes;
-  const renderedEdges = graphStyle === 'rowboat' ? rowboatLayout.edges : edges;
+  const degreeMap = buildDegreeMap(graph, true);
+  const { nodes, edges } = buildVisibleGraph(graph, searchTerm, graphMode, selectedNodeId);
+  const stringLayout = buildStringStyleProjectLayout(nodes, selectedNodeId);
+  const stringNodeIds = new Set(stringLayout.nodes.map((node) => node.id));
+  const renderedNodes = stringLayout.nodes;
+  const renderedEdges = edges.filter((edge) => stringNodeIds.has(edge.fromNodeId) && stringNodeIds.has(edge.toNodeId));
   const nodeMap = new Map(renderedNodes.map((node) => [node.id, node]));
 
   useEffect(() => {
@@ -1085,117 +1342,37 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
 
   const renderWorkspace = (fullscreen: boolean) => (
     <div className={`space-y-5 ${fullscreen ? 'flex h-full flex-col overflow-hidden' : ''}`}>
-      <div className={`grid gap-4 ${fullscreen ? 'shrink-0 lg:grid-cols-[minmax(0,1fr)_minmax(320px,460px)]' : 'xl:grid-cols-[minmax(0,1fr)_minmax(0,380px)]'}`}>
-        <div className="space-y-3">
-          <div>
-            <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">View Mode</p>
-            <div className="flex flex-wrap gap-2">
-              {[
-                ['overview', 'Overview'],
-                ['ownership', 'Ownership'],
-                ['expertise', 'Expertise'],
-                ['deliverables', 'Deliverables'],
-              ].map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setGraphMode(value as typeof graphMode)}
-                  className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${graphMode === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">Graph Style</p>
-            <div className="flex flex-wrap gap-2">
-              {[
-                ['odyssey', 'Odyssey'],
-                ['rowboat', 'Rowboat'],
-              ].map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setGraphStyle(value as KnowledgeGraphStyle)}
-                  className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${graphStyle === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">Node Type</p>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveType('all')}
-                className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${activeType === 'all' ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
-              >
-                All
-              </button>
-              {GRAPH_TYPE_ORDER.map((nodeType) => (
-                <button
-                  key={nodeType}
-                  type="button"
-                  onClick={() => setActiveType(nodeType)}
-                  className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${activeType === nodeType ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
-                >
-                  {GRAPH_TYPE_LABELS[nodeType]}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-3">
-          <label className="relative block w-full">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-            <input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Find nodes by label or id"
-              className="w-full border border-border bg-surface2 py-2 pl-9 pr-3 text-sm text-heading outline-none transition-colors focus:border-accent/40"
-            />
-          </label>
-
+      <div className={`space-y-3 ${fullscreen ? 'shrink-0' : ''}`}>
+        <div>
+          <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">View Mode</p>
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setShowInferred((current) => !current)}
-              className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${showInferred ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
-            >
-              {showInferred ? 'AI Layer On' : 'AI Layer Off'}
-            </button>
             {[
-              ['focused', 'Focused'],
-              ['balanced', 'Balanced'],
-              ['expanded', 'Expanded'],
+              ['overview', 'Overview'],
+              ['ownership', 'Ownership'],
+              ['expertise', 'Expertise'],
+              ['deliverables', 'Deliverables'],
             ].map(([value, label]) => (
               <button
                 key={value}
                 type="button"
-                onClick={() => setDensity(value as typeof density)}
-                className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${density === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
+                onClick={() => setGraphMode(value as typeof graphMode)}
+                className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${graphMode === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
               >
                 {label}
               </button>
             ))}
-            <button
-              type="button"
-              onClick={resetViewport}
-              className="rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted transition-colors hover:text-heading"
-            >
-              Reset View
-            </button>
-            <span className="rounded-full border border-border bg-surface2 px-3 py-1.5 text-xs uppercase tracking-[0.18em] text-muted">
-              {graphStyle === 'rowboat' ? 'Labels: key entities + matches' : 'Labels: People + Repos'}
-            </span>
           </div>
         </div>
+
+        <label className="relative block w-full max-w-[420px]">
+          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="Find nodes by label or id"
+            className="w-full border border-border bg-surface2 py-2 pl-9 pr-3 text-sm text-heading outline-none transition-colors focus:border-accent/40"
+          />
+        </label>
       </div>
 
       <div className={`grid gap-5 ${fullscreen ? 'min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_360px]' : 'xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]'}`}>
@@ -1219,32 +1396,32 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
           onPointerEnter={() => setHovering(true)}
         >
           <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-[0.22em] text-muted">
-            <span>{hovering ? 'Scroll to zoom, drag to pan' : graphStyle === 'rowboat' ? 'Focus-driven memory map' : 'Interactive graph'}</span>
+            <span>{hovering ? 'Scroll to zoom, drag to pan' : 'Structured string map'}</span>
             <span>{Math.round(zoom * 100)}%</span>
           </div>
           <svg viewBox={`0 0 ${GRAPH_VIEWBOX.width} ${GRAPH_VIEWBOX.height}`} className={`${fullscreen ? 'h-[calc(100vh-22rem)] min-h-[620px]' : 'h-[560px]'} w-full select-none`}>
             <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-              {graphStyle === 'rowboat' ? (
-                <>
-                  <circle cx={GRAPH_VIEWBOX.width / 2} cy={GRAPH_VIEWBOX.height / 2 + 6} r={82} fill="rgba(111,183,255,0.06)" stroke="rgba(111,183,255,0.16)" strokeWidth="1.2" />
-                  <text x={GRAPH_VIEWBOX.width / 2} y={GRAPH_VIEWBOX.height / 2 + 10} textAnchor="middle" fill="#7a8ba8" fontSize="11" letterSpacing="2.2">
-                    PROJECT MEMORY
-                  </text>
-
-                  {rowboatLayout.anchors.map((anchor) => (
-                    <g key={anchor.nodeType}>
-                      <circle
-                        cx={anchor.x}
-                        cy={anchor.y}
-                        r={anchor.radius}
-                        fill={GRAPH_TYPE_COLORS[anchor.nodeType] ?? '#8b95a7'}
-                        fillOpacity={0.08}
-                        stroke={GRAPH_TYPE_COLORS[anchor.nodeType] ?? '#8b95a7'}
-                        strokeOpacity={0.18}
+              <>
+                  {stringLayout.cells.map((cell) => (
+                    <g key={cell.nodeType}>
+                      <rect
+                        x={cell.x}
+                        y={cell.y}
+                        width={cell.width}
+                        height={cell.height}
+                        rx={24}
+                        fill="rgba(255,255,255,0.04)"
+                        stroke="rgba(180,195,220,0.22)"
                         strokeWidth="1.2"
                       />
-                      <text x={anchor.x} y={anchor.y - anchor.radius - 10} textAnchor="middle" fill="#7a8ba8" fontSize="12" letterSpacing="2.4">
-                        {GRAPH_TYPE_LABELS[anchor.nodeType].toUpperCase()}
+                      <text
+                        x={cell.x + 18}
+                        y={cell.y - 10}
+                        fill="var(--color-muted)"
+                        fontSize="11"
+                        style={{ letterSpacing: '0.2em', textTransform: 'uppercase' }}
+                      >
+                        {cell.label}
                       </text>
                     </g>
                   ))}
@@ -1256,24 +1433,25 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                     const highlighted = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
                     const edgeDimmed = selectedNode
                       ? !highlighted
-                      : !highlighted && activeType !== 'all' && from.nodeType !== activeType && to.nodeType !== activeType;
+                      : false;
                     return (
                       <path
                         key={edge.id}
-                        d={buildCurvedGraphEdgePath(from, to, Boolean(highlighted))}
+                        d={buildStringStyleProjectEdgePath(from, to)}
                         fill="none"
-                        stroke={highlighted ? 'rgba(245,198,106,0.94)' : edgeDimmed ? 'rgba(139,149,167,0.07)' : 'rgba(111,183,255,0.18)'}
-                        strokeWidth={highlighted ? Math.max(3.1, edge.weight * 2) : Math.max(0.9, Math.min(2.1, edge.weight))}
+                        stroke={highlighted ? 'rgba(245,198,106,0.90)' : edgeDimmed ? 'rgba(180,195,220,0.08)' : 'rgba(180,195,220,0.38)'}
+                        strokeWidth={highlighted ? 3 : Math.max(1.15, edge.weight * 1.1)}
                         strokeLinecap="round"
-                        style={{ transition: 'd 180ms ease, stroke 180ms ease, stroke-width 180ms ease, opacity 180ms ease' }}
+                        opacity={highlighted ? 1 : 0.82}
                       />
                     );
                   })}
 
                   {renderedNodes.map((node) => {
-                    const emphasized = connectedNodeIds.has(node.id) || node.matched;
+                    const selected = node.id === selectedNodeId;
+                    const connected = connectedNodeIds.has(node.id) || node.matched;
                     const fadedBySelection = selectedNode ? !connectedNodeIds.has(node.id) : false;
-                    const isSelected = selectedNode?.id === node.id;
+                    const palette = getStringStyleNodePalette(node, selected);
                     return (
                       <g
                         key={node.id}
@@ -1292,160 +1470,66 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                         }}
                         className="cursor-pointer"
                       >
-                        {node.showCard ? (
-                          <>
-                            <rect
-                              x={node.x - node.cardWidth / 2}
-                              y={node.y - node.cardHeight / 2}
-                              width={node.cardWidth}
-                              height={node.cardHeight}
-                              rx={15}
-                              fill={fadedBySelection ? 'rgba(255,255,255,0.52)' : 'rgba(248,250,252,0.92)'}
-                              stroke={isSelected ? 'rgba(245,198,106,0.92)' : emphasized ? 'rgba(111,183,255,0.35)' : 'rgba(148,163,184,0.22)'}
-                              strokeWidth={isSelected ? 2.6 : 1.2}
-                              style={{ transition: 'x 180ms ease, y 180ms ease, width 180ms ease, stroke 180ms ease, fill 180ms ease' }}
-                            />
-                            <circle
-                              cx={node.x - node.cardWidth / 2 + 15}
-                              cy={node.y}
-                              r={6.5}
-                              fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
-                              fillOpacity={fadedBySelection ? 0.3 : 0.88}
-                              style={{ transition: 'cx 180ms ease, cy 180ms ease, fill-opacity 180ms ease' }}
-                            />
-                            <text
-                              x={node.x - node.cardWidth / 2 + 28}
-                              y={node.y + 4}
-                              textAnchor="start"
-                              fill={fadedBySelection ? '#9aa4b5' : '#23324b'}
-                              fontSize="11"
-                              fontWeight="600"
-                              style={{ transition: 'x 180ms ease, y 180ms ease, fill 180ms ease' }}
-                            >
-                              {node.displayLabel.length > 26 ? `${node.displayLabel.slice(0, 24)}...` : node.displayLabel}
-                            </text>
-                            <text
-                              x={node.x + node.cardWidth / 2 - 12}
-                              y={node.y + 4}
-                              textAnchor="end"
-                              fill={fadedBySelection ? '#9aa4b5' : '#5f708d'}
-                              fontSize="10"
-                              style={{ transition: 'x 180ms ease, y 180ms ease, fill 180ms ease' }}
-                            >
-                              {node.degree}
-                            </text>
-                          </>
-                        ) : (
-                          <>
-                            <circle
-                              cx={node.x}
-                              cy={node.y}
-                              r={node.radius}
-                              fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
-                              fillOpacity={isSelected ? 1 : fadedBySelection ? 0.12 : emphasized ? 0.88 : node.dimmed ? 0.22 : 0.66}
-                              stroke={isSelected ? '#ffffff' : emphasized ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.14)'}
-                              strokeWidth={isSelected ? 3 : emphasized ? 1.5 : 1}
-                              style={{ transition: 'cx 180ms ease, cy 180ms ease, r 180ms ease, fill-opacity 180ms ease, stroke 180ms ease' }}
-                            />
-                            {(node.matched || isSelected) && (
-                              <text
-                                x={node.x}
-                                y={node.y + node.radius + 14}
-                                textAnchor="middle"
-                                fill="#64748b"
-                                fontSize="10"
-                              >
-                                {node.displayLabel.length > 20 ? `${node.displayLabel.slice(0, 18)}...` : node.displayLabel}
-                              </text>
-                            )}
-                          </>
-                        )}
-                      </g>
-                    );
-                  })}
-                </>
-              ) : (
-                <>
-                  {GRAPH_TYPE_ORDER.map((nodeType, index) => {
-                    const x = (GRAPH_VIEWBOX.width / (GRAPH_TYPE_ORDER.length + 1)) * (index + 1);
-                    return (
-                      <g key={nodeType}>
-                        <text x={x} y={26} textAnchor="middle" fill="#8b95a7" fontSize="12" letterSpacing="2.4">
-                          {GRAPH_TYPE_LABELS[nodeType].toUpperCase()}
-                        </text>
-                        <line x1={x} y1={40} x2={x} y2={540} stroke="rgba(139,149,167,0.14)" strokeWidth="1" />
-                      </g>
-                    );
-                  })}
-
-                  {renderedEdges.map((edge) => {
-                    const from = nodeMap.get(edge.fromNodeId);
-                    const to = nodeMap.get(edge.toNodeId);
-                    if (!from || !to) return null;
-                    const highlighted = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
-                    const edgeDimmed = selectedNode
-                      ? !highlighted
-                      : !highlighted && activeType !== 'all' && from.nodeType !== activeType && to.nodeType !== activeType;
-                    return (
-                      <line
-                        key={edge.id}
-                        x1={from.x}
-                        y1={from.y}
-                        x2={to.x}
-                        y2={to.y}
-                        stroke={highlighted ? 'rgba(245,198,106,0.96)' : edgeDimmed ? 'rgba(139,149,167,0.06)' : 'rgba(111,183,255,0.22)'}
-                        strokeWidth={highlighted ? Math.max(3.2, edge.weight * 2.1) : Math.max(0.8, Math.min(2.4, edge.weight))}
-                      />
-                    );
-                  })}
-
-                  {renderedNodes.map((node) => {
-                    const showLabel = node.nodeType === 'person' || node.nodeType === 'repo';
-                    const emphasized = connectedNodeIds.has(node.id) || node.matched;
-                    const fadedBySelection = selectedNode ? !connectedNodeIds.has(node.id) : false;
-                    return (
-                      <g
-                        key={node.id}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSelectedNodeId(node.id);
-                        }}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onPointerEnter={(event) => {
-                          event.stopPropagation();
-                          setHoveredNodeId(node.id);
-                        }}
-                        onPointerLeave={(event) => {
-                          event.stopPropagation();
-                          setHoveredNodeId((current) => (current === node.id ? null : current));
-                        }}
-                        className="cursor-pointer"
-                      >
-                        <circle
-                          cx={node.x}
-                          cy={node.y}
-                          r={node.radius}
-                          fill={GRAPH_TYPE_COLORS[node.nodeType] ?? '#8b95a7'}
-                          fillOpacity={selectedNode?.id === node.id ? 1 : fadedBySelection ? 0.14 : emphasized ? 0.9 : node.dimmed ? 0.22 : 0.72}
-                          stroke={selectedNode?.id === node.id ? '#ffffff' : emphasized ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.14)'}
-                          strokeWidth={selectedNode?.id === node.id ? 3 : emphasized ? 1.5 : 1}
+                        <rect
+                          x={node.x - node.cardWidth / 2}
+                          y={node.y - node.cardHeight / 2}
+                          width={node.cardWidth}
+                          height={node.cardHeight}
+                          rx={node.nodeType === 'task' ? 18 : 16}
+                          fill={palette.fill}
+                          fillOpacity={fadedBySelection ? 0.72 : connected ? 1 : 0.96}
+                          stroke={palette.stroke}
+                          strokeOpacity={fadedBySelection ? 0.72 : 1}
+                          strokeWidth={selected ? 2.5 : connected ? 2 : 1.45}
                         />
-                        {showLabel && (
-                          <text
-                            x={node.x}
-                            y={node.y + node.radius + 14}
-                            textAnchor="middle"
-                            fill={selectedNode?.id === node.id ? '#f8fafc' : node.dimmed ? '#667085' : '#cbd5e1'}
-                            fontSize="10"
-                          >
-                            {node.displayLabel.length > 28 ? `${node.displayLabel.slice(0, 26)}...` : node.displayLabel}
-                          </text>
-                        )}
+                        <rect
+                          x={node.x - node.cardWidth / 2 + 1}
+                          y={node.y - node.cardHeight / 2 + 1}
+                          width={6}
+                          height={node.cardHeight - 2}
+                          rx={3}
+                          fill={palette.stroke}
+                          opacity={fadedBySelection ? 0.38 : 0.92}
+                        />
+                        <circle
+                          cx={node.x - node.cardWidth / 2 + 18}
+                          cy={node.y - 6}
+                          r={4}
+                          fill={palette.stroke}
+                          opacity={fadedBySelection ? 0.4 : 0.95}
+                        />
+                        <text
+                          x={node.x - node.cardWidth / 2 + 28}
+                          y={node.y - 4}
+                          fill={fadedBySelection ? 'var(--color-muted)' : palette.text}
+                          fontSize={node.nodeType === 'task' ? 12 : 11}
+                          fontWeight="600"
+                        >
+                          {getStringStyleCardTitle(node)}
+                        </text>
+                        <text
+                          x={node.x - node.cardWidth / 2 + 28}
+                          y={node.y + 13}
+                          fill={fadedBySelection ? 'var(--color-muted)' : palette.meta}
+                          fontSize="8"
+                          style={{ letterSpacing: '0.11em', textTransform: 'uppercase' }}
+                        >
+                          {getStringStyleCardMeta(node)}
+                        </text>
+                        <text
+                          x={node.x + node.cardWidth / 2 - 12}
+                          y={node.y + 13}
+                          textAnchor="end"
+                          fill={fadedBySelection ? 'var(--color-muted)' : palette.meta}
+                          fontSize="8"
+                          style={{ letterSpacing: '0.1em', textTransform: 'uppercase' }}
+                        >
+                          {node.degree}
+                        </text>
                       </g>
                     );
                   })}
-                </>
-              )}
+              </>
 
               {infoNode && infoBox && infoBoxPosition && (
                 <foreignObject
@@ -1461,19 +1545,18 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                       width: '100%',
                       borderRadius: '12px',
                       border: infoNode.id === selectedNode?.id
-                        ? '1px solid rgba(245, 198, 106, 0.42)'
-                        : '1px solid rgba(148, 163, 184, 0.22)',
-                      background: 'linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.92))',
-                      boxShadow: '0 14px 34px rgba(2, 6, 23, 0.32)',
+                        ? '1px solid rgba(245, 198, 106, 0.5)'
+                        : '1px solid var(--color-border)',
+                      background: 'var(--color-surface)',
+                      boxShadow: '0 14px 34px rgba(0,0,0,0.18)',
                       padding: '11px 12px',
-                      color: '#e5e7eb',
                       overflow: 'hidden',
                     }}
                   >
-                    <div style={{ fontSize: '10px', letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(148, 163, 184, 0.88)' }}>
+                    <div style={{ fontSize: '10px', letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--color-muted)' }}>
                       {hoveredNode ? 'Hover' : 'Selected'} • {GRAPH_TYPE_LABELS[infoNode.nodeType] ?? infoNode.nodeType}
                     </div>
-                    <div style={{ marginTop: '8px', fontSize: '13px', lineHeight: 1.35, fontWeight: 600, color: '#f8fafc', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                    <div style={{ marginTop: '8px', fontSize: '13px', lineHeight: 1.35, fontWeight: 600, color: 'var(--color-heading)', whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                       {infoNode.label}
                     </div>
                   </div>
@@ -1487,8 +1570,8 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
           <div className="border border-border bg-surface2 p-4">
             <p className="text-xs uppercase tracking-[0.18em] text-muted">Graph Status</p>
             <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-muted">
-              <p>Nodes: <span className="text-heading">{showInferred ? graph.nodes.length : graph.nodes.length - (graph.inferredNodeIds?.length ?? 0)}</span></p>
-              <p>Edges: <span className="text-heading">{showInferred ? graph.edges.length : graph.edges.length - (graph.inferredEdgeIds?.length ?? 0)}</span></p>
+              <p>Nodes: <span className="text-heading">{graph.nodes.length}</span></p>
+              <p>Edges: <span className="text-heading">{graph.edges.length}</span></p>
               <p>Generated: <span className="text-heading">{formatDateTime(graph.generatedAt)}</span></p>
               <p>State: <span className="text-heading">{graph.stale ? 'Stale' : 'Fresh'}</span></p>
               <p>AI Inference: <span className="text-heading">{graph.inference?.status ?? 'none'}</span></p>
@@ -1664,7 +1747,7 @@ export default function CoordinationTab({ projectId, isOwner }: CoordinationTabP
   }, [projectId]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div className="border border-border bg-surface p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
@@ -1730,7 +1813,7 @@ export default function CoordinationTab({ projectId, isOwner }: CoordinationTabP
           Loading coordination data…
         </div>
       ) : (
-        <div className="grid gap-6">
+        <div className="grid gap-5">
           <Section title="My Next Actions" icon={Target}>
             <QueueCard queue={snapshot?.myNextActions ?? null} />
           </Section>

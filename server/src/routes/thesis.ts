@@ -14,6 +14,7 @@ import {
   DEFAULT_THESIS_EXAMPLE_PATH,
   isKyleHicksDisplayName,
 } from '../lib/thesis-default.js';
+import { chat, getServerOpenAiCredential, getServerOpenAiPrimaryModel, type AIProviderSelection } from '../ai-providers.js';
 
 type RepoProvider = 'github' | 'gitlab';
 
@@ -105,8 +106,11 @@ type ThesisSourceQueueType = 'paper' | 'web' | 'dataset' | 'notes' | 'document';
 type ThesisSourceIntakeMethod = 'url' | 'pdf' | 'manual';
 type ThesisSourceKind =
   | 'journal_article'
+  | 'conference_paper'
+  | 'book'
   | 'book_chapter'
   | 'government_report'
+  | 'thesis_dissertation'
   | 'dataset'
   | 'interview_notes'
   | 'archive_record'
@@ -127,6 +131,7 @@ type ThesisSourceQueueItem = {
 
 type ThesisSourceLibraryItem = {
   id: string;
+  citeKey: string;
   title: string;
   type: ThesisSourceLibraryType;
   acquisitionMethod: ThesisSourceIntakeMethod;
@@ -187,18 +192,188 @@ type ParsedThesisSourceRecord = {
   extractedTextPreview: string | null;
 };
 
+type ThesisKnowledgeLinkedProject = {
+  id: string;
+  name: string;
+  description: string | null;
+  github_repo: string | null;
+  github_repos: string[] | null;
+  gitlab_repos?: string[] | null;
+};
+
+type ThesisKnowledgeLinkedGoal = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  deadline: string | null;
+  status: string;
+  progress: number;
+  category: string | null;
+  loe: string | null;
+};
+
+type ThesisKnowledgeLinkedEvent = {
+  id: string;
+  project_id: string;
+  source: string;
+  event_type: string;
+  title: string | null;
+  summary: string | null;
+  occurred_at: string;
+};
+
+type ThesisKnowledgeNodeKind = 'source' | 'theme' | 'document' | 'chapter' | 'credit' | 'reference' | 'project' | 'repo';
+
+type ThesisKnowledgeGraphNode = {
+  id: string;
+  label: string;
+  kind: ThesisKnowledgeNodeKind;
+  size: number;
+  score: number;
+  detail: string;
+  meta: string[];
+  relatedSourceIds: string[];
+};
+
+type ThesisKnowledgeGraphEdge = {
+  id: string;
+  source: string;
+  target: string;
+  kind:
+    | 'source-theme'
+    | 'source-document'
+    | 'source-chapter'
+    | 'source-credit'
+    | 'source-source'
+    | 'document-theme'
+    | 'source-reference'
+    | 'project-theme'
+    | 'project-source'
+    | 'project-document'
+    | 'project-repo';
+  strength: number;
+};
+
+type ThesisKnowledgeThemeSummary = {
+  id: string;
+  label: string;
+  count: number;
+  sourceIds: string[];
+};
+
+type ThesisKnowledgeCoverageSummary = {
+  id: string;
+  label: string;
+  count: number;
+  sourceIds: string[];
+};
+
+type ThesisKnowledgeInsight = {
+  title: string;
+  body: string;
+};
+
+type ThesisKnowledgeSourceBrief = {
+  id: string;
+  title: string;
+  summary: string;
+  signals: string[];
+};
+
+type ThesisKnowledgeGraphPayload = {
+  generatedAt: string;
+  stats: {
+    sourceCount: number;
+    documentCount: number;
+    projectCount: number;
+    themeCount: number;
+    connectionCount: number;
+    hydratedSourceCount: number;
+  };
+  nodes: ThesisKnowledgeGraphNode[];
+  edges: ThesisKnowledgeGraphEdge[];
+  themes: ThesisKnowledgeThemeSummary[];
+  coverage: ThesisKnowledgeCoverageSummary[];
+  insights: ThesisKnowledgeInsight[];
+  sourceBriefs: ThesisKnowledgeSourceBrief[];
+};
+
+type ThesisKnowledgeAiThemeSuggestion = {
+  label: string;
+  detail: string | null;
+  sourceIds: string[];
+  documentIds: string[];
+  projectIds: string[];
+};
+
+type ThesisKnowledgeAiLinkSuggestion = {
+  sourceLinks: Array<{
+    leftSourceId: string;
+    rightSourceId: string;
+    strength: number;
+    rationale: string | null;
+  }>;
+  documentSourceLinks: Array<{
+    documentId: string;
+    sourceId: string;
+    strength: number;
+    rationale: string | null;
+  }>;
+  projectSourceLinks: Array<{
+    projectId: string;
+    sourceId: string;
+    strength: number;
+    rationale: string | null;
+  }>;
+  projectDocumentLinks: Array<{
+    projectId: string;
+    documentId: string;
+    strength: number;
+    rationale: string | null;
+  }>;
+};
+
+type ThesisKnowledgeAiEnhancement = ThesisKnowledgeAiLinkSuggestion & {
+  themes: ThesisKnowledgeAiThemeSuggestion[];
+  insights: string[];
+};
+
 const execFileAsync = promisify(execFile);
 const MAX_RENDER_SOURCE_BYTES = 2_000_000;
 const LATEX_RENDER_TIMEOUT_MS = 30_000;
-const MAX_SOURCE_PDF_BYTES = 12 * 1024 * 1024;
+const MAX_SOURCE_PDF_BYTES = 32 * 1024 * 1024;
 const MAX_SOURCE_TEXT_PREVIEW_CHARS = 2_000;
 const MAX_SOURCE_ABSTRACT_CHARS = 1_200;
 const MAX_DOCUMENT_TEXT_PREVIEW_CHARS = 3_000;
 const SOURCE_URL_FETCH_TIMEOUT_MS = 15_000;
 const THESIS_SOURCE_BUCKET = 'project-documents';
+const KNOWLEDGE_GRAPH_THEME_LIMIT = 10;
+const KNOWLEDGE_GRAPH_AI_THEME_LIMIT = 6;
+const KNOWLEDGE_GRAPH_THEME_OUTPUT_LIMIT = 12;
+const KNOWLEDGE_GRAPH_SOURCE_THEME_LIMIT = 3;
+const KNOWLEDGE_GRAPH_SOURCE_REFERENCE_LIMIT = 4;
+const KNOWLEDGE_STOPWORDS = new Set([
+  'about', 'after', 'again', 'against', 'among', 'analysis', 'article', 'been', 'before', 'being', 'between',
+  'both', 'brief', 'chapter', 'claim', 'could', 'dataset', 'defense', 'document', 'documents', 'evidence',
+  'finding', 'findings', 'first', 'from', 'have', 'having', 'into', 'journal', 'linked', 'method', 'methods',
+  'notes', 'paper', 'project', 'report', 'research', 'result', 'results', 'review', 'section', 'should', 'source',
+  'sources', 'study', 'support', 'summary', 'their', 'there', 'these', 'they', 'this', 'thesis', 'those', 'through',
+  'under', 'using', 'very', 'were', 'what', 'when', 'where', 'which', 'while', 'with', 'within', 'would', 'year',
+  'your',
+]);
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function safeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return uniqueStrings(value.filter((entry): entry is string => typeof entry === 'string'));
 }
 
 function cleanPdfMetadataValue(value: unknown) {
@@ -222,8 +397,32 @@ function sanitizeStorageName(filename: string) {
   return normalized || 'upload.pdf';
 }
 
+function normalizeThesisDocumentMimeType(mimeType: string, filename: string) {
+  const normalizedMime = mimeType.trim().toLowerCase();
+  const normalizedFilename = filename.trim().toLowerCase();
+  if (normalizedFilename.endsWith('.step') || normalizedFilename.endsWith('.stp')) {
+    return 'application/step';
+  }
+  if (normalizedFilename.endsWith('.png')) {
+    return 'image/png';
+  }
+  if (normalizedFilename.endsWith('.jpg') || normalizedFilename.endsWith('.jpeg')) {
+    return 'image/jpeg';
+  }
+  if (normalizedFilename.endsWith('.webp')) {
+    return 'image/webp';
+  }
+  if (normalizedFilename.endsWith('.gif')) {
+    return 'image/gif';
+  }
+  if (normalizedMime === 'application/x-step' || normalizedMime === 'model/step') {
+    return 'application/step';
+  }
+  return normalizedMime || 'application/octet-stream';
+}
+
 async function extractDocumentTextPreview(fileBuffer: Buffer, mimeType: string, filename: string) {
-  const normalizedMime = mimeType.toLowerCase();
+  const normalizedMime = normalizeThesisDocumentMimeType(mimeType, filename);
   const normalizedFilename = filename.toLowerCase();
 
   if (normalizedMime === 'application/pdf' || normalizedFilename.endsWith('.pdf')) {
@@ -236,8 +435,8 @@ async function extractDocumentTextPreview(fileBuffer: Buffer, mimeType: string, 
   }
 
   const isPlainTextLike = normalizedMime.startsWith('text/')
-    || /(json|xml|yaml|csv|javascript|typescript|x-tex|tex|markdown)/.test(normalizedMime)
-    || /\.(txt|md|tex|bib|csv|json|ya?ml|xml|html?)$/i.test(normalizedFilename);
+    || /(json|xml|yaml|csv|javascript|typescript|x-tex|tex|markdown|step)/.test(normalizedMime)
+    || /\.(txt|md|tex|bib|csv|json|ya?ml|xml|html?|step|stp)$/i.test(normalizedFilename);
 
   if (!isPlainTextLike) return '';
 
@@ -449,8 +648,11 @@ function normalizeSourceAcquisitionMethod(value: unknown): ThesisSourceIntakeMet
 }
 
 function normalizeSourceKind(value: unknown): ThesisSourceKind {
-  return value === 'book_chapter'
+  return value === 'conference_paper'
+    || value === 'book'
+    || value === 'book_chapter'
     || value === 'government_report'
+    || value === 'thesis_dissertation'
     || value === 'dataset'
     || value === 'interview_notes'
     || value === 'archive_record'
@@ -496,7 +698,7 @@ function normalizeSourceLibraryItem(value: unknown): ThesisSourceLibraryItem | n
   if (!record) return null;
 
   const title = normalizeStringField(record.title, 240);
-  const credit = normalizeStringField(record.credit, 240);
+  const credit = normalizeSourceCreditValue(normalizeStringField(record.credit, 240));
   const venue = normalizeStringField(record.venue, 240);
   const year = normalizeStringField(record.year, 16);
   const locator = normalizeStringField(record.locator, 1_000);
@@ -504,6 +706,7 @@ function normalizeSourceLibraryItem(value: unknown): ThesisSourceLibraryItem | n
 
   return {
     id: normalizeStringField(record.id, 120) || `lib-${Date.now().toString(36)}`,
+    citeKey: normalizeStringField(record.citeKey, 160) || normalizeStringField(record.id, 120) || `source_${Date.now().toString(36)}`,
     title,
     type: normalizeSourceLibraryType(record.type),
     acquisitionMethod: normalizeSourceAcquisitionMethod(record.acquisitionMethod),
@@ -738,6 +941,93 @@ function buildSourceCitation(
   return parts.length > 0 ? compactWhitespace(parts.join(' ')).slice(0, 8_000) : null;
 }
 
+function looksLikeOrganizationCredit(value: string) {
+  const trimmed = compactWhitespace(value);
+  if (!trimmed) return false;
+  if (/[A-Z]{2,}/.test(trimmed) && !/[a-z]/.test(trimmed)) return true;
+  return /\b(agency|department|office|committee|commission|command|center|centre|university|college|school|laboratory|lab|institute|administration|association|society|bureau|ministry|corps|navy|army|air force|marine|marines|government|council|press|publisher|organization|division|company|corporation|corp|inc|incorporated|llc|ltd|limited|plc|gmbh|group|holdings|systems|technologies|industries|international)\b/i.test(trimmed);
+}
+
+function normalizeSourceCreditText(value: string) {
+  return compactWhitespace(
+    value
+      .replace(/\\&/g, '&')
+      .replace(/([A-Za-z])-\s+([A-Za-z])/g, '$1$2'),
+  ).replace(/^[,;]+|[,;]+$/g, '');
+}
+
+function invertSurnameFirstCreditName(value: string) {
+  const normalized = normalizeSourceCreditText(value);
+  const parts = normalized.split(/\s*,\s*/).filter(Boolean);
+  if (parts.length === 2) {
+    return normalizeSourceCreditText(`${parts[1]} ${parts[0]}`);
+  }
+  return normalized;
+}
+
+function extractCreditPeople(value: string) {
+  const normalized = normalizeSourceCreditText(value);
+  if (!normalized || looksLikeOrganizationCredit(normalized) || /^https?:\/\//i.test(normalized)) return [];
+
+  const semicolonParts = normalized
+    .split(/\s*;\s*|\s*\n+\s*/)
+    .map((part) => invertSurnameFirstCreditName(part))
+    .filter(Boolean);
+  if (semicolonParts.length > 1) return semicolonParts;
+
+  const commaCandidate = normalized
+    .replace(/\s*,?\s*(?:and|&)\s+/gi, ', ')
+    .replace(/\s*,\s*,+/g, ', ');
+  const commaParts = commaCandidate
+    .split(/\s*,\s*/)
+    .map((part) => normalizeSourceCreditText(part))
+    .filter(Boolean);
+  if (commaParts.length >= 4 && commaParts.length % 2 === 0) {
+    const names: string[] = [];
+    for (let index = 0; index < commaParts.length; index += 2) {
+      const family = commaParts[index];
+      const given = commaParts[index + 1];
+      if (!family || !given) continue;
+      names.push(normalizeSourceCreditText(`${given} ${family}`));
+    }
+    if (names.length > 1) return names;
+  }
+
+  const conjunctionParts = normalized
+    .split(/\s+(?:and|&)\s+/i)
+    .map((part) => invertSurnameFirstCreditName(part))
+    .filter(Boolean);
+  if (conjunctionParts.length > 1) return conjunctionParts;
+
+  return [invertSurnameFirstCreditName(normalized)];
+}
+
+function normalizeSourceCreditValue(value: string | null | undefined) {
+  const normalized = normalizeSourceCreditText(value ?? '');
+  if (!normalized) return null;
+  if (looksLikeOrganizationCredit(normalized)) return normalized;
+  const people = uniqueStrings(extractCreditPeople(normalized), 12);
+  if (people.length > 1) return people.join('; ');
+  return people[0] ?? normalized;
+}
+
+function normalizeSourceCreditCandidates(values: Array<string | null | undefined>) {
+  const directCandidates = uniqueStrings(
+    values
+      .map((value) => normalizeSourceCreditValue(value))
+      .filter((value): value is string => Boolean(value)),
+    20,
+  );
+  if (directCandidates.length === 0) return null;
+
+  const personCandidates = uniqueStrings(
+    directCandidates.flatMap((value) => extractCreditPeople(value)),
+    12,
+  );
+  if (personCandidates.length > 1) return personCandidates.join('; ');
+  return personCandidates[0] ?? directCandidates[0] ?? null;
+}
+
 function collectJsonLdRecords(value: unknown, records: Record<string, unknown>[] = []) {
   if (Array.isArray(value)) {
     for (const item of value) collectJsonLdRecords(item, records);
@@ -791,10 +1081,20 @@ function inferUrlSourceKind(input: {
   const hints = input.sourceTypeHints.map((value) => value.toLowerCase());
   const title = (input.title ?? '').toLowerCase();
   const venue = (input.venue ?? '').toLowerCase();
+  const combinedText = `${title} ${venue} ${pathName}`;
 
   if (input.contentType.includes('pdf')) return 'journal_article';
   if (hints.some((hint) => /\b(dataset|datacatalog)\b/.test(hint))) return 'dataset';
-  if (hints.some((hint) => /\b(book|chapter)\b/.test(hint))) return 'book_chapter';
+  if (hints.some((hint) => /\b(thesis|dissertation)\b/.test(hint))
+    || /\b(thesis|dissertation|doctoral|masters?)\b/.test(combinedText)
+    || /calhoun\.nps\.edu|proquest|dissertations?|etd/i.test(host + pathName)) {
+    return 'thesis_dissertation';
+  }
+  if (hints.some((hint) => /\b(chapter)\b/.test(hint))) return 'book_chapter';
+  if (hints.some((hint) => /\b(book)\b/.test(hint))) return 'book';
+  if (/\b(conference|proceedings|symposium|workshop)\b/.test(combinedText)) {
+    return 'conference_paper';
+  }
   if (hints.some((hint) => /\b(apireference|softwareapplication|techarticle)\b/.test(hint))
     || /(^|\/)(docs?|documentation|reference|manual|guide|api)(\/|$)/.test(pathName)
     || /\b(docs?|documentation|reference|manual|guide|api)\b/.test(title)) {
@@ -815,15 +1115,351 @@ function inferUrlSourceKind(input: {
 }
 
 function getSourceTypeLabel(kind: ThesisSourceKind | null) {
+  if (kind === 'conference_paper') return 'Conference Paper / Proceedings';
+  if (kind === 'book') return 'Book';
   if (kind === 'dataset') return 'Dataset';
   if (kind === 'book_chapter') return 'Book Chapter';
-  if (kind === 'government_report') return 'Government or Lab Report';
-  if (kind === 'interview_notes') return 'Interview or Notes';
-  if (kind === 'archive_record') return 'Archive Record';
-  if (kind === 'documentation') return 'Documentation';
-  if (kind === 'web_article') return 'Web Article';
+  if (kind === 'government_report') return 'Government / Technical Report';
+  if (kind === 'thesis_dissertation') return 'Thesis / Dissertation';
+  if (kind === 'interview_notes') return 'Interview / Personal Communication';
+  if (kind === 'archive_record') return 'Archive / Collection Record';
+  if (kind === 'documentation') return 'Manual / Standard / Documentation';
+  if (kind === 'web_article') return 'Web Page / News / Blog';
   if (kind === 'journal_article') return 'Journal Article';
   return null;
+}
+
+/** Use AI to fill in missing citation fields from raw HTML + URL. Returns only the fields it found. */
+async function aiEnhanceCitationMetadata(
+  url: string,
+  html: string,
+  existing: { title?: string | null; credit?: string | null; year?: string | null; contextField?: string | null },
+): Promise<{ title?: string; credit?: string; year?: string; contextField?: string }> {
+  try {
+    // Only use AI enhancement when a server-side AI key is configured
+    const serverCred = getServerOpenAiCredential();
+    if (!serverCred?.apiKey) return {};
+
+    const provider: AIProviderSelection = `openai:${getServerOpenAiPrimaryModel('gpt-4o')}`;
+
+    const missingFields = ([] as string[])
+      .concat(!existing.title ? ['title (full document/article title)'] : [])
+      .concat(!existing.credit ? ['author or organization responsible for this work'] : [])
+      .concat(!existing.year ? ['publication year (4-digit)'] : [])
+      .concat(!existing.contextField ? ['journal, publisher, or hosting organization'] : []);
+
+    if (missingFields.length === 0) return {};
+
+    // Trim HTML to useful text for the AI
+    const textContent = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .slice(0, 4000);
+
+    const result = await chat(provider, {
+      system: 'You are a citation extraction assistant. Extract bibliographic metadata from web page text. Return ONLY valid JSON with the requested fields. If a field cannot be determined with reasonable confidence, omit it from the JSON.',
+      user: `URL: ${url}
+
+Page text excerpt:
+${textContent}
+
+Extract these missing citation fields as JSON:
+${missingFields.map((f) => `- ${f}`).join('\n')}
+
+Return JSON like: {"title":"...","author":"...","year":"2024","publisher":"..."} using only keys: title, author, year, publisher. Omit any key you are not confident about.`,
+      maxTokens: 300,
+    }, serverCred);
+
+    const raw = result.text.match(/\{[\s\S]*\}/)?.[0];
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: { title?: string; credit?: string; year?: string; contextField?: string } = {};
+    if (typeof parsed.title === 'string' && parsed.title.trim()) out.title = parsed.title.trim();
+    if (typeof parsed.author === 'string' && parsed.author.trim()) out.credit = parsed.author.trim();
+    if (typeof parsed.year === 'string' && /^\d{4}$/.test(parsed.year.trim())) out.year = parsed.year.trim();
+    if (typeof parsed.publisher === 'string' && parsed.publisher.trim()) out.contextField = parsed.publisher.trim();
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function extractJsonPayload(text: string): string {
+  const fenced = text.match(/```json\s*([\s\S]*?)```/);
+  let raw = fenced ? fenced[1].trim() : text.trim();
+  const firstBrace = raw.indexOf('{');
+  const firstBracket = raw.indexOf('[');
+  const start = firstBrace === -1 ? firstBracket
+    : firstBracket === -1 ? firstBrace
+    : Math.min(firstBrace, firstBracket);
+  if (start > 0) raw = raw.slice(start);
+  const lastBrace = raw.lastIndexOf('}');
+  const lastBracket = raw.lastIndexOf(']');
+  const end = Math.max(lastBrace, lastBracket);
+  if (end >= 0 && end < raw.length - 1) raw = raw.slice(0, end + 1);
+  raw = raw.replace(/\/\/[^\n]*/g, '');
+  raw = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+  raw = raw.replace(/,(\s*[}\]])/g, '$1');
+  return raw.trim();
+}
+
+function clampKnowledgeGraphStrength(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(0.7, Math.min(2.4, value));
+}
+
+async function aiEnhanceKnowledgeGraph(input: {
+  sources: Array<{
+    id: string;
+    title: string;
+    credit: string;
+    venue: string;
+    summary: string;
+    terms: string[];
+    references: string[];
+  }>;
+  documents: Array<{
+    id: string;
+    title: string;
+    description: string;
+    contribution: string;
+    linkedSourceId: string | null;
+    preview: string;
+    terms: string[];
+  }>;
+  projects: Array<{
+    id: string;
+    name: string;
+    description: string;
+    repos: string[];
+    goalTitles: string[];
+    eventTitles: string[];
+    terms: string[];
+  }>;
+  existingThemes: Array<{
+    label: string;
+    sourceIds: string[];
+  }>;
+}): Promise<ThesisKnowledgeAiEnhancement> {
+  try {
+    const serverCred = getServerOpenAiCredential();
+    if (!serverCred?.apiKey) {
+      return {
+        themes: [],
+        insights: [],
+        sourceLinks: [],
+        documentSourceLinks: [],
+        projectSourceLinks: [],
+        projectDocumentLinks: [],
+      };
+    }
+
+    if (input.sources.length === 0 && input.documents.length === 0 && input.projects.length === 0) {
+      return {
+        themes: [],
+        insights: [],
+        sourceLinks: [],
+        documentSourceLinks: [],
+        projectSourceLinks: [],
+        projectDocumentLinks: [],
+      };
+    }
+
+    const provider: AIProviderSelection = `openai:${getServerOpenAiPrimaryModel('gpt-4o')}`;
+    const result = await chat(provider, {
+      system: [
+        'You improve thesis knowledge graphs.',
+        'Return ONLY valid JSON.',
+        'Use only the provided node IDs.',
+        'Prefer high-signal semantic relationships over weak keyword overlap.',
+        'Every proposed theme must include at least one source ID.',
+        `Return at most ${KNOWLEDGE_GRAPH_AI_THEME_LIMIT} themes per response.`,
+      ].join(' '),
+      user: JSON.stringify({
+        instruction: {
+          objective: 'Propose stronger thesis graph themes and semantic links across sources, supporting documents, and linked projects.',
+          limits: {
+            maxThemes: KNOWLEDGE_GRAPH_AI_THEME_LIMIT,
+            maxSourceLinks: 8,
+            maxDocumentSourceLinks: 8,
+            maxProjectSourceLinks: 8,
+            maxProjectDocumentLinks: 6,
+            strengthRange: [0.7, 2.4],
+          },
+          themeRules: [
+            'Use short human-readable labels.',
+            'Themes should unify multiple evidence nodes when possible.',
+            'Do not invent node IDs.',
+          ],
+          responseShape: {
+            themes: [
+              {
+                label: 'string',
+                detail: 'optional short explanation',
+                sourceIds: ['source-id'],
+                documentIds: ['document-id'],
+                projectIds: ['project-node-id'],
+              },
+            ],
+            sourceLinks: [
+              {
+                leftSourceId: 'source-id',
+                rightSourceId: 'source-id',
+                strength: 1.3,
+                rationale: 'optional short reason',
+              },
+            ],
+            documentSourceLinks: [
+              {
+                documentId: 'document-id',
+                sourceId: 'source-id',
+                strength: 1.2,
+                rationale: 'optional short reason',
+              },
+            ],
+            projectSourceLinks: [
+              {
+                projectId: 'project-node-id',
+                sourceId: 'source-id',
+                strength: 1.3,
+                rationale: 'optional short reason',
+              },
+            ],
+            projectDocumentLinks: [
+              {
+                projectId: 'project-node-id',
+                documentId: 'document-id',
+                strength: 1.2,
+                rationale: 'optional short reason',
+              },
+            ],
+            insights: ['optional short insight'],
+          },
+        },
+        context: input,
+      }),
+      maxTokens: 1800,
+      jsonMode: true,
+    }, serverCred);
+
+    const parsed = JSON.parse(extractJsonPayload(result.text)) as Record<string, unknown>;
+    const safeThemes = Array.isArray(parsed.themes) ? parsed.themes : [];
+    const safeInsights = Array.isArray(parsed.insights) ? parsed.insights : [];
+    const safeSourceLinks = Array.isArray(parsed.sourceLinks) ? parsed.sourceLinks : [];
+    const safeDocumentSourceLinks = Array.isArray(parsed.documentSourceLinks) ? parsed.documentSourceLinks : [];
+    const safeProjectSourceLinks = Array.isArray(parsed.projectSourceLinks) ? parsed.projectSourceLinks : [];
+    const safeProjectDocumentLinks = Array.isArray(parsed.projectDocumentLinks) ? parsed.projectDocumentLinks : [];
+
+    const sourcesById = new Set(input.sources.map((item) => item.id));
+    const documentsById = new Set(input.documents.map((item) => item.id));
+    const projectsById = new Set(input.projects.map((item) => item.id));
+
+    return {
+      themes: safeThemes
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const candidate = item as Record<string, unknown>;
+          const label = readString(candidate.label);
+          const sourceIds = safeStringArray(candidate.sourceIds).filter((id) => sourcesById.has(id));
+          if (!label || sourceIds.length === 0) return null;
+          return {
+            label,
+            detail: readString(candidate.detail),
+            sourceIds: uniqueStrings(sourceIds, 10),
+            documentIds: uniqueStrings(safeStringArray(candidate.documentIds).filter((id) => documentsById.has(id)), 8),
+            projectIds: uniqueStrings(safeStringArray(candidate.projectIds).filter((id) => projectsById.has(id)), 8),
+          } satisfies ThesisKnowledgeAiThemeSuggestion;
+        })
+        .filter((item): item is ThesisKnowledgeAiThemeSuggestion => Boolean(item))
+        .slice(0, KNOWLEDGE_GRAPH_AI_THEME_LIMIT),
+      insights: uniqueStrings(
+        safeInsights
+          .map((item) => (typeof item === 'string' ? compactWhitespace(item) : ''))
+          .filter(Boolean),
+        3,
+      ),
+      sourceLinks: safeSourceLinks
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const candidate = item as Record<string, unknown>;
+          const leftSourceId = readString(candidate.leftSourceId);
+          const rightSourceId = readString(candidate.rightSourceId);
+          if (!leftSourceId || !rightSourceId || leftSourceId === rightSourceId) return null;
+          if (!sourcesById.has(leftSourceId) || !sourcesById.has(rightSourceId)) return null;
+          return {
+            leftSourceId,
+            rightSourceId,
+            strength: clampKnowledgeGraphStrength(typeof candidate.strength === 'number' ? candidate.strength : 1.2),
+            rationale: readString(candidate.rationale),
+          };
+        })
+        .filter((item): item is ThesisKnowledgeAiEnhancement['sourceLinks'][number] => Boolean(item))
+        .slice(0, 8),
+      documentSourceLinks: safeDocumentSourceLinks
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const candidate = item as Record<string, unknown>;
+          const documentId = readString(candidate.documentId);
+          const sourceId = readString(candidate.sourceId);
+          if (!documentId || !sourceId) return null;
+          if (!documentsById.has(documentId) || !sourcesById.has(sourceId)) return null;
+          return {
+            documentId,
+            sourceId,
+            strength: clampKnowledgeGraphStrength(typeof candidate.strength === 'number' ? candidate.strength : 1.15),
+            rationale: readString(candidate.rationale),
+          };
+        })
+        .filter((item): item is ThesisKnowledgeAiEnhancement['documentSourceLinks'][number] => Boolean(item))
+        .slice(0, 8),
+      projectSourceLinks: safeProjectSourceLinks
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const candidate = item as Record<string, unknown>;
+          const projectId = readString(candidate.projectId);
+          const sourceId = readString(candidate.sourceId);
+          if (!projectId || !sourceId) return null;
+          if (!projectsById.has(projectId) || !sourcesById.has(sourceId)) return null;
+          return {
+            projectId,
+            sourceId,
+            strength: clampKnowledgeGraphStrength(typeof candidate.strength === 'number' ? candidate.strength : 1.2),
+            rationale: readString(candidate.rationale),
+          };
+        })
+        .filter((item): item is ThesisKnowledgeAiEnhancement['projectSourceLinks'][number] => Boolean(item))
+        .slice(0, 8),
+      projectDocumentLinks: safeProjectDocumentLinks
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const candidate = item as Record<string, unknown>;
+          const projectId = readString(candidate.projectId);
+          const documentId = readString(candidate.documentId);
+          if (!projectId || !documentId) return null;
+          if (!projectsById.has(projectId) || !documentsById.has(documentId)) return null;
+          return {
+            projectId,
+            documentId,
+            strength: clampKnowledgeGraphStrength(typeof candidate.strength === 'number' ? candidate.strength : 1.1),
+            rationale: readString(candidate.rationale),
+          };
+        })
+        .filter((item): item is ThesisKnowledgeAiEnhancement['projectDocumentLinks'][number] => Boolean(item))
+        .slice(0, 6),
+    };
+  } catch {
+    return {
+      themes: [],
+      insights: [],
+      sourceLinks: [],
+      documentSourceLinks: [],
+      projectSourceLinks: [],
+      projectDocumentLinks: [],
+    };
+  }
 }
 
 async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourceRecord> {
@@ -874,7 +1510,7 @@ async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourc
       throw new Error('That PDF URL returned an empty file.');
     }
     if (fileBuffer.byteLength > MAX_SOURCE_PDF_BYTES) {
-      throw new Error('That PDF URL exceeds the 12 MB ingest limit.');
+      throw new Error('That PDF URL exceeds the 32 MB ingest limit.');
     }
     const pdfData = await pdfParse(fileBuffer);
     const pdfRecord = inferPdfSourceMetadata(pdfData, filename || 'source.pdf');
@@ -987,14 +1623,14 @@ async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourc
   ], 6, 320);
   const hasCitationJournal = (metaMap.get('citation_journal_title') ?? []).length > 0
     || (metaMap.get('citation_conference_title') ?? []).length > 0;
-  const credit = chooseBestCandidate([
+  const credit = normalizeSourceCreditCandidates([
     ...(metaMap.get('citation_author') ?? []),
     ...(metaMap.get('dc.creator') ?? []),
     ...(metaMap.get('dc.contributor') ?? []),
     ...jsonLdAuthors,
     ...(metaMap.get('author') ?? []),
     ...(metaMap.get('article:author') ?? []),
-  ], 2, 240);
+  ]);
   const contextField = chooseBestCandidate([
     ...(metaMap.get('citation_journal_title') ?? []),
     ...(metaMap.get('citation_conference_title') ?? []),
@@ -1028,7 +1664,26 @@ async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourc
     ...(metaMap.get('news_keywords') ?? []),
     ...jsonLdKeywords,
   ]);
-  const summary = extractSummary(abstract ?? [title, contextField].filter(Boolean).join('. '));
+  let finalTitle = title;
+  let finalCredit = credit;
+  let finalYear = year;
+  let finalContextField = contextField;
+
+  // If key fields are missing, try AI enhancement
+  const needsAI = !finalCredit || !finalYear;
+  if (needsAI) {
+    const aiFields = await aiEnhanceCitationMetadata(
+      finalUrl.toString(),
+      html,
+      { title: finalTitle, credit: finalCredit, year: finalYear, contextField: finalContextField },
+    );
+    if (!finalTitle && aiFields.title) finalTitle = aiFields.title;
+    if (!finalCredit && aiFields.credit) finalCredit = aiFields.credit;
+    if (!finalYear && aiFields.year) finalYear = aiFields.year;
+    if (!finalContextField && aiFields.contextField) finalContextField = aiFields.contextField;
+  }
+
+  const summary = extractSummary(abstract ?? [finalTitle, finalContextField].filter(Boolean).join('. '));
   const sourceKind = inferUrlSourceKind({
     url: finalUrl,
     contentType,
@@ -1037,23 +1692,23 @@ async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourc
       ...(metaMap.get('og:type') ?? []),
       ...(metaMap.get('citation_type') ?? []),
     ],
-    title,
-    venue: contextField,
+    title: finalTitle,
+    venue: finalContextField,
     hasCitationJournal,
   });
 
   return {
     filename: filename || finalUrl.hostname,
     pageCount: 1,
-    title,
-    credit,
-    contextField,
-    year,
+    title: finalTitle,
+    credit: finalCredit,
+    contextField: finalContextField,
+    year: finalYear,
     abstract,
     summary,
     keywords,
     locator: finalUrl.toString(),
-    citation: buildSourceCitation(title, credit, year, contextField, finalUrl.toString()),
+    citation: buildSourceCitation(finalTitle, finalCredit, finalYear, finalContextField, finalUrl.toString()),
     sourceKind,
     sourceTypeLabel: getSourceTypeLabel(sourceKind),
     extractedTextPreview: chooseBestCandidate([
@@ -1093,13 +1748,13 @@ function inferPdfSourceMetadata(pdfData: Awaited<ReturnType<typeof pdfParse>>, f
     title = titleBlock?.title || orderedLines.slice(0, 260).find((line) => isLikelyTitleCandidateLine(line)) || filenameTitle;
   }
 
-  let credit = metadataAuthor;
+  let credit = normalizeSourceCreditValue(metadataAuthor);
   if (!credit) {
     const titleIndex = titleBlock?.startIndex ?? Math.max(0, orderedLines.findIndex((line) => line === title));
-    credit = [
+    credit = normalizeSourceCreditValue([
       ...orderedLines.slice(Math.max(0, titleIndex - 3), titleIndex + 1),
       ...orderedLines.slice(titleIndex + 1, titleIndex + 5),
-    ].find((line) => isLikelyAuthorLine(line)) ?? null;
+    ].find((line) => isLikelyAuthorLine(line)) ?? null);
   }
 
   const yearCandidates = uniqueStrings([
@@ -1137,6 +1792,1189 @@ function inferPdfSourceMetadata(pdfData: Awaited<ReturnType<typeof pdfParse>>, f
     sourceKind: 'journal_article',
     sourceTypeLabel: 'PDF',
     extractedTextPreview: text ? text.slice(0, MAX_SOURCE_TEXT_PREVIEW_CHARS) : null,
+  };
+}
+
+function isHttpUrl(value: string) {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+function formatKnowledgeLabel(value: string) {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function normalizeKnowledgePhrase(value: string) {
+  return compactWhitespace(value)
+    .replace(/[_/]+/g, ' ')
+    .replace(/[^\w\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function extractKnowledgeTerms(textBlocks: Array<string | null | undefined>, seedTerms: string[] = [], limit = 8) {
+  const explicitTerms = uniqueStrings(
+    seedTerms
+      .map((term) => normalizeKnowledgePhrase(term))
+      .filter((term) => term.length >= 3 && term.length <= 48),
+    limit,
+  );
+
+  const termCounts = new Map<string, number>();
+  for (const block of textBlocks) {
+    const normalized = normalizeKnowledgePhrase(block ?? '');
+    if (!normalized) continue;
+    const words = normalized.split(/\s+/).filter((word) => word.length >= 4 && !KNOWLEDGE_STOPWORDS.has(word));
+    for (const word of words) {
+      termCounts.set(word, (termCounts.get(word) ?? 0) + 1);
+    }
+    for (let index = 0; index < words.length - 1; index += 1) {
+      const first = words[index];
+      const second = words[index + 1];
+      if (!first || !second) continue;
+      const phrase = `${first} ${second}`;
+      if (phrase.length > 32) continue;
+      termCounts.set(phrase, (termCounts.get(phrase) ?? 0) + 2);
+    }
+  }
+
+  const rankedTerms = [...termCounts.entries()]
+    .filter(([term, count]) => count >= 2 && term.length >= 4 && term.length <= 40)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([term]) => term);
+
+  return uniqueStrings(
+    [
+      ...explicitTerms,
+      ...rankedTerms,
+    ].map((term) => formatKnowledgeLabel(term)),
+    limit,
+  );
+}
+
+function getChapterLabel(chapterTarget: ThesisSourceChapterTarget) {
+  if (chapterTarget === 'literature_review') return 'Literature Review';
+  if (chapterTarget === 'methods') return 'Methods';
+  if (chapterTarget === 'findings') return 'Findings';
+  return 'Appendix';
+}
+
+function getCreditLabel(credit: string) {
+  const normalized = compactWhitespace(credit);
+  if (!normalized) return null;
+  const primary = normalized
+    .split(/\s*(?:;|\/| and | & )\s*/i)
+    .map((item) => compactWhitespace(item))
+    .find(Boolean);
+  if (!primary) return null;
+  return primary.length > 72 ? `${primary.slice(0, 69)}...` : primary;
+}
+
+function getCreditLabels(credit: string) {
+  const normalized = compactWhitespace(credit);
+  if (!normalized) return [];
+
+  const people = uniqueStrings(
+    extractCreditPeople(normalized).map((person) => (
+      person.length > 72 ? `${person.slice(0, 69)}...` : person
+    )),
+    12,
+  );
+  if (people.length > 0) return people;
+
+  const fallback = getCreditLabel(normalized);
+  return fallback ? [fallback] : [];
+}
+
+function normalizeThesisKnowledgeLinkedProject(input: unknown): ThesisKnowledgeLinkedProject | null {
+  if (!input || typeof input !== 'object') return null;
+
+  const candidate = input as Record<string, unknown>;
+  const id = readString(candidate.id);
+  const name = readString(candidate.name);
+  if (!id || !name) return null;
+
+  return {
+    id,
+    name,
+    description: readString(candidate.description),
+    github_repo: readString(candidate.github_repo),
+    github_repos: safeStringArray(candidate.github_repos),
+    gitlab_repos: safeStringArray(candidate.gitlab_repos),
+  };
+}
+
+async function enrichThesisKnowledgeLinkedProjectsWithGitLabRepos(
+  linkedProjects: ThesisKnowledgeLinkedProject[],
+): Promise<ThesisKnowledgeLinkedProject[]> {
+  const projectIds = linkedProjects.map((project) => project.id).filter(Boolean);
+  if (projectIds.length === 0) return linkedProjects;
+
+  const { data, error } = await supabase
+    .from('integrations')
+    .select('project_id, config')
+    .in('project_id', projectIds)
+    .eq('type', 'gitlab');
+
+  if (error || !data) return linkedProjects;
+
+  const gitLabReposByProjectId = new Map<string, string[]>();
+  for (const integration of data as GitLabIntegrationRow[]) {
+    const repos = getGitLabRepoPaths(integration.config);
+    if (repos.length === 0) continue;
+    const existing = gitLabReposByProjectId.get(integration.project_id) ?? [];
+    gitLabReposByProjectId.set(
+      integration.project_id,
+      uniqueStrings([...existing, ...repos], 24),
+    );
+  }
+
+  return linkedProjects.map((project) => ({
+    ...project,
+    gitlab_repos: uniqueStrings([
+      ...(project.gitlab_repos ?? []),
+      ...(gitLabReposByProjectId.get(project.id) ?? []),
+    ], 24),
+  }));
+}
+
+function normalizeThesisKnowledgeLinkedGoal(input: unknown): ThesisKnowledgeLinkedGoal | null {
+  if (!input || typeof input !== 'object') return null;
+
+  const candidate = input as Record<string, unknown>;
+  const id = readString(candidate.id);
+  const projectId = readString(candidate.project_id);
+  const title = readString(candidate.title);
+  if (!id || !projectId || !title) return null;
+
+  return {
+    id,
+    project_id: projectId,
+    title,
+    description: readString(candidate.description),
+    deadline: readString(candidate.deadline),
+    status: readString(candidate.status) ?? 'not_started',
+    progress: typeof candidate.progress === 'number'
+      ? Math.max(0, Math.min(100, candidate.progress))
+      : 0,
+    category: readString(candidate.category),
+    loe: readString(candidate.loe),
+  };
+}
+
+function normalizeThesisKnowledgeLinkedEvent(input: unknown): ThesisKnowledgeLinkedEvent | null {
+  if (!input || typeof input !== 'object') return null;
+
+  const candidate = input as Record<string, unknown>;
+  const id = readString(candidate.id);
+  const projectId = readString(candidate.project_id);
+  const occurredAt = readString(candidate.occurred_at);
+  if (!id || !projectId || !occurredAt) return null;
+
+  return {
+    id,
+    project_id: projectId,
+    source: readString(candidate.source) ?? 'manual',
+    event_type: readString(candidate.event_type) ?? 'note',
+    title: readString(candidate.title),
+    summary: readString(candidate.summary),
+    occurred_at: occurredAt,
+  };
+}
+
+type ProjectOverlapEdge = ThesisKnowledgeGraphEdge & {
+  overlap: string[];
+};
+
+function stripReferenceLeadMarkers(value: string) {
+  return compactWhitespace(
+    value
+      .replace(/^\[\d+\]\s*/, '')
+      .replace(/^\(\d+\)\s*/, '')
+      .replace(/^\d+\.\s*/, '')
+      .replace(/^\d+\s+/, ''),
+  );
+}
+
+function looksLikeReferenceHeading(line: string) {
+  return /^(references|bibliography|works cited|literature cited|cited references|reference list|sources)$/i.test(compactWhitespace(line));
+}
+
+function looksLikeReferenceContent(line: string) {
+  const normalized = compactWhitespace(line);
+  if (normalized.length < 24) return false;
+  return (
+    /\b(19|20)\d{2}[a-z]?\b/.test(normalized)
+    || /https?:\/\//i.test(normalized)
+    || /\bdoi\b/i.test(normalized)
+    || /\b(vol\.|pp\.|journal|conference|proceedings|review|press|report|arxiv|thesis)\b/i.test(normalized)
+  );
+}
+
+function looksLikeReferenceStart(line: string) {
+  const normalized = stripReferenceLeadMarkers(line);
+  if (!normalized) return false;
+  return (
+    /^\w.+?\(\d{4}[a-z]?\)/.test(normalized)
+    || /^([A-Z][A-Za-z'`-]+,\s*)?(?:[A-Z]\.\s*){1,5}/.test(normalized)
+    || /^https?:\/\//i.test(normalized)
+    || /^doi:/i.test(normalized)
+  );
+}
+
+function parseReferenceTitle(reference: string) {
+  const quotedTitle = reference.match(/["“]([^"”]{8,220})["”]/)?.[1];
+  if (quotedTitle) return compactWhitespace(quotedTitle);
+
+  const afterYear = reference.match(/\(\d{4}[a-z]?\)\.?\s*([^.;][^.]{8,220})\./)?.[1];
+  if (afterYear) return compactWhitespace(afterYear);
+
+  const segments = reference
+    .split(/[.]/)
+    .map((segment) => compactWhitespace(segment))
+    .filter(Boolean);
+  return segments.find((segment) => {
+    const wordCount = segment.split(/\s+/).length;
+    return wordCount >= 4
+      && wordCount <= 24
+      && !/\b(vol|pp|journal|conference|proceedings|press|review|report|doi|https?)\b/i.test(segment);
+  }) ?? null;
+}
+
+function parseReferenceLeadAuthor(reference: string) {
+  const normalized = stripReferenceLeadMarkers(reference);
+  if (!normalized) return null;
+  const match = normalized.match(/^(.{4,100}?)(?:\(\d{4}[a-z]?\)|["“]|https?:\/\/|doi:)/);
+  if (!match?.[1]) return null;
+  const label = compactWhitespace(match[1].replace(/[.,;:]$/, ''));
+  return label.length > 72 ? `${label.slice(0, 69)}...` : label;
+}
+
+function parseReferenceYear(reference: string) {
+  return reference.match(/\b((?:19|20)\d{2}[a-z]?)\b/)?.[1] ?? null;
+}
+
+function parseReferenceDoi(reference: string) {
+  const doiMatch = reference.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+\b/i)?.[0];
+  if (doiMatch) return doiMatch.toLowerCase();
+  const doiUrl = reference.match(/https?:\/\/(?:dx\.)?doi\.org\/([^)\s]+)/i)?.[1];
+  return doiUrl ? doiUrl.toLowerCase() : null;
+}
+
+function buildReferenceKey(reference: string, title: string | null, leadAuthor: string | null, year: string | null) {
+  const doi = parseReferenceDoi(reference);
+  if (doi) return `doi:${doi}`;
+  const titleKey = normalizeKnowledgePhrase(title ?? '').slice(0, 80);
+  const authorKey = normalizeKnowledgePhrase(leadAuthor ?? '').slice(0, 40);
+  const yearKey = normalizeKnowledgePhrase(year ?? '').slice(0, 8);
+  return `ref:${authorKey}|${titleKey}|${yearKey}`;
+}
+
+function extractReferenceEntriesFromText(text: string) {
+  const rawLines = text
+    .split(/\r?\n/)
+    .map((line) => compactWhitespace(line.replace(/\u0000/g, ' ')))
+    .filter((line) => line.length >= 3 && line.length <= 420);
+
+  if (rawLines.length === 0) return [];
+
+  const headingIndex = rawLines.findIndex((line) => looksLikeReferenceHeading(line));
+  const sectionLines = headingIndex >= 0
+    ? rawLines.slice(headingIndex + 1, headingIndex + 240)
+    : rawLines.slice(Math.max(0, rawLines.length - 180));
+
+  const candidates: string[] = [];
+  let current = '';
+
+  for (const line of sectionLines) {
+    if (looksLikeReferenceHeading(line)) continue;
+    const normalized = stripReferenceLeadMarkers(line);
+    if (!normalized) continue;
+
+    if (!current) {
+      current = normalized;
+      continue;
+    }
+
+    const shouldStartNext = looksLikeReferenceStart(normalized) && looksLikeReferenceContent(current);
+    if (shouldStartNext) {
+      candidates.push(current);
+      current = normalized;
+      continue;
+    }
+
+    if (`${current} ${normalized}`.length <= 520) {
+      current = `${current} ${normalized}`;
+    } else {
+      candidates.push(current);
+      current = normalized;
+    }
+  }
+  if (current) candidates.push(current);
+
+  const results: Array<{
+    key: string;
+    label: string;
+    raw: string;
+    year: string | null;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    const normalized = compactWhitespace(candidate);
+    if (!looksLikeReferenceContent(normalized)) continue;
+    const title = parseReferenceTitle(normalized);
+    const leadAuthor = parseReferenceLeadAuthor(normalized);
+    const year = parseReferenceYear(normalized);
+    const key = buildReferenceKey(normalized, title, leadAuthor, year);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+
+    const label = title
+      ?? (leadAuthor && year ? `${leadAuthor} (${year})` : leadAuthor || year || normalized.slice(0, 84));
+    results.push({
+      key,
+      label: label.length > 110 ? `${label.slice(0, 107)}...` : label,
+      raw: normalized,
+      year,
+    });
+    if (results.length >= 40) break;
+  }
+
+  return results;
+}
+
+async function readThesisAttachmentFullText(storagePath: string, mimeType: string, filename: string) {
+  const normalizedPath = storagePath.trim();
+  if (!normalizedPath) return '';
+
+  const { data, error } = await supabase.storage.from(THESIS_SOURCE_BUCKET).download(normalizedPath);
+  if (error || !data) return '';
+
+  try {
+    const buffer = Buffer.from(await data.arrayBuffer());
+    const normalizedMime = (mimeType || data.type || '').toLowerCase();
+    if (normalizedMime.includes('pdf') || /\.pdf$/i.test(filename)) {
+      const pdfData = await pdfParse(buffer);
+      return pdfData.text ?? '';
+    }
+    return new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+  } catch {
+    return '';
+  }
+}
+
+async function extractCitedReferencesFromUrl(rawUrl: string) {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return [];
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SOURCE_URL_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(parsedUrl.toString(), {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'Odyssey Thesis Knowledge Graph/1.0',
+        accept: 'text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+      },
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return [];
+
+    const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+    if (contentType.includes('pdf') || /\.pdf(?:$|\?)/i.test(response.url || parsedUrl.pathname)) {
+      const fileBuffer = Buffer.from(await response.arrayBuffer());
+      const pdfData = await pdfParse(fileBuffer);
+      return extractReferenceEntriesFromText(pdfData.text ?? '');
+    }
+
+    const html = await response.text();
+    const text = html
+      .replace(/<\/(p|li|div|section|article|br|h1|h2|h3|h4|h5|h6)>/gi, '$&\n')
+      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+    return extractReferenceEntriesFromText(stripHtmlTags(text));
+  } catch {
+    clearTimeout(timeout);
+    return [];
+  }
+}
+
+async function readThesisAttachmentTextPreview(storagePath: string, mimeType: string, filename: string) {
+  const normalizedPath = storagePath.trim();
+  if (!normalizedPath) return '';
+
+  const { data, error } = await supabase.storage.from(THESIS_SOURCE_BUCKET).download(normalizedPath);
+  if (error || !data) return '';
+
+  try {
+    const buffer = Buffer.from(await data.arrayBuffer());
+    return extractDocumentTextPreview(buffer, mimeType || data.type || 'application/octet-stream', filename);
+  } catch {
+    return '';
+  }
+}
+
+async function buildThesisKnowledgeGraph(
+  sourceLibrary: ThesisSourceLibraryItem[],
+  thesisDocuments: ThesisSupportingDocumentItem[],
+  linkedProjects: ThesisKnowledgeLinkedProject[],
+  linkedGoals: ThesisKnowledgeLinkedGoal[],
+  linkedEvents: ThesisKnowledgeLinkedEvent[],
+): Promise<ThesisKnowledgeGraphPayload> {
+  const hydratedSources = await Promise.all(sourceLibrary.map(async (source) => {
+    const urlMetadata = isHttpUrl(source.locator)
+      ? await inferUrlSourceMetadata(source.locator).catch(() => null)
+      : null;
+    const attachmentPreview = source.attachmentStoragePath
+      ? await readThesisAttachmentTextPreview(
+          source.attachmentStoragePath,
+          source.attachmentMimeType,
+          source.attachmentName || source.title,
+        ).catch(() => '')
+      : '';
+    const attachmentFullText = source.attachmentStoragePath
+      ? await readThesisAttachmentFullText(
+          source.attachmentStoragePath,
+          source.attachmentMimeType,
+          source.attachmentName || source.title,
+        ).catch(() => '')
+      : '';
+    const extractedReferences = uniqueStrings(
+      [
+        ...extractReferenceEntriesFromText(attachmentFullText).map((reference) => JSON.stringify(reference)),
+        ...(
+          isHttpUrl(source.locator)
+            ? await extractCitedReferencesFromUrl(source.locator).catch(() => [])
+            : []
+        ).map((reference) => JSON.stringify(reference)),
+      ],
+      50,
+    ).map((value) => JSON.parse(value) as {
+      key: string;
+      label: string;
+      raw: string;
+      year: string | null;
+    });
+
+    const title = source.title || urlMetadata?.title || source.locator;
+    const credit = source.credit || urlMetadata?.credit || '';
+    const venue = source.venue || urlMetadata?.contextField || '';
+    const summary = chooseBestCandidate([
+      source.abstract,
+      urlMetadata?.abstract,
+      urlMetadata?.summary,
+      attachmentPreview,
+      source.notes,
+      source.citation,
+    ], 20, 420) ?? 'Metadata compiled from the thesis source record.';
+    const terms = extractKnowledgeTerms([
+      title,
+      credit,
+      venue,
+      source.abstract,
+      source.notes,
+      source.citation,
+      urlMetadata?.abstract,
+      urlMetadata?.summary,
+      attachmentPreview,
+      extractedReferences.map((reference) => reference.label).join(' '),
+    ], [
+      ...source.tags,
+      ...(urlMetadata?.keywords ?? []),
+      source.sourceKind.replace(/_/g, ' '),
+      source.role,
+    ]);
+
+    return {
+      source,
+      title,
+      credit,
+      venue,
+      summary,
+      terms,
+      hydrated: Boolean(urlMetadata || attachmentPreview),
+      extractedReferences,
+      detail: [
+        credit ? `Credit: ${credit}.` : null,
+        venue ? `Context: ${venue}.` : null,
+        source.year ? `Publication date: ${source.year}.` : null,
+        extractedReferences.length > 0 ? `${extractedReferences.length} cited reference${extractedReferences.length === 1 ? '' : 's'} extracted.` : null,
+        summary,
+      ].filter(Boolean).join(' '),
+    };
+  }));
+
+  const hydratedDocuments = await Promise.all(thesisDocuments.map(async (document) => {
+    const attachmentPreview = !document.extractedTextPreview && document.attachmentStoragePath
+      ? await readThesisAttachmentTextPreview(
+          document.attachmentStoragePath,
+          document.attachmentMimeType,
+          document.attachmentName || document.title,
+        ).catch(() => '')
+      : '';
+    const preview = document.extractedTextPreview || attachmentPreview;
+    const linkedSource = hydratedSources.find((item) => item.source.id === document.linkedSourceId) ?? null;
+    const terms = extractKnowledgeTerms([
+      document.title,
+      document.description,
+      document.contribution,
+      preview,
+      linkedSource?.title ?? '',
+    ], linkedSource?.terms ?? [], 6);
+
+    return {
+      document,
+      preview,
+      linkedSource,
+      terms,
+    };
+  }));
+
+  const projectContexts = linkedProjects.map((project) => {
+    const projectGoals = linkedGoals.filter((goal) => goal.project_id === project.id);
+    const projectEvents = linkedEvents.filter((event) => event.project_id === project.id);
+    const activeGoals = projectGoals
+      .filter((goal) => goal.status !== 'complete')
+      .sort((left, right) => {
+        if (left.deadline && right.deadline) return new Date(left.deadline).getTime() - new Date(right.deadline).getTime();
+        if (left.deadline) return -1;
+        if (right.deadline) return 1;
+        return right.progress - left.progress;
+      });
+    const completedGoals = projectGoals.filter((goal) => goal.status === 'complete');
+    const repoLabels = uniqueStrings([
+      project.github_repo,
+      ...(project.github_repos ?? []),
+      ...(project.gitlab_repos ?? []),
+    ], 24);
+    const repoTerms = repoLabels.flatMap((repo) => {
+      const repoName = repo.split('/').pop() ?? repo;
+      return [repo, repoName];
+    });
+    const terms = extractKnowledgeTerms(
+      [
+        project.name,
+        project.description,
+        ...projectGoals.flatMap((goal) => [goal.title, goal.description, goal.category, goal.loe]),
+        ...projectEvents.flatMap((event) => [event.title, event.summary, event.event_type, event.source]),
+        repoLabels.join(' '),
+      ],
+      [
+        project.name,
+        ...repoTerms,
+        ...activeGoals.slice(0, 3).map((goal) => goal.title),
+        ...projectGoals.map((goal) => goal.category ?? ''),
+      ],
+      8,
+    );
+    const detail = [
+      project.description ? compactWhitespace(project.description) : null,
+      activeGoals.length > 0
+        ? `${activeGoals.length} open linked task${activeGoals.length === 1 ? '' : 's'} still shape thesis execution.`
+        : null,
+      completedGoals.length > 0
+        ? `${completedGoals.length} linked task${completedGoals.length === 1 ? '' : 's'} already completed.`
+        : null,
+      projectEvents.length > 0
+        ? `${projectEvents.length} recent project event${projectEvents.length === 1 ? '' : 's'} are available as context.`
+        : null,
+      activeGoals[0]
+        ? `Highest-priority task: ${activeGoals[0].title}.`
+        : null,
+    ].filter(Boolean).join(' ');
+
+    return {
+      project,
+      goals: projectGoals,
+      events: projectEvents,
+      activeGoals,
+      completedGoals,
+      repoLabels,
+      terms,
+      detail: detail || 'Linked thesis project contributing execution context to the evidence map.',
+    };
+  });
+
+  const themeCounts = new Map<string, { label: string; sourceIds: Set<string> }>();
+  for (const hydratedSource of hydratedSources) {
+    for (const term of hydratedSource.terms.slice(0, KNOWLEDGE_GRAPH_SOURCE_THEME_LIMIT + 2)) {
+      const key = term.toLowerCase();
+      const existing = themeCounts.get(key) ?? { label: term, sourceIds: new Set<string>() };
+      existing.sourceIds.add(hydratedSource.source.id);
+      themeCounts.set(key, existing);
+    }
+  }
+
+  const deterministicThemes = [...themeCounts.entries()]
+    .filter(([, value]) => value.sourceIds.size >= 1)
+    .sort((left, right) => right[1].sourceIds.size - left[1].sourceIds.size || left[1].label.localeCompare(right[1].label))
+    .slice(0, KNOWLEDGE_GRAPH_THEME_LIMIT)
+    .map(([key, value]) => ({
+      id: `theme:${key}`,
+      label: value.label,
+      count: value.sourceIds.size,
+      sourceIds: [...value.sourceIds],
+    }));
+
+  const aiEnhancement = await aiEnhanceKnowledgeGraph({
+    sources: hydratedSources.map((hydratedSource) => ({
+      id: hydratedSource.source.id,
+      title: hydratedSource.title,
+      credit: hydratedSource.credit,
+      venue: hydratedSource.venue,
+      summary: compactWhitespace(hydratedSource.summary).slice(0, 240),
+      terms: hydratedSource.terms.slice(0, 6),
+      references: hydratedSource.extractedReferences.slice(0, 4).map((reference) => reference.label),
+    })),
+    documents: hydratedDocuments.map((hydratedDocument) => ({
+      id: hydratedDocument.document.id,
+      title: hydratedDocument.document.title,
+      description: compactWhitespace(hydratedDocument.document.description).slice(0, 220),
+      contribution: compactWhitespace(hydratedDocument.document.contribution).slice(0, 220),
+      linkedSourceId: hydratedDocument.document.linkedSourceId,
+      preview: compactWhitespace(hydratedDocument.preview).slice(0, 240),
+      terms: hydratedDocument.terms.slice(0, 6),
+    })),
+    projects: projectContexts.map((projectContext) => ({
+      id: `project:${projectContext.project.id}`,
+      name: projectContext.project.name,
+      description: compactWhitespace(projectContext.project.description ?? '').slice(0, 220),
+      repos: projectContext.repoLabels,
+      goalTitles: projectContext.activeGoals.slice(0, 4).map((goal) => goal.title),
+      eventTitles: projectContext.events.slice(0, 4).map((event) => event.title ?? event.summary ?? event.event_type).filter(Boolean) as string[],
+      terms: projectContext.terms.slice(0, 8),
+    })),
+    existingThemes: deterministicThemes.map((theme) => ({
+      label: theme.label,
+      sourceIds: theme.sourceIds,
+    })),
+  });
+
+  const themeContextMap = new Map<string, {
+    id: string;
+    label: string;
+    detail: string | null;
+    sourceIds: Set<string>;
+    documentIds: Set<string>;
+    projectIds: Set<string>;
+  }>();
+
+  const upsertThemeContext = (
+    label: string,
+    detail: string | null,
+    sourceIds: string[] = [],
+    documentIds: string[] = [],
+    projectIds: string[] = [],
+  ) => {
+    const normalizedLabel = compactWhitespace(label);
+    if (!normalizedLabel) return;
+    const key = normalizedLabel.toLowerCase();
+    const existing = themeContextMap.get(key) ?? {
+      id: `theme:${key}`,
+      label: normalizedLabel,
+      detail: null,
+      sourceIds: new Set<string>(),
+      documentIds: new Set<string>(),
+      projectIds: new Set<string>(),
+    };
+    if (!existing.detail && detail) existing.detail = detail;
+    if (normalizedLabel.length < existing.label.length) existing.label = normalizedLabel;
+    for (const sourceId of sourceIds) existing.sourceIds.add(sourceId);
+    for (const documentId of documentIds) existing.documentIds.add(documentId);
+    for (const projectId of projectIds) existing.projectIds.add(projectId);
+    themeContextMap.set(key, existing);
+  };
+
+  for (const theme of deterministicThemes) {
+    upsertThemeContext(theme.label, null, theme.sourceIds);
+  }
+  for (const theme of aiEnhancement.themes) {
+    upsertThemeContext(theme.label, theme.detail, theme.sourceIds, theme.documentIds, theme.projectIds);
+  }
+
+  const themeContexts = [...themeContextMap.values()]
+    .filter((theme) => theme.sourceIds.size > 0)
+    .sort((left, right) => {
+      const leftWeight = left.sourceIds.size * 2 + left.documentIds.size + left.projectIds.size;
+      const rightWeight = right.sourceIds.size * 2 + right.documentIds.size + right.projectIds.size;
+      return rightWeight - leftWeight || left.label.localeCompare(right.label);
+    })
+    .slice(0, KNOWLEDGE_GRAPH_THEME_OUTPUT_LIMIT);
+
+  const themes = themeContexts.map((theme) => ({
+    id: theme.id,
+    label: theme.label,
+    count: theme.sourceIds.size,
+    sourceIds: [...theme.sourceIds],
+  }));
+
+  const themeLookup = new Map(themeContexts.map((theme) => [theme.label.toLowerCase(), theme]));
+
+  const coverageMap = new Map<string, ThesisKnowledgeCoverageSummary>();
+  for (const hydratedSource of hydratedSources) {
+    const label = getChapterLabel(hydratedSource.source.chapterTarget);
+    const key = `chapter:${hydratedSource.source.chapterTarget}`;
+    const existing = coverageMap.get(key) ?? { id: key, label, count: 0, sourceIds: [] };
+    existing.count += 1;
+    existing.sourceIds.push(hydratedSource.source.id);
+    coverageMap.set(key, existing);
+  }
+
+  const repeatedCredits = new Map<string, { label: string; sourceIds: Set<string> }>();
+  for (const hydratedSource of hydratedSources) {
+    for (const creditLabel of getCreditLabels(hydratedSource.credit)) {
+      const key = creditLabel.toLowerCase();
+      const existing = repeatedCredits.get(key) ?? { label: creditLabel, sourceIds: new Set<string>() };
+      existing.sourceIds.add(hydratedSource.source.id);
+      repeatedCredits.set(key, existing);
+    }
+  }
+
+  const creditNodes = [...repeatedCredits.entries()]
+    .filter(([, value]) => value.sourceIds.size > 0)
+    .sort((left, right) => right[1].sourceIds.size - left[1].sourceIds.size || left[1].label.localeCompare(right[1].label))
+    .map(([key, value]) => ({
+      id: `credit:${key}`,
+      label: value.label,
+      kind: 'credit' as const,
+      size: 18 + value.sourceIds.size * 2,
+      score: value.sourceIds.size,
+      detail: `${value.label} is connected to ${value.sourceIds.size} thesis source${value.sourceIds.size === 1 ? '' : 's'}.`,
+      meta: ['Credit node'],
+      relatedSourceIds: [...value.sourceIds],
+    }));
+  const creditNodeIds = new Set(creditNodes.map((node) => node.id));
+
+  const sourceNodes: ThesisKnowledgeGraphNode[] = hydratedSources.map((hydratedSource) => ({
+    id: hydratedSource.source.id,
+    label: hydratedSource.title,
+    kind: 'source',
+    size: 24 + hydratedSource.terms.length,
+    score: 3 + hydratedSource.terms.length + (hydratedSource.hydrated ? 2 : 0) + Math.min(4, hydratedSource.extractedReferences.length),
+    detail: hydratedSource.detail,
+    meta: uniqueStrings([
+      hydratedSource.source.type,
+      hydratedSource.source.sourceKind.replace(/_/g, ' '),
+      hydratedSource.source.role,
+      hydratedSource.source.year,
+      hydratedSource.venue,
+      hydratedSource.extractedReferences.length > 0 ? `${hydratedSource.extractedReferences.length} cited refs` : null,
+    ], 5),
+    relatedSourceIds: [hydratedSource.source.id],
+  }));
+
+  const themeNodes: ThesisKnowledgeGraphNode[] = themeContexts.map((theme) => ({
+    id: theme.id,
+    label: theme.label,
+    kind: 'theme',
+    size: 18 + Math.min(14, theme.sourceIds.size * 2 + theme.documentIds.size + theme.projectIds.size),
+    score: theme.sourceIds.size * 2 + theme.documentIds.size + theme.projectIds.size,
+    detail: theme.detail ?? `${theme.label} appears across ${theme.sourceIds.size} thesis source${theme.sourceIds.size === 1 ? '' : 's'} and acts as a reusable evidence thread.`,
+    meta: uniqueStrings([
+      `${theme.sourceIds.size} connected sources`,
+      theme.documentIds.size > 0 ? `${theme.documentIds.size} linked documents` : null,
+      theme.projectIds.size > 0 ? `${theme.projectIds.size} linked projects` : null,
+    ], 3),
+    relatedSourceIds: [...theme.sourceIds],
+  }));
+
+  const documentNodes: ThesisKnowledgeGraphNode[] = hydratedDocuments.map((hydratedDocument) => ({
+    id: hydratedDocument.document.id,
+    label: hydratedDocument.document.title,
+    kind: 'document',
+    size: 18 + hydratedDocument.terms.length,
+    score: 2 + hydratedDocument.terms.length + (hydratedDocument.linkedSource ? 2 : 0),
+    detail: chooseBestCandidate([
+      hydratedDocument.document.contribution,
+      hydratedDocument.document.description,
+      hydratedDocument.preview,
+    ], 20, 360) ?? 'Supporting document attached to the thesis workspace.',
+    meta: uniqueStrings([
+      hydratedDocument.linkedSource ? `linked to ${hydratedDocument.linkedSource.title}` : 'unlinked document',
+      ...hydratedDocument.terms.slice(0, 3),
+    ], 4),
+    relatedSourceIds: hydratedDocument.linkedSource ? [hydratedDocument.linkedSource.source.id] : [],
+  }));
+
+  const projectNodes: ThesisKnowledgeGraphNode[] = projectContexts.map((projectContext) => ({
+    id: `project:${projectContext.project.id}`,
+    label: projectContext.project.name,
+    kind: 'project',
+    size: 18 + Math.min(10, projectContext.terms.length + projectContext.activeGoals.length),
+    score: 2 + projectContext.terms.length + projectContext.activeGoals.length + Math.min(3, projectContext.events.length),
+    detail: projectContext.detail,
+    meta: uniqueStrings([
+      `${projectContext.activeGoals.length} open tasks`,
+      `${projectContext.completedGoals.length} completed tasks`,
+      `${projectContext.events.length} recent events`,
+      ...projectContext.repoLabels.map((repo) => repo.split('/').slice(-2).join('/')),
+    ], 5),
+    relatedSourceIds: [],
+  }));
+
+  const repoContextMap = new Map<string, {
+    id: string;
+    label: string;
+    normalizedLabel: string;
+    projectIds: Set<string>;
+    projectNames: Set<string>;
+  }>();
+
+  for (const projectContext of projectContexts) {
+    for (const repoLabel of projectContext.repoLabels) {
+      const normalizedLabel = compactWhitespace(repoLabel);
+      if (!normalizedLabel) continue;
+      const key = normalizedLabel.toLowerCase();
+      const existing = repoContextMap.get(key) ?? {
+        id: `repo:${key}`,
+        label: normalizedLabel,
+        normalizedLabel: key,
+        projectIds: new Set<string>(),
+        projectNames: new Set<string>(),
+      };
+      existing.projectIds.add(`project:${projectContext.project.id}`);
+      existing.projectNames.add(projectContext.project.name);
+      repoContextMap.set(key, existing);
+    }
+  }
+
+  const repoNodes: ThesisKnowledgeGraphNode[] = [...repoContextMap.values()]
+    .sort((left, right) => right.projectIds.size - left.projectIds.size || left.label.localeCompare(right.label))
+    .map((repoContext) => ({
+      id: repoContext.id,
+      label: repoContext.label,
+      kind: 'repo' as const,
+      size: 18 + Math.min(8, repoContext.projectIds.size * 2),
+      score: 2 + repoContext.projectIds.size,
+      detail: `${repoContext.label} is linked to ${repoContext.projectIds.size} thesis project${repoContext.projectIds.size === 1 ? '' : 's'}.`,
+      meta: uniqueStrings([
+        `${repoContext.projectIds.size} linked project${repoContext.projectIds.size === 1 ? '' : 's'}`,
+        ...[...repoContext.projectNames].slice(0, 3),
+      ], 4),
+      relatedSourceIds: [],
+    }));
+
+  const nodes: ThesisKnowledgeGraphNode[] = [
+    ...creditNodes,
+    ...themeNodes,
+    ...sourceNodes,
+    ...projectNodes,
+    ...repoNodes,
+    ...documentNodes,
+  ];
+
+  const edgeMap = new Map<string, ThesisKnowledgeGraphEdge>();
+  const addEdge = (edge: ThesisKnowledgeGraphEdge) => {
+    const key = `${edge.kind}:${edge.source}->${edge.target}`;
+    const existing = edgeMap.get(key);
+    if (!existing || edge.strength > existing.strength) {
+      edgeMap.set(key, edge);
+    }
+  };
+
+  for (const hydratedSource of hydratedSources) {
+    for (const term of hydratedSource.terms) {
+      const theme = themeLookup.get(term.toLowerCase());
+      if (!theme) continue;
+      addEdge({
+        id: `${hydratedSource.source.id}->${theme.id}`,
+        source: hydratedSource.source.id,
+        target: theme.id,
+        kind: 'source-theme',
+        strength: 1.4,
+      });
+    }
+
+    for (const creditLabel of getCreditLabels(hydratedSource.credit)) {
+      const creditId = `credit:${creditLabel.toLowerCase()}`;
+      if (creditNodeIds.has(creditId)) {
+        addEdge({
+          id: `${hydratedSource.source.id}->${creditId}`,
+          source: hydratedSource.source.id,
+          target: creditId,
+          kind: 'source-credit',
+          strength: 1.05,
+        });
+      }
+    }
+
+  }
+
+  for (const hydratedDocument of hydratedDocuments) {
+    if (hydratedDocument.linkedSource) {
+      addEdge({
+        id: `${hydratedDocument.document.id}->${hydratedDocument.linkedSource.source.id}`,
+        source: hydratedDocument.document.id,
+        target: hydratedDocument.linkedSource.source.id,
+        kind: 'source-document',
+        strength: 1.5,
+      });
+      continue;
+    }
+
+    for (const term of hydratedDocument.terms.slice(0, 2)) {
+      const theme = themeLookup.get(term.toLowerCase());
+      if (!theme) continue;
+      addEdge({
+        id: `${hydratedDocument.document.id}->${theme.id}`,
+        source: hydratedDocument.document.id,
+        target: theme.id,
+        kind: 'document-theme',
+        strength: 0.95,
+      });
+    }
+  }
+
+  for (const projectContext of projectContexts) {
+    const projectId = `project:${projectContext.project.id}`;
+    const projectTermSet = new Set(projectContext.terms.map((term) => term.toLowerCase()));
+
+    for (const repoLabel of projectContext.repoLabels) {
+      const normalizedRepoLabel = compactWhitespace(repoLabel).toLowerCase();
+      if (!normalizedRepoLabel || !repoContextMap.has(normalizedRepoLabel)) continue;
+      addEdge({
+        id: `${projectId}->repo:${normalizedRepoLabel}`,
+        source: projectId,
+        target: `repo:${normalizedRepoLabel}`,
+        kind: 'project-repo',
+        strength: 1.2,
+      });
+    }
+
+    for (const term of projectContext.terms) {
+      const theme = themeLookup.get(term.toLowerCase());
+      if (!theme) continue;
+      addEdge({
+        id: `${projectId}->${theme.id}`,
+        source: projectId,
+        target: theme.id,
+        kind: 'project-theme',
+        strength: 1.1,
+      });
+    }
+
+    const projectSourceEdges = hydratedSources
+      .reduce<ProjectOverlapEdge[]>((acc, hydratedSource) => {
+        const overlap = hydratedSource.terms.filter((term) => projectTermSet.has(term.toLowerCase()));
+        if (overlap.length === 0) return acc;
+        acc.push({
+          id: `${projectId}->${hydratedSource.source.id}`,
+          source: projectId,
+          target: hydratedSource.source.id,
+          kind: 'project-source',
+          strength: Math.min(2.1, 0.95 + overlap.length * 0.3),
+          overlap,
+        });
+        return acc;
+      }, [])
+      .sort((left, right) => right.overlap.length - left.overlap.length || left.target.localeCompare(right.target))
+      .slice(0, 5)
+      .map(({ overlap, ...edge }) => edge);
+    for (const edge of projectSourceEdges) addEdge(edge);
+
+    const projectDocumentEdges = hydratedDocuments
+      .reduce<ProjectOverlapEdge[]>((acc, hydratedDocument) => {
+        const overlap = hydratedDocument.terms.filter((term) => projectTermSet.has(term.toLowerCase()));
+        if (overlap.length === 0) return acc;
+        acc.push({
+          id: `${projectId}->${hydratedDocument.document.id}`,
+          source: projectId,
+          target: hydratedDocument.document.id,
+          kind: 'project-document',
+          strength: Math.min(1.8, 0.85 + overlap.length * 0.22),
+          overlap,
+        });
+        return acc;
+      }, [])
+      .sort((left, right) => right.overlap.length - left.overlap.length || left.target.localeCompare(right.target))
+      .slice(0, 3)
+      .map(({ overlap, ...edge }) => edge);
+    for (const edge of projectDocumentEdges) addEdge(edge);
+  }
+
+  const sourceSimilarityEdges: ThesisKnowledgeGraphEdge[] = [];
+  for (let index = 0; index < hydratedSources.length; index += 1) {
+    const left = hydratedSources[index];
+    if (!left) continue;
+    const leftThemes = new Set(left.terms.map((term) => term.toLowerCase()));
+    for (let inner = index + 1; inner < hydratedSources.length; inner += 1) {
+      const right = hydratedSources[inner];
+      if (!right) continue;
+      const overlap = right.terms.filter((term) => leftThemes.has(term.toLowerCase()));
+      if (overlap.length < 2) continue;
+      sourceSimilarityEdges.push({
+        id: `${left.source.id}<->${right.source.id}`,
+        source: left.source.id,
+        target: right.source.id,
+        kind: 'source-source',
+        strength: Math.min(2.4, 0.8 + overlap.length * 0.35),
+      });
+    }
+  }
+  for (const edge of sourceSimilarityEdges.slice(0, 18)) addEdge(edge);
+
+  for (const theme of themeContexts) {
+    for (const sourceId of theme.sourceIds) {
+      addEdge({
+        id: `${sourceId}->${theme.id}`,
+        source: sourceId,
+        target: theme.id,
+        kind: 'source-theme',
+        strength: 1.55,
+      });
+    }
+    for (const documentId of theme.documentIds) {
+      addEdge({
+        id: `${documentId}->${theme.id}`,
+        source: documentId,
+        target: theme.id,
+        kind: 'document-theme',
+        strength: 1.12,
+      });
+    }
+    for (const projectId of theme.projectIds) {
+      addEdge({
+        id: `${projectId}->${theme.id}`,
+        source: projectId,
+        target: theme.id,
+        kind: 'project-theme',
+        strength: 1.18,
+      });
+    }
+  }
+
+  for (const link of aiEnhancement.sourceLinks) {
+    addEdge({
+      id: `${link.leftSourceId}<->${link.rightSourceId}:ai`,
+      source: link.leftSourceId,
+      target: link.rightSourceId,
+      kind: 'source-source',
+      strength: link.strength,
+    });
+  }
+  for (const link of aiEnhancement.documentSourceLinks) {
+    addEdge({
+      id: `${link.documentId}->${link.sourceId}:ai`,
+      source: link.documentId,
+      target: link.sourceId,
+      kind: 'source-document',
+      strength: link.strength,
+    });
+  }
+  for (const link of aiEnhancement.projectSourceLinks) {
+    addEdge({
+      id: `${link.projectId}->${link.sourceId}:ai`,
+      source: link.projectId,
+      target: link.sourceId,
+      kind: 'project-source',
+      strength: link.strength,
+    });
+  }
+  for (const link of aiEnhancement.projectDocumentLinks) {
+    addEdge({
+      id: `${link.projectId}->${link.documentId}:ai`,
+      source: link.projectId,
+      target: link.documentId,
+      kind: 'project-document',
+      strength: link.strength,
+    });
+  }
+
+  const edges = [...edgeMap.values()]
+    .sort((left, right) => left.kind.localeCompare(right.kind) || left.source.localeCompare(right.source) || left.target.localeCompare(right.target));
+
+  const strongestTheme = themes[0];
+  const strongestCoverage = [...coverageMap.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))[0];
+  const underdescribedSources = hydratedSources.filter((item) => !item.hydrated && item.source.tags.length === 0 && !item.source.abstract && !item.source.notes);
+  const aiSemanticLinkCount = aiEnhancement.sourceLinks.length
+    + aiEnhancement.documentSourceLinks.length
+    + aiEnhancement.projectSourceLinks.length
+    + aiEnhancement.projectDocumentLinks.length;
+  const mostConnectedProject = projectContexts
+    .map((projectContext) => {
+      const projectId = `project:${projectContext.project.id}`;
+      const projectEdgeCount = edges.filter((edge) => edge.source === projectId || edge.target === projectId).length;
+      return { projectContext, projectEdgeCount };
+    })
+    .sort((left, right) => right.projectEdgeCount - left.projectEdgeCount || left.projectContext.project.name.localeCompare(right.projectContext.project.name))[0];
+
+  return {
+    generatedAt: new Date().toISOString(),
+    stats: {
+      sourceCount: hydratedSources.length,
+      documentCount: hydratedDocuments.length,
+      projectCount: projectContexts.length,
+      themeCount: themes.length,
+      connectionCount: edges.length,
+      hydratedSourceCount: hydratedSources.filter((item) => item.hydrated).length,
+    },
+    nodes,
+    edges,
+    themes,
+    coverage: [...coverageMap.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+    insights: [
+      strongestTheme
+        ? {
+            title: 'Dominant evidence thread',
+            body: `${strongestTheme.label} is the strongest recurring theme right now, with ${strongestTheme.count} connected source${strongestTheme.count === 1 ? '' : 's'} feeding the graph.`,
+          }
+        : null,
+      strongestCoverage
+        ? {
+            title: 'Best-covered chapter target',
+            body: `${strongestCoverage.label} currently has the deepest evidence bench with ${strongestCoverage.count} mapped source${strongestCoverage.count === 1 ? '' : 's'}.`,
+          }
+        : null,
+      mostConnectedProject
+        ? {
+            title: 'Linked project pressure',
+            body: `${mostConnectedProject.projectContext.project.name} is the most connected linked project in the graph right now, with ${mostConnectedProject.projectEdgeCount} evidence relationships touching themes, sources, or supporting documents.`,
+          }
+        : null,
+      aiEnhancement.themes.length > 0 || aiSemanticLinkCount > 0
+        ? {
+            title: 'AI semantic synthesis',
+            body: `AI graph synthesis added ${aiEnhancement.themes.length} refined theme${aiEnhancement.themes.length === 1 ? '' : 's'} and ${aiSemanticLinkCount} higher-signal semantic link${aiSemanticLinkCount === 1 ? '' : 's'} on top of the deterministic graph build.`,
+          }
+        : null,
+      ...aiEnhancement.insights.map((insight, index) => ({
+        title: `AI graph signal ${index + 1}`,
+        body: insight,
+      })),
+      {
+        title: 'Hydrated source coverage',
+        body: `${hydratedSources.filter((item) => item.hydrated).length} of ${hydratedSources.length} source${hydratedSources.length === 1 ? '' : 's'} contributed extra URL or attachment context beyond the manually entered bibliography fields.`,
+      },
+      {
+        title: 'Sources needing more context',
+        body: underdescribedSources.length > 0
+          ? `${underdescribedSources.length} source${underdescribedSources.length === 1 ? '' : 's'} still look sparse and would benefit from better notes, abstracts, or tags before drafting from them.`
+          : 'Every current source has at least some contextual evidence attached, so the graph is not relying only on bare citation records.',
+      },
+    ].filter((item): item is ThesisKnowledgeInsight => Boolean(item)),
+    sourceBriefs: hydratedSources
+      .sort((left, right) => right.terms.length - left.terms.length || left.title.localeCompare(right.title))
+      .slice(0, 6)
+      .map((item) => ({
+        id: item.source.id,
+        title: item.title,
+        summary: item.summary,
+        signals: uniqueStrings([
+          item.source.role,
+          getChapterLabel(item.source.chapterTarget),
+          item.venue,
+          ...item.terms.slice(0, 3),
+        ], 5),
+      })),
   };
 }
 
@@ -2036,7 +3874,7 @@ export async function thesisRoutes(server: FastifyInstance) {
     }
 
     const filename = upload.filename?.trim() || 'upload.pdf';
-    const mimeType = upload.mimetype || 'application/octet-stream';
+    const mimeType = normalizeThesisDocumentMimeType(upload.mimetype || 'application/octet-stream', filename);
     if (!/\.pdf$/i.test(filename) && mimeType !== 'application/pdf') {
       return reply.status(415).send({ error: 'Only PDF uploads are supported here.' });
     }
@@ -2052,7 +3890,7 @@ export async function thesisRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Uploaded PDF is empty.' });
     }
     if (fileBuffer.byteLength > MAX_SOURCE_PDF_BYTES) {
-      return reply.status(413).send({ error: 'Uploaded PDF exceeds the 12 MB limit.' });
+      return reply.status(413).send({ error: 'Uploaded PDF exceeds the 32 MB limit.' });
     }
     if (fileBuffer.byteLength < 5 || !fileBuffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
       return reply.status(415).send({ error: 'Uploaded file is not a valid PDF.' });
@@ -2103,7 +3941,7 @@ export async function thesisRoutes(server: FastifyInstance) {
     }
 
     const filename = upload.filename?.trim() || 'document';
-    const mimeType = upload.mimetype || 'application/octet-stream';
+    const mimeType = normalizeThesisDocumentMimeType(upload.mimetype || 'application/octet-stream', filename);
 
     let fileBuffer: Buffer;
     try {
@@ -2116,7 +3954,7 @@ export async function thesisRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Uploaded document is empty.' });
     }
     if (fileBuffer.byteLength > MAX_SOURCE_PDF_BYTES) {
-      return reply.status(413).send({ error: 'Uploaded document exceeds the 12 MB limit.' });
+      return reply.status(413).send({ error: 'Uploaded document exceeds the 32 MB limit.' });
     }
 
     const extractedTextPreview = await extractDocumentTextPreview(fileBuffer, mimeType, filename);
@@ -2183,7 +4021,7 @@ export async function thesisRoutes(server: FastifyInstance) {
       return reply.status(400).send({ error: 'Uploaded PDF is empty.' });
     }
     if (fileBuffer.byteLength > MAX_SOURCE_PDF_BYTES) {
-      return reply.status(413).send({ error: 'Uploaded PDF exceeds the 12 MB limit.' });
+      return reply.status(413).send({ error: 'Uploaded PDF exceeds the 32 MB limit.' });
     }
     if (fileBuffer.byteLength < 5 || !fileBuffer.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
       return reply.status(415).send({ error: 'Uploaded file is not a valid PDF.' });
@@ -2239,6 +4077,63 @@ export async function thesisRoutes(server: FastifyInstance) {
       const message = error instanceof Error ? error.message : 'Could not parse that URL.';
       const status = /valid absolute url|http and https/i.test(message) ? 400 : 422;
       return reply.status(status).send({ error: message });
+    }
+  });
+
+  server.post<{
+    Body: {
+      sourceLibrary?: unknown;
+      thesisDocuments?: unknown;
+      linkedProjects?: unknown;
+      linkedGoals?: unknown;
+      linkedEvents?: unknown;
+    };
+  }>('/thesis/knowledge/graph', async (request, reply) => {
+    const userId = await requireUser(request.headers.authorization);
+    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const sourceLibrary = Array.isArray(request.body.sourceLibrary)
+      ? request.body.sourceLibrary
+          .map((item) => normalizeSourceLibraryItem(item))
+          .filter((item): item is ThesisSourceLibraryItem => Boolean(item))
+      : [];
+    const thesisDocuments = Array.isArray(request.body.thesisDocuments)
+      ? request.body.thesisDocuments
+          .map((item) => normalizeThesisSupportingDocument(item))
+          .filter((item): item is ThesisSupportingDocumentItem => Boolean(item))
+      : [];
+    const linkedProjects = Array.isArray(request.body.linkedProjects)
+      ? request.body.linkedProjects
+          .map((item) => normalizeThesisKnowledgeLinkedProject(item))
+          .filter((item): item is ThesisKnowledgeLinkedProject => Boolean(item))
+      : [];
+    const linkedGoals = Array.isArray(request.body.linkedGoals)
+      ? request.body.linkedGoals
+          .map((item) => normalizeThesisKnowledgeLinkedGoal(item))
+          .filter((item): item is ThesisKnowledgeLinkedGoal => Boolean(item))
+      : [];
+    const linkedEvents = Array.isArray(request.body.linkedEvents)
+      ? request.body.linkedEvents
+          .map((item) => normalizeThesisKnowledgeLinkedEvent(item))
+          .filter((item): item is ThesisKnowledgeLinkedEvent => Boolean(item))
+      : [];
+
+    try {
+      const enrichedLinkedProjects = await enrichThesisKnowledgeLinkedProjectsWithGitLabRepos(linkedProjects);
+      return {
+        graph: await buildThesisKnowledgeGraph(sourceLibrary, thesisDocuments, enrichedLinkedProjects, linkedGoals, linkedEvents),
+      };
+    } catch (error) {
+      request.log.error({
+        thesisKnowledgeGraph: {
+          userId,
+          sourceCount: sourceLibrary.length,
+          documentCount: thesisDocuments.length,
+          projectCount: linkedProjects.length,
+          error: error instanceof Error ? error.message : 'Unknown knowledge graph error',
+        },
+      }, 'failed to build thesis knowledge graph');
+      return reply.status(500).send({ error: 'Failed to build thesis knowledge graph.' });
     }
   });
 

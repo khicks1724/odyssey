@@ -191,6 +191,7 @@ export default function ReportsTab({
   const [templates, setTemplates] = useState<ProjectReportTemplate[]>([]);
   const [templateLoading, setTemplateLoading] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [goals, setGoals] = useState<Array<{ id: string; title: string }>>([]);
   const templateInputRef = useRef<HTMLInputElement>(null);
   const { filePaths } = useProjectFilePaths(projectId, githubRepo, gitlabRepos);
   const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; initialPath?: string; projectId?: string | null } | null>(null);
@@ -226,6 +227,27 @@ export default function ReportsTab({
       })();
     }
   }, [messages]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data, error: goalsError } = await supabase
+          .from('goals')
+          .select('id,title')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: true });
+        if (!cancelled) {
+          setGoals(goalsError ? [] : (data ?? []));
+        }
+      } catch {
+        if (!cancelled) setGoals([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   useEffect(() => {
     void (async () => {
       setTemplateLoading('fetch');
@@ -844,6 +866,7 @@ export default function ReportsTab({
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
                       onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? projectId : null })}
+                      tasks={goals}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>
@@ -894,6 +917,7 @@ export default function ReportsTab({
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
                       onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? projectId : null })}
+                      tasks={goals}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>

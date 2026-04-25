@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Send, Loader2, Bot, Check, Ban, Plus, Pencil, Trash2, Copy, CheckCheck, AlertTriangle,
   X, FileText, Github, GitBranch, Image, File, ChevronRight, ChevronDown, Mic,
@@ -15,6 +16,7 @@ import RepoTreeModal from './RepoTreeModal';
 import type { Project } from '../types';
 import { useAIErrorDialog } from '../lib/ai-error';
 import { pushUndoAction } from '../lib/undo-manager';
+import { replaceTaskIdsWithTitles } from '../lib/task-refs';
 import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
 import { getGitHubRepos } from '../lib/github';
 import {
@@ -544,6 +546,10 @@ function formatProposalSummary(action: PendingAction): string[] {
   ];
 }
 
+function sanitizeTaskText(text: string | null | undefined, tasks: ProjectGoalCandidate[]): string {
+  return replaceTaskIdsWithTitles(text ?? '', tasks);
+}
+
 function withProposalState(
   messages: Message[],
   msgIdx: number,
@@ -659,6 +665,8 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [contextOpen, setContextOpen] = useState(false);
   const [contextView, setContextView] = useState<'main' | 'docs' | 'repos'>('main');
+  const [contextPos, setContextPos] = useState<{ top: number; left: number } | null>(null);
+  const contextBtnRef = useRef<HTMLButtonElement>(null);
 
   // Project resources (fetched once)
   const [projectDocs,  setProjectDocs]  = useState<ProjectDoc[]>([]);
@@ -854,7 +862,10 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   useEffect(() => {
     function onDown(e: MouseEvent) {
-      if (contextRef.current && !contextRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insidePanel = contextRef.current?.contains(target);
+      const insideBtn = contextBtnRef.current?.contains(target);
+      if (!insidePanel && !insideBtn) {
         setContextOpen(false);
         setContextView('main');
       }
@@ -1872,7 +1883,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                           Task Generation from Notes
                         </p>
                         <p className="text-[10px] text-muted mt-0.5">
-                          <MarkdownWithFileLinks block={false} filePaths={new Map<string, FileRef>()} onFileClick={() => {}} githubRepo={null} gitlabRepos={[]} onRepoClick={() => {}}>
+                          <MarkdownWithFileLinks block={false} filePaths={new Map<string, FileRef>()} onFileClick={() => {}} githubRepo={null} gitlabRepos={[]} onRepoClick={() => {}} tasks={projectGoals}>
                             {msg.content}
                           </MarkdownWithFileLinks>
                         </p>
@@ -2042,6 +2053,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                       githubRepo={githubRepo}
                       gitlabRepos={gitlabRepos}
                       onRepoClick={(repo, type) => setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? resolvedProjectId : null })}
+                      tasks={projectGoals}
                     >
                       {msg.content}
                     </MarkdownWithFileLinks>
@@ -2081,7 +2093,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                             {ACTION_LABELS[action.type]}
                           </div>
                           <p className="text-xs font-semibold text-heading leading-snug">
-                            {action.title ?? action.description}
+                            {sanitizeTaskText(action.title ?? action.description, projectGoals)}
                           </p>
                         </div>
                         <span className="shrink-0 rounded border border-current/20 px-2 py-1 text-[9px] font-mono uppercase tracking-[0.18em] opacity-80">
@@ -2090,7 +2102,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                       </div>
 
                       {action.title && (
-                        <p className="mt-1 text-xs text-heading">{action.description}</p>
+                        <p className="mt-1 text-xs text-heading">{sanitizeTaskText(action.description, projectGoals)}</p>
                       )}
                       {action.reasoning && (
                         <div className="mt-2">
@@ -2101,6 +2113,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                             githubRepo={null}
                             gitlabRepos={[]}
                             onRepoClick={() => {}}
+                            tasks={projectGoals}
                             className="text-[10px] leading-relaxed text-muted"
                           >
                             {action.reasoning}
@@ -2112,7 +2125,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                         <div className="mt-2 rounded border border-current/15 bg-black/10 px-3 py-2">
                           {summaryLines.map((line) => (
                             <p key={line} className="text-[10px] font-mono text-heading/90">
-                              {line}
+                              {sanitizeTaskText(line, projectGoals)}
                             </p>
                           ))}
                         </div>
@@ -2184,12 +2197,22 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         {/* Input row */}
         <div className="px-2 py-1 flex gap-1.5 items-stretch">
           {/* + / dictation stack */}
-          <div className="relative shrink-0 flex self-stretch" ref={contextRef}>
+          <div className="relative shrink-0 flex self-stretch">
             <div className="pc-stack-control">
               <button
                 type="button"
+                ref={contextBtnRef}
                 title="Add context"
-                onClick={() => { setContextOpen((o) => !o); setContextView('main'); }}
+                onClick={() => {
+                  setContextOpen((o) => {
+                    if (!o && contextBtnRef.current) {
+                      const r = contextBtnRef.current.getBoundingClientRect();
+                      setContextPos({ top: r.top, left: r.left });
+                    }
+                    return !o;
+                  });
+                  setContextView('main');
+                }}
                 className={`pc-stack-btn pc-stack-btn--top ${contextOpen ? 'pc-stack-btn--active' : ''}`}
               >
                 <Plus size={14} />
@@ -2211,7 +2234,6 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                 <Mic size={12} />
               </button>
             </div>
-            {contextOpen && <ContextMenu />}
           </div>
 
           {/* Textarea */}
@@ -2262,6 +2284,21 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
         />
       )}
       {aiErrorDialog}
+      {contextOpen && contextPos && createPortal(
+        <div
+          ref={contextRef}
+          style={{
+            position: 'fixed',
+            top: contextPos.top,
+            left: contextPos.left,
+            transform: 'translateY(calc(-100% - 8px))',
+            zIndex: 9999,
+          }}
+        >
+          <ContextMenu />
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }

@@ -32,6 +32,10 @@ function getModelLabel(agent: AIAgentValue): string {
       return 'Google Gemini 2.5 Flash';
     case 'genai-mil':
       return 'GenAI.mil';
+    case 'nvidia':
+      return 'NVIDIA';
+    case 'gemma4':
+      return 'Google Gemma 4';
   }
 }
 

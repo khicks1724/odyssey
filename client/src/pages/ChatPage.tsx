@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import './ChatPage.css';
 import {
   Bot,
@@ -11,6 +12,7 @@ import {
   Image as ImageIcon,
   MessageCircle,
   MessageSquare,
+  Mic,
   Paperclip,
   Plus,
   Search,
@@ -186,6 +188,41 @@ function Avatar({
   );
 }
 
+type BrowserSpeechRecognitionResultLike = {
+  isFinal: boolean;
+  length: number;
+  [index: number]: {
+    transcript: string;
+  };
+};
+
+type BrowserSpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: ArrayLike<BrowserSpeechRecognitionResultLike>;
+};
+
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onresult: ((event: BrowserSpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+  }
+}
+
 export default function ChatPage() {
   const { user } = useAuth();
   const { profile } = useProfile();
@@ -206,11 +243,14 @@ export default function ChatPage() {
   const [search, setSearch] = useState('');
   const [sending, setSending] = useState(false);
   const [hasInput, setHasInput] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [isDictating, setIsDictating] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [creatingDm, setCreatingDm] = useState(false);
   const [contexts, setContexts] = useState<PendingContext[]>([]);
   const [contextOpen, setContextOpen] = useState(false);
   const [contextView, setContextView] = useState<'main' | 'repos' | 'docs'>('main');
+  const [contextPos, setContextPos] = useState<{ top: number; left: number } | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [streamingMsg, setStreamingMsg] = useState<{ content: string; status: string } | null>(null);
@@ -220,10 +260,15 @@ export default function ChatPage() {
   const aiProcessingRef = useRef(false);
   const [gitlabRepos, setGitlabRepos] = useState<string[]>([]);
   const [projectDocs, setProjectDocs] = useState<Array<{ id: string; name: string; text: string }>>([]);
+  const [projectGoals, setProjectGoals] = useState<Array<{ id: string; title: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const contextRef = useRef<HTMLDivElement | null>(null);
+  const contextBtnRef = useRef<HTMLButtonElement | null>(null);
   const creatingDmRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const speechRecognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const dictationBaseInputRef = useRef('');
+  const lastMarkedThreadReadKeyRef = useRef<string | null>(null);
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const { messages, loading: messagesLoading, sendMessage, toggleReaction, last24hMessages } = useChatMessages(selectedThreadId);
   const { people: dmCandidates, loading: dmCandidatesLoading } = useSharedProjectPeople();
@@ -268,6 +313,9 @@ export default function ChatPage() {
       .sort((left, right) => left.displayName.localeCompare(right.displayName));
   }, [dmCandidates]);
 
+  const speechRecognitionSupported = typeof window !== 'undefined'
+    && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+
   useEffect(() => {
     if (!selectedThreadId && threads.length > 0) {
       setSelectedThreadId(threads[0].id);
@@ -292,18 +340,37 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior });
   }, [messages]);
 
+  const selectedThreadUnreadCount = selectedThreadId
+    ? (threadStateByThread[selectedThreadId]?.unread_count ?? 0)
+    : 0;
+  const latestVisibleMessageId = messages[messages.length - 1]?.id ?? null;
+
   useEffect(() => {
-    if (!selectedThreadId || document.visibilityState !== 'visible') return;
+    if (!selectedThreadId || document.visibilityState !== 'visible' || selectedThreadUnreadCount === 0) {
+      return;
+    }
+
+    const readKey = `${selectedThreadId}:${latestVisibleMessageId ?? 'none'}:${selectedThreadUnreadCount}`;
+    if (lastMarkedThreadReadKeyRef.current === readKey) {
+      return;
+    }
+    lastMarkedThreadReadKeyRef.current = readKey;
+
     void markThreadRead(selectedThreadId).catch((error) => {
+      lastMarkedThreadReadKeyRef.current = null;
       console.error('Failed to mark thread read:', error);
     });
-  }, [selectedThreadId, messages.length, markThreadRead]);
+  }, [selectedThreadId, latestVisibleMessageId, selectedThreadUnreadCount, markThreadRead]);
 
   // Clear the AI queue when the user switches threads
   useEffect(() => {
     aiQueueRef.current = [];
     setAiQueueLength(0);
     aiProcessingRef.current = false;
+    setComposerError(null);
+    if (speechRecognitionRef.current) {
+      stopDictation('abort');
+    }
   }, [selectedThreadId]);
 
   const relatedProjectId = selectedThread?.project_id ?? selectedThread?.related_project_id ?? null;
@@ -312,6 +379,7 @@ export default function ChatPage() {
     if (!relatedProjectId) {
       setGitlabRepos([]);
       setProjectDocs([]);
+      setProjectGoals([]);
       return;
     }
 
@@ -324,7 +392,12 @@ export default function ChatPage() {
         .eq('event_type', 'file_upload')
         .order('occurred_at', { ascending: false })
         .limit(8),
-    ]).then(([gitlabRes, docsRes]) => {
+      supabase
+        .from('goals')
+        .select('id,title')
+        .eq('project_id', relatedProjectId)
+        .order('created_at', { ascending: true }),
+    ]).then(([gitlabRes, docsRes, goalsRes]) => {
       const cfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
       setGitlabRepos(getGitLabRepoPaths(cfg));
       const docs = (docsRes.data ?? []).map((doc) => {
@@ -336,6 +409,7 @@ export default function ChatPage() {
         };
       }).filter((doc) => doc.text.trim());
       setProjectDocs(docs);
+      setProjectGoals(goalsRes.error ? [] : (goalsRes.data ?? []));
     });
   }, [selectedThread?.project_id, selectedThread?.related_project_id]);
 
@@ -420,23 +494,149 @@ export default function ChatPage() {
 
   const relatedProject = relatedProjectEarly;
 
-  // Close context menu on outside click
+  const updateContextMenuPosition = () => {
+    const button = contextBtnRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    setContextPos({ top: rect.top, left: rect.left });
+  };
+
   useEffect(() => {
+    if (!contextOpen && !creatingDm) return;
+
     function onDown(e: MouseEvent) {
-      if (contextRef.current && !contextRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insidePanel = contextRef.current?.contains(target);
+      const insideButton = contextBtnRef.current?.contains(target);
+      if (contextOpen && !insidePanel && !insideButton) {
         setContextOpen(false);
         setContextView('main');
       }
-      if (creatingDmRef.current && !creatingDmRef.current.contains(e.target as Node)) {
+      if (creatingDm && creatingDmRef.current && !creatingDmRef.current.contains(target)) {
         setCreatingDm(false);
       }
     }
+
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, []);
+  }, [contextOpen, creatingDm]);
+
+  useEffect(() => {
+    if (!contextOpen) return;
+    updateContextMenuPosition();
+    const handlePositionChange = () => updateContextMenuPosition();
+    window.addEventListener('resize', handlePositionChange);
+    window.addEventListener('scroll', handlePositionChange, true);
+    return () => {
+      window.removeEventListener('resize', handlePositionChange);
+      window.removeEventListener('scroll', handlePositionChange, true);
+    };
+  }, [contextOpen]);
 
   const addRepoContext = (repo: string, repoType: 'github' | 'gitlab') => {
     setContexts((prev) => [...prev, { id: makeId(), type: 'repo', name: repo, repo, repoType }]);
+  };
+
+  const syncComposerInput = (nextValue: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.value = nextValue;
+    const trimmed = nextValue.trim();
+    setHasInput(trimmed.length > 0);
+    setSlashOpen(nextValue.startsWith('/'));
+    setSlashHighlight(0);
+    if (!nextValue.startsWith('/')) setContextOpen(false);
+  };
+
+  const stopDictation = (mode: 'stop' | 'abort' = 'stop') => {
+    const recognition = speechRecognitionRef.current;
+    if (!recognition) return;
+    if (mode === 'abort') {
+      recognition.abort();
+    } else {
+      recognition.stop();
+    }
+  };
+
+  const startDictation = () => {
+    const RecognitionCtor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!RecognitionCtor) {
+      setComposerError('Dictation is not supported in this browser.');
+      return;
+    }
+
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.abort();
+      speechRecognitionRef.current = null;
+    }
+
+    const recognition = new RecognitionCtor();
+    dictationBaseInputRef.current = textareaRef.current?.value ?? '';
+    speechRecognitionRef.current = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || 'en-US';
+
+    recognition.onstart = () => {
+      setIsDictating(true);
+      setComposerError(null);
+      setContextOpen(false);
+      setContextView('main');
+      textareaRef.current?.focus();
+    };
+
+    recognition.onresult = (event) => {
+      let committedText = dictationBaseInputRef.current;
+      let interimText = '';
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const transcript = result?.[0]?.transcript?.trim() ?? '';
+        if (!transcript) continue;
+        if (result.isFinal) {
+          committedText = committedText
+            ? `${committedText}${/\s$/.test(committedText) ? '' : ' '}${transcript}`
+            : transcript;
+        } else {
+          interimText += `${interimText ? ' ' : ''}${transcript}`;
+        }
+      }
+
+      dictationBaseInputRef.current = committedText;
+      const displayValue = interimText
+        ? `${committedText}${committedText && !/\s$/.test(committedText) ? ' ' : ''}${interimText}`
+        : committedText;
+      syncComposerInput(displayValue);
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === 'aborted') return;
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setComposerError('Microphone access was blocked. Allow microphone access to use dictation.');
+      } else {
+        setComposerError('Dictation failed. Try again.');
+      }
+      setIsDictating(false);
+      speechRecognitionRef.current = null;
+    };
+
+    recognition.onend = () => {
+      setIsDictating(false);
+      if (speechRecognitionRef.current === recognition) {
+        speechRecognitionRef.current = null;
+      }
+      syncComposerInput(dictationBaseInputRef.current);
+    };
+
+    recognition.start();
+  };
+
+  const toggleDictation = () => {
+    if (isDictating) {
+      stopDictation('stop');
+      return;
+    }
+    startDictation();
   };
 
   const removeContext = (id: string) => setContexts((prev) => prev.filter((ctx) => ctx.id !== id));
@@ -731,9 +931,18 @@ export default function ChatPage() {
   };
 
   const clearTextarea = () => {
+    if (isDictating) stopDictation('abort');
     if (textareaRef.current) textareaRef.current.value = '';
     setHasInput(false);
+    setSlashOpen(false);
+    setSlashHighlight(0);
   };
+
+  useEffect(() => () => {
+    const recognition = speechRecognitionRef.current;
+    speechRecognitionRef.current = null;
+    recognition?.abort();
+  }, []);
 
   const handleSend = async (overrideInput?: string) => {
     const text = (overrideInput ?? textareaRef.current?.value ?? '').trim();
@@ -806,7 +1015,7 @@ export default function ChatPage() {
 
   // ── Context menu popover ────────────────────────────────────────────────
   const ctxItemCls = 'flex items-center gap-2 w-full px-3 py-2 text-[11px] text-left text-[var(--color-text)] hover:bg-[var(--color-surface2)] hover:text-[var(--color-heading)] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default';
-  const ctxPanelCls = 'absolute bottom-[calc(100%+8px)] left-0 z-60 w-[min(380px,calc(100vw-3rem))] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.35)] overflow-hidden';
+  const ctxPanelCls = 'w-[min(380px,calc(100vw-3rem))] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.35)] overflow-hidden';
 
   function ContextMenu() {
     if (contextView === 'repos') {
@@ -974,8 +1183,8 @@ export default function ChatPage() {
                     </button>
                   ))}
                 </div>
-              </div>
-            )}
+                </div>
+              )}
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-5">
@@ -1210,7 +1419,7 @@ export default function ChatPage() {
                                 }`}
                               >
                                 {message.role === 'assistant' ? (
-                                  <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos} className="text-sm leading-snug break-words cp-prose">
+                                  <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos} tasks={projectGoals} className="text-sm leading-snug break-words cp-prose">
                                     {message.content}
                                   </MarkdownWithFileLinks>
                                 ) : (
@@ -1282,7 +1491,7 @@ export default function ChatPage() {
                           <div className="rounded-2xl border border-accent2/25 bg-surface2 px-3.5 py-2.5 shadow-sm text-heading">
                             {streamingMsg.content ? (
                               <div className="text-sm leading-snug break-words cp-prose">
-                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos}>
+                                <MarkdownWithFileLinks block filePaths={chatFilePaths} onFileClick={handleChatFileClick} onRepoClick={handleRepoClick} githubRepo={relatedGithubRepos} gitlabRepos={gitlabRepos} tasks={projectGoals}>
                                   {streamingMsg.content}
                                 </MarkdownWithFileLinks>
                                 <span className="inline-block w-0.5 h-[1em] bg-accent2 opacity-75 animate-pulse align-middle ml-0.5" />
@@ -1315,6 +1524,12 @@ export default function ChatPage() {
                           </button>
                         </span>
                       ))}
+                    </div>
+                  )}
+
+                  {composerError && (
+                    <div className="rounded-xl border border-danger/25 bg-danger/5 px-3 py-2 text-[11px] font-mono text-danger">
+                      {composerError}
                     </div>
                   )}
 
@@ -1359,26 +1574,57 @@ export default function ChatPage() {
                   <div className="rounded-2xl border border-border bg-surface2 p-2">
 
                     <div className="flex items-end gap-2">
-                      <div className="relative shrink-0 pb-0.5" ref={contextRef}>
-                        <button
-                          type="button"
-                          onClick={() => { setContextOpen((o) => !o); setContextView('main'); setSlashOpen(false); }}
-                          className="w-8 h-8 rounded-lg border border-border text-muted hover:text-heading hover:bg-surface transition-colors flex items-center justify-center"
-                          title="Add context"
-                        >
-                          <Plus size={13} />
-                        </button>
-                        {contextOpen && <ContextMenu />}
+                      <div className="relative shrink-0 flex self-stretch">
+                        <div className="flex h-full flex-col gap-1">
+                          <button
+                            ref={contextBtnRef}
+                            type="button"
+                            onClick={() => {
+                              setContextOpen((open) => {
+                                if (!open) updateContextMenuPosition();
+                                return !open;
+                              });
+                              setContextView('main');
+                              setSlashOpen(false);
+                            }}
+                            className={`w-8 h-8 rounded-lg border border-border text-muted hover:text-heading hover:bg-surface transition-colors flex items-center justify-center ${contextOpen ? 'bg-surface text-heading' : ''}`}
+                            title="Add context"
+                          >
+                            <Plus size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            title={
+                              isDictating
+                                ? 'Stop dictation'
+                                : speechRecognitionSupported
+                                  ? 'Start dictation'
+                                  : 'Dictation unavailable'
+                            }
+                            aria-pressed={isDictating}
+                            onClick={toggleDictation}
+                            disabled={!speechRecognitionSupported && !isDictating}
+                            className={`w-8 h-8 rounded-lg border transition-colors flex items-center justify-center ${
+                              isDictating
+                                ? 'border-danger/40 bg-danger/10 text-danger'
+                                : 'border-border text-muted hover:text-heading hover:bg-surface'
+                            } disabled:opacity-40`}
+                          >
+                            <Mic size={13} />
+                          </button>
+                        </div>
                       </div>
 
                       <textarea
                         ref={textareaRef}
                         onChange={(e) => {
+                          if (isDictating) stopDictation('abort');
                           const val = e.target.value;
                           const nowHasInput = val.trim().length > 0;
                           if (nowHasInput !== hasInput) setHasInput(nowHasInput);
                           setSlashOpen(val.startsWith('/'));
                           setSlashHighlight(0);
+                          setComposerError(null);
                           if (!val.startsWith('/')) setContextOpen(false);
                         }}
                         onKeyDown={(e) => {
@@ -1481,6 +1727,25 @@ export default function ChatPage() {
           )}
         </section>
       </div>
+
+      {contextOpen && contextPos && createPortal(
+        <div
+          ref={contextRef}
+          style={{
+            position: 'fixed',
+            top: contextPos.top,
+            left: contextPos.left,
+            transform: 'translateY(calc(-100% - 8px))',
+            zIndex: 9999,
+            pointerEvents: 'none',
+          }}
+        >
+          <div style={{ pointerEvents: 'auto' }}>
+            <ContextMenu />
+          </div>
+        </div>,
+        document.body,
+      )}
 
       <input
         ref={fileInputRef}

@@ -22,6 +22,9 @@ const LOGIN_THEME_STYLE = {
   '--color-muted': '#6b7a8d',
   '--color-heading': '#0f1f33',
   '--color-accent-fg': '#ffffff',
+  '--color-accent2-fg': '#ffffff',
+  '--color-accent3-fg': '#ffffff',
+  '--color-danger-fg': '#ffffff',
   '--color-code-static': '#1e3a5f',
   '--color-code-static-bg': '#e2ddd4cc',
   '--color-code-static-border': '#c8c0b4cc',
@@ -41,6 +44,9 @@ const LOGIN_THEME_STYLE = {
   '--font-heading-display': '"Syne", sans-serif',
   '--font-scale': '1',
   '--font-tracking': 'normal',
+  backgroundColor: 'var(--color-bg)',
+  color: 'var(--color-text)',
+  colorScheme: 'light',
   fontFamily: 'var(--font-ui)',
 } as CSSProperties;
 
@@ -120,12 +126,12 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="login-theme-scope relative min-h-screen overflow-y-auto" style={LOGIN_THEME_STYLE}>
+    <div className="login-theme-scope relative min-h-screen overflow-y-auto bg-bg text-text" style={LOGIN_THEME_STYLE}>
       <LoginWaveBackground />
 
       <div className="relative z-10 min-h-screen flex flex-col px-6 py-6">
         <div className="flex-1 flex items-center justify-center">
-          <div className="w-full max-w-5xl rounded-[28px] border border-border/80 bg-surface/92 shadow-[0_32px_120px_rgba(15,31,51,0.16)] backdrop-blur-[2px] overflow-hidden">
+          <div className="login-shell w-full max-w-5xl rounded-[28px] border border-border/80 bg-surface/92 shadow-[0_32px_120px_rgba(15,31,51,0.16)] backdrop-blur-[2px] overflow-hidden">
           <div className="flex items-center px-6 h-11 border-b border-border/80 bg-surface/90">
             <DateTime />
           </div>
@@ -133,13 +139,13 @@ export default function LoginPage() {
           <div className="grid lg:grid-cols-[1.1fr_0.9fr]">
             <section className="relative flex items-center px-8 py-10 sm:px-12 sm:py-14 bg-[radial-gradient(circle_at_top_left,_rgba(42,90,143,0.18),_transparent_34%),linear-gradient(135deg,_rgba(255,255,255,0.26),_rgba(42,90,143,0.06))]">
               <div className="max-w-2xl pt-2 sm:pt-4">
-                <h1 className="font-serif text-7xl sm:text-8xl font-bold italic text-heading mb-5">
+                <h1 className="login-wordmark font-serif text-7xl sm:text-8xl font-bold italic text-heading mb-5">
                   <span className="text-accent">Odyssey</span>
                 </h1>
                 <p className="mt-12 text-xs uppercase tracking-[0.35em] text-accent2/80">Project Intelligence</p>
 
                 <div className="mt-10 max-w-xl">
-                  <div className="rounded-2xl border border-border/80 bg-bg/60 px-7 py-5">
+                  <div className="login-panel-card rounded-2xl border border-border/80 bg-bg/60 px-7 py-5">
                     <p className="text-xs uppercase tracking-[0.24em] text-muted mb-2">Username Rules</p>
                     <p className="max-w-md text-sm leading-7 text-heading/85">
                       Usernames must be 3-32 characters. Passwords must be at least 10 characters.
@@ -158,7 +164,7 @@ export default function LoginPage() {
                 <button
                   onClick={signInWithMicrosoft}
                   disabled={submitting}
-                  className="inline-flex w-full items-center justify-center gap-4 rounded-3xl border border-border bg-surface px-6 py-5 text-lg font-semibold tracking-[0.06em] text-heading shadow-[0_18px_48px_rgba(15,31,51,0.12)] transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-70"
+                  className="login-pill login-normal-case login-soft-shadow inline-flex w-full items-center justify-center gap-4 rounded-3xl border border-border bg-surface px-6 py-5 text-lg font-semibold tracking-[0.06em] text-heading transition-colors hover:bg-surface2 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   <svg width="22" height="22" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                     <rect x="1" y="1" width="9" height="9" fill="#F25022"/>
@@ -188,7 +194,7 @@ export default function LoginPage() {
                     value={username}
                     onChange={(event) => setUsername(event.target.value)}
                     placeholder="odyssey_user"
-                    className="w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition focus:border-accent"
+                    className="login-field login-input w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition focus:border-accent"
                     disabled={submitting}
                   />
                 </label>
@@ -202,7 +208,7 @@ export default function LoginPage() {
                       value={displayName}
                       onChange={(event) => setDisplayName(event.target.value)}
                       placeholder="Optional, defaults to username"
-                      className="w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition focus:border-accent"
+                      className="login-field login-input w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-heading outline-none transition focus:border-accent"
                       disabled={submitting}
                     />
                   </label>
@@ -217,14 +223,14 @@ export default function LoginPage() {
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       placeholder={mode === 'signup' ? '10 or more characters' : 'Enter your password'}
-                      className="w-full rounded-2xl border border-border bg-surface px-4 py-3 pr-11 text-sm text-heading outline-none transition focus:border-accent"
+                      className="login-field login-input w-full rounded-2xl border border-border bg-surface px-4 py-3 pr-11 text-sm text-heading outline-none transition focus:border-accent"
                       disabled={submitting}
                     />
                     <button
                       type="button"
                       tabIndex={-1}
                       onClick={() => setShowPassword((v) => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
+                      className="login-normal-case absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
                       aria-label={showPassword ? 'Hide password' : 'Show password'}
                     >
                       {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -233,13 +239,13 @@ export default function LoginPage() {
                 </label>
 
                 {currentError && (
-                  <p className="rounded-2xl border border-danger/20 bg-danger/8 px-4 py-3 text-sm text-danger">
+                  <p className="login-field rounded-2xl border border-danger/20 bg-danger/8 px-4 py-3 text-sm text-danger">
                     {currentError}
                   </p>
                 )}
 
                 {formNotice && (
-                  <p className="rounded-2xl border border-accent2/20 bg-accent2/8 px-4 py-3 text-sm text-heading">
+                  <p className="login-field rounded-2xl border border-accent2/20 bg-accent2/8 px-4 py-3 text-sm text-heading">
                     {formNotice}
                   </p>
                 )}
@@ -247,7 +253,7 @@ export default function LoginPage() {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-full rounded-2xl border border-accent bg-accent px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-accent-fg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
+                  className="login-cta w-full rounded-2xl border border-accent bg-accent px-4 py-3 text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-accent-fg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70"
                   style={{ color: '#f8f4ec', WebkitTextFillColor: '#f8f4ec' }}
                 >
                   {submitting
@@ -264,7 +270,7 @@ export default function LoginPage() {
                         setFormError(null);
                         setFormNotice(null);
                       }}
-                      className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted transition-colors hover:text-heading"
+                      className="login-normal-case text-[11px] font-semibold uppercase tracking-[0.22em] text-muted transition-colors hover:text-heading"
                     >
                       Or create an account
                     </button>
@@ -276,7 +282,7 @@ export default function LoginPage() {
                         setFormError(null);
                         setFormNotice(null);
                       }}
-                      className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted transition-colors hover:text-heading"
+                      className="login-normal-case text-[11px] font-semibold uppercase tracking-[0.22em] text-muted transition-colors hover:text-heading"
                     >
                       Back to sign in
                     </button>

@@ -12,7 +12,7 @@ const TimezoneGlobe = lazyWithRetry(() => import('../components/TimezoneGlobe'),
 
 // ── AI Provider key management ─────────────────────────────────────────────
 
-type AiServiceProvider = 'anthropic' | 'openai' | 'google' | 'google_ai';
+type AiServiceProvider = 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4';
 type OpenAiCredentialMode = 'openai' | 'azure_openai';
 
 interface AiKeyConfig {
@@ -50,8 +50,26 @@ const GENAI_MIL_MODEL_OPTIONS: ProviderModelOption[] = [
   { id: 'genai-mil', label: 'GenAI.mil', description: 'STARK-backed DoD model access' },
 ];
 
+const DEFAULT_NVIDIA_MODEL_ID = 'nvidia/nemotron-3-super-120b-a12b';
+const DEFAULT_GEMMA4_MODEL_ID = 'google/gemma-4-31b-it';
+const NVIDIA_MODEL_OPTIONS: ProviderModelOption[] = [
+  { id: 'nvidia', label: 'NVIDIA', description: 'Use your configured NVIDIA model in the top AI dropdown' },
+];
+const GEMMA4_MODEL_OPTIONS: ProviderModelOption[] = [
+  { id: 'gemma4', label: 'Gemma 4', description: 'Use your configured Gemma 4 model in the top AI dropdown' },
+];
+
 function uniqueModelIds(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function splitMultilineValues(value: string): string[] {
+  return [...new Set(
+    value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean),
+  )];
 }
 
 function getModelCapabilityScore(modelId: string): number {
@@ -132,6 +150,18 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
     placeholder: 'AIza…',
     keyUrl: 'https://aistudio.google.com/app/apikey',
   },
+  nvidia: {
+    label: 'NVIDIA',
+    hint: 'OpenAI-compatible NVIDIA hosted models. Add one `nvapi-...` key per line and Odyssey will fall back across them.',
+    placeholder: 'nvapi-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    keyUrl: 'https://build.nvidia.com/',
+  },
+  gemma4: {
+    label: 'Google Gemma 4',
+    hint: 'Google Gemma 4 served through NVIDIA\'s OpenAI-compatible API. Add one `nvapi-...` key per line and Odyssey will fall back across them.',
+    placeholder: 'nvapi-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    keyUrl: 'https://build.nvidia.com/',
+  },
 };
 
 async function getAuthHeader(): Promise<string | null> {
@@ -165,6 +195,12 @@ function AiProviderCard({
   const [azureEndpoint, setAzureEndpoint] = useState(
     provider === 'openai' ? status?.config?.endpoint ?? '' : '',
   );
+  const [nvidiaModelId, setNvidiaModelId] = useState(
+    provider === 'nvidia' ? status?.config?.preferredModel ?? DEFAULT_NVIDIA_MODEL_ID : DEFAULT_NVIDIA_MODEL_ID,
+  );
+  const [gemma4ModelId, setGemma4ModelId] = useState(
+    provider === 'gemma4' ? status?.config?.preferredModel ?? DEFAULT_GEMMA4_MODEL_ID : DEFAULT_GEMMA4_MODEL_ID,
+  );
   const [selectedModels, setSelectedModels] = useState<string[]>(
     uniqueModelIds(
       status?.config?.enabledModels?.length
@@ -189,15 +225,22 @@ function AiProviderCard({
   const hasKey = status?.hasKey ?? false;
   const isOAuth = status?.credentialType === 'oauth';
   const isAzureOpenAi = provider === 'openai' && openAiMode === 'azure_openai';
+  const isNvidia = provider === 'nvidia';
+  const isGemma4 = provider === 'gemma4';
+  const isNvidiaCompatible = isNvidia || isGemma4;
+  const nvidiaApiKeys = isNvidiaCompatible ? splitMultilineValues(inputKey) : [];
   const keyValue = inputKey;
   const keyPlaceholder = hasKey && !isOAuth
     ? '••••••••••••••••'
     : provider === 'openai' && isAzureOpenAi
       ? 'Azure OpenAI API key'
       : meta.placeholder;
+  const hasReplacementCredential = isNvidiaCompatible ? nvidiaApiKeys.length > 0 : !!inputKey.trim();
   const canSave = provider === 'openai'
-    ? (!!inputKey.trim() || hasKey) && (!isAzureOpenAi || !!azureEndpoint.trim()) && selectedModels.length > 0
-    : (!!inputKey.trim() || hasKey) && selectedModels.length > 0;
+    ? (hasReplacementCredential || hasKey) && (!isAzureOpenAi || !!azureEndpoint.trim()) && selectedModels.length > 0
+    : isNvidiaCompatible
+      ? (hasReplacementCredential || hasKey) && !!(isNvidia ? nvidiaModelId : gemma4ModelId).trim() && selectedModels.length > 0
+      : (hasReplacementCredential || hasKey) && selectedModels.length > 0;
   const availableModelIds = modelOptions.map((option) => option.id);
   const azureDeploymentOptions = isAzureOpenAi
     ? uniqueModelIds([...selectedModels, ...availableModelIds]).map((id) => ({
@@ -212,6 +255,16 @@ function AiProviderCard({
     setOpenAiMode(status?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai');
     setAzureEndpoint(status?.config?.endpoint ?? '');
   }, [provider, status?.config?.endpoint, status?.config?.mode]);
+
+  useEffect(() => {
+    if (provider === 'nvidia') {
+      setNvidiaModelId(status?.config?.preferredModel ?? DEFAULT_NVIDIA_MODEL_ID);
+      return;
+    }
+    if (provider === 'gemma4') {
+      setGemma4ModelId(status?.config?.preferredModel ?? DEFAULT_GEMMA4_MODEL_ID);
+    }
+  }, [provider, status?.config?.preferredModel]);
 
   useEffect(() => {
     const defaults = getDefaultSelectedModelIds(
@@ -261,6 +314,10 @@ function AiProviderCard({
   };
 
   const handleToggleReveal = async () => {
+    if (isNvidiaCompatible) {
+      setShowKey((value) => !value);
+      return;
+    }
     if (!inputKey && hasKey && !isOAuth) {
       setError('Stored keys cannot be revealed. Enter a new key to replace the saved one.');
       return;
@@ -270,6 +327,7 @@ function AiProviderCard({
 
   const handleSave = async () => {
     const trimmed = inputKey.trim();
+    const normalizedNvidiaKeys = isNvidiaCompatible ? splitMultilineValues(inputKey) : [];
     if (!trimmed && !hasKey) {
       setError('API key cannot be empty');
       return;
@@ -277,6 +335,14 @@ function AiProviderCard({
     const trimmedEndpoint = azureEndpoint.trim();
     if (provider === 'openai' && isAzureOpenAi && !trimmedEndpoint) {
       setError('Azure OpenAI endpoint cannot be empty');
+      return;
+    }
+    if (isNvidia && !nvidiaModelId.trim()) {
+      setError('Default NVIDIA model ID cannot be empty');
+      return;
+    }
+    if (isGemma4 && !gemma4ModelId.trim()) {
+      setError('Default Gemma 4 model ID cannot be empty');
       return;
     }
     setError(null);
@@ -292,11 +358,19 @@ function AiProviderCard({
               ...(isAzureOpenAi ? { endpoint: trimmedEndpoint } : {}),
               ...(selectedModels[0] ? { preferredModel: selectedModels[0] } : {}),
             }
-          : {}),
+          : isNvidia
+            ? {
+                preferredModel: nvidiaModelId.trim() || DEFAULT_NVIDIA_MODEL_ID,
+              }
+            : isGemma4
+              ? {
+                  preferredModel: gemma4ModelId.trim() || DEFAULT_GEMMA4_MODEL_ID,
+                }
+            : {}),
         enabledModels: uniqueModelIds(selectedModels),
       };
 
-      const res = trimmed
+      const res = (isNvidiaCompatible ? normalizedNvidiaKeys.length > 0 : !!trimmed)
         ? await fetch('/api/user/ai-keys', {
             method: 'PUT',
             headers: {
@@ -305,7 +379,7 @@ function AiProviderCard({
             },
             body: JSON.stringify({
               provider,
-              apiKey: trimmed,
+              ...(isNvidiaCompatible ? { apiKeys: normalizedNvidiaKeys } : { apiKey: trimmed }),
               config,
             }),
           })
@@ -324,6 +398,11 @@ function AiProviderCard({
       }
 
       setInputKey('');
+      if (isNvidia) {
+        setNvidiaModelId(config.preferredModel ?? DEFAULT_NVIDIA_MODEL_ID);
+      } else if (isGemma4) {
+        setGemma4ModelId(config.preferredModel ?? DEFAULT_GEMMA4_MODEL_ID);
+      }
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
       onSaved(provider);
@@ -355,6 +434,12 @@ function AiProviderCard({
       if (provider === 'openai') {
         setAzureEndpoint('');
       }
+      if (provider === 'nvidia') {
+        setNvidiaModelId(DEFAULT_NVIDIA_MODEL_ID);
+      }
+      if (provider === 'gemma4') {
+        setGemma4ModelId(DEFAULT_GEMMA4_MODEL_ID);
+      }
       onRemoved(provider);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove');
@@ -370,6 +455,7 @@ function AiProviderCard({
       const authHeader = await getAuthHeader();
       if (!authHeader) throw new Error('Not authenticated');
       const trimmedKey = inputKey.trim();
+      const normalizedNvidiaKeys = isNvidiaCompatible ? splitMultilineValues(inputKey) : [];
       const config: AiKeyConfig = {
         ...(provider === 'openai'
           ? {
@@ -377,7 +463,15 @@ function AiProviderCard({
               ...(isAzureOpenAi ? { endpoint: azureEndpoint.trim() } : {}),
               ...(selectedModels[0] ? { preferredModel: selectedModels[0] } : {}),
             }
-          : {}),
+          : isNvidia
+            ? {
+                preferredModel: nvidiaModelId.trim() || DEFAULT_NVIDIA_MODEL_ID,
+              }
+            : isGemma4
+              ? {
+                  preferredModel: gemma4ModelId.trim() || DEFAULT_GEMMA4_MODEL_ID,
+                }
+            : {}),
         enabledModels: uniqueModelIds(selectedModels),
       };
 
@@ -388,7 +482,9 @@ function AiProviderCard({
           Authorization: authHeader,
         },
         body: JSON.stringify({
-          ...(trimmedKey ? { apiKey: trimmedKey } : {}),
+          ...(isNvidiaCompatible
+            ? (normalizedNvidiaKeys.length > 0 ? { apiKeys: normalizedNvidiaKeys } : {})
+            : (trimmedKey ? { apiKey: trimmedKey } : {})),
           config,
         }),
       });
@@ -534,6 +630,28 @@ function AiProviderCard({
         </div>
       )}
 
+      {isNvidiaCompatible && (
+        <div className="space-y-2 border-b border-border/50 pb-3">
+          <div className="space-y-1">
+            <label className="block text-[10px] text-muted">{isNvidia ? 'Default NVIDIA model ID' : 'Default Gemma 4 model ID'}</label>
+            <input
+              type="text"
+              value={isNvidia ? nvidiaModelId : gemma4ModelId}
+              onChange={(e) => {
+                setError(null);
+                if (isNvidia) setNvidiaModelId(e.target.value);
+                else setGemma4ModelId(e.target.value);
+              }}
+              placeholder={isNvidia ? DEFAULT_NVIDIA_MODEL_ID : DEFAULT_GEMMA4_MODEL_ID}
+              className="w-full px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
+            />
+            <p className="text-[10px] text-muted">
+              Odyssey sends this exact model ID to NVIDIA&apos;s OpenAI-compatible API.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-2 border-b border-border/50 pb-3">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] text-muted">Show these models in the top AI dropdown</span>
@@ -600,7 +718,11 @@ function AiProviderCard({
           )}
         </div>
         <p className="text-[10px] text-muted">
-          The first selected model is used as this provider&apos;s default, and new keys start with the most capable model selected by itself.
+          {isNvidia
+            ? 'Enable NVIDIA here to show it in the top AI dropdown. The exact hosted model comes from the NVIDIA model ID above.'
+            : isGemma4
+              ? 'Enable Gemma 4 here to show it in the top AI dropdown. The exact hosted model comes from the Gemma 4 model ID above.'
+            : 'The first selected model is used as this provider&apos;s default, and new keys start with the most capable model selected by itself.'}
         </p>
       </div>
 
@@ -608,7 +730,13 @@ function AiProviderCard({
       <div className="space-y-2">
         <div className="flex items-center gap-1 mb-1">
           <span className="text-[10px] text-muted">
-            {provider === 'openai' && isAzureOpenAi ? 'Azure OpenAI key' : 'API key'}
+            {provider === 'openai' && isAzureOpenAi
+              ? 'Azure OpenAI key'
+              : isNvidia
+                ? 'NVIDIA API keys'
+                : isGemma4
+                  ? 'Gemma 4 API keys'
+                : 'API key'}
           </span>
           {(!isAzureOpenAi || provider !== 'openai') && (
             <a
@@ -621,25 +749,44 @@ function AiProviderCard({
             </a>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-start gap-2">
           <div className="relative flex-1">
-            <input
-              type={showKey ? 'text' : 'password'}
-              value={keyValue}
-              onChange={(e) => { setError(null); setInputKey(e.target.value); }}
-              placeholder={keyPlaceholder}
-              className="w-full px-3 py-1.5 pr-8 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
-            />
-            <button
-              type="button"
-              onClick={handleToggleReveal}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
-              tabIndex={-1}
-              aria-label={showKey ? 'Hide key' : 'Show key'}
-            >
-              {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
-            </button>
+            {isNvidiaCompatible ? (
+              <>
+                <textarea
+                  value={keyValue}
+                  onChange={(e) => { setError(null); setInputKey(e.target.value); }}
+                  placeholder={`One key per line\n${meta.placeholder}`}
+                  rows={4}
+                  className="w-full px-3 py-2 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors resize-y min-h-[96px]"
+                />
+                <p className="mt-1 text-[10px] text-muted">
+                  {isNvidia
+                    ? 'Paste one NVIDIA key per line. Saving replaces the entire stored key set, and Odyssey will try them in order until one works.'
+                    : 'Paste one Gemma 4 key per line. Saving replaces the entire stored key set, and Odyssey will try them in order until one works.'}
+                </p>
+              </>
+            ) : (
+              <>
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  value={keyValue}
+                  onChange={(e) => { setError(null); setInputKey(e.target.value); }}
+                  placeholder={keyPlaceholder}
+                  className="w-full px-3 py-1.5 pr-8 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
+                />
+                <button
+                  type="button"
+                  onClick={handleToggleReveal}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
+                  tabIndex={-1}
+                  aria-label={showKey ? 'Hide key' : 'Show key'}
+                >
+                  {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                </button>
+              </>
+            )}
           </div>
 
           <button
@@ -655,9 +802,9 @@ function AiProviderCard({
           <button
             type="button"
             onClick={handleTest}
-            disabled={testing || !hasKey}
+            disabled={testing || (!hasKey && !hasReplacementCredential)}
             className="px-3 py-1.5 border border-border text-heading text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-surface2 transition-colors rounded disabled:opacity-40 flex items-center gap-1"
-            title={hasKey ? 'Test stored credential' : 'Save a key first'}
+            title={hasKey || hasReplacementCredential ? 'Test credential' : 'Enter or save a key first'}
           >
             {testing ? <Loader2 size={10} className="animate-spin" /> : null}
             {testing ? 'Testing' : 'Test'}
@@ -843,6 +990,8 @@ export default function SettingsPage() {
     if (provider === 'anthropic') return ANTHROPIC_MODEL_OPTIONS;
     if (provider === 'google_ai') return GOOGLE_AI_MODEL_OPTIONS;
     if (provider === 'google') return GENAI_MIL_MODEL_OPTIONS;
+    if (provider === 'nvidia') return NVIDIA_MODEL_OPTIONS;
+    if (provider === 'gemma4') return GEMMA4_MODEL_OPTIONS;
 
     const openAiProvider = aiProviders.find((entry) => entry.id === 'gpt-4o');
     const rawIds = uniqueModelIds([
@@ -862,7 +1011,7 @@ export default function SettingsPage() {
     }));
   };
 
-  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google'];
+  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'gemma4', 'nvidia', 'google'];
   const isGoogleIdentityLinked = (user?.identities ?? []).some((identity) => identity.provider === 'google');
 
   return (

@@ -252,7 +252,7 @@ function MetricCard({
 
   return (
     <div
-      className="relative rounded-2xl border border-border bg-surface2/40 px-4 py-4 transition-colors hover:bg-surface2/60 focus-within:bg-surface2/60"
+      className="relative border border-border bg-surface p-6 transition-colors hover:bg-surface2/40 focus-within:bg-surface2/40"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocusCapture={() => setOpen(true)}
@@ -268,7 +268,7 @@ function MetricCard({
           <p className="text-[10px] uppercase tracking-[0.22em] text-muted">{label}</p>
           <p className="mt-2 text-2xl font-semibold text-heading">{value}</p>
         </div>
-        <div className="rounded-full border border-border/80 bg-surface px-2.5 py-2">
+        <div className="border border-border bg-surface2 px-3 py-2.5">
           <Icon size={14} className="text-accent" />
         </div>
       </div>
@@ -276,7 +276,7 @@ function MetricCard({
 
       {hoverContent && (
         <div className={`absolute left-0 right-0 top-full z-30 pt-3 transition-all duration-150 ${open ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-2 opacity-0'}`}>
-          <div className="overflow-hidden rounded-[1.35rem] border border-border bg-surface/96 shadow-[0_24px_70px_rgba(15,23,42,0.18)] backdrop-blur-md">
+          <div className="overflow-hidden border border-border bg-surface shadow-[0_24px_70px_rgba(15,23,42,0.18)]">
             <div className="border-b border-border bg-[linear-gradient(135deg,rgba(147,161,183,0.08),rgba(255,255,255,0.03))] px-4 py-3">
               {hoverEyebrow && <p className="text-[9px] uppercase tracking-[0.2em] text-accent">{hoverEyebrow}</p>}
               {hoverTitle && <p className="mt-1 text-sm font-semibold text-heading">{hoverTitle}</p>}
@@ -303,7 +303,7 @@ function DistributionCard({
   const maxTotal = Math.max(...items.map((item) => item.total), 1);
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5">
+    <section className="border border-border bg-surface p-6">
       <div className="flex items-center justify-between gap-3 mb-4">
         <div>
           <h3 className="text-sm font-semibold text-heading">{title}</h3>
@@ -355,7 +355,7 @@ function StatusOverview({
   total: number;
 }) {
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5">
+    <section className="border border-border bg-surface p-6">
       <div className="flex items-center justify-between gap-3 mb-4">
         <div>
           <h3 className="text-sm font-semibold text-heading">Task Status Mix</h3>
@@ -404,7 +404,7 @@ function RankedStats({
   const maxValue = Math.max(...items.map((item) => item.value), 1);
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5">
+    <section className="border border-border bg-surface p-6">
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-heading">{title}</h3>
         <p className="text-xs text-muted mt-1">{subtitle}</p>
@@ -430,7 +430,7 @@ function CadenceChart({ days }: { days: ActivityDay[] }) {
   const maxCount = Math.max(...days.map((day) => day.count), 1);
 
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5">
+    <section className="border border-border bg-surface p-6">
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-heading">Activity Cadence</h3>
         <p className="text-xs text-muted mt-1">Last 14 days of events plus task updates.</p>
@@ -463,7 +463,7 @@ function CadenceChart({ days }: { days: ActivityDay[] }) {
 
 function ContributorBoard({ contributors }: { contributors: ContributorStat[] }) {
   return (
-    <section className="rounded-2xl border border-border bg-surface p-5">
+    <section className="border border-border bg-surface p-6">
       <div className="mb-4">
         <h3 className="text-sm font-semibold text-heading">Contributor Snapshot</h3>
         <p className="text-xs text-muted mt-1">Recent task movement and logged activity by project member.</p>
@@ -900,7 +900,7 @@ function ActivityTab({
   );
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-5">
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Open Tasks"
@@ -1138,7 +1138,7 @@ function ActivityTab({
         />
       </section>
 
-      <section className="rounded-2xl border border-border bg-surface p-5">
+      <section className="border border-border bg-surface p-6">
         <div className="flex items-center justify-between gap-3 mb-4">
           <div>
             <h3 className="text-sm font-semibold text-heading">Repository Activity</h3>
@@ -1198,7 +1198,7 @@ function ActivityTab({
       </section>
 
       {recentGoals.length > 0 && (
-        <section className="rounded-2xl border border-border bg-surface p-5">
+        <section className="border border-border bg-surface p-6">
           <div className="mb-4">
             <h3 className="text-sm font-semibold text-heading">Recent Task Momentum</h3>
             <p className="text-xs text-muted mt-1">Most recently updated tasks, including ownership context and optional AI guidance.</p>
@@ -1297,7 +1297,7 @@ function ActivityTab({
                       {isVisible && !guidance?.loading && (
                         <div className="px-3 pb-2.5">
                           <div className="text-[11px] text-muted leading-relaxed min-w-0">
-                            <MarkdownWithFileLinks block filePaths={new Map()} onFileClick={() => {}}>
+                            <MarkdownWithFileLinks block filePaths={new Map()} onFileClick={() => {}} tasks={goals}>
                               {guidance?.text ?? ''}
                             </MarkdownWithFileLinks>
                           </div>

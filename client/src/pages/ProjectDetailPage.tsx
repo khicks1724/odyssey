@@ -74,6 +74,64 @@ const TimelinePage = lazyWithRetry(() => import('../components/TimelinePage'), '
 const FileViewerLazy = lazyWithRetry(() => import('../components/FileViewer'), 'project-file-viewer');
 const GoalReportModal = lazyWithRetry(() => import('../components/GoalReportModal'), 'project-goal-report');
 
+function stripAiDisplayPrefix(value: string | null | undefined): string {
+  return (value ?? '')
+    .replace(/^\s*(?:json|response|answer)\s*:\s*/i, '')
+    .replace(/^[\s:;\-–—]+/, '')
+    .trim();
+}
+
+function sanitizeAiDisplayList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => typeof item === 'string' ? stripAiDisplayPrefix(item) : '')
+    .filter((item) => item.length > 0);
+}
+
+function sanitizeInsightsPayload(value: {
+  status?: string | null;
+  nextSteps?: unknown;
+  futureFeatures?: unknown;
+  codeInsights?: unknown;
+  provider?: string;
+  generatedAt?: string;
+} | null | undefined) {
+  if (!value) return null;
+  return {
+    status: stripAiDisplayPrefix(value.status),
+    nextSteps: sanitizeAiDisplayList(value.nextSteps),
+    futureFeatures: sanitizeAiDisplayList(value.futureFeatures),
+    codeInsights: sanitizeAiDisplayList(value.codeInsights),
+    provider: value.provider,
+    generatedAt: value.generatedAt,
+  };
+}
+
+function sanitizeStandupPayload(value: {
+  highlights?: string | null;
+  accomplished?: unknown;
+  inProgress?: unknown;
+  blockers?: unknown;
+  period?: { from: string; to: string };
+  commitSummary?: { source: 'github' | 'gitlab'; repo: string; count: number }[];
+  totalCommits?: number;
+  provider?: string;
+  generatedAt?: string;
+} | null | undefined) {
+  if (!value) return null;
+  return {
+    highlights: stripAiDisplayPrefix(value.highlights),
+    accomplished: sanitizeAiDisplayList(value.accomplished),
+    inProgress: sanitizeAiDisplayList(value.inProgress),
+    blockers: sanitizeAiDisplayList(value.blockers),
+    period: value.period ?? { from: '', to: '' },
+    commitSummary: value.commitSummary ?? [],
+    totalCommits: value.totalCommits ?? 0,
+    provider: value.provider,
+    generatedAt: value.generatedAt,
+  };
+}
+
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -598,21 +656,37 @@ export default function ProjectDetailPage() {
       .then(({ data, error }) => {
         if (error) console.error('Failed to load insights:', error);
         if (data) {
-          setInsights({
+          setInsights(sanitizeInsightsPayload({
             status: data.status,
             nextSteps: data.next_steps as string[],
             futureFeatures: data.future_features as string[],
             provider: data.provider,
             generatedAt: data.generated_at,
-          });
+          }));
         }
       });
 
     // Load saved standup report
-    fetch(`${API_BASE}/ai/standup/${projectId}`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data) setStandup(data); })
-      .catch(() => {});
+    supabase
+      .from('standup_reports')
+      .select('highlights, accomplished, in_progress, blockers, period, commit_summary, total_commits, provider, generated_at')
+      .eq('project_id', projectId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setStandup(sanitizeStandupPayload({
+            highlights: data.highlights,
+            accomplished: data.accomplished as string[],
+            inProgress: data.in_progress as string[],
+            blockers: data.blockers as string[],
+            period: data.period as { from: string; to: string },
+            commitSummary: data.commit_summary as { source: 'github' | 'gitlab'; repo: string; count: number }[],
+            totalCommits: data.total_commits,
+            provider: data.provider,
+            generatedAt: data.generated_at,
+          }));
+        }
+      });
 
     // Load GitLab integration (multi-repo)
     supabase
@@ -882,14 +956,15 @@ export default function ProjectDetailPage() {
         showAIError('AI returned an empty response. Try a different model.');
       } else {
         const generatedAt = new Date().toISOString();
-        setInsights({ ...data, generatedAt });
+        const sanitizedInsights = sanitizeInsightsPayload({ ...data, generatedAt });
+        setInsights(sanitizedInsights);
         const { error: upsertErr } = await supabase.from('project_insights').upsert(
           {
             project_id: projectId,
-            status: data.status,
-            next_steps: data.nextSteps,
-            future_features: data.futureFeatures,
-            provider: data.provider ?? agent,
+            status: sanitizedInsights?.status ?? '',
+            next_steps: sanitizedInsights?.nextSteps ?? [],
+            future_features: sanitizedInsights?.futureFeatures ?? [],
+            provider: sanitizedInsights?.provider ?? agent,
             generated_at: generatedAt,
           },
           { onConflict: 'project_id' },
@@ -908,7 +983,6 @@ export default function ProjectDetailPage() {
   const handleGenerateStandup = async () => {
     if (!projectId) return;
     setStandupLoading(true);
-    setStandup(null);
     setStandupError(null);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -925,7 +999,7 @@ export default function ProjectDetailPage() {
         setStandupError(data.error || `Failed (${res.status})`);
         showAIError(data.error || `Failed (${res.status})`, res.status);
       } else {
-        setStandup(data);
+        setStandup(sanitizeStandupPayload(data));
       }
     } catch {
       setStandupError('Network error — is the server running?');

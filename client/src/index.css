@@ -2,8 +2,9 @@
 
 @font-face {
   font-family: "Hornet Display";
-  src: url("../fonts/HornetDisplay-Regular.woff2") format("woff2"),
-       url("../fonts/HornetDisplay-Regular.woff") format("woff");
+  src: url("/fonts/hornet-display-main/HornetDisplay-Regular.woff2") format("woff2"),
+       url("/fonts/hornet-display-main/HornetDisplay-Regular.woff") format("woff"),
+       url("/fonts/hornet-display-main/HornetDisplay-Regular.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -11,8 +12,9 @@
 
 @font-face {
   font-family: "Hornet Display Bold";
-  src: url("../fonts/HornetDisplay-Bold.woff2") format("woff2"),
-       url("../fonts/HornetDisplay-Bold.woff") format("woff");
+  src: url("/fonts/hornet-display-main/HornetDisplay-Bold.woff2") format("woff2"),
+       url("/fonts/hornet-display-main/HornetDisplay-Bold.woff") format("woff"),
+       url("/fonts/hornet-display-main/HornetDisplay-Bold.ttf") format("truetype");
   font-weight: 700;
   font-style: normal;
   font-display: swap;
@@ -81,6 +83,108 @@ body {
   font-size: calc(0.8125em * var(--font-scale));
   line-height: 1.7;
   letter-spacing: var(--font-tracking);
+}
+
+.thesis-milestone-card {
+  background-color: color-mix(in srgb, var(--color-surface2) 90%, var(--color-bg) 10%);
+  border-color: color-mix(in srgb, var(--color-border) 82%, var(--color-heading) 18%);
+  box-shadow:
+    0 16px 36px color-mix(in srgb, var(--color-bg) 68%, #000000 32%),
+    0 0 0 1px color-mix(in srgb, var(--color-surface2) 72%, var(--color-heading) 28%) inset;
+}
+
+.thesis-milestone-card:hover,
+.thesis-milestone-card:focus-visible {
+  background-color: color-mix(in srgb, var(--color-surface2) 95%, var(--color-accent) 5%);
+  box-shadow:
+    0 20px 42px color-mix(in srgb, var(--color-bg) 62%, #000000 38%),
+    0 0 0 1px color-mix(in srgb, var(--color-border) 65%, var(--color-accent) 35%) inset;
+}
+
+.thesis-milestone-card--complete {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent3) 18%, transparent) 0%,
+      transparent 42%
+    ),
+    color-mix(in srgb, var(--color-surface2) 82%, var(--color-accent2) 18%);
+  border-color: color-mix(in srgb, var(--color-border) 42%, var(--color-accent2) 58%);
+  box-shadow:
+    0 18px 40px color-mix(in srgb, var(--color-bg) 64%, #000000 36%),
+    0 0 0 1px color-mix(in srgb, var(--color-accent3) 58%, var(--color-heading) 42%) inset,
+    0 0 0 3px color-mix(in srgb, var(--color-accent2) 14%, transparent);
+}
+
+.thesis-milestone-card--complete:hover,
+.thesis-milestone-card--complete:focus-visible {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent3) 24%, transparent) 0%,
+      transparent 46%
+    ),
+    color-mix(in srgb, var(--color-surface2) 76%, var(--color-accent2) 24%);
+  border-color: color-mix(in srgb, var(--color-border) 30%, var(--color-accent2) 70%);
+  box-shadow:
+    0 22px 46px color-mix(in srgb, var(--color-bg) 58%, #000000 42%),
+    0 0 0 1px color-mix(in srgb, var(--color-accent3) 68%, var(--color-heading) 32%) inset,
+    0 0 0 4px color-mix(in srgb, var(--color-accent2) 18%, transparent);
+}
+
+.thesis-milestone-card-panel {
+  background-color: color-mix(in srgb, var(--color-surface) 38%, var(--color-surface2) 62%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border) 84%, var(--color-heading) 16%) inset;
+}
+
+.thesis-milestone-card--complete .thesis-milestone-card-panel {
+  background-color: color-mix(in srgb, var(--color-surface) 38%, var(--color-surface2) 62%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border) 72%, var(--color-accent2) 28%) inset;
+}
+
+.thesis-milestone-status {
+  letter-spacing: 0.16em;
+}
+
+.thesis-milestone-status--planned {
+  background-color: color-mix(in srgb, var(--color-surface2) 78%, var(--color-bg) 22%);
+  border-color: color-mix(in srgb, var(--color-border) 86%, var(--color-heading) 14%);
+  color: var(--color-muted);
+}
+
+.thesis-milestone-status--in-progress {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent) 16%, transparent) 0%,
+      transparent 100%
+    ),
+    color-mix(in srgb, var(--color-surface2) 68%, var(--color-accent) 32%);
+  border-color: color-mix(in srgb, var(--color-border) 36%, var(--color-accent) 64%);
+  color: color-mix(in srgb, var(--color-heading) 62%, var(--color-accent) 38%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent) inset;
+}
+
+.thesis-milestone-status--complete {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-accent3) 28%, transparent) 0%,
+      transparent 100%
+    ),
+    color-mix(in srgb, var(--color-surface2) 48%, var(--color-accent2) 52%);
+  border-color: color-mix(in srgb, var(--color-border) 18%, var(--color-accent2) 82%);
+  color: color-mix(in srgb, var(--color-heading) 48%, var(--color-accent2) 52%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent3) 36%, transparent) inset,
+    0 0 16px color-mix(in srgb, var(--color-accent2) 16%, transparent);
+}
+
+.thesis-milestone-card--complete .thesis-milestone-status--complete {
+  border-color: color-mix(in srgb, var(--color-border) 10%, var(--color-accent2) 90%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent3) 44%, transparent) inset,
+    0 0 20px color-mix(in srgb, var(--color-accent2) 20%, transparent);
 }
 
 button,
@@ -173,17 +277,22 @@ optgroup:disabled {
 [data-font-theme="mfd"] input,
 [data-font-theme="mfd"] select,
 [data-font-theme="mfd"] textarea {
-  font-family: "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
+  font-family: "Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
 }
 
 [data-font-theme="mfd"] .font-serif,
 [data-font-theme="mfd"] .font-mono {
-  font-family: Consolas, "Lucida Console", "Cascadia Mono", monospace;
-  letter-spacing: 0.03em;
+  font-family: "Hornet Display Bold", "Hornet Display", Bahnschrift, "DIN Alternate", "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .login-theme-scope {
+  color-scheme: light;
+  background-color: var(--color-bg);
+  color: var(--color-text);
   font-family: var(--font-ui);
+  text-shadow: none;
 }
 
 .login-theme-scope button,
@@ -191,6 +300,11 @@ optgroup:disabled {
 .login-theme-scope select,
 .login-theme-scope textarea {
   font: inherit;
+}
+
+.login-theme-scope,
+.login-theme-scope * {
+  text-shadow: none !important;
 }
 
 .login-theme-scope .font-serif {
@@ -203,6 +317,53 @@ optgroup:disabled {
 
 .login-theme-scope .font-mono {
   font-family: var(--font-mono) !important;
+}
+
+.login-theme-scope .login-shell {
+  border-radius: 28px !important;
+  box-shadow: 0 32px 120px rgba(15, 31, 51, 0.16) !important;
+}
+
+.login-theme-scope .login-panel-card,
+.login-theme-scope .login-field,
+.login-theme-scope .login-cta {
+  border-radius: 1rem !important;
+}
+
+.login-theme-scope .login-pill {
+  border-radius: 1.5rem !important;
+}
+
+.login-theme-scope .login-soft-shadow {
+  box-shadow: 0 18px 48px rgba(15, 31, 51, 0.12) !important;
+}
+
+.login-theme-scope .login-wordmark {
+  font-family: var(--font-serif) !important;
+  font-weight: 700 !important;
+  font-style: italic;
+  letter-spacing: normal !important;
+}
+
+.login-theme-scope .login-input {
+  font-family: var(--font-ui) !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  box-shadow: none !important;
+}
+
+.login-theme-scope .login-normal-case {
+  text-transform: none !important;
+}
+
+.login-theme-scope button:focus-visible,
+.login-theme-scope input:focus-visible,
+.login-theme-scope select:focus-visible,
+.login-theme-scope textarea:focus-visible,
+.login-theme-scope a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent2) 55%, white);
+  outline-offset: 2px;
+  box-shadow: none !important;
 }
 
 .odyssey-fill-accent {

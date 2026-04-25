@@ -12,6 +12,7 @@ import GoalEditModal, { type MemberOption } from './GoalEditModal';
 import { useAIErrorDialog } from '../lib/ai-error';
 import { pushUndoAction } from '../lib/undo-manager';
 import MarkdownWithFileLinks from './MarkdownWithFileLinks';
+import { replaceTaskIdsWithTitles } from '../lib/task-refs';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -434,9 +435,10 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
                     <MarkdownWithFileLinks
                       filePaths={new Map()}
                       onFileClick={() => {}}
+                      tasks={goals}
                       className="text-[10px] text-muted leading-relaxed"
                     >
-                      {s.reasoning}
+                      {replaceTaskIdsWithTitles(s.reasoning, goals)}
                     </MarkdownWithFileLinks>
                   </div>
 

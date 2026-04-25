@@ -19,6 +19,10 @@ const listeners = new Set<(snapshot: NotificationStoreSnapshot) => void>();
 let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
 let activeFetchToken = 0;
 
+function sortNotifications(notifications: NotificationItem[]) {
+  return [...notifications].sort((left, right) => right.created_at.localeCompare(left.created_at));
+}
+
 function emitNotificationStore() {
   const snapshot = {
     userId: notificationStore.userId,
@@ -65,8 +69,24 @@ function ensureRealtimeSubscription(userId: string) {
   if (realtimeChannel) return;
   realtimeChannel = supabase
     .channel(`notifications:${userId}`)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, () => {
-      void fetchNotificationsForUser(userId);
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, (payload) => {
+      if (payload.eventType === 'DELETE') {
+        const deletedId = typeof payload.old.id === 'string' ? payload.old.id : null;
+        if (!deletedId) return;
+        setNotificationStore({
+          notifications: notificationStore.notifications.filter((notification) => notification.id !== deletedId),
+        });
+        return;
+      }
+
+      const row = (payload.new ?? null) as NotificationItem | null;
+      if (!row?.id) return;
+      setNotificationStore({
+        notifications: sortNotifications([
+          row,
+          ...notificationStore.notifications.filter((notification) => notification.id !== row.id),
+        ]),
+      });
     })
     .subscribe();
 }

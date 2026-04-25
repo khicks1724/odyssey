@@ -1,3 +1,4 @@
+import { toAbsoluteAppUrl } from './base-path';
 import { supabase } from './supabase';
 
 export const THESIS_PAPER_DRAFT_STORAGE_KEY = 'odyssey-thesis-paper-draft';
@@ -219,6 +220,112 @@ export interface ParsedThesisSourceRecord {
 
 export type ParsedThesisSourcePdf = ParsedThesisSourceRecord;
 export type ParsedThesisSourceUrl = ParsedThesisSourceRecord;
+
+export interface ThesisKnowledgeLinkedProject {
+  id: string;
+  name: string;
+  description: string | null;
+  github_repo: string | null;
+  github_repos: string[] | null;
+}
+
+export interface ThesisKnowledgeLinkedGoal {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string | null;
+  deadline: string | null;
+  status: string;
+  progress: number;
+  category: string | null;
+  loe: string | null;
+}
+
+export interface ThesisKnowledgeLinkedEvent {
+  id: string;
+  project_id: string;
+  source: string;
+  event_type: string;
+  title: string | null;
+  summary: string | null;
+  occurred_at: string;
+}
+
+export type ThesisKnowledgeNodeKind = 'source' | 'theme' | 'document' | 'chapter' | 'credit' | 'reference' | 'project' | 'repo';
+
+export interface ThesisKnowledgeGraphNode {
+  id: string;
+  label: string;
+  kind: ThesisKnowledgeNodeKind;
+  size: number;
+  score: number;
+  detail: string;
+  meta: string[];
+  relatedSourceIds: string[];
+}
+
+export interface ThesisKnowledgeGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind:
+    | 'source-theme'
+    | 'source-document'
+    | 'source-chapter'
+    | 'source-credit'
+    | 'source-source'
+    | 'document-theme'
+    | 'source-reference'
+    | 'project-theme'
+    | 'project-source'
+    | 'project-document'
+    | 'project-repo';
+  strength: number;
+}
+
+export interface ThesisKnowledgeThemeSummary {
+  id: string;
+  label: string;
+  count: number;
+  sourceIds: string[];
+}
+
+export interface ThesisKnowledgeCoverageSummary {
+  id: string;
+  label: string;
+  count: number;
+  sourceIds: string[];
+}
+
+export interface ThesisKnowledgeInsight {
+  title: string;
+  body: string;
+}
+
+export interface ThesisKnowledgeSourceBrief {
+  id: string;
+  title: string;
+  summary: string;
+  signals: string[];
+}
+
+export interface ThesisKnowledgeGraphPayload {
+  generatedAt: string;
+  stats: {
+    sourceCount: number;
+    documentCount: number;
+    projectCount: number;
+    themeCount: number;
+    connectionCount: number;
+    hydratedSourceCount: number;
+  };
+  nodes: ThesisKnowledgeGraphNode[];
+  edges: ThesisKnowledgeGraphEdge[];
+  themes: ThesisKnowledgeThemeSummary[];
+  coverage: ThesisKnowledgeCoverageSummary[];
+  insights: ThesisKnowledgeInsight[];
+  sourceBriefs: ThesisKnowledgeSourceBrief[];
+}
 
 function isBrowser() {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -472,15 +579,50 @@ async function getAuthHeaders() {
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const payload = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) {
-    throw new Error(typeof payload.error === 'string' && payload.error.trim() ? payload.error : 'Request failed.');
+  const rawBody = await response.text();
+  let payload: (T & { error?: string; message?: string }) | null = null;
+  if (rawBody) {
+    try {
+      payload = JSON.parse(rawBody) as T & { error?: string; message?: string };
+    } catch {
+      payload = null;
+    }
   }
-  return payload;
+  if (!response.ok) {
+    const payloadError = payload && typeof payload.error === 'string' && payload.error.trim()
+      ? payload.error.trim()
+      : payload && typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
+        : '';
+    const fallbackText = rawBody && !/^\s*</.test(rawBody) ? rawBody.trim() : '';
+    const sizeLimitMessage = response.status === 413 ? 'Uploaded file exceeds the allowed size limit.' : '';
+    throw new Error(
+      payloadError
+      || fallbackText
+      || sizeLimitMessage
+      || `Request failed (${response.status} ${response.statusText}).`,
+    );
+  }
+  return (payload ?? {}) as T;
+}
+
+function normalizeSignedAttachmentUrl(value: string) {
+  if (typeof window === 'undefined') return value;
+
+  try {
+    const parsed = new URL(value, window.location.origin);
+    if (!parsed.pathname.startsWith('/storage/v1/')) {
+      return parsed.toString();
+    }
+
+    return toAbsoluteAppUrl(`/supabase${parsed.pathname}${parsed.search}${parsed.hash}`);
+  } catch {
+    return value;
+  }
 }
 
 export async function fetchThesisDocument() {
-  const response = await fetch('/api/thesis/document', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/document'), {
     headers: await getAuthHeaders(),
   });
   const payload = await parseJsonResponse<{ document: ThesisDocumentRecord | null }>(response);
@@ -493,7 +635,7 @@ export async function saveThesisDocument(input: {
   snapshot: ThesisPaperSnapshot;
   debug?: unknown;
 }) {
-  const response = await fetch('/api/thesis/document', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/document'), {
     method: 'PUT',
     headers: await getAuthHeaders(),
     body: JSON.stringify(input),
@@ -508,7 +650,7 @@ export async function saveThesisDocument(input: {
 }
 
 export async function fetchThesisSettings() {
-  const response = await fetch('/api/thesis/settings', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/settings'), {
     headers: await getAuthHeaders(),
   });
   return parseJsonResponse<ThesisSettingsRecord>(response);
@@ -519,7 +661,7 @@ export async function fetchThesisRenderPreview(input: {
   workspace: ThesisWorkspace;
   activeFilePath: string | null;
 }, signal?: AbortSignal) {
-  const response = await fetch('/api/thesis/render', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/render'), {
     method: 'POST',
     headers: await getAuthHeaders(),
     body: JSON.stringify(input),
@@ -535,7 +677,7 @@ export async function parseThesisSourcePdf(file: File) {
   formData.append('file', file);
   formData.append('filename', file.name);
 
-  const response = await fetch('/api/thesis/sources/parse-pdf', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/sources/parse-pdf'), {
     method: 'POST',
     headers: {
       Authorization: headers.Authorization,
@@ -547,7 +689,7 @@ export async function parseThesisSourcePdf(file: File) {
 }
 
 export async function parseThesisSourceUrl(url: string) {
-  const response = await fetch('/api/thesis/sources/parse-url', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/sources/parse-url'), {
     method: 'POST',
     headers: await getAuthHeaders(),
     body: JSON.stringify({ url }),
@@ -562,7 +704,7 @@ export async function uploadThesisSourcePdf(file: File) {
   formData.append('file', file);
   formData.append('filename', file.name);
 
-  const response = await fetch('/api/thesis/sources/upload-pdf', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/sources/upload-pdf'), {
     method: 'POST',
     headers: {
       Authorization: headers.Authorization,
@@ -579,7 +721,7 @@ export async function uploadThesisDocumentAttachment(file: File) {
   formData.append('file', file);
   formData.append('filename', file.name);
 
-  const response = await fetch('/api/thesis/documents/upload', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/documents/upload'), {
     method: 'POST',
     headers: {
       Authorization: headers.Authorization,
@@ -591,20 +733,20 @@ export async function uploadThesisDocumentAttachment(file: File) {
 }
 
 export async function signThesisSourceAttachment(storagePath: string) {
-  const response = await fetch('/api/thesis/sources/sign', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/sources/sign'), {
     method: 'POST',
     headers: await getAuthHeaders(),
     body: JSON.stringify({ storagePath }),
   });
   const payload = await parseJsonResponse<{ url: string }>(response);
-  return payload.url;
+  return normalizeSignedAttachmentUrl(payload.url);
 }
 
 export async function queueThesisSource(input: {
   libraryItem: unknown;
   queueItem: unknown;
 }) {
-  const response = await fetch('/api/thesis/sources/queue', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/sources/queue'), {
     method: 'POST',
     headers: await getAuthHeaders(),
     body: JSON.stringify(input),
@@ -622,7 +764,7 @@ export async function saveThesisSources(input: {
   sourceQueueItems: unknown[];
   thesisDocuments?: unknown[];
 }) {
-  const response = await fetch('/api/thesis/sources/save', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/sources/save'), {
     method: 'PUT',
     headers: await getAuthHeaders(),
     body: JSON.stringify(input),
@@ -636,6 +778,22 @@ export async function saveThesisSources(input: {
   }>(response);
 }
 
+export async function fetchThesisKnowledgeGraph(input: {
+  sourceLibrary: unknown[];
+  thesisDocuments: unknown[];
+  linkedProjects?: ThesisKnowledgeLinkedProject[];
+  linkedGoals?: ThesisKnowledgeLinkedGoal[];
+  linkedEvents?: ThesisKnowledgeLinkedEvent[];
+}) {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/knowledge/graph'), {
+    method: 'POST',
+    headers: await getAuthHeaders(),
+    body: JSON.stringify(input),
+  });
+  const payload = await parseJsonResponse<{ graph: ThesisKnowledgeGraphPayload }>(response);
+  return payload.graph;
+}
+
 export async function saveThesisRepoLink(input: {
   provider: ThesisRepoProvider;
   repository: string;
@@ -645,7 +803,7 @@ export async function saveThesisRepoLink(input: {
   autosaveEnabled?: boolean;
   token?: string | null;
 }) {
-  const response = await fetch('/api/thesis/settings/repo', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/settings/repo'), {
     method: 'PUT',
     headers: await getAuthHeaders(),
     body: JSON.stringify(input),
@@ -654,7 +812,7 @@ export async function saveThesisRepoLink(input: {
 }
 
 export async function deleteThesisRepoLink() {
-  const response = await fetch('/api/thesis/settings/repo', {
+  const response = await fetch(toAbsoluteAppUrl('/api/thesis/settings/repo'), {
     method: 'DELETE',
     headers: await getAuthHeaders(),
   });

@@ -13,11 +13,17 @@ interface FilterDropdownProps {
   sections: FilterSection[];
   onChange: (sectionKey: string, selected: string[]) => void;
   placeholder?: string;
+  buttonClassName?: string;
 }
 
 interface Pos { top: number; left: number; width: number }
 
-export default function FilterDropdown({ sections, onChange, placeholder = 'Filters' }: FilterDropdownProps) {
+export default function FilterDropdown({
+  sections,
+  onChange,
+  placeholder = 'Filters',
+  buttonClassName = '',
+}: FilterDropdownProps) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<Pos>({ top: 0, left: 0, width: 200 });
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -167,7 +173,7 @@ export default function FilterDropdown({ sections, onChange, placeholder = 'Filt
         type="button"
         onClick={handleOpen}
         className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-[10px] font-mono h-[30px] transition-colors outline-none cursor-pointer
-          ${isActive ? 'border-accent text-heading bg-accent/5' : 'border-border text-muted bg-surface2 hover:text-heading'}`}
+          ${isActive ? 'border-accent text-heading bg-accent/5' : 'border-border text-muted bg-surface2 hover:text-heading'} ${buttonClassName}`}
       >
         <span className="max-w-[200px] truncate">{label}</span>
         {isActive && (

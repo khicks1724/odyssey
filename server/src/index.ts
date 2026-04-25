@@ -24,8 +24,14 @@ import { startNightlyCoordinationRebuild } from './lib/coordination.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isProd = process.env.NODE_ENV === 'production';
+const MAX_APP_BODY_BYTES = 40 * 1024 * 1024;
 
-const server = Fastify({ logger: true });
+const server = Fastify({
+  logger: true,
+  // Keep the app-level parser above route-specific multipart caps so uploads
+  // can reach handlers that enforce their own 25-32 MB file limits.
+  bodyLimit: MAX_APP_BODY_BYTES,
+});
 
 // In production serve the built React app from client/dist
 if (isProd) {
