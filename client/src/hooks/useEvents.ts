@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import { isGeneratedThesisLatexCommitEvent } from '../lib/activity-filters';
 import type { OdysseyEvent } from '../types';
 
@@ -27,7 +27,7 @@ export function useEvents(projectId: string | undefined) {
 
   // Subscribe to realtime events
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`events:${projectId}`)
       .on(

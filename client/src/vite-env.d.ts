@@ -18,5 +18,6 @@ interface Window {
   __ODYSSEY_RUNTIME_CONFIG__?: {
     supabaseUrl?: string;
     supabaseAnonKey?: string;
+    realtimeEnabled?: boolean;
   };
 }

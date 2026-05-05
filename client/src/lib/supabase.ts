@@ -23,6 +23,22 @@ const supabaseUrl = typeof window !== 'undefined'
   : configuredSupabaseUrl;
 const supabaseAnonKey = runtimeConfig?.supabaseAnonKey ?? (import.meta.env.VITE_SUPABASE_ANON_KEY as string);
 
+function isProxyRealtimeCapable(url: string | undefined): boolean {
+  if (typeof window === 'undefined' || !url) return true;
+
+  try {
+    const resolvedUrl = new URL(url);
+    const normalizedPath = resolvedUrl.pathname.replace(/\/+$/, '');
+    const appScopedSupabasePath = `${appBasePath === '/' ? '' : appBasePath}/supabase`;
+
+    return !(resolvedUrl.origin === window.location.origin && normalizedPath === appScopedSupabasePath);
+  } catch {
+    return true;
+  }
+}
+
+export const supabaseRealtimeEnabled = runtimeConfig?.realtimeEnabled ?? isProxyRealtimeCapable(supabaseUrl);
+
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn(
     'Supabase env vars not set. Auth and data features will not work. ' +

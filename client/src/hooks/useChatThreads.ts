@@ -1,6 +1,6 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { ChatMessageRow, ChatThread } from '../types';
 
@@ -220,7 +220,7 @@ function useChatThreadsState() {
   }, [user, fetchThreads]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`chat-threads:${user.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_threads' }, () => fetchThreads())
@@ -234,7 +234,7 @@ function useChatThreadsState() {
 
   // Keep lastMessageByThread up-to-date as new messages arrive
   useEffect(() => {
-    if (!user || threadIds.length === 0) return;
+    if (!user || threadIds.length === 0 || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`chat-previews:${user.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
@@ -406,7 +406,7 @@ export function useChatMessages(threadId: string | null) {
   }, [fetchMessages]);
 
   useEffect(() => {
-    if (!threadId) return;
+    if (!threadId || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`chat-messages:${threadId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages', filter: `thread_id=eq.${threadId}` }, (payload) => {

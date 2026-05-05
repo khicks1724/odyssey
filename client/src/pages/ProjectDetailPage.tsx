@@ -47,7 +47,7 @@ import { useProjectTimeLogs } from '../hooks/useProjectTimeLogs';
 import { useAuth } from '../lib/auth';
 import { useAIAgent } from '../lib/ai-agent';
 import { useChatPanel } from '../lib/chat-panel';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import StatusBadge from '../components/StatusBadge';
 import Modal, { useModal } from '../components/Modal';
 import GoalEditModal from '../components/GoalEditModal';
@@ -785,7 +785,7 @@ export default function ProjectDetailPage() {
   }, [fetchMembers]);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !supabaseRealtimeEnabled) return;
 
     const channel = supabase
       .channel(`project-members:${projectId}`)
@@ -1262,29 +1262,27 @@ export default function ProjectDetailPage() {
 
     for (const g of incomplete) {
       const deadlineMs = new Date(g.deadline!).getTime();
-      const createdMs  = new Date(g.created_at).getTime();
       const daysUntil  = (deadlineMs - now) / 86_400_000;
+      const progress = Math.max(0, Math.min(100, g.progress));
 
       if (daysUntil < 0) { missedCount++; continue; }
 
-      const totalDuration = deadlineMs - createdMs;
-      const elapsed       = now - createdMs;
-      const expected      = totalDuration > 0 ? Math.min(100, (elapsed / totalDuration) * 100) : 0;
-      const deficit       = expected - g.progress;
-
-      if (daysUntil <= 21 && deficit > 40) criticalCount++;
-      else if (daysUntil <= 45 && deficit > 30) behindCount++;
+      if ((daysUntil <= 3 && progress < 75) || (daysUntil <= 7 && progress < 50)) {
+        criticalCount++;
+      } else if ((daysUntil <= 14 && progress < 35) || (daysUntil <= 30 && progress < 15)) {
+        behindCount++;
+      }
     }
 
     const status =
-      (missedCount >= 1 || criticalCount >= 2) ? 'off_track' as const :
-      (criticalCount >= 1 || behindCount >= 2) ? 'at_risk'   as const :
+      (missedCount >= 1 || criticalCount >= 3) ? 'off_track' as const :
+      (criticalCount >= 1 || behindCount >= 3) ? 'at_risk'   as const :
       'on_plan' as const;
 
     const lines: string[] = [`${withDeadlines} of ${total} tasks have deadlines`];
     if (missedCount)   lines.push(`${missedCount} overdue (past deadline)`);
-    if (criticalCount) lines.push(`${criticalCount} critical (≤21 days left, >40pt behind)`);
-    if (behindCount)   lines.push(`${behindCount} at risk (≤45 days left, >30pt behind)`);
+    if (criticalCount) lines.push(`${criticalCount} critical (≤7 days left and <50% complete, or ≤3 days left and <75%)`);
+    if (behindCount)   lines.push(`${behindCount} watch items (≤14 days left and <35% complete, or ≤30 days left and <15%)`);
     if (!missedCount && !criticalCount && !behindCount) lines.push('All deadlines on track');
 
     return { projectStatus: status, statusInsight: lines.join('\n') };

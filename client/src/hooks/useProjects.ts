@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { Project, JoinRequest } from '../types';
 import { generateProjectCode } from '../lib/project-code';
@@ -236,7 +236,7 @@ export function useProjects() {
 
   // Real-time sync — update local state whenever any project row changes in DB
   useEffect(() => {
-    if (!user) return;
+    if (!user || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel('projects-list')
       .on(
@@ -377,7 +377,7 @@ export function useJoinRequests(projectId: string | undefined) {
   useEffect(() => { fetchRequests(); }, [fetchRequests]);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`join-requests:${projectId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'join_requests', filter: `project_id=eq.${projectId}` }, () => {

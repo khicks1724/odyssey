@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, FileText, Paperclip, Send, Trash2, Download, Loader2, MessageSquare } from 'lucide-react';
 import type { Goal, GoalComment } from '../types';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { pushUndoAction } from '../lib/undo-manager';
 
@@ -94,6 +94,7 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
 
   // Realtime subscription for new comments
   useEffect(() => {
+    if (!supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`goal-comments-${goal.id}`)
       .on('postgres_changes', {

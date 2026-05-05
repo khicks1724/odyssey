@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { NotificationItem } from '../types';
 
@@ -66,7 +66,7 @@ async function fetchNotificationsForUser(userId: string) {
 }
 
 function ensureRealtimeSubscription(userId: string) {
-  if (realtimeChannel) return;
+  if (!supabaseRealtimeEnabled || realtimeChannel) return;
   realtimeChannel = supabase
     .channel(`notifications:${userId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` }, (payload) => {
