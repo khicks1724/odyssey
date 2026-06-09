@@ -51,12 +51,35 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+// Hard-bound every Supabase request. Without a timeout, a single stalled request
+// (notably a token refresh going through the subpath proxy) hangs forever, which
+// holds the gotrue auth Web Lock and blocks every later getSession()/query —
+// surfacing as the app freezing on a page until the user manually refreshes.
+const SUPABASE_FETCH_TIMEOUT_MS = 20000;
+
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  // Respect a caller-provided signal while also enforcing our own timeout.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SUPABASE_FETCH_TIMEOUT_MS);
+
+  const callerSignal = init?.signal;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+}
+
 export const supabase = createClient(
   supabaseUrl ?? 'https://placeholder.supabase.co',
   supabaseAnonKey ?? 'placeholder',
   {
     auth: {
       flowType: 'pkce',
+    },
+    global: {
+      fetch: fetchWithTimeout,
     },
   },
 );

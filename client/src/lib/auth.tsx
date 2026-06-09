@@ -66,20 +66,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let active = true;
+
+    // Apply a new session, but keep the SAME user/session object references when
+    // nothing meaningful changed. onAuthStateChange fires on every TOKEN_REFRESHED
+    // (and on tab focus); without this guard each fire produced a brand-new `user`
+    // object reference, retriggering every `[user]` effect across the app and
+    // causing redundant refetch storms (the page-load sluggishness).
+    const applySession = (nextSession: Session | null) => {
+      if (!active) return;
+      setSession((prev) => (prev?.access_token === nextSession?.access_token ? prev : nextSession));
+      setUser((prev) => {
+        const nextUser = nextSession?.user ?? null;
+        if (prev?.id === nextUser?.id) return prev; // same identity — keep reference
+        return nextUser;
+      });
+    };
+
+    // Never let a hung getSession() (e.g. a stalled token refresh holding the
+    // gotrue lock) leave the app permanently stuck on the "Loading…" screen.
+    const initTimeout = window.setTimeout(() => {
+      if (active) setLoading(false);
+    }, 8000);
+
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+      if (!active) return;
+      window.clearTimeout(initTimeout);
+      applySession(session);
+      setLoading(false);
+    }).catch(() => {
+      if (!active) return;
+      window.clearTimeout(initTimeout);
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+        applySession(session);
       },
     );
 
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      window.clearTimeout(initTimeout);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const getRedirectTo = () => {

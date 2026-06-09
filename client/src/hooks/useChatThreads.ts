@@ -82,11 +82,20 @@ function useChatThreadsState() {
     if (syncResult.error) {
       const msg = syncResult.error.message.toLowerCase();
       const missing = msg.includes('could not find the function public.sync_my_project_chat_memberships') || msg.includes('schema cache');
-      // Transient network failures (auth token refresh in flight, brief proxy
-      // hiccup) surface as "Failed to fetch" — they self-recover on the next
-      // fetch, so don't spam the console with them.
-      const transientNetwork = msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('load failed');
-      if (!missing && !transientNetwork) {
+      // Transient infrastructure failures self-recover on the next fetch, so
+      // don't spam the console with them: "Failed to fetch" (network/abort),
+      // and upstream gateway hiccups that come back as 502/503/504 or an HTML
+      // error page body instead of JSON.
+      const transient =
+        msg.includes('failed to fetch') ||
+        msg.includes('networkerror') ||
+        msg.includes('load failed') ||
+        msg.includes('aborted') ||
+        msg.includes('502') || msg.includes('503') || msg.includes('504') ||
+        msg.includes('bad gateway') || msg.includes('gateway time') ||
+        msg.includes('service unavailable') ||
+        msg.includes('<html') || msg.includes('<!doctype');
+      if (!missing && !transient) {
         console.error('Failed to sync chat memberships:', syncResult.error);
       }
     }
