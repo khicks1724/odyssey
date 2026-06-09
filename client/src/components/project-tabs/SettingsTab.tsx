@@ -297,6 +297,14 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
               placeholder={savedToken ? '••••••••••••••••' : 'Paste your personal access token'}
+              name="gitlab-pat"
+              autoComplete="new-password"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
               className={`${inputCls} pr-10`}
             />
             <button
@@ -324,6 +332,14 @@ function GitLabSection({ projectId, onReposChanged }: { projectId: string; onRep
               onChange={(e) => setRepoInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleLink()}
               placeholder="https://gitlab.example.com/group/project-name"
+              name="gitlab-repo-url"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
               className={inputCls}
             />
             <button type="button" onClick={handleLink} disabled={saving || !repoInput.trim()}
@@ -1781,6 +1797,14 @@ function SettingsTab({
               value={repoInput}
               onChange={(e) => setRepoInput(e.target.value)}
               placeholder="https://github.com/owner/repo.git"
+              name="github-repo-url"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
               className="flex-1 px-4 py-3 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded"
             />
             <button

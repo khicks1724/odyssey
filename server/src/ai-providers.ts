@@ -900,15 +900,14 @@ export function clearProviderError(provider: AIProvider, credential?: ProviderCr
 }
 
 export function getAvailableProviders(): { id: AIProvider; name: string; available: boolean; status: ProviderStatus }[] {
+  // Google (Gemini / gemini-pro), NVIDIA, and Google Gemma 4 are intentionally
+  // excluded sitewide — they are not offered in the model dropdown or Settings.
   return [
     { id: 'claude-haiku',  name: 'Claude Haiku',       available: false, status: 'no_key' },
     { id: 'claude-sonnet', name: 'Claude Sonnet 4.6',  available: false, status: 'no_key' },
     { id: 'claude-opus',   name: 'Claude Opus 4.6',    available: false, status: 'no_key' },
     { id: 'gpt-4o',        name: 'GPT-4o',             available: false, status: 'no_key' },
-    { id: 'gemini-pro',    name: 'Gemini 2.5 Flash',   available: false, status: 'no_key' },
     { id: 'genai-mil',     name: 'GenAI.mil (STARK)',  available: false, status: 'no_key' },
-    { id: 'nvidia',        name: 'NVIDIA',             available: false, status: 'no_key' },
-    { id: 'gemma4',        name: 'Gemma 4',            available: false, status: 'no_key' },
   ];
 }
 

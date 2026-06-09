@@ -8,7 +8,6 @@ import { promisify } from 'node:util';
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import { getUserFromAuthHeader } from '../lib/request-auth.js';
 import { supabase } from '../lib/supabase.js';
-import { getGitLabToken, storeGitLabToken } from '../lib/gitlab-token.js';
 import {
   createDefaultThesisDocumentSeed,
   DEFAULT_THESIS_EXAMPLE_PATH,
@@ -16,41 +15,12 @@ import {
 } from '../lib/thesis-default.js';
 import { chat, getServerOpenAiCredential, getServerOpenAiPrimaryModel, type AIProviderSelection } from '../ai-providers.js';
 
-type RepoProvider = 'github' | 'gitlab';
-
 type ThesisDocumentRow = {
   user_id: string;
   draft: string;
   editor_theme: string | null;
   snapshot: unknown;
-  repo_sync_status: 'idle' | 'saved' | 'error';
-  repo_sync_error: string | null;
-  repo_synced_at: string | null;
   updated_at: string;
-};
-
-type ThesisRepoLinkRow = {
-  id: string;
-  user_id: string;
-  provider: RepoProvider;
-  repo: string;
-  host: string | null;
-  branch: string | null;
-  file_path: string;
-  file_paths: unknown;
-  sync_all_workspace_files: boolean;
-  last_synced_file_paths: unknown;
-  autosave_enabled: boolean;
-  token_encrypted: string | null;
-  token_iv: string | null;
-  token_auth_tag: string | null;
-  updated_at: string;
-};
-
-type EncryptedTokenFields = {
-  tokenEncrypted?: string | null;
-  tokenIv?: string | null;
-  tokenAuthTag?: string | null;
 };
 
 type GitLabIntegrationConfig = {
@@ -65,21 +35,9 @@ type GitLabIntegrationConfig = {
   host?: string;
 };
 
-type ProjectMemberRow = {
-  project_id: string;
-};
-
 type GitLabIntegrationRow = {
   project_id: string;
   config: GitLabIntegrationConfig | null;
-};
-
-type UserProjectGitLabTokenRow = {
-  project_id: string;
-  host: string;
-  token_encrypted: string;
-  token_iv: string;
-  token_auth_tag: string;
 };
 
 type ThesisRenderWorkspaceFile = {
@@ -3354,56 +3312,6 @@ function getWorkspaceSummary(snapshot: unknown) {
   };
 }
 
-function encodePathSegments(path: string) {
-  return path.split('/').map((segment) => encodeURIComponent(segment)).join('/');
-}
-
-function normalizeGitHubRepo(input: string) {
-  const trimmed = input.trim();
-  if (!trimmed) throw new Error('GitHub repository is required.');
-  if (/^https?:\/\//i.test(trimmed)) {
-    const url = new URL(trimmed);
-    if (url.hostname !== 'github.com') throw new Error('GitHub repository URL must use github.com.');
-    const repo = url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('GitHub repository must look like owner/repo.');
-    return repo;
-  }
-  const repo = trimmed.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('GitHub repository must look like owner/repo.');
-  return repo;
-}
-
-function normalizeGitLabRepoInput(input: string, hostInput?: string | null) {
-  const trimmed = input.trim();
-  if (!trimmed) throw new Error('GitLab repository is required.');
-
-  if (/^https?:\/\//i.test(trimmed)) {
-    const url = new URL(trimmed);
-    if (url.protocol !== 'https:') throw new Error('GitLab repository URL must start with https://');
-    const repo = url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
-    if (!repo.includes('/')) throw new Error('GitLab repository URL must include the full group/project path.');
-    return { host: url.origin.replace(/\/+$/, ''), repo };
-  }
-
-  const repo = trimmed.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
-  const host = hostInput?.trim().replace(/\/+$/, '') ?? '';
-  if (!host) throw new Error('GitLab host is required when the repository is not a full URL.');
-  if (!/^https:\/\//i.test(host)) throw new Error('GitLab host must start with https://');
-  if (!repo.includes('/')) throw new Error('GitLab repository must include the full group/project path.');
-  return { host, repo };
-}
-
-function normalizeFilePath(input: string | null | undefined) {
-  const filePath = (input ?? '').trim().replace(/^\/+/, '');
-  if (!filePath) return 'main.tex';
-  if (filePath.includes('..')) throw new Error('File path cannot contain "..".');
-  return filePath;
-}
-
-function normalizeGitLabHost(host: string | null | undefined) {
-  return (host ?? '').trim().replace(/\/+$/, '');
-}
-
 function normalizeGitLabRepoPath(repo: string | null | undefined) {
   return (repo ?? '').trim().replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
 }
@@ -3415,34 +3323,6 @@ function getGitLabRepoPaths(config: GitLabIntegrationConfig | null | undefined) 
   return [...new Set([repoPath, ...repos, repo].filter((value): value is string => Boolean(value)).map(normalizeGitLabRepoPath))];
 }
 
-function getGitLabHost(config: GitLabIntegrationConfig | null | undefined) {
-  if (config?.host?.trim()) return normalizeGitLabHost(config.host);
-  if (config?.repoUrl?.trim()) {
-    try {
-      return normalizeGitLabHost(new URL(config.repoUrl).origin);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
-
-function normalizeFilePaths(input: unknown, fallbackFilePath: string | null | undefined) {
-  const values = Array.isArray(input) ? input : [];
-  const normalized = [...new Set(values
-    .map((value) => (typeof value === 'string' ? normalizeFilePath(value) : null))
-    .filter((value): value is string => Boolean(value)))];
-  if (normalized.length > 0) return normalized;
-  return [normalizeFilePath(fallbackFilePath)];
-}
-
-function normalizeOptionalFilePaths(input: unknown) {
-  const values = Array.isArray(input) ? input : [];
-  return [...new Set(values
-    .map((value) => (typeof value === 'string' ? normalizeFilePath(value) : null))
-    .filter((value): value is string => Boolean(value)))];
-}
-
 async function requireUser(authorization: string | undefined) {
   const userId = await getUserFromAuthHeader(authorization);
   return userId;
@@ -3451,7 +3331,7 @@ async function requireUser(authorization: string | undefined) {
 async function getThesisDocument(userId: string): Promise<ThesisDocumentRow | null> {
   const { data, error } = await supabase
     .from('thesis_documents')
-    .select('user_id, draft, editor_theme, snapshot, repo_sync_status, repo_sync_error, repo_synced_at, updated_at')
+    .select('user_id, draft, editor_theme, snapshot, updated_at')
     .eq('user_id', userId)
     .maybeSingle();
   if (error) throw error;
@@ -3482,373 +3362,10 @@ async function seedDefaultThesisDocumentForUser(userId: string): Promise<ThesisD
       draft: seed.draft,
       editor_theme: null,
       snapshot: seed.snapshot,
-      repo_sync_status: 'idle',
-      repo_sync_error: null,
-      repo_synced_at: null,
     });
   if (upsertError) throw upsertError;
 
   return getThesisDocument(userId);
-}
-
-async function getThesisRepoLink(userId: string): Promise<ThesisRepoLinkRow | null> {
-  const { data, error } = await supabase
-    .from('user_thesis_repo_links')
-    .select('id, user_id, provider, repo, host, branch, file_path, file_paths, sync_all_workspace_files, last_synced_file_paths, autosave_enabled, token_encrypted, token_iv, token_auth_tag, updated_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as ThesisRepoLinkRow | null) ?? null;
-}
-
-function mapRepoLink(row: ThesisRepoLinkRow | null) {
-  if (!row) return null;
-  const filePaths = normalizeFilePaths(row.file_paths, row.file_path);
-  return {
-    id: row.id,
-    provider: row.provider,
-    repo: row.repo,
-    host: row.host,
-    filePath: filePaths[0] ?? normalizeFilePath(row.file_path),
-    filePaths,
-    syncAllWorkspaceFiles: row.sync_all_workspace_files,
-    autosaveEnabled: row.autosave_enabled,
-    tokenSaved: Boolean(row.token_encrypted && row.token_iv && row.token_auth_tag),
-    updatedAt: row.updated_at,
-  };
-}
-
-function readStoredToken(row: ThesisRepoLinkRow | null) {
-  if (!row?.token_encrypted || !row.token_iv || !row.token_auth_tag) return '';
-  return getGitLabToken({
-    tokenEncrypted: row.token_encrypted,
-    tokenIv: row.token_iv,
-    tokenAuthTag: row.token_auth_tag,
-  });
-}
-
-async function findLinkedProjectGitLabToken(row: ThesisRepoLinkRow) {
-  if (row.provider !== 'gitlab') return '';
-
-  const repo = normalizeGitLabRepoPath(row.repo);
-  const host = normalizeGitLabHost(row.host);
-  if (!repo || !host) return '';
-
-  const { data: memberships, error: membershipError } = await supabase
-    .from('project_members')
-    .select('project_id')
-    .eq('user_id', row.user_id);
-  if (membershipError) return '';
-
-  const projectIds = ((memberships as ProjectMemberRow[] | null) ?? [])
-    .map((entry) => entry.project_id)
-    .filter(Boolean);
-  if (projectIds.length === 0) return '';
-
-  const [{ data: integrations, error: integrationError }, { data: tokenRows, error: tokenError }] = await Promise.all([
-    supabase
-      .from('integrations')
-      .select('project_id, config')
-      .in('project_id', projectIds)
-      .eq('type', 'gitlab'),
-    supabase
-      .from('user_project_gitlab_tokens')
-      .select('project_id, host, token_encrypted, token_iv, token_auth_tag')
-      .eq('user_id', row.user_id)
-      .in('project_id', projectIds),
-  ]);
-
-  if (integrationError || tokenError) return '';
-
-  const tokenByProjectId = new Map(
-    (((tokenRows as UserProjectGitLabTokenRow[] | null) ?? []).filter((entry) => normalizeGitLabHost(entry.host) === host))
-      .map((entry) => [
-        entry.project_id,
-        getGitLabToken({
-          tokenEncrypted: entry.token_encrypted,
-          tokenIv: entry.token_iv,
-          tokenAuthTag: entry.token_auth_tag,
-        }),
-      ]),
-  );
-
-  for (const integration of (integrations as GitLabIntegrationRow[] | null) ?? []) {
-    const config = integration.config;
-    if (getGitLabHost(config) !== host) continue;
-    if (!getGitLabRepoPaths(config).includes(repo)) continue;
-
-    const userToken = tokenByProjectId.get(integration.project_id)?.trim();
-    if (userToken) return userToken;
-
-    const sharedToken = getGitLabToken(config).trim();
-    if (sharedToken) return sharedToken;
-  }
-
-  return '';
-}
-
-async function resolveGitHubBranch(repo: string, token: string, preferredBranch: string | null) {
-  if (preferredBranch) return preferredBranch;
-  const [owner, repoName] = repo.split('/');
-  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}`, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'User-Agent': 'Odyssey-App',
-    },
-  });
-  if (!response.ok) {
-    throw new Error('Failed to read GitHub repository metadata. Check the repository and token permissions.');
-  }
-  const payload = await response.json() as { default_branch?: string };
-  return payload.default_branch?.trim() || 'main';
-}
-
-function getSelectedRepoFiles(row: ThesisRepoLinkRow, snapshot: unknown, fallbackDraft: string) {
-  const workspace = sanitizeRenderWorkspace(snapshot, fallbackDraft);
-  if (row.sync_all_workspace_files) {
-    if (workspace.files.length === 0) {
-      throw new Error('No workspace documents were found to sync.');
-    }
-    return workspace.files;
-  }
-
-  const selectedPaths = normalizeFilePaths(row.file_paths, row.file_path);
-  const workspaceByPath = new Map(workspace.files.map((file) => [file.path, file]));
-  const selectedFiles: ThesisRenderWorkspaceFile[] = [];
-  const seen = new Set<string>();
-
-  for (const selectedPath of selectedPaths) {
-    let match = workspaceByPath.get(selectedPath) ?? null;
-    if (!match) {
-      const basename = selectedPath.split('/').pop();
-      const basenameMatches = workspace.files.filter((file) => file.path.split('/').pop() === basename);
-      if (basenameMatches.length === 1) match = basenameMatches[0];
-    }
-    if (!match || seen.has(match.path)) continue;
-    seen.add(match.path);
-    selectedFiles.push(match);
-  }
-
-  return selectedFiles;
-}
-
-async function syncDraftToGitHub(row: ThesisRepoLinkRow, files: ThesisRenderWorkspaceFile[]) {
-  const token = readStoredToken(row);
-  if (!token) throw new Error('GitHub token is missing for thesis repo autosave.');
-
-  const [owner, repoName] = row.repo.split('/');
-  const branch = await resolveGitHubBranch(row.repo, token, row.branch);
-  const headers = {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'User-Agent': 'Odyssey-App',
-  };
-
-  for (const file of files) {
-    const filePath = normalizeFilePath(file.path);
-    const fileBuffer = getWorkspaceFileBuffer(file);
-    const fileUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodePathSegments(filePath)}?ref=${encodeURIComponent(branch)}`;
-    const currentResponse = await fetch(fileUrl, { headers });
-    let sha: string | undefined;
-    if (currentResponse.ok) {
-      const current = await currentResponse.json() as { sha?: string; content?: string; encoding?: string };
-      sha = current.sha;
-      if (current.content && current.encoding === 'base64') {
-        const existing = Buffer.from(current.content.replace(/\n/g, ''), 'base64');
-        if (existing.equals(fileBuffer)) continue;
-      }
-    } else if (currentResponse.status !== 404) {
-      throw new Error('Failed to read the target file from GitHub.');
-    }
-
-    const updateResponse = await fetch(
-      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${encodePathSegments(filePath)}`,
-      {
-        method: 'PUT',
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: `Update thesis LaTeX file ${filePath} from Odyssey`,
-          content: fileBuffer.toString('base64'),
-          branch,
-          ...(sha ? { sha } : {}),
-        }),
-      },
-    );
-
-    if (!updateResponse.ok) {
-      const message = await updateResponse.text().catch(() => '');
-      throw new Error(`GitHub save failed: ${message.slice(0, 200) || updateResponse.statusText}`);
-    }
-  }
-}
-
-async function resolveGitLabBranch(row: ThesisRepoLinkRow, token: string) {
-  if (row.branch?.trim()) return row.branch.trim();
-  const projectId = encodeURIComponent(row.repo);
-  const headers = { 'PRIVATE-TOKEN': token };
-  let lastFailure = '';
-
-  const response = await fetch(`${row.host}/api/v4/projects/${projectId}`, { headers });
-  if (response.ok) {
-    const payload = await response.json() as { default_branch?: string };
-    if (payload.default_branch?.trim()) return payload.default_branch.trim();
-  } else {
-    const message = await response.text().catch(() => '');
-    lastFailure = `GitLab ${response.status}: ${message.slice(0, 200) || response.statusText}`;
-  }
-
-  for (const candidate of ['main', 'master']) {
-    const branchResponse = await fetch(
-      `${row.host}/api/v4/projects/${projectId}/repository/branches/${encodeURIComponent(candidate)}`,
-      { headers },
-    );
-    if (branchResponse.ok) return candidate;
-    const message = await branchResponse.text().catch(() => '');
-    lastFailure = `GitLab ${branchResponse.status}: ${message.slice(0, 200) || branchResponse.statusText}`;
-  }
-
-  const branchesResponse = await fetch(
-    `${row.host}/api/v4/projects/${projectId}/repository/branches?per_page=1`,
-    { headers },
-  );
-  if (branchesResponse.ok) {
-    const payload = await branchesResponse.json() as Array<{ name?: string }>;
-    const branch = payload.find((item) => item.name?.trim())?.name?.trim();
-    if (branch) return branch;
-  } else {
-    const message = await branchesResponse.text().catch(() => '');
-    lastFailure = `GitLab ${branchesResponse.status}: ${message.slice(0, 200) || branchesResponse.statusText}`;
-  }
-
-  throw new Error(lastFailure ? `Failed to read GitLab repository metadata. ${lastFailure}` : 'Failed to read GitLab repository metadata.');
-}
-
-async function syncDraftToGitLabWithToken(row: ThesisRepoLinkRow, files: ThesisRenderWorkspaceFile[], token: string) {
-  if (!row.host) throw new Error('GitLab host is missing for thesis repo autosave.');
-
-  const branch = await resolveGitLabBranch(row, token);
-  const headers = {
-    'PRIVATE-TOKEN': token,
-    'Content-Type': 'application/json',
-  };
-  const currentPaths = files.map((file) => normalizeFilePath(file.path));
-  const currentPathSet = new Set(currentPaths);
-  const stalePaths = normalizeOptionalFilePaths(row.last_synced_file_paths)
-    .filter((filePath) => !currentPathSet.has(filePath));
-
-  for (const file of files) {
-    const filePath = normalizeFilePath(file.path);
-    const fileBuffer = getWorkspaceFileBuffer(file);
-    const fileEndpoint = `${row.host}/api/v4/projects/${encodeURIComponent(row.repo)}/repository/files/${encodeURIComponent(filePath)}`;
-    const currentResponse = await fetch(`${fileEndpoint}?ref=${encodeURIComponent(branch)}`, { headers: { 'PRIVATE-TOKEN': token } });
-    if (currentResponse.ok) {
-      const current = await currentResponse.json() as { content?: string; encoding?: string };
-      if (current.content && current.encoding === 'base64') {
-        const existing = Buffer.from(current.content, 'base64');
-        if (existing.equals(fileBuffer)) continue;
-      }
-    } else if (currentResponse.status !== 404) {
-      const message = await currentResponse.text().catch(() => '');
-      throw new Error(`GitLab file lookup failed: ${message.slice(0, 200) || currentResponse.statusText}`);
-    }
-
-    const body = JSON.stringify({
-      branch,
-      content: fileBuffer.toString('base64'),
-      encoding: 'base64',
-      commit_message: `Update thesis LaTeX file ${filePath} from Odyssey`,
-    });
-
-    const saveResponse = await fetch(fileEndpoint, {
-      method: currentResponse.status === 404 ? 'POST' : 'PUT',
-      headers,
-      body,
-    });
-
-    if (!saveResponse.ok) {
-      const message = await saveResponse.text().catch(() => '');
-      throw new Error(`GitLab save failed: ${message.slice(0, 200) || saveResponse.statusText}`);
-    }
-  }
-
-  for (const filePath of stalePaths) {
-    const fileEndpoint = `${row.host}/api/v4/projects/${encodeURIComponent(row.repo)}/repository/files/${encodeURIComponent(filePath)}`;
-    const currentResponse = await fetch(`${fileEndpoint}?ref=${encodeURIComponent(branch)}`, {
-      headers: { 'PRIVATE-TOKEN': token },
-    });
-    if (currentResponse.status === 404) continue;
-    if (!currentResponse.ok) {
-      const message = await currentResponse.text().catch(() => '');
-      throw new Error(`GitLab file lookup failed: ${message.slice(0, 200) || currentResponse.statusText}`);
-    }
-
-    const deleteResponse = await fetch(fileEndpoint, {
-      method: 'DELETE',
-      headers,
-      body: JSON.stringify({
-        branch,
-        commit_message: `Delete thesis file ${filePath} removed from Odyssey`,
-      }),
-    });
-
-    if (!deleteResponse.ok) {
-      const message = await deleteResponse.text().catch(() => '');
-      throw new Error(`GitLab delete failed: ${message.slice(0, 200) || deleteResponse.statusText}`);
-    }
-  }
-}
-
-function isGitLabAuthFailure(message: string) {
-  return /\b(401|403)\b/.test(message) || /unauthorized|forbidden/i.test(message);
-}
-
-async function syncDraftToGitLab(row: ThesisRepoLinkRow, files: ThesisRenderWorkspaceFile[]) {
-  const thesisToken = readStoredToken(row).trim();
-  const linkedProjectToken = (await findLinkedProjectGitLabToken(row)).trim();
-  const candidateTokens = [...new Set([thesisToken, linkedProjectToken].filter(Boolean))];
-  if (candidateTokens.length === 0) throw new Error('GitLab token is missing for thesis repo autosave.');
-
-  let lastError: Error | null = null;
-  for (const token of candidateTokens) {
-    try {
-      await syncDraftToGitLabWithToken(row, files, token);
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Failed to sync thesis draft to GitLab.');
-      if (!isGitLabAuthFailure(lastError.message)) {
-        throw lastError;
-      }
-    }
-  }
-
-  throw lastError ?? new Error('Failed to sync thesis draft to GitLab.');
-}
-
-async function syncDraftToRepo(row: ThesisRepoLinkRow | null, draft: string, snapshot: unknown) {
-  if (!row || !row.autosave_enabled) {
-    return { status: 'idle' as const, error: null, syncedAt: null };
-  }
-
-  const files = getSelectedRepoFiles(row, snapshot, draft);
-  if (row.provider === 'github') {
-    await syncDraftToGitHub(row, files);
-  } else {
-    await syncDraftToGitLab(row, files);
-    const syncedPaths = files.map((file) => normalizeFilePath(file.path));
-    const { error } = await supabase
-      .from('user_thesis_repo_links')
-      .update({ last_synced_file_paths: syncedPaths })
-      .eq('id', row.id);
-    if (error) {
-      throw new Error('GitLab sync finished, but Odyssey could not record the synced file manifest.');
-    }
-  }
-
-  return { status: 'saved' as const, error: null, syncedAt: new Date().toISOString() };
 }
 
 export async function thesisRoutes(server: FastifyInstance) {
@@ -4366,9 +3883,6 @@ export async function thesisRoutes(server: FastifyInstance) {
         editorTheme: document.editor_theme,
         snapshot: document.snapshot,
         updatedAt: document.updated_at,
-        repoSyncStatus: document.repo_sync_status,
-        repoSyncError: document.repo_sync_error,
-        repoSyncedAt: document.repo_synced_at,
       } : null,
     };
   });
@@ -4400,7 +3914,6 @@ export async function thesisRoutes(server: FastifyInstance) {
       },
     }, 'received thesis document save');
 
-    const repoLink = await getThesisRepoLink(userId);
     const { error: upsertError } = await supabase
       .from('thesis_documents')
       .upsert({
@@ -4408,166 +3921,16 @@ export async function thesisRoutes(server: FastifyInstance) {
         draft,
         editor_theme: request.body.editorTheme?.trim() || null,
         snapshot: request.body.snapshot ?? {},
-        repo_sync_status: repoLink?.autosave_enabled ? 'idle' : 'idle',
-        repo_sync_error: null,
       });
 
     if (upsertError) {
       return reply.status(500).send({ error: 'Failed to autosave thesis draft.' });
     }
 
-    let repoSyncStatus: 'idle' | 'saved' | 'error' = 'idle';
-    let repoSyncError: string | null = null;
-    let repoSyncedAt: string | null = null;
-    if (repoLink?.autosave_enabled) {
-      try {
-        const result = await syncDraftToRepo(repoLink, draft, request.body.snapshot);
-        repoSyncStatus = result.status;
-        repoSyncError = result.error;
-        repoSyncedAt = result.syncedAt;
-      } catch (error) {
-        repoSyncStatus = 'error';
-        repoSyncError = error instanceof Error ? error.message : 'Failed to sync thesis draft to repository.';
-      }
-
-      await supabase
-        .from('thesis_documents')
-        .update({
-          repo_sync_status: repoSyncStatus,
-          repo_sync_error: repoSyncError,
-          repo_synced_at: repoSyncedAt,
-        })
-        .eq('user_id', userId);
-    }
-
     const document = await getThesisDocument(userId);
     return {
       ok: true,
       updatedAt: document?.updated_at ?? new Date().toISOString(),
-      repoSyncStatus: document?.repo_sync_status ?? repoSyncStatus,
-      repoSyncError: document?.repo_sync_error ?? repoSyncError,
-      repoSyncedAt: document?.repo_synced_at ?? repoSyncedAt,
     };
-  });
-
-  server.get('/thesis/settings', async (request, reply) => {
-    const userId = await requireUser(request.headers.authorization);
-    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const [document, repoLink] = await Promise.all([
-      getThesisDocument(userId),
-      getThesisRepoLink(userId),
-    ]);
-
-    return {
-      document: document ? {
-        updatedAt: document.updated_at,
-        repoSyncStatus: document.repo_sync_status,
-        repoSyncError: document.repo_sync_error,
-        repoSyncedAt: document.repo_synced_at,
-      } : null,
-      repoLink: mapRepoLink(repoLink),
-    };
-  });
-
-  server.put<{
-    Body: {
-      provider?: RepoProvider;
-      repository?: string;
-      host?: string | null;
-      filePaths?: string[] | null;
-      syncAllWorkspaceFiles?: boolean;
-      autosaveEnabled?: boolean;
-      token?: string | null;
-    };
-  }>('/thesis/settings/repo', async (request, reply) => {
-    const userId = await requireUser(request.headers.authorization);
-    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const provider = request.body.provider;
-    if (provider !== 'github' && provider !== 'gitlab') {
-      return reply.status(400).send({ error: 'Provider must be github or gitlab.' });
-    }
-
-    try {
-      const existing = await getThesisRepoLink(userId);
-      const repository = typeof request.body.repository === 'string' ? request.body.repository : '';
-      const filePaths = normalizeFilePaths(request.body.filePaths, existing?.file_path);
-      const syncAllWorkspaceFiles = request.body.syncAllWorkspaceFiles === true;
-      const autosaveEnabled = request.body.autosaveEnabled !== false;
-      const token = request.body.token?.trim() ?? '';
-      const canReuseExistingToken = existing?.provider === provider
-        && Boolean(existing.token_encrypted && existing.token_iv && existing.token_auth_tag);
-
-      let repo = '';
-      let host: string | null = null;
-      if (provider === 'github') {
-        repo = normalizeGitHubRepo(repository);
-      } else {
-        const normalized = normalizeGitLabRepoInput(repository, request.body.host);
-        repo = normalized.repo;
-        host = normalized.host;
-      }
-      const repoTargetChanged = existing?.provider !== provider
-        || normalizeGitLabHost(existing?.host) !== normalizeGitLabHost(host)
-        || normalizeGitLabRepoPath(existing?.repo) !== normalizeGitLabRepoPath(repo);
-
-      const encryptedToken = token
-        ? storeGitLabToken({}, token) as EncryptedTokenFields
-        : canReuseExistingToken ? {
-            tokenEncrypted: existing?.token_encrypted ?? null,
-            tokenIv: existing?.token_iv ?? null,
-            tokenAuthTag: existing?.token_auth_tag ?? null,
-          } : {
-            tokenEncrypted: null,
-            tokenIv: null,
-            tokenAuthTag: null,
-          };
-
-      if (!encryptedToken.tokenEncrypted || !encryptedToken.tokenIv || !encryptedToken.tokenAuthTag) {
-        return reply.status(400).send({ error: 'A personal access token is required the first time you connect a thesis repo.' });
-      }
-
-      const { error } = await supabase
-        .from('user_thesis_repo_links')
-        .upsert({
-          user_id: userId,
-          provider,
-          repo,
-          host,
-          branch: null,
-          file_path: filePaths[0] ?? 'main.tex',
-          file_paths: filePaths,
-          sync_all_workspace_files: syncAllWorkspaceFiles,
-          last_synced_file_paths: repoTargetChanged ? [] : normalizeOptionalFilePaths(existing?.last_synced_file_paths),
-          autosave_enabled: autosaveEnabled,
-          token_encrypted: encryptedToken.tokenEncrypted,
-          token_iv: encryptedToken.tokenIv,
-          token_auth_tag: encryptedToken.tokenAuthTag,
-        }, { onConflict: 'user_id' });
-
-      if (error) {
-        return reply.status(500).send({ error: 'Failed to save thesis repo settings.' });
-      }
-
-      const saved = await getThesisRepoLink(userId);
-      return { repoLink: mapRepoLink(saved) };
-    } catch (error) {
-      return reply.status(400).send({ error: error instanceof Error ? error.message : 'Invalid thesis repo settings.' });
-    }
-  });
-
-  server.delete('/thesis/settings/repo', async (request, reply) => {
-    const userId = await requireUser(request.headers.authorization);
-    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
-
-    const { error } = await supabase
-      .from('user_thesis_repo_links')
-      .delete()
-      .eq('user_id', userId);
-    if (error) {
-      return reply.status(500).send({ error: 'Failed to remove thesis repo settings.' });
-    }
-    return { ok: true };
   });
 }

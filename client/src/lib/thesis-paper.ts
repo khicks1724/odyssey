@@ -127,21 +127,7 @@ export interface ThesisPaperDraftEdit {
   replacement: string;
 }
 
-export type ThesisRepoProvider = 'github' | 'gitlab';
 export type ThesisRemoteSaveState = 'idle' | 'saving' | 'saved' | 'error';
-
-export interface ThesisRepoLink {
-  id: string;
-  provider: ThesisRepoProvider;
-  repo: string;
-  host: string | null;
-  filePath: string;
-  filePaths: string[];
-  syncAllWorkspaceFiles: boolean;
-  autosaveEnabled: boolean;
-  tokenSaved: boolean;
-  updatedAt: string;
-}
 
 export interface ThesisSourceAttachment {
   name: string;
@@ -156,19 +142,6 @@ export interface ThesisDocumentRecord {
   editorTheme: string | null;
   snapshot: ThesisPaperSnapshot | null;
   updatedAt: string;
-  repoSyncStatus: 'idle' | 'saved' | 'error';
-  repoSyncError: string | null;
-  repoSyncedAt: string | null;
-}
-
-export interface ThesisSettingsRecord {
-  document: {
-    updatedAt: string;
-    repoSyncStatus: 'idle' | 'saved' | 'error';
-    repoSyncError: string | null;
-    repoSyncedAt: string | null;
-  } | null;
-  repoLink: ThesisRepoLink | null;
 }
 
 export interface ThesisRenderDiagnostic {
@@ -643,17 +616,7 @@ export async function saveThesisDocument(input: {
   return parseJsonResponse<{
     ok: true;
     updatedAt: string;
-    repoSyncStatus: 'idle' | 'saved' | 'error';
-    repoSyncError: string | null;
-    repoSyncedAt: string | null;
   }>(response);
-}
-
-export async function fetchThesisSettings() {
-  const response = await fetch(toAbsoluteAppUrl('/api/thesis/settings'), {
-    headers: await getAuthHeaders(),
-  });
-  return parseJsonResponse<ThesisSettingsRecord>(response);
 }
 
 export async function fetchThesisRenderPreview(input: {
@@ -792,31 +755,6 @@ export async function fetchThesisKnowledgeGraph(input: {
   });
   const payload = await parseJsonResponse<{ graph: ThesisKnowledgeGraphPayload }>(response);
   return payload.graph;
-}
-
-export async function saveThesisRepoLink(input: {
-  provider: ThesisRepoProvider;
-  repository: string;
-  host?: string | null;
-  filePaths?: string[] | null;
-  syncAllWorkspaceFiles?: boolean;
-  autosaveEnabled?: boolean;
-  token?: string | null;
-}) {
-  const response = await fetch(toAbsoluteAppUrl('/api/thesis/settings/repo'), {
-    method: 'PUT',
-    headers: await getAuthHeaders(),
-    body: JSON.stringify(input),
-  });
-  return parseJsonResponse<{ repoLink: ThesisRepoLink | null }>(response);
-}
-
-export async function deleteThesisRepoLink() {
-  const response = await fetch(toAbsoluteAppUrl('/api/thesis/settings/repo'), {
-    method: 'DELETE',
-    headers: await getAuthHeaders(),
-  });
-  return parseJsonResponse<{ ok: true }>(response);
 }
 
 export function buildNumberedLatexSource(draft: string) {

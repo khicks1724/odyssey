@@ -24,32 +24,32 @@ export default function ViewModeToggle() {
 
   return (
     <div
-      className="inline-flex items-center rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-0.5"
+      className="inline-flex items-stretch overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
       aria-label="Page view mode"
     >
       <button
         type="button"
         onClick={() => setMode('extended')}
         aria-pressed={mode === 'extended'}
-        className={`rounded-md px-2.5 py-1.5 text-[10px] font-semibold tracking-[0.02em] transition-colors ${
+        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
           mode === 'extended'
             ? 'bg-[var(--color-surface2)] text-[var(--color-heading)]'
             : 'text-[var(--color-muted)] hover:text-[var(--color-heading)]'
         }`}
       >
-        Extended View
+        Extended
       </button>
       <button
         type="button"
         onClick={() => setMode('relaxed')}
         aria-pressed={mode === 'relaxed'}
-        className={`rounded-md px-2.5 py-1.5 text-[10px] font-semibold tracking-[0.02em] transition-colors ${
+        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
           mode === 'relaxed'
             ? 'bg-[var(--color-surface2)] text-[var(--color-heading)]'
             : 'text-[var(--color-muted)] hover:text-[var(--color-heading)]'
         }`}
       >
-        Relaxed View
+        Relaxed
       </button>
     </div>
   );

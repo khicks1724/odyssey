@@ -20,6 +20,10 @@ const ALLOWED_PROXY_PREFIXES = [
   'realtime/v1/',
 ];
 
+// Fail a hung upstream request fast rather than leaving the browser request
+// pending forever (which holds the gotrue auth lock and cascades into errors).
+const UPSTREAM_TIMEOUT_MS = 30_000;
+
 const ALLOWED_REQUEST_HEADERS = new Set([
   'accept',
   'accept-language',
@@ -160,15 +164,28 @@ export async function supabaseProxyRoutes(server: FastifyInstance) {
           headers.delete('content-type');
         }
 
+        // Time out hung upstream requests. Without this, a stalled upstream
+        // (e.g. gotrue token refresh) leaves the browser request pending
+        // indefinitely, which holds the gotrue Web Lock past its 5s budget and
+        // cascades into "Failed to fetch" / "Lock not released" auth errors.
+        const abortController = new AbortController();
+        const timeoutId = setTimeout(() => abortController.abort(), UPSTREAM_TIMEOUT_MS);
+
         const fetchOptions: ProxyFetchInit = {
           method: request.method,
           headers,
           body,
           duplex: body ? 'half' : undefined,
           redirect: 'manual',
+          signal: abortController.signal,
         };
 
-        const upstreamResponse = await fetch(upstreamUrl, fetchOptions);
+        let upstreamResponse: Response;
+        try {
+          upstreamResponse = await fetch(upstreamUrl, fetchOptions);
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         reply.code(upstreamResponse.status);
 
@@ -184,6 +201,10 @@ export async function supabaseProxyRoutes(server: FastifyInstance) {
         const payload = Buffer.from(await upstreamResponse.arrayBuffer());
         return reply.send(payload);
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          request.log.error({ err: error }, 'Supabase proxy request timed out');
+          return reply.status(504).send({ error: 'Supabase proxy request timed out' });
+        }
         request.log.error({ err: error }, 'Supabase proxy request failed');
         return reply.status(502).send({ error: 'Supabase proxy request failed' });
       }

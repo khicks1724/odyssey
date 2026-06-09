@@ -2624,7 +2624,6 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   const [remoteReady, setRemoteReady] = useState(false);
   const [remoteSaveState, setRemoteSaveState] = useState<ThesisRemoteSaveState>('idle');
   const [remoteSaveMessage, setRemoteSaveMessage] = useState<string | null>(null);
-  const [remoteRepoWarning, setRemoteRepoWarning] = useState<string | null>(null);
   const [savedFileIds, setSavedFileIds] = useState<Set<string>>(() => new Set());
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [previewWidthPercent, setPreviewWidthPercent] = useState(DEFAULT_PREVIEW_WIDTH_PERCENT);
@@ -3062,11 +3061,9 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       commitRemoteSavedWorkspace(nextWorkspace);
       setRemoteSaveState('saved');
       setRemoteSaveMessage(null);
-      setRemoteRepoWarning(result.repoSyncStatus === 'error' ? (result.repoSyncError ?? 'Repository mirror failed.') : null);
     } catch (error) {
       setRemoteSaveState('error');
       setRemoteSaveMessage(error instanceof Error ? error.message : 'Failed to autosave thesis draft.');
-      setRemoteRepoWarning(null);
     }
   };
 
@@ -3266,13 +3263,11 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
 
           setRemoteSaveState('saved');
           setRemoteSaveMessage(null);
-          setRemoteRepoWarning(remoteDocument.repoSyncStatus === 'error' ? remoteDocument.repoSyncError : null);
         }
       } catch (error) {
         if (cancelled) return;
         setRemoteSaveState('error');
         setRemoteSaveMessage(error instanceof Error ? error.message : 'Failed to load thesis draft.');
-        setRemoteRepoWarning(null);
       } finally {
         if (!cancelled) setRemoteReady(true);
       }
@@ -4742,12 +4737,6 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       {remoteSaveState === 'error' && remoteSaveMessage && (
         <div className="border-b border-danger/30 bg-danger/5 px-5 py-3 text-xs text-danger">
           Thesis autosave failed. {remoteSaveMessage}
-        </div>
-      )}
-
-      {remoteSaveState !== 'error' && remoteRepoWarning && (
-        <div className="border-b border-amber-300/50 bg-amber-50 px-5 py-3 text-xs text-amber-900">
-          Repository mirror warning. {remoteRepoWarning}
         </div>
       )}
 

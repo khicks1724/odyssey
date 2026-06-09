@@ -6,7 +6,7 @@ import { useAIAgent } from '../lib/ai-agent';
 import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models';
 import { supabase } from '../lib/supabase';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
-import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Clock, KeyRound, Eye, EyeOff, Trash2, ExternalLink, RefreshCw, Camera, X } from 'lucide-react';
+import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Clock, KeyRound, Eye, EyeOff, Trash2, ExternalLink, RefreshCw, Camera, X, Github } from 'lucide-react';
 
 const TimezoneGlobe = lazyWithRetry(() => import('../components/TimezoneGlobe'), 'settings-timezone-globe');
 
@@ -758,6 +758,14 @@ function AiProviderCard({
                   onChange={(e) => { setError(null); setInputKey(e.target.value); }}
                   placeholder={`One key per line\n${meta.placeholder}`}
                   rows={4}
+                  name={`ai-key-${provider}`}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  data-1p-ignore
+                  data-lpignore="true"
+                  data-form-type="other"
                   className="w-full px-3 py-2 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors resize-y min-h-[96px]"
                 />
                 <p className="mt-1 text-[10px] text-muted">
@@ -773,6 +781,14 @@ function AiProviderCard({
                   value={keyValue}
                   onChange={(e) => { setError(null); setInputKey(e.target.value); }}
                   placeholder={keyPlaceholder}
+                  name={`ai-key-${provider}`}
+                  autoComplete="new-password"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  data-1p-ignore
+                  data-lpignore="true"
+                  data-form-type="other"
                   className="w-full px-3 py-1.5 pr-8 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
                 />
@@ -839,6 +855,152 @@ function AiProviderCard({
         <p className="text-[10px] text-muted font-mono">
           {isOAuth ? 'Connected' : 'Last updated'}: {new Date(status.lastUpdated).toLocaleDateString()}
         </p>
+      )}
+    </div>
+  );
+}
+
+// ── GitHub PAT card ────────────────────────────────────────────────────────
+
+function GitHubTokenCard() {
+  const [hasToken, setHasToken] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [inputToken, setInputToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) { setLoading(false); return; }
+      try {
+        const res = await fetch('/api/user/github-token', { headers: { Authorization: authHeader } });
+        if (!res.ok || cancelled) return;
+        const data = await res.json() as { hasToken: boolean; lastUpdated: string | null };
+        if (!cancelled) { setHasToken(data.hasToken); setLastUpdated(data.lastUpdated); }
+      } catch { /* silently fail */ } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSave = async () => {
+    const trimmed = inputToken.trim();
+    if (!trimmed) { setError('Token cannot be empty'); return; }
+    setError(null);
+    setSaving(true);
+    try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) throw new Error('Not authenticated');
+      const res = await fetch('/api/user/github-token', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+        body: JSON.stringify({ token: trimmed }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+      setInputToken('');
+      setHasToken(true);
+      setLastUpdated(new Date().toISOString());
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save');
+    }
+    setSaving(false);
+  };
+
+  const handleRemove = async () => {
+    setError(null);
+    setRemoving(true);
+    try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) throw new Error('Not authenticated');
+      const res = await fetch('/api/user/github-token', { method: 'DELETE', headers: { Authorization: authHeader } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setHasToken(false);
+      setLastUpdated(null);
+      setInputToken('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to remove');
+    }
+    setRemoving(false);
+  };
+
+  return (
+    <div className="border border-border p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <Github size={12} className="text-heading shrink-0" />
+            <span className="text-xs font-semibold text-heading">GitHub</span>
+          </div>
+          <p className="text-[10px] text-muted mt-0.5">
+            Personal access token used to load repo files, commits, and READMEs in project integrations. A classic PAT with no scopes works for public repos.
+          </p>
+        </div>
+        {loading ? (
+          <Loader2 size={12} className="animate-spin text-muted shrink-0" />
+        ) : hasToken ? (
+          <span className="flex items-center gap-1 text-[10px] font-mono border border-accent3/30 text-accent3 px-2 py-0.5 rounded shrink-0">
+            <Check size={9} /> Token set
+          </span>
+        ) : (
+          <span className="text-[10px] text-danger font-mono border border-danger/30 px-2 py-0.5 rounded shrink-0">No token</span>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] text-muted">Personal access token</span>
+          <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-0.5 text-[10px] text-accent/70 hover:text-accent transition-colors ml-1">
+            Create token <ExternalLink size={9} />
+          </a>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showToken ? 'text' : 'password'}
+              value={inputToken}
+              onChange={(e) => { setError(null); setInputToken(e.target.value); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleSave(); }}
+              placeholder={hasToken ? '••••••••••••••••' : 'ghp_…'}
+              className="w-full px-3 py-1.5 pr-8 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
+            />
+            <button type="button" onClick={() => setShowToken((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-heading transition-colors"
+              tabIndex={-1}>
+              {showToken ? <EyeOff size={12} /> : <Eye size={12} />}
+            </button>
+          </div>
+          <button type="button" onClick={() => void handleSave()}
+            disabled={saving || !inputToken.trim()}
+            className="px-3 py-1.5 border border-accent/30 text-accent text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded disabled:opacity-40 flex items-center gap-1">
+            {saving ? <Loader2 size={10} className="animate-spin" /> : savedFlash ? <Check size={10} /> : null}
+            {savedFlash ? 'Saved' : 'Save'}
+          </button>
+          {hasToken && (
+            <button type="button" onClick={() => void handleRemove()} disabled={removing}
+              className="px-3 py-1.5 border border-danger/30 text-danger text-[10px] font-sans font-semibold tracking-wider uppercase hover:bg-danger/5 transition-colors rounded disabled:opacity-40 flex items-center gap-1">
+              {removing ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && <p className="text-[10px] text-danger font-mono">{error}</p>}
+      {hasToken && lastUpdated && (
+        <p className="text-[10px] text-muted font-mono">Last updated: {new Date(lastUpdated).toLocaleDateString()}</p>
       )}
     </div>
   );
@@ -1011,7 +1173,8 @@ export default function SettingsPage() {
     }));
   };
 
-  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'gemma4', 'nvidia', 'google'];
+  // 'nvidia', Google AI Studio (gemini), and Google Gemma 4 are intentionally excluded sitewide.
+  const AI_SERVICE_PROVIDERS: AiServiceProvider[] = ['anthropic', 'openai', 'google'];
   const isGoogleIdentityLinked = (user?.identities ?? []).some((identity) => identity.provider === 'google');
 
   return (
@@ -1221,6 +1384,18 @@ export default function SettingsPage() {
               })}
             </div>
           )}
+        </div>
+
+        {/* Integrations */}
+        <div className="bg-surface p-6">
+          <div className="flex items-center gap-2 mb-2">
+            <Github size={14} className="text-accent" />
+            <h2 className="font-sans text-sm font-bold text-heading">Integrations</h2>
+          </div>
+          <p className="text-[11px] text-muted mb-5">
+            Personal tokens for external services. Used only for your own requests.
+          </p>
+          <GitHubTokenCard />
         </div>
 
         {/* Preferences */}

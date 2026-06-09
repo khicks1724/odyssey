@@ -22,7 +22,6 @@ import {
   Plus,
   AlertTriangle,
   Search,
-  Settings2,
   SquarePen,
   Trash2,
   Users,
@@ -70,10 +69,9 @@ import { pushUndoAction } from '../lib/undo-manager';
 
 const ThesisPaperTab = lazyWithRetry(() => import('../components/ThesisPaperTab'), 'thesis-paper-tab');
 const ThesisKnowledgeTab = lazyWithRetry(() => import('../components/ThesisKnowledgeTab'), 'thesis-knowledge-tab');
-const ThesisSettingsTab = lazyWithRetry(() => import('../components/ThesisSettingsTab'), 'thesis-settings-tab');
 const PdfFieldCaptureModal = lazyWithRetry(() => import('../components/PdfFieldCaptureModal'), 'thesis-pdf-field-capture-modal');
 
-type ThesisTabId = 'overview' | 'milestones' | 'sources' | 'documents' | 'graph' | 'paper' | 'settings';
+type ThesisTabId = 'overview' | 'milestones' | 'sources' | 'documents' | 'graph' | 'paper';
 
 type ThesisMilestoneTask = {
   id: string;
@@ -219,7 +217,6 @@ const tabs: { id: ThesisTabId; label: string; icon: typeof BookOpen }[] = [
   { id: 'documents', label: 'Documents', icon: FileText },
   { id: 'graph', label: 'Knowledge', icon: Network },
   { id: 'paper', label: 'Latex', icon: FileText },
-  { id: 'settings', label: 'Settings', icon: Settings2 },
 ];
 
 function createMilestoneTask(label: string, completed = false): ThesisMilestoneTask {
@@ -2266,7 +2263,7 @@ export default function ThesisPage() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const requestedTab = params.get('tab');
-    if (requestedTab === 'overview' || requestedTab === 'milestones' || requestedTab === 'sources' || requestedTab === 'documents' || requestedTab === 'graph' || requestedTab === 'paper' || requestedTab === 'settings') {
+    if (requestedTab === 'overview' || requestedTab === 'milestones' || requestedTab === 'sources' || requestedTab === 'documents' || requestedTab === 'graph' || requestedTab === 'paper') {
       setActiveTab(requestedTab);
     }
   }, [location.search]);
@@ -6072,23 +6069,6 @@ Thesis AI should help with literature synthesis, argument structure, methodology
           <ThesisPaperTab
             sourceLibrary={sourceLibrary}
             bibliographyFormat={bibliographyFormat}
-          />
-        </Suspense>
-      )}
-
-      {activeTab === 'settings' && (
-        <Suspense
-          fallback={(
-            <div className="flex items-center justify-center gap-2 border border-border bg-surface px-6 py-16 text-xs text-muted">
-              <Loader2 size={14} className="animate-spin" />
-              Loading thesis settings…
-            </div>
-          )}
-        >
-          <ThesisSettingsTab
-            paperSnapshotUpdatedAt={paperSnapshot.updatedAt}
-            linkedProjects={linkedProjects.map((project) => ({ id: project.id, name: project.name }))}
-            workspaceFiles={paperSnapshot.workspace?.files.map((file) => ({ id: file.id, path: file.path })) ?? []}
           />
         </Suspense>
       )}

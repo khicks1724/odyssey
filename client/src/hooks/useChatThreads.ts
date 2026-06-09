@@ -82,7 +82,11 @@ function useChatThreadsState() {
     if (syncResult.error) {
       const msg = syncResult.error.message.toLowerCase();
       const missing = msg.includes('could not find the function public.sync_my_project_chat_memberships') || msg.includes('schema cache');
-      if (!missing) {
+      // Transient network failures (auth token refresh in flight, brief proxy
+      // hiccup) surface as "Failed to fetch" — they self-recover on the next
+      // fetch, so don't spam the console with them.
+      const transientNetwork = msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('load failed');
+      if (!missing && !transientNetwork) {
         console.error('Failed to sync chat memberships:', syncResult.error);
       }
     }

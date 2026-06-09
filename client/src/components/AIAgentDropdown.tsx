@@ -75,23 +75,18 @@ function toAgentValues(values: string[] | undefined): AIAgentValue[] {
 }
 
 function buildProviderGroups(providers: ProviderInfo[]): { label: string; ids: AIAgentValue[] }[] {
+  // Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded sitewide.
   const anthropic: AIAgentValue[] = providers
     .filter((provider) => ['claude-haiku', 'claude-sonnet', 'claude-opus'].includes(provider.id))
     .flatMap((provider) => toAgentValues(provider.visibleModels));
   const openai = toAgentValues(providers.find((provider) => provider.id === 'gpt-4o')?.visibleModels);
-  const google = toAgentValues(providers.find((provider) => provider.id === 'gemini-pro')?.visibleModels);
   const genai = toAgentValues(providers.find((provider) => provider.id === 'genai-mil')?.visibleModels);
-  const nvidia = toAgentValues(providers.find((provider) => provider.id === 'nvidia')?.visibleModels);
-  const gemma4 = toAgentValues(providers.find((provider) => provider.id === 'gemma4')?.visibleModels);
 
   return [
     { label: 'Auto', ids: ['auto' as AIAgentValue] },
     { label: 'Anthropic', ids: anthropic },
     { label: 'OpenAI', ids: openai },
-    { label: 'Google', ids: google },
-    { label: 'Gemma 4', ids: gemma4 },
     { label: 'DoD / GenAI.mil', ids: genai },
-    { label: 'NVIDIA', ids: nvidia },
   ].filter((group) => group.label === 'Auto' || group.ids.length > 0);
 }
 

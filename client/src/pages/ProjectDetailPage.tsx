@@ -61,6 +61,7 @@ import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { pickUnusedProjectLabelColor } from '../lib/project-label-colors';
 import { pushUndoAction } from '../lib/undo-manager';
 import WorkspaceTabBar from '../components/WorkspaceTabBar';
+import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
 
 const OverviewTab = lazyWithRetry(() => import('../components/project-tabs/OverviewTab'), 'project-tab-overview');
 const ActivityTab = lazyWithRetry(() => import('../components/project-tabs/ActivityTab'), 'project-tab-activity');
@@ -2873,6 +2874,7 @@ function RepoPanel({
   icon,
   source,
   repoId,
+  projectId,
   repoLabel,
   repoUrl,
   titleExtra,
@@ -2881,6 +2883,7 @@ function RepoPanel({
   files,
   loading,
   connected,
+  error,
   onNavigateSettings,
   scanButton,
 }: {
@@ -2888,6 +2891,7 @@ function RepoPanel({
   icon: React.ReactNode;
   source: 'github' | 'gitlab';
   repoId: string;
+  projectId?: string | null;
   repoLabel?: string;
   repoUrl?: string;
   titleExtra?: React.ReactNode;
@@ -2896,6 +2900,7 @@ function RepoPanel({
   files: FileEntry[];
   loading: boolean;
   connected: boolean;
+  error?: string | null;
   onNavigateSettings: () => void;
   scanButton?: React.ReactNode;
 }) {
@@ -2922,6 +2927,7 @@ function RepoPanel({
           <FileViewerLazy
             source={source}
             repo={repoId}
+            projectId={projectId}
             path={openFile}
             externalUrl={externalFileUrl(openFile)}
             onClose={() => setOpenFile(null)}
@@ -2961,6 +2967,8 @@ function RepoPanel({
           <div className="px-6 py-8 flex items-center justify-center gap-2 text-xs text-muted">
             <Loader2 size={12} className="animate-spin" /> Loading…
           </div>
+        ) : error ? (
+          <div className="px-6 py-6 text-center text-xs text-red-400">{error}</div>
         ) : (
           <>
             {/* Sub-tabs */}
@@ -3040,9 +3048,16 @@ function RepoPanel({
 
             {/* README view */}
             {view === 'readme' && (
-              <div className="px-6 py-4 max-h-96 overflow-y-auto">
+              <div className="px-6 py-4 max-h-96 overflow-y-auto text-xs text-[var(--color-text)]">
                 {readme ? (
-                  <pre className="text-[11px] text-muted whitespace-pre-wrap font-mono leading-relaxed">{readme}</pre>
+                  <MarkdownWithFileLinks
+                    block
+                    filePaths={new Map()}
+                    onFileClick={() => {}}
+                    className="leading-relaxed"
+                  >
+                    {readme}
+                  </MarkdownWithFileLinks>
                 ) : (
                   <p className="text-xs text-muted text-center py-6">No README found.</p>
                 )}
@@ -3066,6 +3081,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
   const [ghReadme, setGhReadme] = useState<string | null>(null);
   const [ghFiles, setGhFiles] = useState<FileEntry[]>([]);
   const [ghLoading, setGhLoading] = useState(false);
+  const [ghError, setGhError] = useState<string | null>(null);
   const [glCommits, setGlCommits] = useState<CommitEntry[]>([]);
   const [glReadme, setGlReadme] = useState<string | null>(null);
   const [glFiles, setGlFiles] = useState<FileEntry[]>([]);
@@ -3082,21 +3098,25 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
   useEffect(() => {
     if (!activeGithubRepo) return;
     setGhLoading(true);
+    setGhError(null);
     const [owner, repo] = activeGithubRepo.split('/');
     (async () => {
       const { data: sessionData } = await supabase.auth.getSession();
       const headers: Record<string, string> = {};
       if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
       Promise.all([
-        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : null),
-        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : null),
+        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
+        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
       ]).then(([recent, tree]) => {
         if (recent) {
           setGhCommits(parseCommits(recent.commits ?? []));
           if (recent.readme) setGhReadme(recent.readme);
         }
         if (tree?.files) setGhFiles(tree.files);
-      }).catch(() => {}).finally(() => setGhLoading(false));
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        setGhError(msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('api rate') ? 'GitHub API rate limit exceeded — add a GITHUB_TOKEN to the server to fix this.' : msg);
+      }).finally(() => setGhLoading(false));
     })();
   }, [activeGithubRepo]);
 
@@ -3154,6 +3174,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         icon={<Github size={14} className={activeGithubRepo ? 'text-heading' : 'text-muted'} />}
         source="github"
         repoId={activeGithubRepo ?? ''}
+        projectId={_projectId}
         repoLabel={activeGithubRepo ?? undefined}
         repoUrl={activeGithubRepo ? `https://github.com/${activeGithubRepo}` : undefined}
         titleExtra={githubRepoList.length > 1 ? (
@@ -3173,6 +3194,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         files={ghFiles}
         loading={ghLoading}
         connected={!!activeGithubRepo}
+        error={ghError}
         onNavigateSettings={onNavigateSettings}
       />
 
@@ -3185,6 +3207,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         }
         source="gitlab"
         repoId={gitlabRepo ?? ''}
+        projectId={_projectId}
         repoLabel={undefined}
         titleExtra={gitlabRepos.length > 1 ? (
           <select

@@ -29,7 +29,12 @@ function isProxyRealtimeCapable(url: string | undefined): boolean {
   try {
     const resolvedUrl = new URL(url);
     const normalizedPath = resolvedUrl.pathname.replace(/\/+$/, '');
-    const appScopedSupabasePath = `${appBasePath === '/' ? '' : appBasePath}/supabase`;
+    // appBasePath keeps a trailing slash (e.g. "/odyssey/"), so strip it before
+    // appending "/supabase" — otherwise we'd compare against "/odyssey//supabase"
+    // and the match would always fail, leaving realtime enabled over a proxy that
+    // cannot carry the websocket.
+    const appBasePrefix = appBasePath === '/' ? '' : appBasePath.replace(/\/+$/, '');
+    const appScopedSupabasePath = `${appBasePrefix}/supabase`;
 
     return !(resolvedUrl.origin === window.location.origin && normalizedPath === appScopedSupabasePath);
   } catch {

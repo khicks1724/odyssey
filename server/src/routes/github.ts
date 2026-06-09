@@ -1,6 +1,21 @@
 import type { FastifyInstance } from 'fastify';
 import { getUserFromAuthHeader, isInternalRequest, requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
 import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
+import { supabase } from '../lib/supabase.js';
+import { decryptGitHubToken } from './user-github-token.js';
+
+async function getUserGitHubToken(authHeader: string | undefined): Promise<string | null> {
+  if (!authHeader?.startsWith('Bearer ')) return null;
+  const { data: { user }, error: userError } = await supabase.auth.getUser(authHeader.slice(7));
+  if (userError || !user) return null;
+  const { data } = await supabase
+    .from('user_github_tokens')
+    .select('encrypted_key, iv, auth_tag')
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (!data) return null;
+  try { return decryptGitHubToken(data.encrypted_key, data.iv, data.auth_tag); } catch { return null; }
+}
 
 interface GitHubCommit {
   sha: string;
@@ -35,7 +50,7 @@ export async function githubRoutes(server: FastifyInstance) {
 
     const { owner, repo } = request.params;
     const perPage = Math.min(100, Number(request.query.per_page) || 30);
-    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
+    const token = (request.headers['x-github-token'] as string | undefined) || await getUserGitHubToken(request.headers.authorization) || process.env.GITHUB_TOKEN;
 
     // Validate owner/repo format to prevent injection
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
@@ -92,7 +107,7 @@ export async function githubRoutes(server: FastifyInstance) {
     }
 
     const { owner, repo } = request.params;
-    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
+    const token = (request.headers['x-github-token'] as string | undefined) || await getUserGitHubToken(request.headers.authorization) || process.env.GITHUB_TOKEN;
 
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
       return reply.status(400).send({ error: 'Invalid owner or repo name' });
@@ -136,7 +151,7 @@ export async function githubRoutes(server: FastifyInstance) {
     }
 
     const { q } = request.query;
-    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
+    const token = (request.headers['x-github-token'] as string | undefined) || await getUserGitHubToken(request.headers.authorization) || process.env.GITHUB_TOKEN;
 
     if (!q || q.length < 2) {
       return reply.status(400).send({ error: 'Query must be at least 2 characters' });
@@ -184,7 +199,7 @@ export async function githubRoutes(server: FastifyInstance) {
     }
 
     const { owner, repo } = request.params;
-    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
+    const token = (request.headers['x-github-token'] as string | undefined) || await getUserGitHubToken(request.headers.authorization) || process.env.GITHUB_TOKEN;
 
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
       return reply.status(400).send({ error: 'Invalid owner or repo name' });
@@ -231,7 +246,7 @@ export async function githubRoutes(server: FastifyInstance) {
     }
 
     const { owner, repo } = request.params;
-    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
+    const token = (request.headers['x-github-token'] as string | undefined) || await getUserGitHubToken(request.headers.authorization) || process.env.GITHUB_TOKEN;
 
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
       return reply.status(400).send({ error: 'Invalid owner or repo name' });
@@ -284,7 +299,7 @@ export async function githubRoutes(server: FastifyInstance) {
 
     const { owner, repo } = request.params;
     const { path } = request.query;
-    const token = (request.headers['x-github-token'] as string | undefined) || process.env.GITHUB_TOKEN;
+    const token = (request.headers['x-github-token'] as string | undefined) || await getUserGitHubToken(request.headers.authorization) || process.env.GITHUB_TOKEN;
 
     if (!path) return reply.status(400).send({ error: 'path required' });
     if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {

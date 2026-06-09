@@ -12,7 +12,8 @@ import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js'
 import { logAiTokenUsage } from './token-usage.js';
 import { isServerFallbackPausedForUser } from '../lib/server-fallback-controls.js';
 
-const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil', 'nvidia', 'gemma4'];
+// Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
+const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'genai-mil'];
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 type OpenAiCredentialMode = 'openai' | 'azure_openai';
 type OpenAiUserConfig = {
@@ -269,7 +270,8 @@ function getGitLabHost(config: GitLabIntegrationConfig | null | undefined): stri
 }
 
 // Prefer order when auto-selecting from stored user keys
-const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gemini-pro', 'gemma4', 'nvidia', 'gpt-4o', 'genai-mil'];
+// Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
+const AUTO_PROVIDER_PREFERENCE: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'genai-mil'];
 
 function getConfiguredOpenAiSelection(config: unknown): OpenAiProviderSelection {
   const raw = config && typeof config === 'object'
