@@ -52,6 +52,7 @@ const GENAI_MIL_MODEL_OPTIONS: ProviderModelOption[] = [
 
 const DEFAULT_NVIDIA_MODEL_ID = 'nvidia/nemotron-3-super-120b-a12b';
 const DEFAULT_GEMMA4_MODEL_ID = 'google/gemma-4-31b-it';
+const AZURE_GPT_56_DEPLOYMENTS = ['terra', 'luna', 'sol'];
 const NVIDIA_MODEL_OPTIONS: ProviderModelOption[] = [
   { id: 'nvidia', label: 'NVIDIA', description: 'Use your configured NVIDIA model in the top AI dropdown' },
 ];
@@ -243,10 +244,12 @@ function AiProviderCard({
       : (hasReplacementCredential || hasKey) && selectedModels.length > 0;
   const availableModelIds = modelOptions.map((option) => option.id);
   const azureDeploymentOptions = isAzureOpenAi
-    ? uniqueModelIds([...selectedModels, ...availableModelIds]).map((id) => ({
+    ? uniqueModelIds([...AZURE_GPT_56_DEPLOYMENTS, ...selectedModels, ...availableModelIds]).map((id) => ({
         id,
         label: id,
-        description: 'Azure OpenAI deployment name',
+        description: AZURE_GPT_56_DEPLOYMENTS.includes(id)
+          ? 'Azure GPT-5.6 deployment'
+          : 'Azure OpenAI deployment name',
       }))
     : modelOptions;
 

@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { supabase } from './supabase';
-import { canonicalizeOpenAiModelId } from './openai-models';
+import { buildOpenAiAgentValue, canonicalizeOpenAiModelId, parseOpenAiAgentValue, type OpenAiReasoningEffort } from './openai-models';
 
 export type FixedAIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAIAgentValue = `openai:${string}`;
@@ -25,6 +25,8 @@ export interface ProviderInfo {
 interface AIAgentContextType {
   agent: AIAgentValue;
   setAgent: (agent: AIAgentValue) => void;
+  reasoningEffort: OpenAiReasoningEffort;
+  setReasoningEffort: (effort: OpenAiReasoningEffort) => void;
   providers: ProviderInfo[];
   loading: boolean;
   serverReachable: boolean;
@@ -36,6 +38,8 @@ interface AIAgentContextType {
 const AIAgentContext = createContext<AIAgentContextType>({
   agent: 'auto',
   setAgent: () => {},
+  reasoningEffort: 'medium',
+  setReasoningEffort: () => {},
   providers: [],
   loading: true,
   serverReachable: true,
@@ -50,7 +54,7 @@ let lastProvidersFetch = 0;
 const FIXED_VALUES: FixedAIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil', 'nvidia', 'gemma4'];
 
 export function isOpenAIAgentValue(value: string): value is OpenAIAgentValue {
-  return value.startsWith('openai:') && value.slice('openai:'.length).trim().length > 0;
+  return value.startsWith('openai:') && parseOpenAiAgentValue(value).modelId.length > 0;
 }
 
 export function AIAgentProvider({ children }: { children: ReactNode }) {
@@ -65,6 +69,9 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [serverReachable, setServerReachable] = useState(true);
   const [lastUsed, setLastUsed] = useState<AIProvider | null>(null);
+  const reasoningEffort = isOpenAIAgentValue(agent)
+    ? parseOpenAiAgentValue(agent).reasoningEffort ?? 'medium'
+    : 'medium';
 
   const fetchProviders = useCallback((force = false) => {
     const now = Date.now();
@@ -87,13 +94,14 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
         if (agent !== 'auto') {
           if (isOpenAIAgentValue(agent)) {
             const current = list.find((p) => p.id === 'gpt-4o');
-            const modelId = agent.slice('openai:'.length);
+            const { modelId, reasoningEffort: storedEffort } = parseOpenAiAgentValue(agent);
             const availableModelIds = (current?.visibleModels ?? [])
               .filter((value): value is string => typeof value === 'string' && value.startsWith('openai:'))
               .map((value) => value.slice('openai:'.length));
             const canonicalModelId = canonicalizeOpenAiModelId(modelId, availableModelIds);
-            const canonicalAgent = (`openai:${canonicalModelId}`) as AIAgentValue;
-            if (canonicalModelId && canonicalAgent !== agent && current?.visibleModels?.includes(canonicalAgent)) {
+            const visibleAgent = (`openai:${canonicalModelId}`) as AIAgentValue;
+            const canonicalAgent = buildOpenAiAgentValue(canonicalModelId, storedEffort ?? 'medium') as AIAgentValue;
+            if (canonicalModelId && canonicalAgent !== agent && current?.visibleModels?.includes(visibleAgent)) {
               setAgentState(canonicalAgent);
               localStorage.setItem(STORAGE_KEY, canonicalAgent);
             }
@@ -109,16 +117,26 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   useEffect(() => { fetchProviders(); }, []);
 
   const setAgent = useCallback((a: AIAgentValue) => {
-    setAgentState(a);
-    localStorage.setItem(STORAGE_KEY, a);
-  }, []);
+    const nextAgent = isOpenAIAgentValue(a)
+      ? buildOpenAiAgentValue(parseOpenAiAgentValue(a).modelId, reasoningEffort)
+      : a;
+    setAgentState(nextAgent);
+    localStorage.setItem(STORAGE_KEY, nextAgent);
+  }, [reasoningEffort]);
+
+  const setReasoningEffort = useCallback((effort: OpenAiReasoningEffort) => {
+    if (!isOpenAIAgentValue(agent)) return;
+    const nextAgent = buildOpenAiAgentValue(parseOpenAiAgentValue(agent).modelId, effort);
+    setAgentState(nextAgent);
+    localStorage.setItem(STORAGE_KEY, nextAgent);
+  }, [agent]);
 
   const notifyModelUsed = useCallback((provider: AIProvider) => {
     setLastUsed(provider);
   }, []);
 
   return (
-    <AIAgentContext.Provider value={{ agent, setAgent, providers, loading, serverReachable, lastUsed, notifyModelUsed, refreshProviders: () => fetchProviders(true) }}>
+    <AIAgentContext.Provider value={{ agent, setAgent, reasoningEffort, setReasoningEffort, providers, loading, serverReachable, lastUsed, notifyModelUsed, refreshProviders: () => fetchProviders(true) }}>
       {children}
     </AIAgentContext.Provider>
   );

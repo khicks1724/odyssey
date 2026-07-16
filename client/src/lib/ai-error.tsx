@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import Modal from '../components/Modal';
 import { isOpenAIAgentValue, type AIAgentValue, type FixedAIProvider } from './ai-agent';
+import { parseOpenAiAgentValue } from './openai-models';
 
 interface ProviderInfo {
   id: FixedAIProvider;
@@ -17,7 +18,7 @@ interface AIErrorState {
 
 function getModelLabel(agent: AIAgentValue): string {
   if (agent === 'auto') return 'Auto';
-  if (isOpenAIAgentValue(agent)) return `OpenAI ${agent.slice('openai:'.length)}`;
+  if (isOpenAIAgentValue(agent)) return `OpenAI ${parseOpenAiAgentValue(agent).modelId}`;
 
   switch (agent) {
     case 'claude-haiku':

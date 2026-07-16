@@ -39,6 +39,10 @@ function isOpenAiProviderSelection(provider: string): provider is OpenAiProvider
   return provider.startsWith('openai:');
 }
 
+function getOpenAiModelFromSelection(provider: OpenAiProviderSelection): string {
+  return provider.slice('openai:'.length).replace(/::reasoning:(?:low|medium|high|xhigh)$/i, '').trim();
+}
+
 // Map provider selection to the service name stored in user_ai_keys table
 function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4' {
   if (provider === 'gpt-4o' || isOpenAiProviderSelection(provider)) return 'openai';
@@ -51,7 +55,7 @@ function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai
 
 function normalizeAgentValue(agent: string): AIProviderSelection | null {
   if (ALL_PROVIDERS.includes(agent as AIProvider)) return agent as AIProvider;
-  if (isOpenAiProviderSelection(agent) && agent.slice('openai:'.length).trim().length > 0) return agent;
+  if (isOpenAiProviderSelection(agent) && getOpenAiModelFromSelection(agent).length > 0) return agent;
   return null;
 }
 
@@ -395,10 +399,11 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
     if (service !== 'openai') return apiKey;
 
     const config = (data.config ?? {}) as { mode?: string; endpoint?: string; preferredModel?: string; enabledModels?: unknown };
-    const modelOverride = getPrimaryModelSelection(
+    const configuredDefaultModel = getPrimaryModelSelection(
       normalizeConfiguredModelIds(config.enabledModels),
       config.preferredModel,
     ) || undefined;
+    const modelOverride = isOpenAiProviderSelection(provider) ? undefined : configuredDefaultModel;
     if (config.mode === 'azure_openai') {
       const endpoint = typeof config.endpoint === 'string' ? normalizeEndpoint(config.endpoint) : '';
       if (endpoint) {

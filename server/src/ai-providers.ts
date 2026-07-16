@@ -5,6 +5,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAiProviderSelection = `openai:${string}`;
 export type AIProviderSelection = AIProvider | OpenAiProviderSelection;
+type OpenAiReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+const OPENAI_REASONING_SUFFIX = /::reasoning:(low|medium|high|xhigh)$/i;
 
 // 'auto' is a client-side concept — server resolves it per endpoint before calling chat()
 export type AIProviderOrAuto = AIProviderSelection | 'auto';
@@ -26,6 +28,17 @@ interface ChatMessage {
   disableReasoning?: boolean;
   /** Enable web search via the provider's native search capability */
   webSearch?: boolean;
+  /** OpenAI reasoning effort selected by the user */
+  reasoningEffort?: OpenAiReasoningEffort;
+}
+
+function parseOpenAiSelection(value: string): { model: string; reasoningEffort?: OpenAiReasoningEffort } {
+  const suffix = value.match(OPENAI_REASONING_SUFFIX);
+  if (!suffix) return { model: value.trim() };
+  return {
+    model: value.slice(0, -suffix[0].length).trim(),
+    reasoningEffort: suffix[1].toLowerCase() as OpenAiReasoningEffort,
+  };
 }
 
 export interface ChatTokenUsage {
@@ -398,6 +411,7 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
           { role: 'user', content: userContent as any },
         ],
         ...(msg.jsonMode && !msg.webSearch && supportsJsonMode ? { response_format: { type: 'json_object' } } : {}),
+        ...(msg.reasoningEffort && !isHostedNvidiaCompatible ? ({ reasoning_effort: msg.reasoningEffort } as any) : {}),
         ...(extraBody ? ({ extra_body: extraBody } as any) : {}),
       };
       const tokenLimit = msg.maxTokens || 500;
@@ -924,7 +938,8 @@ export function getCachedProviderStatus(provider: AIProvider, credential?: Provi
 
 export async function chat(provider: AIProviderSelection, msg: ChatMessage, apiKey?: ProviderCredentialOverride): Promise<ChatResult> {
   if (isOpenAiProviderSelection(provider)) {
-    return callOpenAiModel(provider.slice('openai:'.length), msg, apiKey);
+    const { model, reasoningEffort } = parseOpenAiSelection(provider.slice('openai:'.length));
+    return callOpenAiModel(model, { ...msg, ...(reasoningEffort ? { reasoningEffort } : {}) }, apiKey);
   }
   const fn = providers[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);

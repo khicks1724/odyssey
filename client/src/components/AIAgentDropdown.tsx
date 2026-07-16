@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Zap, Bot, RefreshCw } from 'lucide-react';
 import { isOpenAIAgentValue, useAIAgent, type AIAgentValue, type FixedAIProvider, type KeySource, type ProviderInfo, type ProviderStatus } from '../lib/ai-agent';
-import { canonicalizeOpenAiModelId } from '../lib/openai-models';
+import { buildOpenAiAgentValue, canonicalizeOpenAiModelId, parseOpenAiAgentValue, type OpenAiReasoningEffort } from '../lib/openai-models';
 import './AIAgentDropdown.css';
 
 const fixedAgentMeta: Record<'auto' | FixedAIProvider, { name: string; shortName: string; description: string; colorClass: string; provider: string }> = {
@@ -19,11 +19,11 @@ const fixedAgentMeta: Record<'auto' | FixedAIProvider, { name: string; shortName
 function getAgentMeta(agent: AIAgentValue) {
   if (agent === 'auto') return fixedAgentMeta.auto;
   if (isOpenAIAgentValue(agent)) {
-    const model = agent.slice('openai:'.length);
+    const { modelId: model, reasoningEffort } = parseOpenAiAgentValue(agent);
     return {
       name: model,
-      shortName: model,
-      description: `OpenAI · ${model}`,
+      shortName: reasoningEffort ? `${model} · ${reasoningEffort}` : model,
+      description: `OpenAI · ${model}${reasoningEffort ? ` · ${reasoningEffort} reasoning` : ''}`,
       colorClass: 'aid-gpt4o',
       provider: 'OpenAI',
     };
@@ -38,9 +38,12 @@ function getCanonicalOpenAiAgentValue(agent: AIAgentValue, providers: ProviderIn
   const availableModelIds = (openAiProvider?.visibleModels ?? [])
     .filter((value): value is string => typeof value === 'string' && value.startsWith('openai:'))
     .map((value) => value.slice('openai:'.length));
-  const canonicalModelId = canonicalizeOpenAiModelId(agent.slice('openai:'.length), availableModelIds);
+  const { modelId, reasoningEffort } = parseOpenAiAgentValue(agent);
+  const canonicalModelId = canonicalizeOpenAiModelId(modelId, availableModelIds);
 
-  return canonicalModelId ? `openai:${canonicalModelId}` : agent;
+  return canonicalModelId
+    ? buildOpenAiAgentValue(canonicalModelId, reasoningEffort ?? 'medium')
+    : agent;
 }
 
 function StatusBadge({ available, active, serverReachable, status }: {
@@ -91,7 +94,7 @@ function buildProviderGroups(providers: ProviderInfo[]): { label: string; ids: A
 }
 
 export default function AIAgentDropdown() {
-  const { agent, setAgent, providers, loading, serverReachable, lastUsed, refreshProviders } = useAIAgent();
+  const { agent, setAgent, reasoningEffort, setReasoningEffort, providers, loading, serverReachable, lastUsed, refreshProviders } = useAIAgent();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -205,7 +208,9 @@ export default function AIAgentDropdown() {
                     {groupIds.map((id) => {
                       const meta = getAgentMeta(id);
                       const available = isAvailable(id);
-                      const isActive = id === displayAgent;
+                      const isActive = isOpenAIAgentValue(id) && isOpenAIAgentValue(displayAgent)
+                        ? parseOpenAiAgentValue(id).modelId === parseOpenAiAgentValue(displayAgent).modelId
+                        : id === displayAgent;
                       const pInfo = id !== 'auto' ? getProviderForAgent(id, providers) : undefined;
                       const dimmed = !available && id !== 'auto';
 
@@ -253,6 +258,29 @@ export default function AIAgentDropdown() {
                   </div>
                 );
               })}
+              {isOpenAIAgentValue(displayAgent) && (
+                <div className="px-3 py-2.5 border-t border-[var(--color-border)]">
+                  <div className="mb-2 text-[9px] tracking-[0.12em] uppercase text-[var(--color-muted)]/70 font-semibold">
+                    Reasoning effort
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(['low', 'medium', 'high', 'xhigh'] as OpenAiReasoningEffort[]).map((effort) => (
+                      <button
+                        key={effort}
+                        type="button"
+                        onClick={() => setReasoningEffort(effort)}
+                        className={`rounded border px-2 py-1.5 text-[10px] font-mono uppercase transition-colors ${
+                          reasoningEffort === effort
+                            ? 'border-[var(--color-accent)]/60 bg-[var(--color-accent)]/10 text-[var(--color-heading)]'
+                            : 'border-[var(--color-border)] text-[var(--color-muted)] hover:bg-[var(--color-surface2)]'
+                        }`}
+                      >
+                        {effort}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

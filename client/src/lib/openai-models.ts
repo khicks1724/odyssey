@@ -1,5 +1,23 @@
 const SNAPSHOT_DATE_SUFFIX = /-\d{4}-\d{2}-\d{2}$/;
 const GPT_NUMERIC_ALIAS = /^gpt-\d+(?:\.\d+)?-\d+$/i;
+const REASONING_SUFFIX = /::reasoning:(low|medium|high|xhigh)$/i;
+
+export type OpenAiReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+export function parseOpenAiAgentValue(value: string): { modelId: string; reasoningEffort?: OpenAiReasoningEffort } {
+  const rawValue = value.startsWith('openai:') ? value.slice('openai:'.length) : value;
+  const suffix = rawValue.match(REASONING_SUFFIX);
+  if (!suffix) return { modelId: rawValue.trim() };
+
+  return {
+    modelId: rawValue.slice(0, -suffix[0].length).trim(),
+    reasoningEffort: suffix[1].toLowerCase() as OpenAiReasoningEffort,
+  };
+}
+
+export function buildOpenAiAgentValue(modelId: string, reasoningEffort: OpenAiReasoningEffort): `openai:${string}` {
+  return `openai:${modelId.trim()}::reasoning:${reasoningEffort}`;
+}
 
 function stripSnapshotDate(modelId: string): string {
   return modelId.replace(SNAPSHOT_DATE_SUFFIX, '');
