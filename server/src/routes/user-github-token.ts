@@ -50,6 +50,29 @@ export function decryptGitHubToken(encryptedKey: string, iv: string, authTag: st
   ]).toString('utf8');
 }
 
+export async function getStoredGitHubTokenForUser(userId: string | null | undefined): Promise<{
+  token: string;
+  updatedAt: string | null;
+} | null> {
+  if (!userId) return null;
+
+  const { data } = await supabase
+    .from('user_github_tokens')
+    .select('encrypted_key, iv, auth_tag, created_at, updated_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (!data) return null;
+
+  try {
+    return {
+      token: decryptGitHubToken(data.encrypted_key, data.iv, data.auth_tag),
+      updatedAt: data.updated_at ?? data.created_at ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function getUserId(authHeader: string | undefined): Promise<string | null> {
   if (!authHeader?.startsWith('Bearer ')) return null;
   const { data: { user }, error } = await supabase.auth.getUser(authHeader.slice(7));

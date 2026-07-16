@@ -2,19 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { getUserFromAuthHeader, isInternalRequest, requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
 import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
 import { supabase } from '../lib/supabase.js';
-import { decryptGitHubToken } from './user-github-token.js';
+import { getStoredGitHubTokenForUser } from './user-github-token.js';
 
 async function getUserGitHubToken(authHeader: string | undefined): Promise<string | null> {
   if (!authHeader?.startsWith('Bearer ')) return null;
   const { data: { user }, error: userError } = await supabase.auth.getUser(authHeader.slice(7));
   if (userError || !user) return null;
-  const { data } = await supabase
-    .from('user_github_tokens')
-    .select('encrypted_key, iv, auth_tag')
-    .eq('user_id', user.id)
-    .maybeSingle();
-  if (!data) return null;
-  try { return decryptGitHubToken(data.encrypted_key, data.iv, data.auth_tag); } catch { return null; }
+  return (await getStoredGitHubTokenForUser(user.id))?.token ?? null;
 }
 
 interface GitHubCommit {

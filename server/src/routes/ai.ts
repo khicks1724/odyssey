@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
@@ -11,6 +12,7 @@ import { getGitLabToken } from '../lib/gitlab-token.js';
 import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
 import { logAiTokenUsage } from './token-usage.js';
 import { isServerFallbackPausedForUser } from '../lib/server-fallback-controls.js';
+import { getStoredGitHubTokenForUser } from './user-github-token.js';
 
 // Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'genai-mil'];
@@ -1629,7 +1631,7 @@ Analyze which goals these documents show progress on, who did the work, and when
   });
 
   // ── Helper: gather full project context from DB + connected sources ─────────
-  async function buildProjectContext(projectId: string, userId?: string | null) {
+  async function buildProjectContext(projectId: string, userId?: string | null, githubToken?: string | null) {
     const [
       { data: project },
       { data: goals },
@@ -1841,14 +1843,18 @@ Analyze which goals these documents show progress on, who did the work, and when
     const combinedDocumentsContext = [documentsContext, noteAttachmentContext].filter(Boolean).join('\n\n---\n\n');
 
     // GitHub data — commits, README, code files, and recent commit diffs
-    const internalHeaders = getInternalRequestHeaders(userId);
+    const resolvedGitHubToken = githubToken?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
+    const internalHeaders = {
+      ...getInternalRequestHeaders(userId),
+      ...(resolvedGitHubToken ? { 'x-github-token': resolvedGitHubToken } : {}),
+    };
     let githubContext = '';
     for (const githubRepo of getGitHubRepos(project)) {
       const [owner, repo] = githubRepo.split('/');
-      const ghToken = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
-      if (ghToken) ghHeaders.Authorization = `Bearer ${ghToken}`;
+      if (resolvedGitHubToken) ghHeaders.Authorization = `Bearer ${resolvedGitHubToken}`;
       const BASE = `http://localhost:${process.env.PORT ?? 3000}`;
+      githubContext += `${githubContext ? '\n\n' : ''}## LINKED GITHUB REPOSITORY: ${githubRepo}`;
 
       // 1. Commits + README
       try {
@@ -1859,10 +1865,14 @@ Analyze which goals these documents show progress on, who did the work, and when
         if (r.ok) {
           const rd = await r.json() as { commits?: string[]; readme?: string };
           const filteredCommits = (rd.commits ?? []).filter((commit) => !isGeneratedThesisLatexCommitMessage(commit));
-          if (filteredCommits.length) githubContext += `${githubContext ? '\n\n' : ''}GitHub repo: ${githubRepo}\nCommits:\n${filteredCommits.slice(0, 20).join('\n')}`;
+          if (filteredCommits.length) githubContext += `\nCommits:\n${filteredCommits.slice(0, 20).join('\n')}`;
           if (rd.readme) githubContext += `\n\nREADME:\n${rd.readme.slice(0, 3000)}`;
+        } else {
+          githubContext += `\nRepository summary unavailable (GitHub returned ${r.status}).`;
         }
-      } catch { /* best-effort */ }
+      } catch {
+        githubContext += '\nRepository summary unavailable due to a GitHub request failure.';
+      }
 
       // 2. Recent commit diffs — what actually changed in the last 6 commits
       try {
@@ -1890,8 +1900,12 @@ Analyze which goals these documents show progress on, who did the work, and when
             } catch { /* skip single commit */ }
           }
           if (diffParts.length > 0) githubContext += `\n\nRECENT COMMIT DIFFS:\n${diffParts.join('\n\n')}`;
+        } else {
+          githubContext += `\nRecent commit diffs unavailable (GitHub returned ${commitsRes.status}).`;
         }
-      } catch { /* best-effort */ }
+      } catch {
+        githubContext += '\nRecent commit diffs unavailable due to a GitHub request failure.';
+      }
 
       // 3. Full source code — recursive tree fetch then prioritized file fetch
       const BINARY_EXTS_GH = new Set(['.png','.jpg','.jpeg','.gif','.ico','.pdf','.zip','.tar','.gz','.bin','.onnx','.pt','.weights','.h264','.mp4','.so','.dylib','.exe','.wasm','.pkl','.npy','.npz','.db','.sqlite','.lock']);
@@ -1961,8 +1975,12 @@ Analyze which goals these documents show progress on, who did the work, and when
           ].filter(Boolean).join('\n');
 
           githubContext += `\n\n${summary}\n\n${codeLines.join('\n\n')}`;
+        } else {
+          githubContext += `\nSource tree unavailable (GitHub returned ${treeRes.status}).`;
         }
-      } catch { /* best-effort */ }
+      } catch {
+        githubContext += '\nSource tree unavailable due to a GitHub request failure.';
+      }
     }
 
     // GitLab data (multi-repo support) — commits + README + code files
@@ -2144,10 +2162,20 @@ Analyze which goals these documents show progress on, who did the work, and when
   const ctxCache = new Map<string, { data: ProjectCtx; expiresAt: number }>();
 
   async function getCachedContext(projectId: string, userId?: string | null): Promise<ProjectCtx> {
-    const cacheKey = `${projectId}:${userId ?? 'anon'}`;
+    const [githubAccess, projectVersion, gitlabVersion] = await Promise.all([
+      getStoredGitHubTokenForUser(userId),
+      supabase.from('projects').select('github_repo, github_repos').eq('id', projectId).maybeSingle(),
+      supabase.from('integrations').select('config, created_at').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
+    ]);
+    const contextVersion = createHash('sha256').update(JSON.stringify({
+      githubRepos: getGitHubRepos(projectVersion.data),
+      githubTokenUpdatedAt: githubAccess?.updatedAt ?? null,
+      gitlab: gitlabVersion.data ?? null,
+    })).digest('hex').slice(0, 16);
+    const cacheKey = `${projectId}:${userId ?? 'anon'}:${contextVersion}`;
     const cached = ctxCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.data;
-    const data = await buildProjectContext(projectId, userId);
+    const data = await buildProjectContext(projectId, userId, githubAccess?.token);
     ctxCache.set(cacheKey, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
     return data;
   }

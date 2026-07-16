@@ -651,7 +651,7 @@ export default function ProjectDetailPage() {
     // Load saved AI insights
     supabase
       .from('project_insights')
-      .select('status, next_steps, future_features, provider, generated_at')
+      .select('status, next_steps, future_features, code_insights, provider, generated_at')
       .eq('project_id', projectId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -661,6 +661,7 @@ export default function ProjectDetailPage() {
             status: data.status,
             nextSteps: data.next_steps as string[],
             futureFeatures: data.future_features as string[],
+            codeInsights: data.code_insights as string[],
             provider: data.provider,
             generatedAt: data.generated_at,
           }));
@@ -965,6 +966,7 @@ export default function ProjectDetailPage() {
             status: sanitizedInsights?.status ?? '',
             next_steps: sanitizedInsights?.nextSteps ?? [],
             future_features: sanitizedInsights?.futureFeatures ?? [],
+            code_insights: sanitizedInsights?.codeInsights ?? [],
             provider: sanitizedInsights?.provider ?? agent,
             generated_at: generatedAt,
           },
