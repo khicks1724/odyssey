@@ -63,6 +63,33 @@ function uniqueModelIds(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
+function normalizeAzureOpenAiEndpoint(endpoint: string): string {
+  const trimmed = endpoint.trim();
+  if (!trimmed) return '';
+
+  try {
+    const url = new URL(trimmed);
+    const openAiV1Index = url.pathname.toLowerCase().indexOf('/openai/v1');
+    if (openAiV1Index >= 0) {
+      url.pathname = url.pathname.slice(0, openAiV1Index + '/openai/v1'.length);
+    } else if (/\.openai\.azure\.com$/i.test(url.hostname)) {
+      url.pathname = '/openai/v1';
+    }
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return trimmed
+      .replace(/[?#].*$/, '')
+      .replace(/\/(?:chat\/completions|responses|models)\/?$/i, '')
+      .replace(/\/+$/, '');
+  }
+}
+
+function normalizeAzureCatalogModelId(modelId: string): string {
+  return modelId.replace(/^(gpt-5\.6-(?:terra|luna|sol))-\d{4}-\d{2}-\d{2}$/i, '$1');
+}
+
 function splitMultilineValues(value: string): string[] {
   return [...new Set(
     value
@@ -245,7 +272,7 @@ function AiProviderCard({
       : (hasReplacementCredential || hasKey) && selectedModels.length > 0;
   const availableModelIds = modelOptions.map((option) => option.id);
   const azureDeploymentOptions = isAzureOpenAi
-    ? uniqueModelIds([...selectedModels, ...availableModelIds]).map((id) => ({
+    ? uniqueModelIds([...selectedModels, ...availableModelIds.map(normalizeAzureCatalogModelId)]).map((id) => ({
         id,
         label: id,
         description: 'Exact Azure OpenAI deployment ID',
@@ -338,7 +365,7 @@ function AiProviderCard({
       setError('API key cannot be empty');
       return;
     }
-    const trimmedEndpoint = azureEndpoint.trim();
+    const trimmedEndpoint = normalizeAzureOpenAiEndpoint(azureEndpoint);
     if (provider === 'openai' && isAzureOpenAi && !trimmedEndpoint) {
       setError('Azure OpenAI endpoint cannot be empty');
       return;
@@ -354,6 +381,7 @@ function AiProviderCard({
     setError(null);
     setTestResult(null);
     setSaving(true);
+    if (isAzureOpenAi) setAzureEndpoint(trimmedEndpoint);
     try {
       const authHeader = await getAuthHeader();
       if (!authHeader) throw new Error('Not authenticated');
@@ -467,11 +495,13 @@ function AiProviderCard({
       if (!authHeader) throw new Error('Not authenticated');
       const trimmedKey = inputKey.trim();
       const normalizedNvidiaKeys = isNvidiaCompatible ? splitMultilineValues(inputKey) : [];
+      const normalizedEndpoint = normalizeAzureOpenAiEndpoint(azureEndpoint);
+      if (isAzureOpenAi) setAzureEndpoint(normalizedEndpoint);
       const config: AiKeyConfig = {
         ...(provider === 'openai'
           ? {
               mode: openAiMode,
-              ...(isAzureOpenAi ? { endpoint: azureEndpoint.trim() } : {}),
+              ...(isAzureOpenAi ? { endpoint: normalizedEndpoint } : {}),
               ...(selectedModels[0] ? { preferredModel: selectedModels[0] } : {}),
             }
           : isNvidia
@@ -598,6 +628,7 @@ function AiProviderCard({
                 type="text"
                 value={azureEndpoint}
                 onChange={(e) => setAzureEndpoint(e.target.value)}
+                onBlur={() => setAzureEndpoint((value) => normalizeAzureOpenAiEndpoint(value))}
                 placeholder="https://your-resource.openai.azure.com/openai/v1"
                 className="w-full px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
               />
@@ -1170,8 +1201,11 @@ export default function SettingsPage() {
     if (provider === 'gemma4') return GEMMA4_MODEL_OPTIONS;
 
     const openAiProvider = aiProviders.find((entry) => entry.id === 'gpt-4o');
+    const providerModelIds = currentStatus?.config?.mode === 'azure_openai'
+      ? (openAiProvider?.models ?? [])
+      : (openAiProvider?.models ?? []).map(normalizeAzureCatalogModelId);
     const rawIds = uniqueModelIds([
-      ...(openAiProvider?.models ?? []),
+      ...providerModelIds,
       ...(currentStatus?.config?.enabledModels ?? []),
       ...(currentStatus?.config?.preferredModel ? [currentStatus.config.preferredModel] : []),
     ]);

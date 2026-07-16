@@ -106,7 +106,26 @@ async function getUserFromRequest(authHeader: string | undefined): Promise<strin
 }
 
 function normalizeOpenAiEndpoint(endpoint: string): string {
-  return endpoint.trim().replace(/\/+$/, '');
+  const trimmed = endpoint.trim();
+  if (!trimmed) return '';
+
+  try {
+    const url = new URL(trimmed);
+    const openAiV1Index = url.pathname.toLowerCase().indexOf('/openai/v1');
+    if (openAiV1Index >= 0) {
+      url.pathname = url.pathname.slice(0, openAiV1Index + '/openai/v1'.length);
+    } else if (/\.openai\.azure\.com$/i.test(url.hostname)) {
+      url.pathname = '/openai/v1';
+    }
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return trimmed
+      .replace(/[?#].*$/, '')
+      .replace(/\/(?:chat\/completions|responses|models)\/?$/i, '')
+      .replace(/\/+$/, '');
+  }
 }
 
 function normalizePreferredOpenAiModel(model: string): string {
@@ -375,33 +394,18 @@ async function testOpenAiCredential(apiKey: string, config: ProviderCredentialCo
   });
 
   if (useAzure) {
-    const deployment = config.preferredModel?.trim() || config.enabledModels?.find((value) => value.trim())?.trim() || '';
-    if (!deployment) {
-      const deployments = await discoverAzureDeployments(client);
-      if (deployments.length === 0) {
-        throw new Error('Azure credentials are valid, but no callable chat deployments were discovered. Create a deployment in Azure or enter its exact deployment ID.');
-      }
-      return {
-        message: `Azure OpenAI is valid. Discovered ${deployments.length} callable deployment${deployments.length === 1 ? '' : 's'}.`,
-        model: deployments[0],
-        models: deployments,
-      };
+    const requestedDeployments = normalizeEnabledModels([
+      ...(config.enabledModels ?? []),
+      ...(config.preferredModel ? [config.preferredModel] : []),
+    ]);
+    const deployments = await discoverAzureDeployments(client, requestedDeployments);
+    if (deployments.length === 0) {
+      throw new Error('Azure credentials are valid, but no callable chat deployments were discovered. Create a deployment in Azure or enter its exact deployment ID.');
     }
-
-    try {
-      await testAzureDeployment(client, deployment);
-    } catch (err: any) {
-      const status = err?.status ?? err?.response?.status ?? 0;
-      const detail = err?.message ?? String(err);
-      if (status === 404 && /deployment/i.test(detail)) {
-        throw new Error(`Azure deployment "${deployment}" was not found. Enter the exact deployment name from Azure OpenAI and try again.`);
-      }
-      throw err;
-    }
-
     return {
-      message: 'Azure OpenAI credentials and deployment are valid.',
-      model: deployment,
+      message: `Azure OpenAI is valid. Discovered ${deployments.length} callable deployment${deployments.length === 1 ? '' : 's'}.`,
+      model: deployments[0],
+      models: deployments,
     };
   }
 

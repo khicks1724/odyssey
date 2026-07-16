@@ -508,6 +508,13 @@ async function getOpenAiModelsForRequest(authHeader: string | undefined): Promis
     return normalizeOpenAiModelIds(merged);
   }
 
+  if (typeof credential !== 'string' && credential.authMode === 'api-key' && credential.baseURL) {
+    return mergeOpenAiModels(
+      credential.modelOverride ? [credential.modelOverride] : [],
+      userConfig?.preferredModel,
+    );
+  }
+
   try {
     const models = await listOpenAiModels(credential);
     const merged = mergeOpenAiModels(models, userConfig?.preferredModel);
