@@ -12,3 +12,5 @@ docker compose \
   -f "$ROOT_DIR/deploy/supabase/docker-compose.yml" \
   -f "$ROOT_DIR/deploy/docker-compose.odyssey.yml" \
   up -d --build
+
+"$ROOT_DIR/scripts/vm/apply-odyssey-schema.sh"

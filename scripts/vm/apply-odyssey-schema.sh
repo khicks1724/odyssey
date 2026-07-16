@@ -72,3 +72,8 @@ done
 echo "Applying odyssey-bootstrap.sql"
 cat "$ROOT_DIR/deploy/odyssey-bootstrap.sql" >"$TMP_SQL"
 run_sql "$TMP_SQL"
+
+docker compose --env-file "$SUPABASE_DIR/.env" -f "$SUPABASE_COMPOSE" exec -T db \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c "notify pgrst, 'reload schema';" \
+  >/dev/null

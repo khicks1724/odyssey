@@ -39,6 +39,12 @@ type ProviderCredentialConfig = {
   enabledModels?: string[];
 };
 
+type CredentialTestResult = {
+  message: string;
+  model?: string;
+  models?: string[];
+};
+
 type StoredKeyRow = {
   encrypted_key: string;
   iv: string;
@@ -305,41 +311,86 @@ async function testAnthropicCredential(apiKey: string): Promise<{ message: strin
   return { message: 'Anthropic key is valid.', model: 'claude-haiku-4-5-20251001' };
 }
 
-async function testOpenAiCredential(apiKey: string, config: ProviderCredentialConfig): Promise<{ message: string; model?: string }> {
+function getAzureDeploymentCandidates(modelIds: string[]): string[] {
+  const gpt56Model = /^gpt-5\.6-(terra|luna|sol)(?:-\d{4}-\d{2}-\d{2})?$/i;
+
+  return [...new Set(
+    modelIds
+      .map((modelId) => modelId.trim())
+      .filter((modelId) => gpt56Model.test(modelId))
+      .map((modelId) => modelId.replace(/-\d{4}-\d{2}-\d{2}$/i, ''))
+      .filter(Boolean),
+  )].sort((a, b) => a.localeCompare(b));
+}
+
+async function testAzureDeployment(client: OpenAI, deployment: string): Promise<void> {
+  try {
+    await client.chat.completions.create({
+      model: deployment,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: TEST_OUTPUT_TOKENS,
+    });
+  } catch (error: unknown) {
+    if (!shouldRetryWithMaxCompletionTokens(error)) throw error;
+    await client.chat.completions.create({
+      model: deployment,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_completion_tokens: TEST_OUTPUT_TOKENS,
+    });
+  }
+}
+
+async function discoverAzureDeployments(client: OpenAI, requestedDeployments: string[] = []): Promise<string[]> {
+  const models = await client.models.list();
+  const candidates = [...new Set([
+    ...requestedDeployments.map((deployment) => deployment.trim()).filter(Boolean),
+    ...getAzureDeploymentCandidates(models.data.map((entry) => entry.id)),
+  ])];
+  const available: string[] = [];
+  const batchSize = 5;
+
+  for (let index = 0; index < candidates.length; index += batchSize) {
+    const batch = candidates.slice(index, index + batchSize);
+    const results = await Promise.all(batch.map(async (deployment) => {
+      try {
+        await testAzureDeployment(client, deployment);
+        return deployment;
+      } catch {
+        return null;
+      }
+    }));
+    available.push(...results.filter((deployment): deployment is string => !!deployment));
+  }
+
+  return available;
+}
+
+async function testOpenAiCredential(apiKey: string, config: ProviderCredentialConfig): Promise<CredentialTestResult> {
   const useAzure = config.mode === 'azure_openai' && !!config.endpoint;
   const client = new OpenAI({
     apiKey,
     ...(useAzure ? { baseURL: config.endpoint } : {}),
     ...(useAzure ? { defaultHeaders: { 'api-key': apiKey } } : {}),
+    timeout: 20000,
   });
 
   if (useAzure) {
     const deployment = config.preferredModel?.trim() || config.enabledModels?.find((value) => value.trim())?.trim() || '';
     if (!deployment) {
+      const deployments = await discoverAzureDeployments(client);
+      if (deployments.length === 0) {
+        throw new Error('Azure credentials are valid, but no callable chat deployments were discovered. Create a deployment in Azure or enter its exact deployment ID.');
+      }
       return {
-        message: 'Azure OpenAI credentials are valid. Add at least one Azure deployment name to use this provider.',
+        message: `Azure OpenAI is valid. Discovered ${deployments.length} callable deployment${deployments.length === 1 ? '' : 's'}.`,
+        model: deployments[0],
+        models: deployments,
       };
     }
 
     try {
-      await client.chat.completions.create({
-        model: deployment,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: TEST_OUTPUT_TOKENS,
-      });
+      await testAzureDeployment(client, deployment);
     } catch (err: any) {
-      if (shouldRetryWithMaxCompletionTokens(err)) {
-        await client.chat.completions.create({
-          model: deployment,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_completion_tokens: TEST_OUTPUT_TOKENS,
-        });
-        return {
-          message: 'Azure OpenAI credentials and deployment are valid.',
-          model: deployment,
-        };
-      }
-
       const status = err?.status ?? err?.response?.status ?? 0;
       const detail = err?.message ?? String(err);
       if (status === 404 && /deployment/i.test(detail)) {
@@ -494,7 +545,7 @@ async function testGoogleCredential(provider: Provider, credential: string): Pro
   };
 }
 
-async function testStoredCredential(provider: Provider, row: StoredKeyRow): Promise<{ message: string; model?: string }> {
+async function testStoredCredential(provider: Provider, row: StoredKeyRow): Promise<CredentialTestResult> {
   const plaintext = decryptUserKey(row.encrypted_key, row.iv, row.auth_tag);
   const config = sanitizeConfig(provider, row.config);
 
@@ -513,7 +564,7 @@ async function testStoredCredential(provider: Provider, row: StoredKeyRow): Prom
   return testGoogleCredential(provider, plaintext);
 }
 
-async function testPlaintextCredential(provider: Provider, apiKey: string, config: ProviderCredentialConfig): Promise<{ message: string; model?: string }> {
+async function testPlaintextCredential(provider: Provider, apiKey: string, config: ProviderCredentialConfig): Promise<CredentialTestResult> {
   if (provider === 'anthropic') {
     return testAnthropicCredential(apiKey);
   }
@@ -594,9 +645,36 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
         return reply.status(400).send({ error: 'apiKey must be a non-empty string' });
       }
 
-      const { config, error: configError } = validateConfig(provider, rawConfig);
+      const { config: validatedConfig, error: configError } = validateConfig(provider, rawConfig);
       if (configError) {
         return reply.status(400).send({ error: configError });
+      }
+
+      let config = validatedConfig;
+      if (provider === 'openai' && config.mode === 'azure_openai' && config.endpoint) {
+        try {
+          const azureClient = new OpenAI({
+            apiKey: apiKey!.trim(),
+            baseURL: config.endpoint,
+            defaultHeaders: { 'api-key': apiKey!.trim() },
+            timeout: 20000,
+          });
+          const requestedDeployments = normalizeEnabledModels([
+            ...(config.enabledModels ?? []),
+            ...(config.preferredModel ? [config.preferredModel] : []),
+          ]);
+          const deployments = await discoverAzureDeployments(azureClient, requestedDeployments);
+          if (deployments.length === 0) {
+            return reply.status(400).send({ error: 'Azure credentials are valid, but no callable chat deployments were discovered.' });
+          }
+          config = {
+            ...config,
+            preferredModel: deployments[0],
+            enabledModels: deployments,
+          };
+        } catch (error: unknown) {
+          return reply.status(400).send({ error: error instanceof Error ? error.message : 'Failed to discover Azure deployments' });
+        }
       }
 
       const plaintextToStore = provider === 'nvidia' || provider === 'gemma4'

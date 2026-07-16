@@ -37,6 +37,7 @@ from auth.users u
 where p.id = u.id and p.email is null;
 
 -- Allow authenticated users to search profiles by email (for member invite)
+drop policy if exists "Users can search profiles" on public.profiles;
 create policy "Users can search profiles"
   on public.profiles for select
   using (auth.uid() is not null);

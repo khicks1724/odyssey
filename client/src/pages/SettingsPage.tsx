@@ -52,7 +52,6 @@ const GENAI_MIL_MODEL_OPTIONS: ProviderModelOption[] = [
 
 const DEFAULT_NVIDIA_MODEL_ID = 'nvidia/nemotron-3-super-120b-a12b';
 const DEFAULT_GEMMA4_MODEL_ID = 'google/gemma-4-31b-it';
-const AZURE_GPT_56_DEPLOYMENTS = ['terra', 'luna', 'sol'];
 const NVIDIA_MODEL_OPTIONS: ProviderModelOption[] = [
   { id: 'nvidia', label: 'NVIDIA', description: 'Use your configured NVIDIA model in the top AI dropdown' },
 ];
@@ -238,18 +237,18 @@ function AiProviderCard({
       : meta.placeholder;
   const hasReplacementCredential = isNvidiaCompatible ? nvidiaApiKeys.length > 0 : !!inputKey.trim();
   const canSave = provider === 'openai'
-    ? (hasReplacementCredential || hasKey) && (!isAzureOpenAi || !!azureEndpoint.trim()) && selectedModels.length > 0
+    ? (hasReplacementCredential || hasKey)
+      && (!isAzureOpenAi || !!azureEndpoint.trim())
+      && (isAzureOpenAi || selectedModels.length > 0)
     : isNvidiaCompatible
       ? (hasReplacementCredential || hasKey) && !!(isNvidia ? nvidiaModelId : gemma4ModelId).trim() && selectedModels.length > 0
       : (hasReplacementCredential || hasKey) && selectedModels.length > 0;
   const availableModelIds = modelOptions.map((option) => option.id);
   const azureDeploymentOptions = isAzureOpenAi
-    ? uniqueModelIds([...AZURE_GPT_56_DEPLOYMENTS, ...selectedModels, ...availableModelIds]).map((id) => ({
+    ? uniqueModelIds([...selectedModels, ...availableModelIds]).map((id) => ({
         id,
         label: id,
-        description: AZURE_GPT_56_DEPLOYMENTS.includes(id)
-          ? 'Azure GPT-5.6 deployment'
-          : 'Azure OpenAI deployment name',
+        description: 'Exact Azure OpenAI deployment ID',
       }))
     : modelOptions;
 
@@ -275,6 +274,10 @@ function AiProviderCard({
       provider === 'openai' ? status?.config?.preferredModel : undefined,
     );
     const nextSelectedModels = uniqueModelIds(status?.config?.enabledModels?.length ? status.config.enabledModels : defaults);
+    if (provider === 'openai' && openAiMode === 'azure_openai' && status?.config?.mode !== 'azure_openai') {
+      setSelectedModels([]);
+      return;
+    }
     if (provider === 'openai' && openAiMode !== 'azure_openai') {
       setSelectedModels(canonicalizeSelectedModelIds(nextSelectedModels, modelOptions.map((option) => option.id)));
       return;
@@ -298,7 +301,7 @@ function AiProviderCard({
   const toggleSelectedModel = (modelId: string) => {
     setSelectedModels((current) => {
       if (current.includes(modelId)) {
-        return current.length === 1 ? current : current.filter((id) => id !== modelId);
+        return current.length === 1 && !isAzureOpenAi ? current : current.filter((id) => id !== modelId);
       }
       const next = [...current, modelId];
       if (provider === 'openai' && openAiMode !== 'azure_openai') {
@@ -395,9 +398,14 @@ function AiProviderCard({
             body: JSON.stringify({ config }),
           });
 
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      }
+
+      const savedConfig = (body as { config?: AiKeyConfig }).config;
+      if (provider === 'openai' && savedConfig?.enabledModels?.length) {
+        setSelectedModels(uniqueModelIds(savedConfig.enabledModels));
       }
 
       setInputKey('');
@@ -495,7 +503,10 @@ function AiProviderCard({
       if (!res.ok) {
         throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
       }
-      const data = body as { message?: string; model?: string };
+      const data = body as { message?: string; model?: string; models?: string[] };
+      if (provider === 'openai' && isAzureOpenAi && data.models?.length) {
+        setSelectedModels(uniqueModelIds(data.models));
+      }
       setTestResult({
         ok: true,
         message: data.model ? `${data.message ?? 'Credential is valid.'} Model: ${data.model}` : (data.message ?? 'Credential is valid.'),
@@ -601,8 +612,8 @@ function AiProviderCard({
       {provider === 'openai' && isAzureOpenAi && (
         <div className="space-y-2 border-b border-border/50 pb-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted">Azure deployment names</span>
-            <span className="text-[10px] text-muted/70">Use the exact deployment IDs from Azure, not the base model family</span>
+            <span className="text-[10px] text-muted">Azure deployment ID</span>
+            <span className="text-[10px] text-muted/70">Choose a discovered deployment below, or add its exact Azure ID here</span>
           </div>
           <div className="flex gap-2">
             <input
@@ -615,7 +626,7 @@ function AiProviderCard({
                   handleAddAzureDeployment();
                 }
               }}
-              placeholder="gpt-5.4-2"
+              placeholder="gpt-5.6-sol"
               className="flex-1 px-3 py-1.5 bg-surface border border-border text-heading text-xs font-mono focus:outline-none focus:border-accent/50 transition-colors"
             />
             <button
@@ -628,7 +639,7 @@ function AiProviderCard({
             </button>
           </div>
           <p className="text-[10px] text-muted">
-            Odyssey will send the selected deployment name exactly as entered when it calls Azure OpenAI.
+            Deployment aliases from another tool only work when Azure has a deployment with that exact ID.
           </p>
         </div>
       )}
@@ -712,7 +723,7 @@ function AiProviderCard({
                 ) : (
                   <div className="px-3 py-3 text-[10px] text-muted">
                     {provider === 'openai' && isAzureOpenAi
-                      ? 'Add at least one Azure deployment name above.'
+                      ? 'Save or test the endpoint and key to discover callable Azure deployments.'
                       : 'Save and test your credential first to load model choices for this provider.'}
                   </div>
                 )}

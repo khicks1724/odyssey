@@ -6,6 +6,7 @@ dist/
 .mcp.json
 .claude/
 deploy/odyssey.env
+deploy/odyssey.env.*
 deploy/supabase/.env
 export/
 generated_reports/
