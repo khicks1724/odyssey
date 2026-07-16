@@ -244,6 +244,12 @@ for provider, client_id, client_secret in provider_specs:
             f"{provider}_CLIENT_ID": client_id,
             f"{provider}_SECRET": client_secret,
         })
+    elif client_id or client_secret:
+        print(
+            f"Warning: {provider} OAuth is disabled because its client ID or secret is missing.",
+            file=sys.stderr,
+        )
+        updates[f"{provider}_ENABLED"] = "false"
 
 azure_url = app_values.get("MICROSOFT_TENANT_URL", "").strip()
 if azure_url:
