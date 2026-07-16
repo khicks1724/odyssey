@@ -1,5 +1,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import OpenAI from 'openai';
 import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
@@ -35,6 +39,20 @@ interface GitLabIntegrationConfig {
   tokenIv?: string;
   tokenAuthTag?: string;
   host?: string;
+}
+
+function runGitCommand(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, {
+      env,
+      encoding: 'utf8',
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: 45_000,
+    }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout);
+    });
+  });
 }
 
 function isOpenAiProviderSelection(provider: string): provider is OpenAiProviderSelection {
@@ -1391,16 +1409,16 @@ NVIDIA structured-output compatibility rules:
 - Put all reasoning directly into the final JSON fields.`;
 
     try {
-      const runInsightsRequest = async (repair = false) => {
-        const result = await chatWithAudit(request.headers.authorization, provider, {
-          system: `${baseSystemPrompt}${useNvidiaStructuredMode ? nvidiaStructuredSuffix : ''}${repair ? '\nReturn fully populated fields now. Do not leave any array empty if the evidence supports at least one specific item.' : ''}`,
-          user: buildProjectInsightsEvidence(ctx),
-          maxTokens: 3000,
-          jsonMode: true,
-          disableReasoning: useNvidiaStructuredMode,
-        }, userApiKey, { feature: 'project-insights', routePath: '/api/ai/project-insights', projectId, userId });
+      const runInsightsRequest = async (repair = false) => chatWithAudit(request.headers.authorization, provider, {
+        system: `${baseSystemPrompt}${useNvidiaStructuredMode ? nvidiaStructuredSuffix : ''}${repair ? '\nReturn fully populated fields now. Do not leave any array empty if the evidence supports at least one specific item.' : ''}`,
+        user: buildProjectInsightsEvidence(ctx),
+        maxTokens: repair ? 6000 : 3000,
+        jsonMode: true,
+        disableReasoning: useNvidiaStructuredMode,
+      }, userApiKey, { feature: 'project-insights', routePath: '/api/ai/project-insights', projectId, userId });
 
-        let raw = extractJson(result.text);
+      const parseInsightsPayload = (text: string) => {
+        let raw = extractJson(text);
         let parsed: any;
         try {
           parsed = JSON.parse(raw);
@@ -1409,10 +1427,18 @@ NVIDIA structured-output compatibility rules:
           if (lastBrace > 0) raw = raw.slice(0, lastBrace + 1);
           parsed = JSON.parse(raw);
         }
-        return { parsed, result };
+        return parsed;
       };
 
-      let { parsed, result } = await runInsightsRequest();
+      let result = await runInsightsRequest();
+      let parsed: any;
+      try {
+        parsed = parseInsightsPayload(result.text);
+      } catch (parseError) {
+        server.log.warn({ err: parseError, provider: result.provider }, 'Retrying malformed project insights response');
+        result = await runInsightsRequest(true);
+        parsed = parseInsightsPayload(result.text);
+      }
       let normalized = {
         status: normalizeStructuredText(parsed.status),
         nextSteps: normalizeStructuredList(parsed.nextSteps),
@@ -1420,7 +1446,8 @@ NVIDIA structured-output compatibility rules:
         codeInsights: normalizeStructuredList(parsed.codeInsights),
       };
       if (useNvidiaStructuredMode && !normalized.status && normalized.nextSteps.length === 0 && normalized.futureFeatures.length === 0 && normalized.codeInsights.length === 0) {
-        ({ parsed, result } = await runInsightsRequest(true));
+        result = await runInsightsRequest(true);
+        parsed = parseInsightsPayload(result.text);
         normalized = {
           status: normalizeStructuredText(parsed.status),
           nextSteps: normalizeStructuredList(parsed.nextSteps),
@@ -3363,7 +3390,7 @@ QUALITY REQUIREMENTS:
 
     const [{ data: project }, { data: goals }, { data: events }, gitlabRes] = await Promise.all([
       supabase.from('projects').select('name, description, github_repo, github_repos').eq('id', projectId).single(),
-      supabase.from('goals').select('id, title, status, progress, deadline, category').eq('project_id', projectId),
+      supabase.from('goals').select('id, title, description, status, progress, deadline, category').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, occurred_at')
         .eq('project_id', projectId).gte('occurred_at', sinceISO)
         .order('occurred_at', { ascending: false }).limit(30),
@@ -3371,37 +3398,102 @@ QUALITY REQUIREMENTS:
     ]);
 
     const githubRepos = getGitHubRepos(project);
+    const githubAccess = await getStoredGitHubTokenForUser(userId);
+    const githubToken = githubAccess?.token?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
     const gitlabCfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
     const gitlabRepos = getGitLabRepoPaths(gitlabCfg);
     const gitlabHost = getGitLabHost(gitlabCfg);
     const gitlabToken = getGitLabToken(gitlabCfg);
 
     const commitsByRepo: { source: 'github' | 'gitlab'; repo: string; commits: string[]; count: number }[] = [];
+    const repositoryWarnings: string[] = [];
+    const fetchRepositoryActivity = async (url: string, init: RequestInit): Promise<Response> => {
+      let response: Response | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        response = await fetch(url, init);
+        if (![502, 503, 504].includes(response.status) || attempt === 2) return response;
+        await response.text().catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+      }
+      return response!;
+    };
+    const fetchGitHubCommitsViaGit = async (githubRepo: string): Promise<string[]> => {
+      if (!githubToken || !/^[\w.-]+\/[\w.-]+$/.test(githubRepo)) return [];
+      const checkoutRoot = await mkdtemp(join(tmpdir(), 'odyssey-standup-'));
+      const repositoryPath = join(checkoutRoot, 'repo.git');
+      try {
+        const basicCredential = Buffer.from(`x-access-token:${githubToken}`).toString('base64');
+        const gitEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_CONFIG_COUNT: '1',
+          GIT_CONFIG_KEY_0: 'http.extraHeader',
+          GIT_CONFIG_VALUE_0: `Authorization: Basic ${basicCredential}`,
+        };
+        await runGitCommand([
+          'clone',
+          '--bare',
+          '--filter=blob:none',
+          '--depth=200',
+          `https://github.com/${githubRepo}.git`,
+          repositoryPath,
+        ], gitEnv);
+        const log = await runGitCommand([
+          '--git-dir', repositoryPath,
+          'log',
+          `--since=${sinceISO}`,
+          '--date=short',
+          '--format=[%ad] %s',
+          '--all',
+        ], { ...process.env, GIT_TERMINAL_PROMPT: '0' });
+        return log.split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line && !isGeneratedThesisLatexCommitMessage(line.replace(/^\[[^\]]+\]\s*/, '')));
+      } finally {
+        await rm(checkoutRoot, { recursive: true, force: true }).catch(() => undefined);
+      }
+    };
 
     for (const githubRepo of githubRepos) {
       const [owner, repo] = githubRepo.split('/');
-      const token = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
-      if (token) ghHeaders.Authorization = `Bearer ${token}`;
+      if (githubToken) ghHeaders.Authorization = `Bearer ${githubToken}`;
       const msgs: string[] = [];
+      let githubFetchWarning = '';
       try {
         for (let page = 1; page <= 2; page++) {
-          const r = await fetch(
+          const r = await fetchRepositoryActivity(
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?per_page=100&page=${page}&since=${sinceISO}`,
             { headers: ghHeaders }
           );
-          if (!r.ok) break;
-          const commits: { commit: { message: string } }[] = await r.json();
+          if (!r.ok) {
+            githubFetchWarning = `Could not read ${githubRepo} commits (GitHub HTTP ${r.status}).`;
+            break;
+          }
+          const commits: { commit: { message: string; author?: { date?: string } } }[] = await r.json();
           if (!commits.length) break;
           for (const c of commits) {
             const message = c.commit.message.split('\n')[0].trim();
             if (isGeneratedThesisLatexCommitMessage(message)) continue;
-            msgs.push(message);
+            const date = c.commit.author?.date?.slice(0, 10);
+            msgs.push(`${date ? `[${date}] ` : ''}${message}`);
           }
           if (commits.length < 100) break;
         }
-      } catch { /* best-effort */ }
-      if (msgs.length > 0) commitsByRepo.push({ source: 'github', repo: githubRepo, commits: msgs.slice(0, 50), count: msgs.length });
+      } catch {
+        githubFetchWarning = `Could not read ${githubRepo} commits because the GitHub request failed.`;
+      }
+      if (githubFetchWarning && githubToken) {
+        try {
+          const gitCommits = await fetchGitHubCommitsViaGit(githubRepo);
+          msgs.splice(0, msgs.length, ...gitCommits);
+          githubFetchWarning = '';
+        } catch {
+          githubFetchWarning += ' The authenticated Git fallback also failed.';
+        }
+      }
+      if (githubFetchWarning) repositoryWarnings.push(githubFetchWarning);
+      commitsByRepo.push({ source: 'github', repo: githubRepo, commits: msgs.slice(0, 50), count: msgs.length });
     }
 
     if (gitlabToken && gitlabHost) for (const repo of gitlabRepos) {
@@ -3409,28 +3501,34 @@ QUALITY REQUIREMENTS:
       const msgs: string[] = [];
       try {
         for (let page = 1; page <= 2; page++) {
-          const r = await fetch(
+          const r = await fetchRepositoryActivity(
             `${gitlabHost}/api/v4/projects/${encoded}/repository/commits?per_page=100&page=${page}&since=${sinceISO}&order_by=created_at&sort=desc`,
             { headers: { 'PRIVATE-TOKEN': gitlabToken ?? '' } }
           );
-          if (!r.ok) break;
-          const commits: { title: string }[] = await r.json();
+          if (!r.ok) {
+            repositoryWarnings.push(`Could not read ${repo} commits (GitLab HTTP ${r.status}).`);
+            break;
+          }
+          const commits: { title: string; created_at?: string }[] = await r.json();
           if (!commits.length) break;
           for (const c of commits) {
             const message = c.title.trim();
             if (isGeneratedThesisLatexCommitMessage(message)) continue;
-            msgs.push(message);
+            const date = c.created_at?.slice(0, 10);
+            msgs.push(`${date ? `[${date}] ` : ''}${message}`);
           }
           if (commits.length < 100) break;
         }
-      } catch { /* best-effort */ }
-      if (msgs.length > 0) commitsByRepo.push({ source: 'gitlab', repo, commits: msgs.slice(0, 50), count: msgs.length });
+      } catch {
+        repositoryWarnings.push(`Could not read ${repo} commits because the GitLab request failed.`);
+      }
+      commitsByRepo.push({ source: 'gitlab', repo, commits: msgs.slice(0, 50), count: msgs.length });
     }
 
     const totalCommits = commitsByRepo.reduce((sum, r) => sum + r.count, 0);
 
     const goalsText = (goals ?? []).map((g) =>
-      `- [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}`
+      `- [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.description ? `\n  Scope: ${g.description.slice(0, 500)}` : ''}`
     ).join('\n') || 'No tasks';
 
     const eventsText = (events ?? []).map((e) =>
@@ -3447,12 +3545,11 @@ QUALITY REQUIREMENTS:
         .filter((g) => ['done', 'completed', 'review'].includes(String(g.status).toLowerCase()) || Number(g.progress ?? 0) >= 75)
         .slice(0, 3)
         .map((g) => `${g.title} (${g.progress}% complete${g.status ? `, ${String(g.status).toLowerCase()}` : ''})`);
-      if (completedGoals.length > 0) return completedGoals;
-
       const commitTopics = commitsByRepo
         .flatMap((repo) => repo.commits.slice(0, 3).map((message) => `${repo.repo.split('/').pop()}: ${message}`))
         .slice(0, 3);
-      if (commitTopics.length > 0) return commitTopics;
+      const combinedEvidence = [...commitTopics, ...completedGoals].slice(0, 6);
+      if (combinedEvidence.length > 0) return combinedEvidence;
 
       const eventTopics = (events ?? [])
         .slice(0, 3)
@@ -3489,6 +3586,12 @@ Return an object with:
 - "inProgress": array of 2-4 strings — work actively underway based on recent commits, active tasks, and NOT_STARTED tasks with near-term deadlines. If there are no commits, derive from task status and context. Never return an empty array — if no active work is apparent, note planned work that should be underway.
 - "blockers": array of 0-3 strings — risks, stalled tasks, or potential blockers (return empty array if none apparent)
 
+Evidence reconciliation rules:
+- Treat Odyssey tasks as the planning/status layer and repository commits as the delivery/evidence layer. You MUST use both when both are present.
+- Map commit topics to the most likely Odyssey task by title and scope. State which task the repository work advances, even when that task is still marked NOT_STARTED or 0%.
+- When commits demonstrate implementation but the matching Odyssey task is stale, describe the delivered work in "accomplished" and identify the tracker mismatch in "blockers". Never claim that execution has not begun when Total commits is greater than zero.
+- "accomplished" must lead with concrete commit-backed delivery, then incorporate task progress and logged events. "inProgress" should combine continuing commit themes with upcoming or partially complete Odyssey tasks.
+
 Be specific. Reference real task names, actual commit topics, and concrete percentages. When you mention repository files, prefer the most specific repo-qualified or path-qualified form you can infer, such as \`repo-name/src/module/file.ts\` or \`calibration/core/plot_generator.py\`, instead of shortening to ambiguous bare filenames. Avoid generic filler.`;
       const nvidiaStructuredSuffix = `
 
@@ -3509,11 +3612,14 @@ ${goalsText}
 COMMITS BY REPO:
 ${commitsText}
 
+REPOSITORY ACCESS WARNINGS:
+${repositoryWarnings.length > 0 ? repositoryWarnings.join('\n') : 'None'}
+
 LOGGED EVENTS:
 ${eventsText}
 
 Generate the standup summary.`,
-        maxTokens: 800,
+        maxTokens: repair ? 1600 : 800,
         jsonMode: true,
         disableReasoning: useNvidiaStructuredMode,
       }, userApiKey, { feature: 'standup', routePath: '/api/ai/standup', projectId, userId });
@@ -3530,7 +3636,14 @@ Generate the standup summary.`,
       };
 
       let result = await runStandupRequest();
-      let parsed = parseStandupPayload(result.text);
+      let parsed: any;
+      try {
+        parsed = parseStandupPayload(result.text);
+      } catch (parseError) {
+        server.log.warn({ err: parseError, provider: result.provider }, 'Retrying malformed standup response');
+        result = await runStandupRequest(true);
+        parsed = parseStandupPayload(result.text);
+      }
       let highlights = normalizeStructuredText(parsed.highlights);
       let accomplished = normalizeStructuredList(parsed.accomplished);
       let inProgress = normalizeStructuredList(parsed.inProgress);
@@ -3558,6 +3671,7 @@ Generate the standup summary.`,
         period: { from: sinceDate, to: toDate },
         commitSummary: commitsByRepo.map((r) => ({ source: r.source, repo: r.repo, count: r.count })),
         totalCommits,
+        repositoryWarnings,
         provider: result.provider,
         generatedAt,
       };

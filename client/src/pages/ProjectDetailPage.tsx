@@ -116,6 +116,7 @@ function sanitizeStandupPayload(value: {
   period?: { from: string; to: string };
   commitSummary?: { source: 'github' | 'gitlab'; repo: string; count: number }[];
   totalCommits?: number;
+  repositoryWarnings?: string[];
   provider?: string;
   generatedAt?: string;
 } | null | undefined) {
@@ -128,6 +129,7 @@ function sanitizeStandupPayload(value: {
     period: value.period ?? { from: '', to: '' },
     commitSummary: value.commitSummary ?? [],
     totalCommits: value.totalCommits ?? 0,
+    repositoryWarnings: value.repositoryWarnings ?? [],
     provider: value.provider,
     generatedAt: value.generatedAt,
   };
@@ -503,6 +505,7 @@ export default function ProjectDetailPage() {
     period: { from: string; to: string };
     commitSummary: { source: 'github' | 'gitlab'; repo: string; count: number }[];
     totalCommits: number;
+    repositoryWarnings: string[];
     provider?: string;
     generatedAt?: string;
   };
@@ -684,6 +687,7 @@ export default function ProjectDetailPage() {
             period: data.period as { from: string; to: string },
             commitSummary: data.commit_summary as { source: 'github' | 'gitlab'; repo: string; count: number }[],
             totalCommits: data.total_commits,
+            repositoryWarnings: [],
             provider: data.provider,
             generatedAt: data.generated_at,
           }));

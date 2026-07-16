@@ -314,6 +314,8 @@ function shouldRetryWithMaxCompletionTokens(error: unknown): boolean {
     || (/max_tokens/i.test(message) && /max_completion_tokens/i.test(message));
 }
 
+const MAX_STRUCTURED_COMPLETION_TOKENS = 16_000;
+
 function getHostedProviderId(credential: OpenAiCredentialOverride, model: string): 'nvidia' | 'gemma4' | null {
   const normalizedModel = model.trim().toLowerCase();
   if (credential.providerLabel === 'gemma4' || normalizedModel.startsWith('google/gemma-4')) {
@@ -446,8 +448,20 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
         const content = completion.choices?.[0]?.message?.content || '';
         const finishReason = completion.choices?.[0]?.finish_reason ?? null;
 
-        if (!msg.webSearch && !expanded && !content.trim() && finishReason === 'length' && currentTokenLimit < 2000) {
-          const expandedTokenLimit = Math.max(2000, currentTokenLimit * 2);
+        // A length-limited JSON response is never usable, even when it contains
+        // partial content. Reasoning models can also spend the entire initial
+        // budget before emitting visible text. Retry once with enough room for
+        // both cases instead of passing truncated JSON to route-level parsers.
+        const shouldExpandLengthLimitedResponse = !msg.webSearch
+          && !expanded
+          && finishReason === 'length'
+          && (msg.jsonMode || !content.trim())
+          && currentTokenLimit < MAX_STRUCTURED_COMPLETION_TOKENS;
+        if (shouldExpandLengthLimitedResponse) {
+          const expandedTokenLimit = Math.min(
+            MAX_STRUCTURED_COMPLETION_TOKENS,
+            Math.max(2000, currentTokenLimit * 2),
+          );
           const expandedCompletion = await withTimeout(
             openai.chat.completions.create({
               ...baseCompletionParams,

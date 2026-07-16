@@ -393,6 +393,7 @@ type StandupData = {
   period: { from: string; to: string };
   commitSummary: { source: 'github' | 'gitlab'; repo: string; count: number }[];
   totalCommits: number;
+  repositoryWarnings: string[];
   provider?: string;
   generatedAt?: string;
 };
@@ -759,6 +760,15 @@ function OverviewTab({
                   </div>
                 )}
               </div>
+
+              {standup.repositoryWarnings.length > 0 && (
+                <div className="border border-red-300/30 bg-red-500/5 rounded px-4 py-3">
+                  <p className="text-xs font-medium text-heading mb-1">Some repository activity could not be loaded</p>
+                  {standup.repositoryWarnings.map((warning) => (
+                    <p key={warning} className="text-[11px] text-muted">{warning}</p>
+                  ))}
+                </div>
+              )}
 
               {standup.highlights && (
                 <div className="px-4 py-3 rounded bg-accent/8 border border-accent/15">
