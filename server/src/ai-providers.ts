@@ -458,10 +458,10 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
           && (msg.jsonMode || !content.trim())
           && currentTokenLimit < MAX_STRUCTURED_COMPLETION_TOKENS;
         if (shouldExpandLengthLimitedResponse) {
-          const expandedTokenLimit = Math.min(
-            MAX_STRUCTURED_COMPLETION_TOKENS,
-            Math.max(2000, currentTokenLimit * 2),
-          );
+          // Go straight to the full structured-output budget. A small doubling
+          // can make a reasoning model perform the same expensive request twice
+          // and still stop halfway through its JSON.
+          const expandedTokenLimit = MAX_STRUCTURED_COMPLETION_TOKENS;
           const expandedCompletion = await withTimeout(
             openai.chat.completions.create({
               ...baseCompletionParams,
@@ -473,6 +473,12 @@ async function callOpenAiModel(model: string, msg: ChatMessage, apiKeyOverride?:
             requestTimeoutMessage,
           );
           return finalizeCompletion(expandedCompletion, expandedTokenLimit, true);
+        }
+
+        if (!msg.webSearch && msg.jsonMode && finishReason === 'length') {
+          // Never pass known-truncated structured output to route-level
+          // JSON.parse calls. Partial JSON cannot be treated as valid actions.
+          throw new Error('The AI response reached its output limit before the structured result was complete. Try again or switch to another model.');
         }
 
         clearProviderError(providerId, credential);
@@ -953,7 +959,13 @@ export function getCachedProviderStatus(provider: AIProvider, credential?: Provi
 export async function chat(provider: AIProviderSelection, msg: ChatMessage, apiKey?: ProviderCredentialOverride): Promise<ChatResult> {
   if (isOpenAiProviderSelection(provider)) {
     const { model, reasoningEffort } = parseOpenAiSelection(provider.slice('openai:'.length));
-    return callOpenAiModel(model, { ...msg, ...(reasoningEffort ? { reasoningEffort } : {}) }, apiKey);
+    // A route may explicitly choose a leaner effort for structured automation;
+    // otherwise honor the effort encoded in the user's model selection.
+    const effectiveReasoningEffort = msg.reasoningEffort ?? reasoningEffort;
+    return callOpenAiModel(model, {
+      ...msg,
+      ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
+    }, apiKey);
   }
   const fn = providers[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);

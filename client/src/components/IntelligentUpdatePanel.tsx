@@ -85,6 +85,7 @@ function buildDraft(s: Suggestion, goals: Goal[]): Goal {
       title:       (s.args.title as string) ?? 'New Task',
       deadline:    (s.args.deadline as string) ?? null,
       category:    (s.args.category as string) ?? null,
+      loe:         (s.args.loe as string) ?? null,
       assigned_to: (s.args.assignedTo as string) ?? null,
     };
   }
@@ -173,6 +174,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
   const { agent, providers } = useAIAgent();
   const { showAIError, aiErrorDialog } = useAIErrorDialog(agent, providers);
   const [loading,      setLoading]      = useState(false);
+  const [hasRun,       setHasRun]       = useState(false);
   const [suggestions,  setSuggestions]  = useState<Suggestion[]>([]);
   const [goals,        setGoals]        = useState<Goal[]>([]);
   const [members,      setMembers]      = useState<MemberOption[]>([]);
@@ -207,6 +209,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
   const runAnalysis = async () => {
     setLoading(true);
     setError(null);
+    setHasRun(false);
     setSuggestions([]);
     setStates({});
     await fetchSupporting();
@@ -228,6 +231,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
       }
       const list: Suggestion[] = data.suggestions ?? [];
       setSuggestions(list);
+      setHasRun(true);
       setProvider(data.provider ?? null);
       const init: Record<string, 'idle'> = {};
       list.forEach((s) => { init[s.id] = 'idle'; });
@@ -248,17 +252,22 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
       const { type, args } = s;
 
       if (type === 'create_goal') {
-        const { data: newGoal } = await supabase.from('goals').insert({
+        const requestedStatus = overrides?.status ?? 'not_started';
+        const requestedProgress = overrides?.progress ?? 0;
+        const isComplete = requestedStatus === 'complete' || requestedProgress === 100;
+        const { data: newGoal, error: createError } = await supabase.from('goals').insert({
           project_id:  projectId,
           title:       overrides?.title       ?? (args.title as string),
           deadline:    overrides?.deadline    ?? (args.deadline as string) ?? null,
           category:    overrides?.category    ?? (args.category as string) ?? null,
-          loe:         overrides?.loe         ?? null,
+          loe:         overrides?.loe         ?? (args.loe as string) ?? null,
           assigned_to: overrides?.assigned_to ?? (args.assignedTo as string) ?? null,
           assignees:   overrides?.assignees   ?? [],
-          status:      overrides?.status      ?? 'not_started',
-          progress:    overrides?.progress    ?? 0,
+          status:      isComplete ? 'complete' : requestedStatus,
+          progress:    isComplete ? 100 : requestedProgress,
+          completed_at: isComplete ? new Date().toISOString() : null,
         }).select().single();
+        if (createError) throw createError;
         // Auto-generate AI guidance in background
         if (newGoal?.id) {
           const { data: sessionData } = await supabase.auth.getSession();
@@ -277,8 +286,39 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
         }
       } else if (type === 'update_goal') {
         const baseUpdates = args.updates as Record<string, unknown>;
-        const merged = overrides ? { ...baseUpdates, ...overrides } : baseUpdates;
-        await supabase.from('goals').update(merged).eq('id', args.goalId as string);
+        const merged: Record<string, unknown> = overrides ? { ...baseUpdates, ...overrides } : { ...baseUpdates };
+        const existingGoal = goals.find((goal) => goal.id === args.goalId);
+        const { data: { user } } = await supabase.auth.getUser();
+        merged.updated_by = user?.id ?? null;
+        if (merged.status === 'complete' || merged.progress === 100) {
+          merged.status = 'complete';
+          merged.progress = 100;
+          merged.completed_at = existingGoal?.completed_at ?? new Date().toISOString();
+        } else if (typeof merged.status === 'string') {
+          merged.completed_at = null;
+        }
+        const { error: updateError } = await supabase.from('goals').update(merged).eq('id', args.goalId as string);
+        if (updateError) throw updateError;
+
+        if (existingGoal && (merged.status !== undefined || merged.progress !== undefined)) {
+          void supabase.from('events').insert({
+            project_id: projectId,
+            actor_id: user?.id ?? null,
+            source: 'ai',
+            event_type: 'goal_progress_updated',
+            title: `Repository scan updated task: "${existingGoal.title}"`,
+            summary: s.reasoning,
+            metadata: {
+              goal_id: existingGoal.id,
+              old_status: existingGoal.status,
+              new_status: merged.status ?? existingGoal.status,
+              old_progress: existingGoal.progress,
+              new_progress: merged.progress ?? existingGoal.progress,
+              analyzed_by: provider,
+            },
+            occurred_at: new Date().toISOString(),
+          });
+        }
       } else if (type === 'delete_goal') {
         const { data: deletedGoal, error: loadError } = await supabase
           .from('goals')
@@ -286,7 +326,8 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
           .eq('id', args.goalId as string)
           .maybeSingle();
         if (loadError) throw loadError;
-        await supabase.from('goals').delete().eq('id', args.goalId as string);
+        const { error: deleteError } = await supabase.from('goals').delete().eq('id', args.goalId as string);
+        if (deleteError) throw deleteError;
         if (deletedGoal) {
           pushUndoAction({
             label: `Deleted task ${deletedGoal.title}`,
@@ -299,7 +340,8 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
         }
       } else if (type === 'extend_deadline' || type === 'contract_deadline') {
         const newDeadline = overrides?.deadline ?? args.suggestedDeadline;
-        await supabase.from('goals').update({ deadline: newDeadline }).eq('id', args.goalId as string);
+        const { error: deadlineError } = await supabase.from('goals').update({ deadline: newDeadline }).eq('id', args.goalId as string);
+        if (deadlineError) throw deadlineError;
       }
 
       setStates((prev) => ({ ...prev, [s.id]: 'accepted' }));
@@ -341,7 +383,7 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
           <Sparkles size={15} className="text-accent" />
           <div>
             <div className="text-sm font-bold text-heading font-sans">Intelligent Update</div>
-            <div className="text-[10px] text-muted font-mono">AI-powered task suggestions</div>
+            <div className="text-[10px] text-muted font-mono">AI task and repository scan</div>
           </div>
         </div>
         <button type="button" onClick={onClose} title="Close" className="text-muted hover:text-heading transition-colors">
@@ -353,14 +395,14 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
       <div className="flex-1 overflow-y-auto min-h-0">
 
         {/* Empty state */}
-        {!loading && suggestions.length === 0 && !error && (
+        {!loading && suggestions.length === 0 && !error && !hasRun && (
           <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
             <Sparkles size={32} className="text-muted/30" />
             <div>
               <p className="text-sm text-heading font-sans mb-1">Analyze Your Project</p>
               <p className="text-xs text-muted leading-relaxed max-w-xs">
-                The AI will review your tasks, documents, commits, and team activity to suggest
-                improvements — tasks to add, remove, or reschedule.
+                The AI will scan all linked GitHub and GitLab repositories, compare commits and
+                source with your tasks, and suggest progress, completion, and planning updates.
               </p>
             </div>
             <button
@@ -373,11 +415,32 @@ export default function IntelligentUpdatePanel({ projectId, onClose, onGoalMutat
           </div>
         )}
 
+        {/* Successful scan with no evidence-backed changes */}
+        {!loading && suggestions.length === 0 && !error && hasRun && (
+          <div className="flex flex-col items-center justify-center h-full gap-4 p-8 text-center">
+            <CheckCircle size={32} className="text-accent3/70" />
+            <div>
+              <p className="text-sm text-heading font-sans mb-1">Tasks Are Up to Date</p>
+              <p className="text-xs text-muted leading-relaxed max-w-xs">
+                The repository scan found no clear evidence that any task needs a progress,
+                completion, or planning change.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={runAnalysis}
+              className="flex items-center gap-2 px-4 py-2 border border-border text-xs text-muted rounded hover:text-heading hover:bg-surface2 transition-colors"
+            >
+              <Sparkles size={12} /> Scan Again
+            </button>
+          </div>
+        )}
+
         {/* Loading */}
         {loading && (
           <div className="flex flex-col items-center justify-center h-full gap-3">
             <Loader2 size={24} className="animate-spin text-accent" />
-            <p className="text-sm text-muted">Analyzing project across all sources…</p>
+            <p className="text-sm text-muted">Scanning linked repos and reconciling tasks…</p>
           </div>
         )}
 

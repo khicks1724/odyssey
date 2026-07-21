@@ -1670,7 +1670,7 @@ Analyze which goals these documents show progress on, who did the work, and when
       { data: noteAttachments },
     ] = await Promise.all([
       supabase.from('projects').select('name, description, github_repo, github_repos, created_at, owner_id').eq('id', projectId).single(),
-      supabase.from('goals').select('id, title, status, progress, deadline, category, assigned_to, assignees, estimated_hours').eq('project_id', projectId),
+      supabase.from('goals').select('id, title, description, status, progress, deadline, category, loe, assigned_to, assignees, estimated_hours, completed_at, updated_at').eq('project_id', projectId),
       supabase.from('events').select('source, event_type, title, summary, metadata, occurred_at').eq('project_id', projectId).order('occurred_at', { ascending: false }).limit(50),
       supabase.from('project_members').select('user_id, role').eq('project_id', projectId),
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
@@ -1731,12 +1731,12 @@ Analyze which goals these documents show progress on, who did the work, and when
 
     // Tasks list — IDs kept for action proposals in chat, but format uses "task" terminology
     const goalsText = (goals ?? []).map((g) =>
-      `- [task_id:${g.id}] [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [${g.category}]` : ''}${g.assigned_to ? ` assigned:${g.assigned_to}` : ''}`
+      `- [task_id:${g.id}] [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [category:${g.category}]` : ''}${g.loe ? ` [loe:${g.loe}]` : ''}${g.assigned_to ? ` assigned:${g.assigned_to}` : ''}${g.updated_at ? ` updated:${g.updated_at.slice(0, 10)}` : ''}`
     ).join('\n') || 'No tasks';
 
     // Tasks-only text (no IDs) for insights — prevents the AI from parroting UUIDs back to users
     const tasksText = (goals ?? []).map((g) =>
-      `- [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [${g.category}]` : ''}`
+      `- [${g.status.toUpperCase()}] "${g.title}" — ${g.progress}%${g.deadline ? ` (due ${g.deadline})` : ''}${g.category ? ` [category:${g.category}]` : ''}${g.loe ? ` [loe:${g.loe}]` : ''}${g.updated_at ? ` (tracker updated ${g.updated_at.slice(0, 10)})` : ''}${g.description ? `\n  Scope/acceptance notes: ${g.description.slice(0, 600)}` : ''}`
     ).join('\n') || 'No tasks';
 
     const actualHoursByGoal = new Map<string, number>();
@@ -2028,7 +2028,7 @@ Analyze which goals these documents show progress on, who did the work, and when
 
         const repoResults = await Promise.allSettled(repos.map(async (repo) => {
           const repoLabel = repos.length > 1 ? ` [${repo}]` : '';
-          let repoCtx = '';
+          let repoCtx = `## LINKED GITLAB REPOSITORY: ${repo}\n`;
 
           // 1. Commits + README
           try {
@@ -2188,7 +2188,11 @@ Analyze which goals these documents show progress on, who did the work, and when
   type ProjectCtx = Awaited<ReturnType<typeof buildProjectContext>>;
   const ctxCache = new Map<string, { data: ProjectCtx; expiresAt: number }>();
 
-  async function getCachedContext(projectId: string, userId?: string | null): Promise<ProjectCtx> {
+  async function getCachedContext(
+    projectId: string,
+    userId?: string | null,
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<ProjectCtx> {
     const [githubAccess, projectVersion, gitlabVersion] = await Promise.all([
       getStoredGitHubTokenForUser(userId),
       supabase.from('projects').select('github_repo, github_repos').eq('id', projectId).maybeSingle(),
@@ -2201,7 +2205,7 @@ Analyze which goals these documents show progress on, who did the work, and when
     })).digest('hex').slice(0, 16);
     const cacheKey = `${projectId}:${userId ?? 'anon'}:${contextVersion}`;
     const cached = ctxCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    if (!options.forceRefresh && cached && cached.expiresAt > Date.now()) return cached.data;
     const data = await buildProjectContext(projectId, userId, githubAccess?.token);
     ctxCache.set(cacheKey, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
     return data;
@@ -2941,6 +2945,44 @@ For any action that targets an existing task, copy the exact task_id from TASK A
     return clipped ? `${label}:\n${clipped}` : '';
   }
 
+  function splitLinkedRepositorySections(context: string, marker: string): string[] {
+    const normalized = context.trim();
+    if (!normalized) return [];
+    const markerIndexes: number[] = [];
+    let searchFrom = 0;
+    while (searchFrom < normalized.length) {
+      const index = normalized.indexOf(marker, searchFrom);
+      if (index < 0) break;
+      markerIndexes.push(index);
+      searchFrom = index + marker.length;
+    }
+    if (markerIndexes.length === 0) return [normalized];
+
+    return markerIndexes.map((start, index) => {
+      const end = markerIndexes[index + 1] ?? normalized.length;
+      return normalized.slice(start, end).trim();
+    }).filter(Boolean);
+  }
+
+  /** Keep every linked repo represented when a project has more source than fits in one AI prompt. */
+  function buildBalancedRepositoryEvidence(githubContext: string, gitlabContext: string, maxChars: number): string {
+    const sections = [
+      ...splitLinkedRepositorySections(githubContext, '## LINKED GITHUB REPOSITORY:'),
+      ...splitLinkedRepositorySections(gitlabContext, '## LINKED GITLAB REPOSITORY:'),
+    ];
+    if (sections.length === 0) return '';
+
+    let remainingBudget = maxChars;
+    let remainingSections = sections.length;
+    return sections.map((section) => {
+      const allocation = Math.max(500, Math.floor(remainingBudget / remainingSections));
+      const clipped = truncatePromptText(section, allocation);
+      remainingBudget = Math.max(0, remainingBudget - clipped.length);
+      remainingSections -= 1;
+      return clipped;
+    }).filter(Boolean).join('\n\n--- NEXT LINKED REPOSITORY ---\n\n');
+  }
+
   function buildReportSectionEvidence(input: {
     sectionTitle: string;
     projectName: string;
@@ -3045,7 +3087,7 @@ For any action that targets an existing task, copy the exact task_id from TASK A
   }
 
   function buildIntelligentUpdateEvidence(ctx: {
-    project?: { name?: string | null } | null;
+    project?: { name?: string | null; description?: string | null } | null;
     tasksText: string;
     goalsText: string;
     membersText: string;
@@ -3054,15 +3096,15 @@ For any action that targets an existing task, copy the exact task_id from TASK A
     githubContext: string;
     gitlabContext: string;
   }, goalCount: number): string {
+    const repositoryEvidence = buildBalancedRepositoryEvidence(ctx.githubContext, ctx.gitlabContext, 80_000);
     return [
-      `PROJECT: ${ctx.project?.name ?? 'Unknown'}`,
-      buildPromptSection(`TASKS (${goalCount} total)`, ctx.tasksText || 'None — project has no tasks yet.', 4500),
-      buildPromptSection('TASK ACTION TARGETS (for args only; never show IDs in visible text)', ctx.goalsText || 'None — project has no tasks yet.', 3500),
+      `PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}`,
+      buildPromptSection(`TASKS TO RECONCILE WITH REPOSITORY EVIDENCE (${goalCount} total)`, ctx.tasksText || 'None — project has no tasks yet.', 30_000),
+      buildPromptSection('TASK ACTION TARGETS (for args only; never show IDs in visible text)', ctx.goalsText || 'None — project has no tasks yet.', 30_000),
       buildPromptSection('TEAM', ctx.membersText, 1200),
       buildPromptSection('RECENT ACTIVITY', ctx.eventsText, 1800),
       buildPromptSection('DOCUMENT SIGNALS', ctx.documentsContext, 1800),
-      buildPromptSection('GITHUB', ctx.githubContext, 3000),
-      buildPromptSection('GITLAB REPOS (commits + source code)', ctx.gitlabContext, 8000),
+      buildPromptSection('LINKED GITHUB AND GITLAB REPOSITORY EVIDENCE (balanced across every connected repo)', repositoryEvidence, 80_000),
     ].filter(Boolean).join('\n\n');
   }
 
@@ -3717,7 +3759,9 @@ Generate the standup summary.`,
       ? resolveProvider(request.body, 'claude-haiku')
       : await resolveAutoProvider(request.headers.authorization, 'claude-haiku');
     const userApiKey = await getUserApiKey(request.headers.authorization, provider);
-    const ctx = await getCachedContext(projectId, userId);
+    // This button is an explicit scan action, so bypass the short-lived chat cache
+    // and read the latest commits, diffs, and source from every linked repository.
+    const ctx = await getCachedContext(projectId, userId, { forceRefresh: true });
 
     // ── Fetch project labels (categories + LOEs) ─────────────────────────────
     const { data: labelsData } = await supabase
@@ -3779,7 +3823,7 @@ Generate the standup summary.`,
 
     try {
       const result = await chatWithAudit(request.headers.authorization, provider, {
-        system: `You are Odyssey's intelligent project advisor. Analyze ALL available project data — tasks, documents, commits, team activity — and produce a JSON list of specific, actionable suggestions to improve the project's task structure and deadlines.
+        system: `You are Odyssey's intelligent project advisor. Analyze ALL available project data — tasks, documents, commits, team activity — and produce a JSON list of specific, actionable suggestions to reconcile task status and progress, improve task structure, and adjust deadlines.
 
 Respond ONLY with valid JSON — no markdown, no code fences, no comments, no trailing commas, no explanation outside the JSON.
 
@@ -3789,7 +3833,7 @@ Return an object with one key:
   - "type": "create_goal" | "update_goal" | "delete_goal" | "extend_deadline" | "contract_deadline"
   - "priority": "high" | "medium" | "low"
   - "title": string (short label shown in the UI, max 60 chars)
-  - "reasoning": string (2-3 sentences explaining WHY this is suggested, referencing actual data)
+  - "reasoning": string (1-2 concise sentences explaining WHY this is suggested, referencing actual data; max 400 characters)
   - "args": object matching the type:
     - create_goal: {title, deadline, category, loe, assignedTo?}
     - update_goal: {goalId, updates: {title?, status?, progress?, deadline?, category?, loe?, assigned_to?}}
@@ -3806,9 +3850,18 @@ PROJECT LABELS (you MUST use ONLY these exact values):
 - Available categories: ${projectCategories.length > 0 ? projectCategories.map(c => `"${c}"`).join(', ') : '(none defined — omit category field)'}
 - Available lines of effort: ${projectLoes.length > 0 ? projectLoes.map(l => `"${l}"`).join(', ') : '(none defined — omit loe field)'}
 
-SUGGESTION VOLUME: Generate between ${minSuggestions} and ${maxSuggestions} suggestions. More is better when context is rich — do not artificially limit suggestions if there is genuine work to capture.
+SUGGESTION VOLUME: Generate at most ${maxSuggestions} suggestions and aim for at least ${minSuggestions} only when the evidence genuinely supports them. Return fewer (including zero) rather than inventing progress or low-value changes.
 
 CREATION BIAS: ${creationBias}
+
+REPOSITORY PROGRESS RECONCILIATION (highest priority when existing tasks and repo evidence are present):
+- Evaluate every existing non-complete task against the commits, commit diffs, README, and current source from ALL linked GitHub and GitLab repositories. Do not focus only on the first or busiest repo.
+- Map repository work to a task by its title and scope/acceptance notes. If the repository clearly shows more progress than Odyssey currently records, emit one update_goal suggestion for that task with both a coherent status and progress percentage.
+- Use conservative progress bands: implementation started = 10-49; substantial implementation present = 50-89; implementation appears finished but review/verification remains = 90-99 and in_review; complete = 100 and complete.
+- Mark a task complete only when the current source and/or commit diffs clearly satisfy the whole task scope. A single related commit, file, stub, TODO, README claim, or partial implementation is not enough.
+- Repository source can establish that implementation exists; commits and diffs establish recent delivery. Cite the provider, repo name, and concrete commit topic or file path in the reasoning.
+- Never lower recorded progress or move a task backward because evidence is absent. If repository evidence is ambiguous, make no status/progress suggestion for that task.
+- Do not emit duplicate update_goal suggestions for the same task. Prioritize evidence-backed progress/completion updates before task creation, deletion, or deadline cleanup.
 
 CONTEXT SIGNALS (use to calibrate):
 - Existing tasks: ${goalCount}
@@ -3816,13 +3869,17 @@ CONTEXT SIGNALS (use to calibrate):
 - Document context available: ${hasDocs ? 'yes (' + Math.round(docContextLen / 1000) + 'k chars)' : 'no'}
 	- Project age: ${projectAgeDays <= 1 ? 'brand new (today)' : projectAgeDays + ' days old'}
 	
-	Be specific and reference actual task names, dates, file names, and commit messages from the context.
+	Be specific and reference actual task names, dates, repository names, file names, and commit messages from the context.
 	Use internal task IDs only inside \`args.goalId\`. Never include raw task IDs in \`title\`, \`reasoning\`, \`args.goalTitle\`, or any other user-visible field.`,
         user: `${intelligentUpdateEvidence}
 
-Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list from scratch based on all available context.' : 'Suggest specific improvements to the task structure, deadlines, and coverage.'} Remember: every create_goal MUST have deadline, category, and loe filled in.`,
-        maxTokens: 4000,
+Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list from scratch based on all available context.' : 'First reconcile every task against all linked repositories for evidence of progress or completion, then suggest other specific improvements to task structure, deadlines, and coverage.'} Remember: every create_goal MUST have deadline, category, and loe filled in.`,
+        // Structured automation needs much less deliberation than chat. A low
+        // reasoning budget leaves room for the complete JSON action list and
+        // avoids a slow length-limit retry on reasoning-heavy OpenAI models.
+        maxTokens: 16000,
         jsonMode: true,
+        reasoningEffort: 'low',
       }, userApiKey, { feature: 'intelligent-update', routePath: '/api/ai/intelligent-update', projectId, userId });
 
       let raw = extractJson(result.text);
@@ -3836,46 +3893,102 @@ Analyze everything. ${goalCount === 0 ? 'Build a comprehensive initial task list
         parsed = JSON.parse(raw);
       }
 
-      // ── Validate + sanitise create_goal suggestions ───────────────────────
+      // ── Validate and normalise suggestions before they become UI actions ─
       const today = new Date().toISOString().split('T')[0];
+      const validTypes = new Set(['create_goal', 'update_goal', 'delete_goal', 'extend_deadline', 'contract_deadline']);
+      const validStatuses = new Set(['not_started', 'in_progress', 'in_review', 'complete']);
+      const statusRank: Record<string, number> = { not_started: 0, in_progress: 1, in_review: 2, complete: 3 };
+      const goalById = new Map(ctx.goals.map((goal) => [goal.id.toLowerCase(), goal]));
+      const seenProgressUpdates = new Set<string>();
+      const isIsoDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+      const canonicalLabel = (value: unknown, labels: string[]): string | null | undefined => {
+        if (value === null) return null;
+        if (typeof value !== 'string') return undefined;
+        if (labels.length === 0) return value.trim() || null;
+        return labels.find((label) => label.toLowerCase() === value.trim().toLowerCase());
+      };
 
-      const suggestions: any[] = (parsed.suggestions ?? []).filter((s: any) => {
-        if (s.type !== 'create_goal') return true; // non-create suggestions always pass through
+      const suggestions: any[] = [];
+      for (const rawSuggestion of Array.isArray(parsed.suggestions) ? parsed.suggestions : []) {
+        if (!rawSuggestion || typeof rawSuggestion !== 'object' || !validTypes.has(rawSuggestion.type)) continue;
+        const suggestion = { ...rawSuggestion, args: { ...(rawSuggestion.args ?? {}) } };
+        const args = suggestion.args as Record<string, any>;
 
-        const args = s.args ?? {};
+        if (suggestion.type === 'create_goal') {
+          if (typeof args.title !== 'string' || !args.title.trim()) continue;
+          args.title = args.title.trim();
+          if (!isIsoDate(args.deadline)) continue;
+          if (args.deadline < today) args.deadline = today;
 
-        // Must have a title
-        if (!args.title?.trim()) return false;
+          const category = canonicalLabel(args.category, projectCategories);
+          if (projectCategories.length > 0 && category === undefined) continue;
+          args.category = category ?? null;
+          const loe = canonicalLabel(args.loe, projectLoes);
+          if (projectLoes.length > 0 && loe === undefined) continue;
+          args.loe = loe ?? null;
+        } else {
+          if (typeof args.goalId !== 'string') continue;
+          const goal = goalById.get(args.goalId.toLowerCase());
+          if (!goal) continue;
+          args.goalId = goal.id;
 
-        // Must have a deadline — if missing or invalid, drop the suggestion
-        if (!args.deadline || typeof args.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(args.deadline)) return false;
-        // Deadline must be in the future (or today)
-        if (args.deadline < today) args.deadline = today;
+          if (suggestion.type === 'update_goal') {
+            const proposed = args.updates && typeof args.updates === 'object' ? args.updates as Record<string, unknown> : {};
+            const updates: Record<string, unknown> = {};
 
-        // Must have a category that exists in the project labels (if any defined)
-        if (projectCategories.length > 0) {
-          if (!args.category) return false;
-          // Case-insensitive match — normalise to the canonical casing from project labels
-          const match = projectCategories.find(c => c.toLowerCase() === args.category.toLowerCase());
-          if (!match) return false;
-          args.category = match; // normalise casing
+            if (typeof proposed.title === 'string' && proposed.title.trim()) updates.title = proposed.title.trim();
+            if (validStatuses.has(String(proposed.status))) updates.status = String(proposed.status);
+            if (typeof proposed.progress === 'number' && Number.isFinite(proposed.progress)) {
+              updates.progress = Math.min(100, Math.max(0, Math.round(proposed.progress)));
+            }
+            if (proposed.deadline === null || isIsoDate(proposed.deadline)) updates.deadline = proposed.deadline;
+            const category = canonicalLabel(proposed.category, projectCategories);
+            if (category !== undefined) updates.category = category;
+            const loe = canonicalLabel(proposed.loe, projectLoes);
+            if (loe !== undefined) updates.loe = loe;
+            if (proposed.assigned_to === null || typeof proposed.assigned_to === 'string') updates.assigned_to = proposed.assigned_to;
+
+            // Repository reconciliation may only advance task state, never regress it.
+            if (typeof updates.progress === 'number' && updates.progress < goal.progress) delete updates.progress;
+            if (typeof updates.status === 'string' && (statusRank[updates.status] ?? -1) < (statusRank[goal.status] ?? -1)) delete updates.status;
+            if (goal.status === 'complete') {
+              delete updates.status;
+              delete updates.progress;
+            }
+            if (updates.status === 'complete') updates.progress = 100;
+            if (updates.progress === 100) updates.status = 'complete';
+            if (typeof updates.progress === 'number' && updates.progress > 0 && goal.status === 'not_started') {
+              if (updates.status === undefined || updates.status === 'not_started') {
+                updates.status = updates.progress >= 90 ? 'in_review' : 'in_progress';
+              }
+            }
+
+            for (const key of Object.keys(updates)) {
+              if ((goal as Record<string, unknown>)[key] === updates[key]) delete updates[key];
+            }
+            if (Object.keys(updates).length === 0) continue;
+            if ((updates.status !== undefined || updates.progress !== undefined) && seenProgressUpdates.has(goal.id)) continue;
+            if (updates.status !== undefined || updates.progress !== undefined) seenProgressUpdates.add(goal.id);
+            args.updates = updates;
+          } else if (suggestion.type === 'delete_goal') {
+            args.goalTitle = goal.title;
+          } else {
+            if (!isIsoDate(args.suggestedDeadline)) continue;
+            args.goalTitle = goal.title;
+            args.currentDeadline = goal.deadline;
+          }
         }
 
-        // Must have a loe that exists in the project labels (if any defined)
-        if (projectLoes.length > 0) {
-          if (!args.loe) return false;
-          const match = projectLoes.find(l => l.toLowerCase() === args.loe.toLowerCase());
-          if (!match) return false;
-          args.loe = match; // normalise casing
-        }
-
-        return true;
-      }).map((s: any) => sanitizeSuggestionVisibleFields(s, taskTitleById));
+        suggestions.push(sanitizeSuggestionVisibleFields(suggestion, taskTitleById));
+      }
 
       return { suggestions, provider: result.provider };
     } catch (err: any) {
       server.log.error(err);
-      const msg = err?.message ?? 'Failed to run intelligent update';
+      const rawMessage = err?.message ?? 'Failed to run intelligent update';
+      const msg = err instanceof SyntaxError || /(?:unexpected end|unterminated).*json/i.test(rawMessage)
+        ? 'The AI returned an incomplete structured response. Try again or switch to another model.'
+        : rawMessage;
       if (msg.includes('credit') || msg.includes('billing')) return reply.status(402).send({ error: 'API key has no credits.' });
       return reply.status(500).send({ error: msg });
     }
