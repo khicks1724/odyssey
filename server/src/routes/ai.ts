@@ -1088,18 +1088,37 @@ export async function aiRoutes(server: FastifyInstance) {
 
     reply.header('Cache-Control', 'no-store');
 
-    const [projectRes, gitlabRes, githubAccess] = await Promise.all([
+    const [projectRes, gitlabRes, githubAccess, gitlabUserTokenRes] = await Promise.all([
       supabase.from('projects').select('github_repo, github_repos').eq('id', projectId).single(),
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
       getStoredGitHubTokenForUser(userId),
+      supabase
+        .from('user_project_gitlab_tokens')
+        .select('host, token_encrypted, token_iv, token_auth_tag')
+        .eq('project_id', projectId)
+        .eq('user_id', userId)
+        .maybeSingle(),
     ]);
 
     const githubRepos = getGitHubRepos(projectRes.data);
     const githubToken = githubAccess?.token?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
     const gitlabCfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
+    const gitlabUserToken = gitlabUserTokenRes.data as {
+      host?: string;
+      token_encrypted?: string;
+      token_iv?: string;
+      token_auth_tag?: string;
+    } | null;
     const gitlabRepos = getGitLabRepoPaths(gitlabCfg);
-    const gitlabHost = getGitLabHost(gitlabCfg);
-    const gitlabToken = getGitLabToken(gitlabCfg);
+    const gitlabHost = getGitLabHost(gitlabCfg) || gitlabUserToken?.host?.trim().replace(/\/+$/, '') || '';
+    const gitlabUserAccessToken = gitlabUserToken
+      ? getGitLabToken({
+          tokenEncrypted: gitlabUserToken.token_encrypted,
+          tokenIv: gitlabUserToken.token_iv,
+          tokenAuthTag: gitlabUserToken.token_auth_tag,
+        })
+      : '';
+    const gitlabToken = gitlabUserAccessToken || getGitLabToken(gitlabCfg);
 
     const countByDate = new Map<string, number>();
     // repoKey -> date -> count, for per-repo tooltip breakdown
@@ -1204,7 +1223,7 @@ export async function aiRoutes(server: FastifyInstance) {
             repoCommitCount += 1;
             if (page === 1) {
               recentCommits.push({
-                sha: c.sha.slice(0, 7),
+                sha: c.sha,
                 date: committedAt,
                 author: c.commit.author?.name?.trim() || c.commit.committer?.name?.trim() || c.author?.login?.trim() || 'Unknown author',
                 message: message.split('\n')[0].slice(0, 80),
@@ -1234,7 +1253,6 @@ export async function aiRoutes(server: FastifyInstance) {
     for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const repoKey = `gitlab:${repo}`;
-      const repoLabel = repo.includes('/') ? repo.split('/').slice(-2).join('/') : repo;
       repoBreakdown.set(repoKey, new Map());
       let repoCommitCount = 0;
       let failureMessage = '';
@@ -1264,11 +1282,11 @@ export async function aiRoutes(server: FastifyInstance) {
             repoCommitCount += 1;
             if (page === 1) {
               recentCommits.push({
-                sha: c.id.slice(0, 7),
+                sha: c.id,
                 date: c.created_at,
                 author: c.author_name,
                 message: c.title.slice(0, 80),
-                repo: repoLabel,
+                repo,
                 source: 'gitlab',
               });
             }
@@ -2175,12 +2193,11 @@ Analyze which goals these documents show progress on, who did the work, and when
                   );
                   if (!diffRes.ok) continue;
                   const diffData = await diffRes.json() as {
-                    diffs?: { new_path: string; diff: string; new_file: boolean; deleted_file: boolean; renamed_file: boolean }[];
+                    files?: { newPath: string; patch: string | null; status: string }[];
                   };
-                  const diffs = diffData.diffs ?? [];
+                  const diffs = diffData.files ?? [];
                   const files = diffs.slice(0, 10).map((d) => {
-                    const status = d.new_file ? 'added' : d.deleted_file ? 'deleted' : d.renamed_file ? 'renamed' : 'modified';
-                    return `  [${status}] ${d.new_path}\n${(d.diff ?? '').slice(0, 600)}`;
+                    return `  [${d.status}] ${d.newPath}\n${(d.patch ?? '').slice(0, 600)}`;
                   }).join('\n');
                   diffParts.push(`── ${c.title}\n${files}`);
                 } catch { /* skip */ }

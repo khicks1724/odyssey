@@ -27,6 +27,7 @@ import { getGitHubRepos } from '../../lib/github';
 import { formatMemberRole } from '../../lib/member-role';
 import type { FileRef } from '../../hooks/useProjectFilePaths';
 import type { Goal, OdysseyEvent } from '../../types';
+import './OverviewTab.css';
 
 const RFI_FILTER_KEYS = { category: 'category', loe: 'loe', assignee: 'assignee' } as const;
 
@@ -510,69 +511,71 @@ function OverviewTab({
 
   return (
     <>
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.5fr)_minmax(18rem,0.72fr)] gap-px bg-border border border-border mb-5">
-        <div className="bg-surface p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <BarChart3 size={14} className="text-accent" />
-            <h3 className="font-sans text-sm font-bold text-heading">Project Status</h3>
+      <div className="overview-summary-container">
+        <div className="overview-summary-layout mb-5 grid gap-px border border-border bg-border">
+          <div className="min-w-0 bg-surface p-3 sm:p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <BarChart3 size={14} className="text-accent" />
+              <h3 className="font-sans text-sm font-bold text-heading">Project Status</h3>
+            </div>
+            <div className="overview-status-metrics grid gap-px border border-border bg-border">
+              <div className="flex min-h-[4.5rem] min-w-0 flex-col justify-center bg-surface2 px-3 py-2 sm:px-4 xl:px-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Tasks</p>
+                <p className="mt-0.5 truncate text-lg font-sans font-bold text-heading">{completedGoals.length} / {goals.length}</p>
+              </div>
+              <div className="flex min-h-[4.5rem] min-w-0 flex-col justify-center bg-surface2 px-3 py-2 sm:px-4 xl:px-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Progress</p>
+                <p className="mt-0.5 truncate text-lg font-sans font-bold text-heading">{overallProgress}%</p>
+              </div>
+              <div className="flex min-h-[4.5rem] min-w-0 flex-col justify-center bg-surface2 px-3 py-2 sm:px-4 xl:px-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Members</p>
+                <p className="mt-0.5 truncate text-lg font-sans font-bold text-heading">{members.length || 1}</p>
+              </div>
+              <div className="flex min-h-[4.5rem] min-w-0 flex-col justify-center bg-surface2 px-3 py-2 sm:px-4 xl:px-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Events</p>
+                <p className="mt-0.5 truncate text-lg font-sans font-bold text-heading">{events.length}</p>
+              </div>
+              <div className="overview-trajectory flex min-h-[4.5rem] min-w-0 flex-col justify-center bg-surface2 px-3 py-2 sm:px-4 xl:px-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Trajectory</p>
+                <p className={`mt-0.5 break-words text-sm font-sans font-bold leading-snug ${trajectoryTone}`}>{trajectoryLabel}</p>
+              </div>
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-3 xl:grid-cols-5">
-            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Tasks</p>
-              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{completedGoals.length} / {goals.length}</p>
+          <div className="min-w-0 bg-surface p-3 sm:p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <Sparkles size={14} className="text-accent" />
+              <h3 className="font-sans text-sm font-bold text-heading">Generate</h3>
             </div>
-            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Progress</p>
-              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{overallProgress}%</p>
+            <div className="overview-generate-actions grid gap-px border border-border bg-border">
+              <button
+                type="button"
+                onClick={handleGenerateInsights}
+                disabled={insightsLoading}
+                className="flex min-h-[4.5rem] min-w-0 items-center gap-2.5 overflow-hidden bg-accent/10 px-3 py-2.5 text-left transition-colors hover:bg-accent/16 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4"
+              >
+                {insightsLoading ? <Loader2 size={14} className="shrink-0 animate-spin text-accent" /> : <Search size={14} className="shrink-0 text-accent" />}
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words font-sans text-sm font-bold leading-tight text-heading">AI Insights</span>
+                  <span className="mt-1 block text-[9px] font-mono uppercase tracking-[0.16em] text-accent">
+                    {insightsLoading ? 'Running' : insights ? 'Refresh' : 'Run'}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerateStandup}
+                disabled={standupLoading}
+                className="flex min-h-[4.5rem] min-w-0 items-center gap-2.5 overflow-hidden bg-accent/10 px-3 py-2.5 text-left transition-colors hover:bg-accent/16 disabled:cursor-not-allowed disabled:opacity-50 sm:px-4"
+              >
+                {standupLoading ? <Loader2 size={14} className="shrink-0 animate-spin text-accent" /> : <ClipboardList size={14} className="shrink-0 text-accent" />}
+                <span className="min-w-0 flex-1">
+                  <span className="block break-words font-sans text-sm font-bold leading-tight text-heading">2-Week Standup</span>
+                  <span className="mt-1 block text-[9px] font-mono uppercase tracking-[0.16em] text-accent">
+                    {standupLoading ? 'Running' : standup ? 'Refresh' : 'Run'}
+                  </span>
+                </span>
+              </button>
             </div>
-            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Members</p>
-              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{members.length || 1}</p>
-            </div>
-            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Events</p>
-              <p className="mt-0.5 text-lg font-sans font-bold text-heading">{events.length}</p>
-            </div>
-            <div className="flex min-h-[4.5rem] flex-col justify-center bg-surface2 px-4 py-2 sm:col-span-2 xl:col-span-1">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-muted font-mono">Trajectory</p>
-              <p className={`mt-0.5 text-sm font-sans font-bold ${trajectoryTone}`}>{trajectoryLabel}</p>
-            </div>
-          </div>
-        </div>
-        <div className="bg-surface p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <Sparkles size={14} className="text-accent" />
-            <h3 className="font-sans text-sm font-bold text-heading">Generate</h3>
-          </div>
-          <div className="grid grid-cols-2 gap-px border border-border bg-border">
-            <button
-              type="button"
-              onClick={handleGenerateInsights}
-              disabled={insightsLoading}
-              className="flex min-h-[4.5rem] items-center justify-between gap-3 bg-accent/10 px-4 py-2.5 text-left transition-colors hover:bg-accent/16 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="flex items-center gap-2">
-                {insightsLoading ? <Loader2 size={14} className="animate-spin text-accent" /> : <Search size={14} className="text-accent" />}
-                <span className="font-sans text-sm font-bold text-heading">AI Insights</span>
-              </span>
-              <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-accent">
-                {insightsLoading ? 'Running' : insights ? 'Refresh' : 'Run'}
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={handleGenerateStandup}
-              disabled={standupLoading}
-              className="flex min-h-[4.5rem] items-center justify-between gap-3 bg-accent/10 px-4 py-2.5 text-left transition-colors hover:bg-accent/16 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="flex items-center gap-2">
-                {standupLoading ? <Loader2 size={14} className="animate-spin text-accent" /> : <ClipboardList size={14} className="text-accent" />}
-                <span className="font-sans text-sm font-bold text-heading">2-Week Standup</span>
-              </span>
-              <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-accent">
-                {standupLoading ? 'Running' : standup ? 'Refresh' : 'Run'}
-              </span>
-            </button>
           </div>
         </div>
       </div>

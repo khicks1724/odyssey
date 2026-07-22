@@ -1,0 +1,43 @@
+.overview-summary-container {
+  container: overview-summary / inline-size;
+}
+
+.overview-summary-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.overview-status-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.overview-trajectory {
+  grid-column: span 2 / span 2;
+}
+
+.overview-generate-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container overview-summary (min-width: 32rem) {
+  .overview-status-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .overview-generate-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container overview-summary (min-width: 72rem) {
+  .overview-summary-layout {
+    grid-template-columns: minmax(0, 1.25fr) minmax(30rem, 0.75fr);
+  }
+
+  .overview-status-metrics {
+    grid-template-columns: repeat(4, minmax(5.5rem, 0.72fr)) minmax(9.5rem, 1.12fr);
+  }
+
+  .overview-trajectory {
+    grid-column: span 1 / span 1;
+  }
+}

@@ -62,6 +62,7 @@ import { pickUnusedProjectLabelColor } from '../lib/project-label-colors';
 import { pushUndoAction } from '../lib/undo-manager';
 import WorkspaceTabBar from '../components/WorkspaceTabBar';
 import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
+import CommitDiffRow from '../components/CommitDiffRow';
 
 const OverviewTab = lazyWithRetry(() => import('../components/project-tabs/OverviewTab'), 'project-tab-overview');
 const ActivityTab = lazyWithRetry(() => import('../components/project-tabs/ActivityTab'), 'project-tab-activity');
@@ -2786,8 +2787,34 @@ function DocumentsTab({
 }
 
 // ── Integrations Preview Tab ─────────────────────────────────────────────────
-interface CommitEntry { date: string; message: string; author: string }
+interface CommitEntry { sha?: string; date: string; message: string; author: string; url?: string }
 interface FileEntry { path: string; size?: number }
+
+function parseCommitSummaries(raw: string[]): CommitEntry[] {
+  return raw.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit)).slice(0, 30).map((commit) => {
+    const match = commit.match(/^\[(.+?)\] (.+?) — (.+)$/);
+    return match
+      ? { date: match[1], message: match[2], author: match[3] }
+      : { date: '', message: commit, author: '' };
+  });
+}
+
+function parseCommitDetails(raw: unknown, fallback: string[]): CommitEntry[] {
+  if (!Array.isArray(raw)) return parseCommitSummaries(fallback);
+  const parsed = raw.flatMap((value): CommitEntry[] => {
+    if (!value || typeof value !== 'object') return [];
+    const commit = value as Record<string, unknown>;
+    if (typeof commit.message !== 'string' || isGeneratedThesisLatexCommitMessage(commit.message)) return [];
+    return [{
+      sha: typeof commit.sha === 'string' ? commit.sha : undefined,
+      date: typeof commit.date === 'string' ? commit.date : '',
+      message: commit.message,
+      author: typeof commit.author === 'string' ? commit.author : '',
+      url: typeof commit.url === 'string' ? commit.url : undefined,
+    }];
+  });
+  return parsed.length > 0 ? parsed.slice(0, 30) : parseCommitSummaries(fallback);
+}
 
 interface IntegrationsPreviewTabProps {
   projectId: string;
@@ -2908,7 +2935,7 @@ function RepoPanel({
   icon: React.ReactNode;
   source: 'github' | 'gitlab';
   repoId: string;
-  projectId?: string | null;
+  projectId: string;
   repoLabel?: string;
   repoUrl?: string;
   titleExtra?: React.ReactNode;
@@ -3002,18 +3029,24 @@ function RepoPanel({
 
             {/* Commits view */}
             {view === 'commits' && (
-              <div className="divide-y divide-border max-h-80 overflow-y-auto">
+              <div className="max-h-[640px] overflow-y-auto">
                 {commits.length === 0 && (
                   <div className="px-6 py-6 text-xs text-muted text-center">No commits found.</div>
                 )}
                 {commits.map((c, i) => (
-                  <div key={i} className="flex items-start gap-3 px-6 py-3">
-                    <GitBranch size={11} className="text-muted mt-0.5 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs text-heading truncate">{c.message}</p>
-                      <p className="text-[10px] text-muted">{c.author}{c.date ? ` · ${c.date}` : ''}</p>
-                    </div>
-                  </div>
+                  <CommitDiffRow
+                    key={c.sha ?? `${c.date}:${c.message}:${i}`}
+                    projectId={projectId}
+                    commit={{
+                      source,
+                      repo: repoId,
+                      sha: c.sha,
+                      message: c.message,
+                      author: c.author,
+                      date: c.date,
+                      url: c.url,
+                    }}
+                  />
                 ))}
               </div>
             )}
@@ -3107,12 +3140,6 @@ function IntegrationsPreviewTab({ projectId, project, githubRepo, gitlabRepos, g
   const [glScanResults, setGlScanResults] = useState<{ completed: string[]; suggested: { title: string; reason: string }[]; provider?: string } | null>(null);
   const [glScanError, setGlScanError] = useState<string | null>(null);
 
-  const parseCommits = (raw: string[]): CommitEntry[] =>
-    raw.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit)).slice(0, 30).map((c) => {
-      const match = c.match(/^\[(.+?)\] (.+?) — (.+)$/);
-      return match ? { date: match[1], message: match[2], author: match[3] } : { date: '', message: c, author: '' };
-    });
-
   useEffect(() => {
     if (!activeGithubRepo) return;
     setGhLoading(true);
@@ -3127,7 +3154,7 @@ function IntegrationsPreviewTab({ projectId, project, githubRepo, gitlabRepos, g
         fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
       ]).then(([recent, tree]) => {
         if (recent) {
-          setGhCommits(parseCommits(recent.commits ?? []));
+          setGhCommits(parseCommitDetails(recent.commitDetails, recent.commits ?? []));
           if (recent.readme) setGhReadme(recent.readme);
         }
         if (tree?.files) setGhFiles(tree.files);
@@ -3150,7 +3177,7 @@ function IntegrationsPreviewTab({ projectId, project, githubRepo, gitlabRepos, g
         fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
       ]).then(([recent, tree]) => {
         if (recent) {
-          setGlCommits(parseCommits(recent.commits ?? []));
+          setGlCommits(parseCommitDetails(recent.commitDetails, recent.commits ?? []));
           if (recent.readme) setGlReadme(recent.readme);
         }
         if (tree?.files) setGlFiles(tree.files);

@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase.js';
 import { getInternalUserId, getUserFromAuthHeader, isInternalRequest, requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
 import { getGitLabToken, storeGitLabToken } from '../lib/gitlab-token.js';
 import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
+import { buildCommitDiffPayload } from '../lib/commit-diff.js';
 
 interface GitLabIntegrationConfig {
   repoUrl?: string;
@@ -170,6 +171,8 @@ async function resolveGitLabAccess(input: {
   if (input.projectId?.trim()) {
     const integration = await getGitLabIntegration(input.projectId.trim());
     const config = (integration?.config ?? null) as GitLabIntegrationConfig | null;
+    const configuredRepos = getGitLabRepoPaths(config);
+    if (requestedRepo && !configuredRepos.includes(requestedRepo)) return null;
     const repoPath = requestedRepo || getGitLabRepoPath(config);
     const host = getGitLabHost(config);
     const tokenRow = input.userId ? await getGitLabTokenRow(input.projectId.trim(), input.userId) : null;
@@ -256,17 +259,23 @@ export async function gitlabRoutes(server: FastifyInstance) {
       glGet(access.repoPath, '/repository/files/README.md/raw?ref=HEAD', access.token, access.host),
     ]);
 
-    type GLCommit = { created_at: string; title: string; author_name: string };
-    const commits = commitsResult.status === 'fulfilled'
-      ? (commitsResult.value as GLCommit[])
-        .filter((c) => !isGeneratedThesisLatexCommitMessage(c.title))
-        .map((c) =>
-          `[${c.created_at.slice(0, 10)}] ${c.title} — ${c.author_name}`
-        )
+    type GLCommit = { id: string; created_at: string; title: string; author_name: string; web_url?: string };
+    const visibleCommits = commitsResult.status === 'fulfilled'
+      ? (commitsResult.value as GLCommit[]).filter((c) => !isGeneratedThesisLatexCommitMessage(c.title))
       : [];
+    const commits = visibleCommits.map((c) =>
+      `[${c.created_at.slice(0, 10)}] ${c.title} — ${c.author_name}`
+    );
+    const commitDetails = visibleCommits.map((c) => ({
+      sha: c.id,
+      date: c.created_at,
+      message: c.title,
+      author: c.author_name || 'Unknown author',
+      url: c.web_url,
+    }));
 
     const readme = readmeResult.status === 'fulfilled' ? String(readmeResult.value).slice(0, 3000) : '';
-    return { commits, readme, host: access.host, repo: access.repoPath, repoUrl: access.repoUrl };
+    return { commits, commitDetails, readme, host: access.host, repo: access.repoPath, repoUrl: access.repoUrl };
   });
 
   server.get<{ Querystring: { projectId?: string; repo?: string } }>('/gitlab/commits', async (request, reply) => {
@@ -310,10 +319,31 @@ export async function gitlabRoutes(server: FastifyInstance) {
     });
     const sha = request.query.sha?.trim();
     if (!access || !sha) return reply.status(400).send({ error: 'projectId, repo, and sha are required' });
+    if (!/^[0-9a-f]{7,64}$/i.test(sha)) return reply.status(400).send({ error: 'A valid commit SHA is required' });
 
     try {
-      const data = await glGet(access.repoPath, `/repository/commits/${encodeURIComponent(sha)}/diff`, access.token, access.host);
-      return { diffs: data };
+      const data = await glGet(access.repoPath, `/repository/commits/${encodeURIComponent(sha)}/diff?per_page=100`, access.token, access.host) as Array<{
+        old_path?: string;
+        new_path?: string;
+        diff?: string;
+        new_file?: boolean;
+        deleted_file?: boolean;
+        renamed_file?: boolean;
+        collapsed?: boolean;
+        too_large?: boolean;
+      }>;
+      const files = data.map((file) => {
+        const binary = typeof file.diff === 'string' && /^Binary files\b/m.test(file.diff);
+        return {
+          oldPath: file.old_path ?? file.new_path ?? 'unknown',
+          newPath: file.new_path ?? file.old_path ?? 'unknown',
+          status: file.new_file ? 'added' : file.deleted_file ? 'deleted' : file.renamed_file ? 'renamed' : 'modified',
+          patch: binary ? null : file.diff ?? null,
+          binary,
+          truncated: Boolean(file.too_large || file.collapsed),
+        };
+      });
+      return buildCommitDiffPayload(files);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       return reply.status(500).send({ error: msg });

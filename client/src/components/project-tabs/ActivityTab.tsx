@@ -16,6 +16,7 @@ import ActivityFeed from '../ActivityFeed';
 import CommitActivityCharts from '../CommitActivityCharts';
 import MarkdownWithFileLinks from '../MarkdownWithFileLinks';
 import ProgressRing from '../ProgressRing';
+import CommitDiffRow from '../CommitDiffRow';
 import { useProjectCommitHistory } from '../../hooks/useProjectCommitHistory';
 import { supabase } from '../../lib/supabase';
 import type { Goal, OdysseyEvent } from '../../types';
@@ -1176,6 +1177,28 @@ function ActivityTab({
           </div>
         </div>
         <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} history={repoHistory} />
+        {!repoHistory.loading && repoHistory.recentCommits.length > 0 && (
+          <div className="mt-5">
+            <div className="mb-2.5 flex items-end justify-between gap-3">
+              <div>
+                <h4 className="text-xs font-semibold text-heading">Recent commits</h4>
+                <p className="mt-0.5 text-[10px] text-muted">Open a commit to inspect its changed files and inline patch.</p>
+              </div>
+              <span className="shrink-0 font-mono text-[10px] text-muted">{repoHistory.recentCommits.length} shown</span>
+            </div>
+            <div className="max-h-[640px] overflow-y-auto rounded-xl border border-border/80 bg-surface2/20">
+              {repoHistory.recentCommits.map((commit) => (
+                <CommitDiffRow
+                  key={`${commit.source}:${commit.repo}:${commit.sha}`}
+                  projectId={project.id}
+                  commit={commit}
+                  showRepository
+                  comfortable
+                />
+              ))}
+            </div>
+          </div>
+        )}
         {!repoHistory.loading && repoHistory.warnings.length > 0 && (
           <div className="mt-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">
             {repoHistory.warnings.map((warning) => <p key={warning}>{warning}</p>)}

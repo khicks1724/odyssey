@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { getUserFromAuthHeader, isInternalRequest, requireProjectAccessFromAuthHeader } from '../lib/request-auth.js';
 import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js';
+import { buildCommitDiffPayload } from '../lib/commit-diff.js';
+import { getGitHubRepos } from '../lib/github.js';
 import { supabase } from '../lib/supabase.js';
 import { getStoredGitHubTokenForUser } from './user-github-token.js';
 
@@ -19,6 +21,19 @@ interface GitHubCommit {
   };
   html_url: string;
   author?: { login: string; avatar_url: string } | null;
+}
+
+interface GitHubCommitDetails extends GitHubCommit {
+  stats?: { additions?: number; deletions?: number; total?: number };
+  files?: Array<{
+    filename: string;
+    previous_filename?: string;
+    status?: string;
+    additions?: number;
+    deletions?: number;
+    changes?: number;
+    patch?: string;
+  }>;
 }
 
 async function requireGitHubProjectAccess(
@@ -273,12 +288,104 @@ export async function githubRoutes(server: FastifyInstance) {
       }
     }
 
-    const commitSummaries = (commits as GitHubCommit[])
+    const visibleCommits = (commits as GitHubCommit[])
       .filter((c) => !isGeneratedThesisLatexCommitMessage(c.commit.message))
-      .slice(0, 30)
+      .slice(0, 30);
+    const commitSummaries = visibleCommits
       .map((c) => `[${c.commit.author.date}] ${c.commit.message.split('\n')[0]}`);
+    const commitDetails = visibleCommits.map((c) => ({
+      sha: c.sha,
+      date: c.commit.author.date,
+      message: c.commit.message.split('\n')[0],
+      author: c.commit.author.name || c.author?.login || 'Unknown author',
+      url: c.html_url,
+    }));
 
-    return { commits: commitSummaries, readme };
+    return { commits: commitSummaries, commitDetails, readme };
+  });
+
+  // Fetch a single commit's file patches without exposing the connected token.
+  server.get<{
+    Params: { owner: string; repo: string };
+    Querystring: { projectId?: string; sha?: string };
+  }>('/github/:owner/:repo/commit-diff', async (request, reply) => {
+    const projectId = request.query.projectId?.trim();
+    if (!projectId) return reply.status(400).send({ error: 'projectId is required' });
+    if (!isInternalRequest(request.headers)) {
+      const access = await requireGitHubProjectAccess(request.headers.authorization, projectId);
+      if (!access.ok) return reply.status(access.status).send({ error: access.error });
+    }
+
+    const { owner, repo } = request.params;
+    const sha = request.query.sha?.trim() ?? '';
+    if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) {
+      return reply.status(400).send({ error: 'Invalid owner or repo name' });
+    }
+    if (!/^[0-9a-f]{7,64}$/i.test(sha)) {
+      return reply.status(400).send({ error: 'A valid commit SHA is required' });
+    }
+
+    const { data: project, error: projectError } = await supabase
+      .from('projects')
+      .select('github_repo, github_repos')
+      .eq('id', projectId)
+      .maybeSingle();
+    if (projectError) return reply.status(500).send({ error: 'Unable to verify the linked repository' });
+    const requestedRepo = `${owner}/${repo}`.toLowerCase();
+    const linked = getGitHubRepos(project).some((value) => value.toLowerCase() === requestedRepo);
+    if (!linked) return reply.status(403).send({ error: 'This repository is not linked to the project' });
+
+    const token = (request.headers['x-github-token'] as string | undefined)
+      || await getUserGitHubToken(request.headers.authorization)
+      || process.env.GITHUB_TOKEN;
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'Odyssey-App',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const response = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(sha)}?per_page=100`,
+      { headers },
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as { message?: string } | null;
+      return reply.status(response.status).send({
+        error: body?.message?.trim() || `GitHub could not load this commit (${response.status})`,
+      });
+    }
+
+    const commit = await response.json() as GitHubCommitDetails;
+    const files = (commit.files ?? []).map((file) => ({
+      oldPath: file.previous_filename ?? file.filename,
+      newPath: file.filename,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      patch: file.patch ?? null,
+      binary: !file.patch
+        && (file.additions ?? 0) === 0
+        && (file.deletions ?? 0) === 0
+        && (file.changes ?? 0) > 0,
+    }));
+    const payload = buildCommitDiffPayload(files, {
+      reportedFileCount: files.length,
+      additions: commit.stats?.additions,
+      deletions: commit.stats?.deletions,
+      truncated: response.headers.get('link')?.includes('rel="next"'),
+    });
+
+    return {
+      ...payload,
+      commit: {
+        sha: commit.sha,
+        message: commit.commit.message.split('\n')[0],
+        author: commit.commit.author.name || commit.author?.login || 'Unknown author',
+        date: commit.commit.author.date,
+        url: commit.html_url,
+      },
+    };
   });
 
   // Fetch raw file content

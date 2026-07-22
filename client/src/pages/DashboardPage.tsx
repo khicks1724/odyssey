@@ -530,7 +530,7 @@ export default function DashboardPage() {
                 const ago = d > 0 ? `${d}d ago` : h > 0 ? `${h}h ago` : 'just now';
                 return (
                   <div key={i} className="flex items-center gap-3 py-1.5 border-b border-border/50 last:border-0">
-                    <span className="font-mono text-[9px] text-accent/70 shrink-0 w-12">{c.sha}</span>
+                    <span className="font-mono text-[9px] text-accent/70 shrink-0 w-12">{c.sha.slice(0, 7)}</span>
                     <span className="text-[11px] text-heading truncate flex-1">{c.message}</span>
                     <span className="text-[10px] text-muted/70 shrink-0 truncate max-w-[90px] hidden sm:block">{c.repo}</span>
                     <span className="text-[10px] text-muted shrink-0 truncate max-w-[70px] hidden md:block">{c.author}</span>
