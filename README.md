@@ -10,7 +10,7 @@ Odyssey is a full-stack application, not just a React frontend. The repository i
 - a Fastify API server in `server/`
 - a Supabase schema and migration set in `supabase/`
 - a self-hosted Supabase deployment in `deploy/supabase/`
-- an Odyssey runtime container and VM helper scripts in `deploy/` and `scripts/vm/`
+- a root Docker Compose deployment for Odyssey and the bundled Supabase stack
 
 The current codebase expects Supabase features directly:
 
@@ -67,14 +67,18 @@ In production:
 
 The checked-in production path is container-based and built around these pieces:
 
+- [compose.yaml](/home/kyle/odyssey/compose.yaml)
+  Loads the complete Supabase and Odyssey deployment from the repository root.
 - [Dockerfile](/home/kyle/odyssey/Dockerfile)
   Builds the client, builds the server, then produces one runtime image that serves both.
+- [deploy/Dockerfile.migrations](/home/kyle/odyssey/deploy/Dockerfile.migrations)
+  Packages the checked-in schema and migrations as a one-shot Compose service.
 - [deploy/docker-compose.odyssey.yml](/home/kyle/odyssey/deploy/docker-compose.odyssey.yml)
-  Runs the Odyssey app container and wires it to Supabase.
+  Runs the migration and Odyssey app containers and wires them to Supabase.
 - [deploy/supabase/docker-compose.yml](/home/kyle/odyssey/deploy/supabase/docker-compose.yml)
   Runs the self-hosted Supabase services.
 - [scripts/vm/up.sh](/home/kyle/odyssey/scripts/vm/up.sh)
-  Generates the derived Supabase env and brings the full stack up.
+  Compatibility/setup wrapper that refreshes the derived Supabase env before running Compose.
 - [scripts/vm/down.sh](/home/kyle/odyssey/scripts/vm/down.sh)
   Stops the stack.
 - [scripts/vm/generate-supabase-env.sh](/home/kyle/odyssey/scripts/vm/generate-supabase-env.sh)
@@ -86,6 +90,7 @@ The production container exposes port `3000`. Supabase services are exposed thro
 
 ```text
 odyssey/
+  compose.yaml               Root entry point for the full production stack
   client/                    React 19 + Vite frontend
   server/                    Fastify 5 API server
   supabase/                  Base schema and app migrations
@@ -93,7 +98,8 @@ odyssey/
     docker-compose.odyssey.yml
     odyssey.env.example
     supabase/                Self-hosted Supabase stack
-  scripts/vm/                Bring-up, shutdown, schema, export/import helpers
+  scripts/docker/            In-container database migration runner
+  scripts/vm/                Environment setup and export/import helpers
   setup.md                   Longer setup and deployment guide
 ```
 
@@ -162,8 +168,8 @@ Use this when you want Odyssey and Supabase running together on one machine.
 Typical process:
 
 - create `deploy/odyssey.env`
-- let the VM scripts generate `deploy/supabase/.env`
-- run `bash scripts/vm/up.sh`
+- generate `deploy/supabase/.env` once for the host
+- run `docker compose up -d --build`
 
 This is the most accurate way to run the repo as designed.
 
@@ -244,27 +250,38 @@ cd ../client && npm run dev
 
 ### Full Local Or VM Deployment With Bundled Supabase
 
-1. Install Docker and Docker Compose.
+1. Install Docker and Docker Compose 2.24.7 or newer (the root model uses Compose `include` with its long syntax).
 2. Copy [deploy/odyssey.env.example](/home/kyle/odyssey/deploy/odyssey.env.example) to `deploy/odyssey.env`.
 3. Update `CLIENT_URL` and any provider/integration settings.
-4. Run the VM helper.
+4. Generate the host-specific Supabase environment once.
+5. Start the full stack from the repository root.
 
 ```bash
 cp deploy/odyssey.env.example deploy/odyssey.env
-bash scripts/vm/up.sh
+# Edit deploy/odyssey.env before continuing.
+bash scripts/vm/generate-supabase-env.sh
+docker compose up -d --build
 ```
 
-The helper will:
+Compose will:
 
-- generate or update `deploy/supabase/.env`
-- align Supabase auth redirect URLs with `CLIENT_URL`
 - build the Odyssey runtime image
 - start Supabase and Odyssey together
+- run all pending Odyssey database migrations
+- wait for the database migrations and Supabase gateway before starting Odyssey
+
+Run `generate-supabase-env.sh` again only when host URLs, auth providers, or related environment settings change. Routine code deployments do not need it.
+
+After pushing changes, the complete VM deployment command is:
+
+```bash
+git pull --ff-only && docker compose up -d --build --remove-orphans
+```
 
 To stop the stack:
 
 ```bash
-bash scripts/vm/down.sh
+docker compose down
 ```
 
 ## Non-NPS Setup Notes
@@ -330,7 +347,7 @@ This file is partly managed by [scripts/vm/generate-supabase-env.sh](/home/kyle/
 - provider enablement flags for Supabase Auth
 - generated keys when missing
 
-Do not treat this as a purely hand-maintained file if you are using the VM scripts.
+Do not treat this as a purely hand-maintained file. Refresh it with `scripts/vm/generate-supabase-env.sh` when host or authentication settings change; routine Compose rebuilds reuse it.
 
 ## Auth And Identity
 
@@ -349,7 +366,7 @@ For production use, verify these are aligned:
 - Microsoft redirect URI
 - any OAuth provider callback URLs
 
-The VM scripts handle much of this automatically when you use the bundled deployment path.
+The environment generator aligns these settings during initial setup and whenever authentication configuration changes.
 
 ## Repo Integrations
 
@@ -411,8 +428,8 @@ npm run start
 ### Full Stack
 
 ```bash
-bash scripts/vm/up.sh
-bash scripts/vm/down.sh
+docker compose up -d --build
+docker compose down
 ```
 
 ## Recommended Smoke Test

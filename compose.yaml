@@ -1,0 +1,11 @@
+name: supabase
+
+# Compose loads the existing Supabase stack and the Odyssey-specific services as
+# one project. The included files keep their original deploy/supabase-relative
+# paths, and interpolation uses the VM's persistent, untracked Supabase env.
+include:
+  - path:
+      - ./deploy/supabase/docker-compose.yml
+      - ./deploy/docker-compose.odyssey.yml
+    project_directory: ./deploy/supabase
+    env_file: ./deploy/supabase/.env

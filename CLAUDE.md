@@ -16,12 +16,14 @@
 
 ### How to rebuild and restart Odyssey
 
-Always use the `up.sh` script — do NOT run docker compose directly, it needs both compose files and the correct env:
+The repository-root `compose.yaml` loads the Supabase and Odyssey services, builds the app, and applies pending database migrations. After code is committed and pushed, deploy from `/home/kyle/odyssey` with:
 
 ```bash
 cd /home/kyle/odyssey
-bash scripts/vm/up.sh
+git pull --ff-only && docker compose up -d --build --remove-orphans
 ```
+
+Use `docker compose down` to stop the full stack. `scripts/vm/up.sh` remains as a compatibility/setup helper when the generated Supabase environment must be refreshed, but it is not required for routine code deployments.
 
 ### Public URL
 

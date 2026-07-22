@@ -4,23 +4,22 @@ This keeps Odyssey on a Supabase-compatible backend so the UI, auth model, stora
 
 ## 1. Prepare env files
 
-Generate a self-hosted Supabase `.env` for this VM:
+Create the app env and populate it with the provider and integration values used by the server:
+
+```bash
+cp deploy/odyssey.env.example deploy/odyssey.env
+# Edit deploy/odyssey.env before continuing.
+```
+
+Then generate the self-hosted Supabase `.env` for this VM:
 
 ```bash
 ./scripts/vm/generate-supabase-env.sh YOUR_VM_IP_OR_HOSTNAME
 ```
 
-Create the app env:
+`generate-supabase-env.sh` keeps self-hosted Supabase secrets stable after the first initialization. It updates host URLs and redirect allow-lists, but it does not rotate JWT/API/database secrets on routine runs.
 
-```bash
-cp deploy/odyssey.env.example deploy/odyssey.env
-```
-
-Populate `deploy/odyssey.env` with the same provider and integration values currently used in `server/.env`.
-
-`./scripts/vm/up.sh` now keeps self-hosted Supabase secrets stable after the first initialization. It updates host URLs and redirect allow-lists, but it no longer rotates JWT/API/database secrets on every restart.
-
-If `deploy/odyssey.env` contains provider credentials, `./scripts/vm/up.sh` mirrors them into self-hosted Supabase Auth automatically:
+If `deploy/odyssey.env` contains provider credentials, `generate-supabase-env.sh` mirrors them into self-hosted Supabase Auth:
 
 ```dotenv
 GITHUB_OAUTH_CLIENT_ID=
@@ -37,7 +36,15 @@ MICROSOFT_TENANT_URL=https://login.microsoftonline.com/common
 ## 2. Start the VM stack
 
 ```bash
-./scripts/vm/up.sh
+docker compose up -d --build
+```
+
+The repository-root Compose model starts the complete Supabase stack, applies pending Odyssey schema migrations, and starts the app after those dependencies are healthy.
+
+For later code deployments, use this single shell command from the repository root:
+
+```bash
+git pull --ff-only && docker compose up -d --build --remove-orphans
 ```
 
 For Microsoft, register both of these redirect URIs in the same Microsoft Entra app:
@@ -53,6 +60,8 @@ If you publish Odyssey behind a public origin or sub-path, use that public URL i
 Supabase still runs locally on the VM, but its public OAuth callback should follow the same public Odyssey URL and append `/supabase`.
 
 ## 3. Apply Odyssey schema and buckets
+
+The `odyssey-migrations` Compose service now does this automatically during `docker compose up`. To apply the files manually for recovery or troubleshooting, use:
 
 ```bash
 ./scripts/vm/apply-odyssey-schema.sh

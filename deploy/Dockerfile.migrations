@@ -1,0 +1,11 @@
+FROM postgres:15-bookworm
+
+WORKDIR /app
+
+COPY scripts/docker/apply-odyssey-schema.sh /usr/local/bin/apply-odyssey-schema
+COPY supabase/ ./supabase/
+COPY deploy/odyssey-bootstrap.sql ./deploy/odyssey-bootstrap.sql
+
+RUN chmod +x /usr/local/bin/apply-odyssey-schema
+
+ENTRYPOINT ["/usr/local/bin/apply-odyssey-schema"]

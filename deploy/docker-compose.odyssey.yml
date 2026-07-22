@@ -1,4 +1,15 @@
 services:
+  odyssey-migrations:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.migrations
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./.env
+
   odyssey:
     container_name: odyssey-app
     build:
@@ -10,6 +21,8 @@ services:
     depends_on:
       kong:
         condition: service_healthy
+      odyssey-migrations:
+        condition: service_completed_successfully
     env_file:
       - ./.env
       - ../odyssey.env
