@@ -27,31 +27,31 @@ export default function FontSwitcher() {
   }, []);
 
   return (
-    <div ref={ref} className="relative" style={{ width: PANEL_WIDTH }}>
+    <div ref={ref} className="app-font-switcher relative">
       <button
         type="button"
         onClick={() => setOpen(!open)}
         title="Font theme"
-        className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm
+        className="font-switcher__trigger flex h-8 w-full items-center gap-2 rounded-lg px-3 text-sm
                    bg-[var(--color-surface)] border border-[var(--color-border)]
                    text-[var(--color-text)] hover:bg-[var(--color-surface2)] transition-colors cursor-pointer"
       >
         <span
-          className="fs-sample text-[13px] font-semibold text-[var(--color-heading)] leading-none shrink-0"
+          className="fs-sample font-switcher__sample text-[13px] font-semibold text-[var(--color-heading)] leading-none shrink-0"
           data-font-id={fontTheme.id}
         >
           Aa
         </span>
-        <span className="flex-1 text-left text-sm text-[var(--color-text)] truncate">{fontTheme.name}</span>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-[var(--color-muted)] shrink-0">
+        <span className="font-switcher__label flex-1 text-left text-xs text-[var(--color-text)] truncate">{fontTheme.name}</span>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="font-switcher__chevron text-[var(--color-muted)] shrink-0">
           <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
       {open && (
         <div
-          className="absolute left-0 top-full mt-1 rounded-lg border border-[var(--color-border)]
-                     bg-[var(--color-surface)] shadow-xl z-50 overflow-hidden"
+          className="font-switcher__menu absolute left-0 top-full mt-1 rounded-lg border border-[var(--color-border)]
+                     bg-[var(--color-surface)] shadow-xl z-50"
           style={{ width: PANEL_WIDTH }}
         >
           <div className="px-3 py-2 border-b border-[var(--color-border)]">

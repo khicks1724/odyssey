@@ -32,13 +32,13 @@ export default function FontSizeControl() {
   };
 
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="app-font-size-control flex items-center gap-0.5">
       <button
         type="button"
         onClick={() => change(-1)}
         disabled={step <= -3}
         title="Decrease font size"
-        className="flex items-center justify-center w-7 h-7 rounded-lg border border-[var(--color-border)]
+        className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--color-border)]
                    bg-[var(--color-surface)] text-[var(--color-muted)] hover:text-[var(--color-heading)]
                    hover:bg-[var(--color-surface2)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
       >
@@ -66,7 +66,7 @@ export default function FontSizeControl() {
         onClick={() => change(1)}
         disabled={step >= 5}
         title="Increase font size"
-        className="flex items-center justify-center w-7 h-7 rounded-lg border border-[var(--color-border)]
+        className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--color-border)]
                    bg-[var(--color-surface)] text-[var(--color-muted)] hover:text-[var(--color-heading)]
                    hover:bg-[var(--color-surface2)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
       >

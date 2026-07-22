@@ -90,12 +90,12 @@ export default function AppLayout() {
 
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Top header — counter-zoomed so A+/A- never shifts its contents */}
-        <header className="app-header-fixed relative z-30 flex items-center justify-between px-6 h-11 shrink-0
+        <header className="app-header-fixed relative z-30 flex h-14 shrink-0 items-center justify-between gap-4 px-4
                             border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-          <div className="app-header-date flex items-center gap-3 min-w-0">
+          <div className="app-header-date flex shrink-0 items-center gap-3 min-w-0">
             <DateTime />
           </div>
-          <div className="app-header-controls flex min-w-0 items-center gap-2">
+          <div className="app-header-controls flex min-w-0 flex-1 items-center justify-end gap-2">
             <AIAgentDropdown />
             <ViewModeToggle />
             <FontSizeControl />
@@ -106,7 +106,7 @@ export default function AppLayout() {
               type="button"
               onClick={() => setOpen(!open)}
               title={open ? `Close ${panelTitle}` : `Open ${panelTitle}`}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors cursor-pointer
+              className={`app-chat-toggle flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm transition-colors cursor-pointer
                 ${open
                   ? 'bg-[var(--color-surface2)] border-[var(--color-accent)]/40 text-[var(--color-accent)]'
                   : 'bg-[var(--color-surface)] border-[var(--color-border)] text-[var(--color-muted)] hover:text-[var(--color-heading)] hover:bg-[var(--color-surface2)]'

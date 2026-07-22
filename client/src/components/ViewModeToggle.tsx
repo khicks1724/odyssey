@@ -24,14 +24,15 @@ export default function ViewModeToggle() {
 
   return (
     <div
-      className="inline-flex items-stretch overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
+      className="app-view-mode-control inline-flex h-8 items-stretch overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-sm"
       aria-label="Page view mode"
     >
       <button
         type="button"
         onClick={() => setMode('extended')}
         aria-pressed={mode === 'extended'}
-        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+        title="Use the full available page width"
+        className={`px-3 text-xs font-medium transition-colors ${
           mode === 'extended'
             ? 'bg-[var(--color-surface2)] text-[var(--color-heading)]'
             : 'text-[var(--color-muted)] hover:text-[var(--color-heading)]'
@@ -43,7 +44,8 @@ export default function ViewModeToggle() {
         type="button"
         onClick={() => setMode('relaxed')}
         aria-pressed={mode === 'relaxed'}
-        className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+        title="Use a centered reading width"
+        className={`px-3 text-xs font-medium transition-colors ${
           mode === 'relaxed'
             ? 'bg-[var(--color-surface2)] text-[var(--color-heading)]'
             : 'text-[var(--color-muted)] hover:text-[var(--color-heading)]'

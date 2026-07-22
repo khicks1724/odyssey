@@ -7,6 +7,16 @@
 .aid-gemini   { --aid-color: #6366f1; }
 .aid-genaimil { --aid-color: #22d3ee; }
 
+.app-ai-trigger {
+  min-width: 8rem;
+}
+
+@media (max-width: 44rem) {
+  .app-ai-trigger {
+    max-width: 10rem;
+  }
+}
+
 .aid-dot {
   width: 0.625rem;
   height: 0.625rem;

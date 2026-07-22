@@ -198,7 +198,6 @@ type GraphPalette = {
 function buildGraphPalette(theme: Theme): GraphPalette {
   const { colors, colorScheme } = theme;
   const isDarkTheme = (colorScheme ?? (relativeLuminance(colors.bg) < 0.2 ? 'dark' : 'light')) === 'dark';
-  const isClaudeTheme = theme.id === 'claude-dark' || theme.id === 'claude-light';
   const metaText = isDarkTheme
     ? mixColors(colors.muted, colors.heading, 0.22)
     : mixColors(colors.muted, colors.heading, 0.12);
@@ -212,41 +211,23 @@ function buildGraphPalette(theme: Theme): GraphPalette {
     ? mixColors(colors.surface2, colors.accent, 0.78)
     : mixColors(colors.surface2, colors.accent, 0.88);
   const selectedText = pickReadableText(selectedFill, colors.heading, colors.bg);
-  const kindAnchors: Record<VisibleNodeKind, string> = isClaudeTheme
-    ? {
-      credit: '#ba6d5c',
-      theme: '#8d7463',
-      source: '#c6a46a',
-      project: '#d18659',
-      repo: '#a18472',
-      document: '#d9c09b',
-    }
-    : {
-      credit: '#c86a63',
-      theme: '#5f84c7',
-      source: '#c8ad4c',
-      project: '#d4874f',
-      repo: '#6d79bc',
-      document: '#5d9d7b',
-    };
+  const kindAnchors: Record<VisibleNodeKind, string> = {
+    credit: '#c86a63',
+    theme: '#5f84c7',
+    source: '#c8ad4c',
+    project: '#d4874f',
+    repo: '#6d79bc',
+    document: '#5d9d7b',
+  };
   const blendWithThemeColor = (anchor: string, themeColor: string, themeRatio: number) => mixColors(anchor, themeColor, themeRatio);
-  const kindBase: Record<VisibleNodeKind, string> = isClaudeTheme
-    ? {
-      credit: blendWithThemeColor(kindAnchors.credit, colors.accent, 0.26),
-      theme: blendWithThemeColor(kindAnchors.theme, colors.muted, 0.24),
-      source: blendWithThemeColor(kindAnchors.source, colors.heading, 0.08),
-      project: blendWithThemeColor(kindAnchors.project, colors.accent, 0.3),
-      repo: blendWithThemeColor(kindAnchors.repo, colors.border, 0.18),
-      document: blendWithThemeColor(kindAnchors.document, colors.accent3, 0.12),
-    }
-    : {
-      credit: blendWithThemeColor(kindAnchors.credit, colors.accent, 0.16),
-      theme: blendWithThemeColor(kindAnchors.theme, colors.accent2, 0.18),
-      source: blendWithThemeColor(kindAnchors.source, colors.accent, 0.08),
-      project: blendWithThemeColor(kindAnchors.project, colors.danger, 0.18),
-      repo: blendWithThemeColor(kindAnchors.repo, colors.accent2, 0.18),
-      document: blendWithThemeColor(kindAnchors.document, colors.accent3, 0.12),
-    };
+  const kindBase: Record<VisibleNodeKind, string> = {
+    credit: blendWithThemeColor(kindAnchors.credit, colors.accent, 0.16),
+    theme: blendWithThemeColor(kindAnchors.theme, colors.accent2, 0.18),
+    source: blendWithThemeColor(kindAnchors.source, colors.accent, 0.08),
+    project: blendWithThemeColor(kindAnchors.project, colors.danger, 0.18),
+    repo: blendWithThemeColor(kindAnchors.repo, colors.accent2, 0.18),
+    document: blendWithThemeColor(kindAnchors.document, colors.accent3, 0.12),
+  };
   const kindFill = (kind: VisibleNodeKind, darkRatio: number, lightRatio: number) => (
     mixColors(colors.surface2, kindBase[kind], isDarkTheme ? darkRatio : lightRatio)
   );

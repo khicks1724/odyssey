@@ -134,50 +134,6 @@ export const themes: Theme[] = [
     },
   },
   {
-    id: 'claude-dark',
-    name: 'Claude Dark',
-    previewColors: ['#1f1b17', '#D4825E', '#f3eee6'],
-    colors: {
-      bg: '#1f1b17',
-      surface: '#28231f',
-      surface2: '#312a25',
-      border: '#473d36',
-      accent: '#D4825E',
-      accent2: '#8f715f',
-      accent3: '#f3eee6',
-      danger: '#b75f42',
-      text: '#d8cec3',
-      muted: '#aa9b8d',
-      heading: '#f3eee6',
-      accentFg: '#1f1b17',
-      accent2Fg: '#f3eee6',
-      accent3Fg: '#1f1b17',
-      dangerFg: '#fdf8f2',
-    },
-  },
-  {
-    id: 'claude-light',
-    name: 'Claude Light',
-    previewColors: ['#faf7f2', '#D4825E', '#2e2823'],
-    colors: {
-      bg: '#faf7f2',
-      surface: '#f1ece4',
-      surface2: '#e7ded3',
-      border: '#cfc1b2',
-      accent: '#D4825E',
-      accent2: '#8b6f5c',
-      accent3: '#2e2823',
-      danger: '#b85c38',
-      text: '#2e2823',
-      muted: '#7e6e62',
-      heading: '#1f1a17',
-      accentFg: '#fffaf5',
-      accent2Fg: '#fffaf5',
-      accent3Fg: '#fffaf5',
-      dangerFg: '#fffaf5',
-    },
-  },
-  {
     id: 'nps-dark',
     name: 'NPS Dark',
     previewColors: ['#00457c', '#FFD503', '#ffffff'],
@@ -215,25 +171,6 @@ export const themes: Theme[] = [
       text:     '#001a2e',  // very dark navy
       muted:    '#8c8c8c',  // NPS Grey
       heading:  '#00457c',  // NPS Blue headings
-    },
-  },
-  {
-    id: 'usa',
-    name: '🇺🇸 USA',
-    previewColors: ['#b22234', '#ffffff', '#3c3b6e'],
-    colors: {
-      bg: '#07162d',
-      surface: '#0c1f3f',
-      surface2: '#132b55',
-      border: '#274777',
-      accent: '#c72c41',
-      accent2: '#4d79c7',
-      accent3: '#ffffff',
-      danger: '#ff6b6b',
-      text: '#f6f8fb',
-      muted: '#b4c3de',
-      heading: '#ffffff',
-      accentFg: '#ffffff',
     },
   },
   {
@@ -421,14 +358,23 @@ interface ThemeContextValue {
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 const defaultThemeId = 'ivory';
 
+function getInitialTheme() {
+  const fallback = themes.find((candidate) => candidate.id === defaultThemeId) ?? themes[0];
+  const savedId = localStorage.getItem('odyssey-theme');
+  const savedTheme = themes.find((candidate) => candidate.id === savedId);
+  const initialTheme = savedTheme ?? fallback;
+
+  // Migrate retired or otherwise invalid saved themes to the supported default.
+  if (savedId !== initialTheme.id) {
+    localStorage.setItem('odyssey-theme', initialTheme.id);
+  }
+
+  return initialTheme;
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const { setFontTheme } = useFontTheme();
-  const [theme, setThemeState] = useState<Theme>(() => {
-    const saved = localStorage.getItem('odyssey-theme');
-    return themes.find((t) => t.id === saved)
-      ?? themes.find((t) => t.id === defaultThemeId)
-      ?? themes[0];
-  });
+  const [theme, setThemeState] = useState<Theme>(getInitialTheme);
 
   useEffect(() => {
     applyTheme(theme);

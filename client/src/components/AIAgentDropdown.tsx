@@ -128,11 +128,11 @@ export default function AIAgentDropdown() {
   const providerGroups = buildProviderGroups(providers);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="app-ai-switcher relative min-w-0">
       <button
         onClick={() => setOpen(!open)}
         title="Select AI model"
-        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm
+        className={`app-ai-trigger flex h-8 max-w-60 items-center gap-2 rounded-lg px-3 text-sm
                    bg-[var(--color-surface)] border border-[var(--color-border)]
                    text-[var(--color-text)] hover:bg-[var(--color-surface2)] transition-colors cursor-pointer
                    ${open ? 'border-[var(--color-accent)]/40 bg-[var(--color-surface2)]' : ''}`}
@@ -146,7 +146,7 @@ export default function AIAgentDropdown() {
           }
         </span>
 
-        <span className="font-medium text-xs">
+        <span className="app-ai-trigger__label min-w-0 truncate font-medium text-xs">
           {displayAgent === 'auto'
             ? lastUsedMeta ? `Auto · ${lastUsedMeta.shortName}` : 'Auto'
             : buttonMeta.shortName}
@@ -154,14 +154,14 @@ export default function AIAgentDropdown() {
 
         <KeySourceBadge keySource={buttonKeySource} />
 
-        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" className="text-[var(--color-muted)]">
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" className="shrink-0 text-[var(--color-muted)]">
           <path d="M3 5L6 8L9 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-[340px] rounded-lg border border-[var(--color-border)]
-                        bg-[var(--color-surface)] shadow-xl z-50 overflow-hidden">
+        <div className="absolute right-0 top-full mt-1.5 flex max-h-[calc(100vh-4.5rem)] w-[min(340px,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-lg border border-[var(--color-border)]
+                        bg-[var(--color-surface)] shadow-xl z-50">
 
           {/* Header */}
           <div className="px-3 py-2.5 border-b border-[var(--color-border)] flex items-center justify-between">
@@ -195,7 +195,7 @@ export default function AIAgentDropdown() {
           {loading ? (
             <div className="px-3 py-6 text-center text-xs text-[var(--color-muted)]">Checking model status…</div>
           ) : (
-            <div className="py-1">
+            <div className="min-h-0 overflow-y-auto py-1">
               {providerGroups.map(({ label, ids }) => {
                 const groupIds = ids;
                 return (

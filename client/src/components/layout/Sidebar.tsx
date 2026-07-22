@@ -105,9 +105,9 @@ export default function Sidebar() {
       }`}
     >
       {/* Brand */}
-      <div className={`flex items-center border-b border-border h-16 px-3 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
+      <div className={`flex h-14 items-center border-b border-border px-3 ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
         {!sidebarCollapsed && (
-          <NavLink to="/" end className="font-serif text-4xl font-bold italic text-heading flex-1 text-center hover:opacity-80 transition-opacity">
+          <NavLink to="/" end className="flex-1 text-center font-serif text-3xl font-bold italic text-heading transition-opacity hover:opacity-80">
             <span className="text-accent">Odyssey</span>
           </NavLink>
         )}
