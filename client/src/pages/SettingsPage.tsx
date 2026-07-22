@@ -7,6 +7,16 @@ import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/opena
 import { supabase } from '../lib/supabase';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Clock, KeyRound, Eye, EyeOff, Trash2, ExternalLink, RefreshCw, Camera, X, Github } from 'lucide-react';
+import {
+  GenAiMilBrowserApiError,
+  clearGenAiMilBrowserKey,
+  getGenAiMilBrowserKey,
+  hasGenAiMilBrowserKey,
+  isGenAiMilBrowserKey,
+  setGenAiMilBrowserKey,
+  subscribeToGenAiMilBrowserKey,
+  testGenAiMilFromBrowser,
+} from '../lib/genai-mil-browser';
 
 const TimezoneGlobe = lazyWithRetry(() => import('../components/TimezoneGlobe'), 'settings-timezone-globe');
 
@@ -167,7 +177,7 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
   },
   google: {
     label: 'GenAI.mil (DoW)',
-    hint: 'Requires a STARK API key and approved DoW network egress from the Odyssey server',
+    hint: 'Browser-direct STARK access using this device\'s DoW network connection',
     placeholder: 'STARK_…',
     keyUrl: 'https://api.genai.mil',
   },
@@ -248,6 +258,7 @@ function AiProviderCard({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testErrorAction, setTestErrorAction] = useState<{ href: string; label: string } | null>(null);
+  const [browserDirectReady, setBrowserDirectReady] = useState(hasGenAiMilBrowserKey);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
   const hasKey = status?.hasKey ?? false;
@@ -326,6 +337,12 @@ function AiProviderCard({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [modelPickerOpen]);
 
+  useEffect(() => {
+    if (provider !== 'google') return;
+    setBrowserDirectReady(hasGenAiMilBrowserKey());
+    return subscribeToGenAiMilBrowserKey(setBrowserDirectReady);
+  }, [provider]);
+
   const toggleSelectedModel = (modelId: string) => {
     setSelectedModels((current) => {
       if (current.includes(modelId)) {
@@ -364,6 +381,10 @@ function AiProviderCard({
     const normalizedNvidiaKeys = isNvidiaCompatible ? splitMultilineValues(inputKey) : [];
     if (!trimmed && !hasKey) {
       setError('API key cannot be empty');
+      return;
+    }
+    if (provider === 'google' && trimmed && !isGenAiMilBrowserKey(trimmed)) {
+      setError('Enter a valid GenAI.mil STARK API key.');
       return;
     }
     const trimmedEndpoint = normalizeAzureOpenAiEndpoint(azureEndpoint);
@@ -438,6 +459,7 @@ function AiProviderCard({
         setSelectedModels(uniqueModelIds(savedConfig.enabledModels));
       }
 
+      if (provider === 'google' && trimmed) setGenAiMilBrowserKey(trimmed);
       setInputKey('');
       if (isNvidia) {
         setNvidiaModelId(config.preferredModel ?? DEFAULT_NVIDIA_MODEL_ID);
@@ -482,6 +504,7 @@ function AiProviderCard({
       if (provider === 'gemma4') {
         setGemma4ModelId(DEFAULT_GEMMA4_MODEL_ID);
       }
+      if (provider === 'google') clearGenAiMilBrowserKey();
       onRemoved(provider);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove');
@@ -495,6 +518,19 @@ function AiProviderCard({
     setTestErrorAction(null);
     setTesting(true);
     try {
+      if (provider === 'google') {
+        const browserKey = inputKey.trim() || getGenAiMilBrowserKey();
+        if (!browserKey) {
+          throw new Error('Re-enter your STARK key once in this browser tab, then click Test. Stored server keys are never revealed back to the browser.');
+        }
+        const data = await testGenAiMilFromBrowser(browserKey);
+        setTestResult({
+          ok: true,
+          message: `GenAI.mil is working through this browser (${data.models.length} model${data.models.length === 1 ? '' : 's'} available). Model: ${data.model}`,
+        });
+        setTesting(false);
+        return;
+      }
       const authHeader = await getAuthHeader();
       if (!authHeader) throw new Error('Not authenticated');
       const trimmedKey = inputKey.trim();
@@ -556,6 +592,9 @@ function AiProviderCard({
         message: data.model ? `${data.message ?? 'Credential is valid.'} Model: ${data.model}` : (data.message ?? 'Credential is valid.'),
       });
     } catch (err: unknown) {
+      if (err instanceof GenAiMilBrowserApiError && err.code === 'key_locked' && err.unlockUrl) {
+        setTestErrorAction({ href: err.unlockUrl, label: 'Unlock STARK API key' });
+      }
       const message = err instanceof Error ? err.message : 'Credential test failed';
       setError(message);
       setTestResult({ ok: false, message });
@@ -587,6 +626,17 @@ function AiProviderCard({
           </span>
         )}
       </div>
+
+      {provider === 'google' && (
+        <div className={`flex items-center justify-between gap-3 border px-3 py-2 rounded ${browserDirectReady ? 'border-accent3/25 bg-accent3/5' : 'border-accent/20 bg-accent/5'}`}>
+          <p className="text-[10px] text-muted">
+            GenAI.mil calls leave through this browser, not the Odyssey AWS server. Its browser copy is retained only for this tab session.
+          </p>
+          <span className={`shrink-0 text-[9px] font-mono uppercase ${browserDirectReady ? 'text-accent3' : 'text-accent'}`}>
+            {browserDirectReady ? 'Browser ready' : 'Re-enter key'}
+          </span>
+        </div>
+      )}
 
       {/* Google OAuth option — only for google_ai (Google AI Studio) provider */}
       {provider === 'google_ai' && isGoogleLinked && (

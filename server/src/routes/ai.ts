@@ -17,6 +17,11 @@ import { isGeneratedThesisLatexCommitMessage } from '../lib/activity-filters.js'
 import { logAiTokenUsage } from './token-usage.js';
 import { isServerFallbackPausedForUser } from '../lib/server-fallback-controls.js';
 import { getStoredGitHubTokenForUser } from './user-github-token.js';
+import {
+  hasActiveGenAiBrowserRelay,
+  withGenAiBrowserRelay,
+} from '../lib/genai-browser-relay.js';
+import { GenAiMilApiError } from '../lib/genai-mil.js';
 
 // Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'genai-mil'];
@@ -770,7 +775,20 @@ async function chatWithAudit(
     userId?: string | null;
   },
 ): Promise<ChatResult> {
-  const result = await chat(provider, msg, apiKey);
+  const run = () => chat(provider, msg, apiKey);
+  let result: ChatResult;
+  if (provider === 'genai-mil') {
+    const userId = options.userId ?? await getUserFromAuthHeader(authHeader);
+    if (!userId || !hasActiveGenAiBrowserRelay(userId)) {
+      throw new GenAiMilApiError({
+        code: 'browser_relay_unavailable',
+        message: 'GenAI.mil browser-direct mode is not active. Open Settings → AI Providers and save or test your STARK key in this browser tab, then retry.',
+      });
+    }
+    result = await withGenAiBrowserRelay(userId, run);
+  } else {
+    result = await run();
+  }
   try {
     await logAiTokenUsage({
       authHeader,
@@ -799,7 +817,20 @@ async function streamChatWithAudit(
     userId?: string | null;
   },
 ): Promise<ChatResult> {
-  const result = await streamChat(provider, msg, onToken, apiKey);
+  const run = () => streamChat(provider, msg, onToken, apiKey);
+  let result: ChatResult;
+  if (provider === 'genai-mil') {
+    const userId = options.userId ?? await getUserFromAuthHeader(authHeader);
+    if (!userId || !hasActiveGenAiBrowserRelay(userId)) {
+      throw new GenAiMilApiError({
+        code: 'browser_relay_unavailable',
+        message: 'GenAI.mil browser-direct mode is not active. Open Settings → AI Providers and save or test your STARK key in this browser tab, then retry.',
+      });
+    }
+    result = await withGenAiBrowserRelay(userId, run);
+  } else {
+    result = await run();
+  }
   try {
     await logAiTokenUsage({
       authHeader,

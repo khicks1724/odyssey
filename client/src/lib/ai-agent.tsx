@@ -1,13 +1,14 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { supabase } from './supabase';
 import { buildOpenAiAgentValue, canonicalizeOpenAiModelId, parseOpenAiAgentValue, type OpenAiReasoningEffort } from './openai-models';
+import { hasGenAiMilBrowserKey, subscribeToGenAiMilBrowserKey } from './genai-mil-browser';
 
 export type FixedAIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAIAgentValue = `openai:${string}`;
 export type AIProvider = FixedAIProvider | OpenAIAgentValue;
 export type AIAgentValue = AIProvider | 'auto';
 
-export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'error';
+export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'browser_required' | 'error';
 export type KeySource = 'user' | 'server' | 'none';
 
 export interface ProviderInfo {
@@ -53,6 +54,17 @@ const PROVIDERS_TTL_MS = 5 * 60 * 1000; // re-fetch at most once every 5 minutes
 let lastProvidersFetch = 0;
 const FIXED_VALUES: FixedAIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil', 'nvidia', 'gemma4'];
 
+function applyBrowserProviderReadiness(list: ProviderInfo[], browserReady = hasGenAiMilBrowserKey()): ProviderInfo[] {
+  return list.map((provider) => {
+    if (provider.id !== 'genai-mil' || !provider.userKeyLinked) return provider;
+    return {
+      ...provider,
+      available: browserReady,
+      status: browserReady ? 'ready' : 'browser_required',
+    };
+  });
+}
+
 export function isOpenAIAgentValue(value: string): value is OpenAIAgentValue {
   return value.startsWith('openai:') && parseOpenAiAgentValue(value).modelId.length > 0;
 }
@@ -89,7 +101,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       })
       .then((data) => {
         const list: ProviderInfo[] = data.providers || [];
-        setProviders(list);
+        setProviders(applyBrowserProviderReadiness(list));
         setServerReachable(true);
         if (agent !== 'auto') {
           if (isOpenAIAgentValue(agent)) {
@@ -115,6 +127,10 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
   }, [agent]);
 
   useEffect(() => { fetchProviders(); }, [fetchProviders]);
+
+  useEffect(() => subscribeToGenAiMilBrowserKey((browserReady) => {
+    setProviders((current) => applyBrowserProviderReadiness(current, browserReady));
+  }), []);
 
   const setAgent = useCallback((a: AIAgentValue) => {
     const nextAgent = isOpenAIAgentValue(a)

@@ -337,11 +337,11 @@ Operational checklist
 ---------------------
 
 1. Obtain a scoped STARK key from GenAI.mil.
-2. Ensure the application server, not only the user's browser, has approved
-   DoW network egress to `api.genai.mil`.
+2. Ensure the client that sends the GenAI.mil HTTPS request has approved DoW
+   network egress to `api.genai.mil`. Odyssey's browser-direct mode sends this
+   request from the signed-in browser rather than the Odyssey server.
 3. Send the key as `Authorization: Bearer <key>`.
 4. Call `GET /v1/models` to discover models available to that key.
 5. Use an available model ID with `POST /v1/chat/completions`.
 6. If the API returns a locked-key 401, visit its `unlock_url` and retry.
 7. Honor 429 rate-limit headers and retry delays.
-

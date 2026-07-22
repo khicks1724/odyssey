@@ -7,6 +7,12 @@
  *   Authorization: Bearer <STARK API key>
  */
 
+import {
+  GenAiBrowserRelayError,
+  getGenAiBrowserRelayUserId,
+  requestGenAiFromBrowser,
+} from './genai-browser-relay.js';
+
 export const GENAI_MIL_BASE_URL = 'https://api.genai.mil/v1';
 export const DEFAULT_GENAI_MIL_MODEL = 'gemini-2.5-flash';
 
@@ -18,6 +24,9 @@ export function isGenAiMilKey(value: string): boolean {
 export type GenAiMilErrorCode =
   | 'network_access'
   | 'network_error'
+  | 'browser_relay_unavailable'
+  | 'browser_request_failed'
+  | 'browser_request_timeout'
   | 'key_locked'
   | 'unauthorized'
   | 'forbidden'
@@ -252,18 +261,50 @@ async function starkRequest(path: string, options: {
   let response: Response;
   let rawBody: string;
   try {
-    response = await fetch(`${GENAI_MIL_BASE_URL}${path}`, {
-      method: options.method ?? 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-      signal: controller.signal,
-    });
-    rawBody = await response.text();
+    const relayUserId = getGenAiBrowserRelayUserId();
+    if (relayUserId) {
+      if (path !== '/models' && path !== '/chat/completions') {
+        throw new GenAiMilApiError({
+          code: 'browser_request_failed',
+          message: 'Odyssey refused an unsupported GenAI.mil browser-direct path.',
+        });
+      }
+      const relayResponse = await requestGenAiFromBrowser(relayUserId, {
+        path,
+        method: options.method ?? 'GET',
+        ...(options.body ? { body: options.body } : {}),
+        timeoutMs,
+      });
+      const headers = new Headers();
+      if (relayResponse.contentType) headers.set('content-type', relayResponse.contentType);
+      if (relayResponse.retryAfter) headers.set('retry-after', relayResponse.retryAfter);
+      response = new Response(relayResponse.body, {
+        status: relayResponse.status,
+        headers,
+      });
+      rawBody = relayResponse.body;
+    } else {
+      response = await fetch(`${GENAI_MIL_BASE_URL}${path}`, {
+        method: options.method ?? 'GET',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+        signal: controller.signal,
+      });
+      rawBody = await response.text();
+    }
   } catch (error) {
+    if (error instanceof GenAiMilApiError) throw error;
+    if (error instanceof GenAiBrowserRelayError) {
+      throw new GenAiMilApiError({
+        code: error.code,
+        message: error.message,
+        cause: error,
+      });
+    }
     const timedOut = controller.signal.aborted;
     throw new GenAiMilApiError({
       code: 'network_error',

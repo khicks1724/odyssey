@@ -52,6 +52,30 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
   const providerInfo = agent === 'auto' ? null : providers.find((provider) => provider.id === (isOpenAIAgentValue(agent) ? 'gpt-4o' : agent));
   const lower = detail.toLowerCase();
 
+  if (lower.includes('browser-direct mode is not active') || lower.includes('no browser-session stark key')) {
+    return {
+      title: 'GenAI.mil Browser Session Required',
+      message: 'Open Settings → AI Providers, re-enter your STARK key, and click Test. The browser copy stays only in this tab session so GenAI.mil traffic can leave through your DoW connection.',
+      detail,
+    };
+  }
+
+  if (lower.includes("browser's network location") || lower.includes('this browser to an approved dow network')) {
+    return {
+      title: 'GenAI.mil Network Access Required',
+      message: 'GenAI.mil rejected this device’s network location. Connect this browser to an approved DoW network, then retry.',
+      detail,
+    };
+  }
+
+  if (lower.includes('browser could not call genai.mil directly') || lower.includes('allows cors from the odyssey site')) {
+    return {
+      title: 'GenAI.mil Browser Request Blocked',
+      message: 'The browser could not reach GenAI.mil directly. Verify the DoW connection and browser access; if those are working, GenAI.mil must allow CORS requests from this Odyssey site.',
+      detail,
+    };
+  }
+
   if (lower.includes('outside of dow networks') || lower.includes("server's network location") || lower.includes('approved dow/vpn egress')) {
     return {
       title: 'GenAI.mil Network Access Required',

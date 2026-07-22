@@ -20,6 +20,7 @@ import { goalActivityRoutes } from './routes/goal-activity.js';
 import { financialRoutes } from './routes/financials.js';
 import { thesisRoutes } from './routes/thesis.js';
 import { tokenUsageRoutes } from './routes/token-usage.js';
+import { genAiBrowserRelayRoutes } from './routes/genai-browser-relay.js';
 import { getAvailableProviders } from './ai-providers.js';
 import { startNightlyCoordinationRebuild } from './lib/coordination.js';
 
@@ -83,6 +84,7 @@ await server.register(goalActivityRoutes, { prefix: '/api' });
 await server.register(financialRoutes, { prefix: '/api' });
 await server.register(thesisRoutes, { prefix: '/api' });
 await server.register(tokenUsageRoutes, { prefix: '/api' });
+await server.register(genAiBrowserRelayRoutes, { prefix: '/api' });
 await server.register(supabaseProxyRoutes);
 
 const port = Number(process.env.PORT) || 3000;

@@ -12,6 +12,7 @@ import AppLayout from './components/layout/AppLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ChatThreadsProvider } from './hooks/useChatThreads';
 import { lazyWithRetry } from './lib/lazy-with-retry';
+import GenAiMilBrowserRelay from './components/GenAiMilBrowserRelay';
 
 const LoginPage = lazyWithRetry(() => import('./pages/LoginPage'), 'route-login');
 const AuthCallbackPage = lazyWithRetry(() => import('./pages/AuthCallbackPage'), 'route-auth-callback');
@@ -79,6 +80,7 @@ export default function App() {
           <UndoProvider>
           <ChatPanelProvider>
             <AuthProvider>
+              <GenAiMilBrowserRelay />
               <ChatThreadsProvider>
                 <AppRoutes />
               </ChatThreadsProvider>

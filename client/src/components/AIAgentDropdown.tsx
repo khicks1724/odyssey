@@ -61,6 +61,7 @@ function StatusBadge({ available, active, serverReachable, status }: {
   if (!serverReachable) return <span className="aid-badge aid-badge--offline">Offline</span>;
   if (status === 'no_credits') return <span className="aid-badge aid-badge--nocredits">NO CREDIT</span>;
   if (status === 'invalid_key') return <span className="aid-badge aid-badge--nokey">INVALID KEY</span>;
+  if (status === 'browser_required') return <span className="aid-badge aid-badge--nokey">BROWSER KEY</span>;
   if (status === 'error') return <span className="aid-badge aid-badge--offline">ERROR</span>;
   if (available) return <span className="aid-badge aid-badge--ready">ACTIVE</span>;
   return <span className="aid-badge aid-badge--nokey">NO KEY</span>;
@@ -122,7 +123,7 @@ export default function AIAgentDropdown() {
     if (!serverReachable) return false;
     const p = getProviderForAgent(id, providers);
     if (!p?.available) return false;
-    if (p.status === 'no_credits' || p.status === 'invalid_key' || p.status === 'error') return false;
+    if (p.status === 'no_credits' || p.status === 'invalid_key' || p.status === 'browser_required' || p.status === 'error') return false;
     return true;
   };
 
