@@ -1,5 +1,5 @@
 -- Migration 030: Add 'google_ai' as a separate provider slot in user_ai_keys
--- 'google'    = DoD GenAI.mil STARK keys
+-- 'google'    = DoW GenAI.mil STARK keys
 -- 'google_ai' = Google AI Studio AIza... keys (new)
 
 ALTER TABLE user_ai_keys

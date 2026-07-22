@@ -27,7 +27,16 @@ import type { FastifyInstance } from 'fastify';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { clearProviderError } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
+import {
+  DEFAULT_GENAI_MIL_MODEL,
+  GenAiMilApiError,
+  createGenAiMilChatCompletion,
+  isGenAiMilKey,
+  listGenAiMilModels,
+  selectGenAiMilModel,
+} from '../lib/genai-mil.js';
 
 type Provider = 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4';
 const VALID_PROVIDERS: Provider[] = ['anthropic', 'openai', 'google', 'google_ai', 'nvidia', 'gemma4'];
@@ -297,10 +306,6 @@ function parseGoogleOAuthCredential(value: string): { access_token: string } | n
   }
 }
 
-function isGenAiMilKey(value: string): boolean {
-  return value.startsWith('STARK_') || value.startsWith('STARK-');
-}
-
 function shouldRetryWithMaxCompletionTokens(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /unsupported parameter:\s*['"]max_tokens['"]/i.test(message)
@@ -503,37 +508,32 @@ async function testGeminiBearer(accessToken: string): Promise<{ message: string;
   return { message: 'Google account credential is valid.', model: 'gemini-2.0-flash' };
 }
 
-async function testGoogleCredential(provider: Provider, credential: string): Promise<{ message: string; model?: string }> {
+async function testGoogleCredential(provider: Provider, credential: string): Promise<CredentialTestResult> {
   const oauth = parseGoogleOAuthCredential(credential);
   if (oauth) {
     return testGeminiBearer(oauth.access_token);
   }
 
   if (provider === 'google' && isGenAiMilKey(credential)) {
-    const model = process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash';
-    const response = await fetch('https://api.genai.mil/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': credential,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: TEST_OUTPUT_TOKENS,
-        temperature: 0,
-      }),
+    // STARK documents model discovery as the credential/scope check. Then make a
+    // minimal completion so the Test button verifies both documented API methods.
+    const models = await listGenAiMilModels(credential);
+    const configuredModel = process.env.GENAI_MIL_MODEL?.trim() || DEFAULT_GENAI_MIL_MODEL;
+    const model = selectGenAiMilModel(models, configuredModel);
+    await createGenAiMilChatCompletion({
+      apiKey: credential,
+      model,
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      maxTokens: TEST_OUTPUT_TOKENS,
+      temperature: 0,
+      timeoutMs: 30_000,
     });
-
-    if (!response.ok) {
-      const text = await response.text();
-      if (text.startsWith('<!doctype') || text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
-        throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. Odyssey tests this key from the server, and the Odyssey server could not reach GenAI.mil from an approved network. Move the server onto DoD/VPN access or use another model. (HTTP ${response.status})`);
-      }
-      throw new Error(text || `GenAI.mil API ${response.status}`);
-    }
-
-    return { message: 'GenAI.mil key is valid.', model };
+    clearProviderError('genai-mil', credential);
+    return {
+      message: `GenAI.mil key is valid (${models.length} model${models.length === 1 ? '' : 's'} available).`,
+      model,
+      models,
+    };
   }
 
   const client = new GoogleGenerativeAI(credential);
@@ -835,6 +835,19 @@ export async function userAiKeysRoutes(server: FastifyInstance) {
         return { ok: true, provider, ...result };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Credential test failed';
+        if (err instanceof GenAiMilApiError) {
+          const status = err.status >= 400 && err.status <= 599
+            ? err.status
+            : err.code === 'invalid_response'
+              ? 502
+              : 503;
+          return reply.status(status).send({
+            error: message,
+            errorCode: err.code,
+            ...(err.unlockUrl ? { unlockUrl: err.unlockUrl } : {}),
+            ...(err.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: err.retryAfterSeconds }),
+          });
+        }
         return reply.status(400).send({ error: message });
       }
     },

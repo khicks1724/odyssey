@@ -47,7 +47,7 @@ const GOOGLE_AI_MODEL_OPTIONS: ProviderModelOption[] = [
 ];
 
 const GENAI_MIL_MODEL_OPTIONS: ProviderModelOption[] = [
-  { id: 'genai-mil', label: 'GenAI.mil', description: 'STARK-backed DoD model access' },
+  { id: 'genai-mil', label: 'GenAI.mil', description: 'STARK-backed DoW model access' },
 ];
 
 const DEFAULT_NVIDIA_MODEL_ID = 'nvidia/nemotron-3-super-120b-a12b';
@@ -166,10 +166,10 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
     keyUrl: 'https://platform.openai.com/api-keys',
   },
   google: {
-    label: 'GenAI.mil (DoD)',
-    hint: 'DoD GenAI.mil platform — requires a STARK API key (STARK_… or STARK-…)',
+    label: 'GenAI.mil (DoW)',
+    hint: 'Requires a STARK API key and approved DoW network egress from the Odyssey server',
     placeholder: 'STARK_…',
-    keyUrl: 'https://ai.dod.mil',
+    keyUrl: 'https://api.genai.mil',
   },
   google_ai: {
     label: 'Google AI Studio (Gemini)',
@@ -247,6 +247,7 @@ function AiProviderCard({
   const [savedFlash, setSavedFlash] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [testErrorAction, setTestErrorAction] = useState<{ href: string; label: string } | null>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
   const hasKey = status?.hasKey ?? false;
@@ -380,6 +381,7 @@ function AiProviderCard({
     }
     setError(null);
     setTestResult(null);
+    setTestErrorAction(null);
     setSaving(true);
     if (isAzureOpenAi) setAzureEndpoint(trimmedEndpoint);
     try {
@@ -454,6 +456,7 @@ function AiProviderCard({
   const handleRemove = async () => {
     setError(null);
     setTestResult(null);
+    setTestErrorAction(null);
     setRemoving(true);
     try {
       const authHeader = await getAuthHeader();
@@ -489,6 +492,7 @@ function AiProviderCard({
   const handleTest = async () => {
     setError(null);
     setTestResult(null);
+    setTestErrorAction(null);
     setTesting(true);
     try {
       const authHeader = await getAuthHeader();
@@ -529,11 +533,21 @@ function AiProviderCard({
           config,
         }),
       });
-      const body = await res.json().catch(() => ({}));
+      const body = await res.json().catch(() => ({})) as {
+        error?: string;
+        errorCode?: string;
+        unlockUrl?: string;
+        message?: string;
+        model?: string;
+        models?: string[];
+      };
       if (!res.ok) {
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+        if (body.errorCode === 'key_locked' && body.unlockUrl) {
+          setTestErrorAction({ href: body.unlockUrl, label: 'Unlock STARK API key' });
+        }
+        throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      const data = body as { message?: string; model?: string; models?: string[] };
+      const data = body;
       if (provider === 'openai' && isAzureOpenAi && data.models?.length) {
         setSelectedModels(uniqueModelIds(data.models));
       }
@@ -800,7 +814,7 @@ function AiProviderCard({
               <>
                 <textarea
                   value={keyValue}
-                  onChange={(e) => { setError(null); setInputKey(e.target.value); }}
+                  onChange={(e) => { setError(null); setTestErrorAction(null); setInputKey(e.target.value); }}
                   placeholder={`One key per line\n${meta.placeholder}`}
                   rows={4}
                   name={`ai-key-${provider}`}
@@ -824,7 +838,7 @@ function AiProviderCard({
                 <input
                   type={showKey ? 'text' : 'password'}
                   value={keyValue}
-                  onChange={(e) => { setError(null); setInputKey(e.target.value); }}
+                  onChange={(e) => { setError(null); setTestErrorAction(null); setInputKey(e.target.value); }}
                   placeholder={keyPlaceholder}
                   name={`ai-key-${provider}`}
                   autoComplete="new-password"
@@ -889,6 +903,17 @@ function AiProviderCard({
       {/* Error */}
       {error && (
         <p className="text-[10px] text-danger font-mono">{error}</p>
+      )}
+
+      {testErrorAction && (
+        <a
+          href={testErrorAction.href}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex text-[10px] font-mono text-accent hover:underline"
+        >
+          {testErrorAction.label} ↗
+        </a>
       )}
 
       {testResult && testResult.ok && (

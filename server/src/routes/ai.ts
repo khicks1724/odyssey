@@ -67,7 +67,7 @@ function getOpenAiModelFromSelection(provider: OpenAiProviderSelection): string 
 function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4' {
   if (provider === 'gpt-4o' || isOpenAiProviderSelection(provider)) return 'openai';
   if (provider === 'gemini-pro') return 'google_ai'; // Google AI Studio keys (AIza…)
-  if (provider === 'genai-mil') return 'google';     // DoD STARK keys still live in 'google' slot
+  if (provider === 'genai-mil') return 'google';     // DoW STARK keys still live in 'google' slot
   if (provider === 'nvidia') return 'nvidia';
   if (provider === 'gemma4') return 'gemma4';
   return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
@@ -2700,6 +2700,10 @@ Rules:
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
       if (msg.includes('credit') || msg.includes('billing')) return reply.status(402).send({ error: 'API key has no credits.' });
+      const providerStatus = Number(err?.status ?? 0);
+      if (providerStatus >= 400 && providerStatus <= 599) {
+        return reply.status(providerStatus).send({ error: msg });
+      }
       // Pass through the real error so the client can display the actual provider message
       return reply.status(500).send({ error: msg });
     }
@@ -2838,7 +2842,7 @@ For any action that targets an existing task, copy the exact task_id from TASK A
       server.log.error(err);
       const msg = err?.message ?? 'Failed';
       // Pass the full error message through so the client can display the real reason
-      send({ type: 'error', message: msg });
+      send({ type: 'error', message: msg, status: Number(err?.status ?? 0) || undefined });
     }
 
     res.end();

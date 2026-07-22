@@ -1,6 +1,17 @@
 import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import {
+  DEFAULT_GENAI_MIL_MODEL,
+  GenAiMilApiError,
+  createGenAiMilChatCompletion,
+  isGenAiMilKey,
+  listGenAiMilModels,
+  selectGenAiMilModel,
+  type GenAiMilChatResult,
+} from './lib/genai-mil.js';
+
+export { isGenAiMilKey };
 
 export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAiProviderSelection = `openai:${string}`;
@@ -592,12 +603,6 @@ function parseGoogleCred(credential: string): GoogleOAuthCred | null {
   }
 }
 
-/** GenAI.mil (DoD) keys start with STARK_ and use an OpenAI-compatible endpoint */
-export function isGenAiMilKey(key: string): boolean {
-  return key.startsWith('STARK_') || key.startsWith('STARK-');
-}
-
-
 /**
  * Scrub URL-like references from a string so GenAI.mil doesn't try to browse them.
  * Replaces patterns like "GitHub: github.com/owner/repo" with a plain label.
@@ -614,10 +619,10 @@ function scrubUrlsForGenAiMil(text: string): string {
     .replace(/\bhttps?:\/\/(?!api\.genai\.mil)[^\s\n"'`>)]+/g, '[url-redacted]');
 }
 
-/** GenAI.mil — OpenAI-compatible /v1/chat/completions endpoint
+/** GenAI.mil — STARK's OpenAI-compatible /v1/chat/completions endpoint.
  *
- * STARK API only accepts: messages, model, max_tokens, stream, temperature.
- * No response_format, no system role, no tool_choice, no assistant prefill.
+ * Odyssey intentionally uses STARK's documented portable subset: messages, model,
+ * max_tokens, stream, and temperature. It does not send response_format or tools.
  *
  * Two distinct failure modes we work around:
  *  1. JSON endpoints: model responds conversationally ("Of course,…") instead of JSON.
@@ -628,54 +633,41 @@ function scrubUrlsForGenAiMil(text: string): string {
  *     position) and project data is directly above it, not buried under a long preamble.
  */
 async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<ChatResult> {
-  const model = process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash';
+  let model = process.env.GENAI_MIL_MODEL?.trim() || DEFAULT_GENAI_MIL_MODEL;
 
   // ── Helper: single raw API call ──────────────────────────────────────────
-  async function rawCall(content: string, maxTokens: number, temperature: number): Promise<string> {
-    const r = await fetch('https://api.genai.mil/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': apiKey,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content }],
-        max_tokens: maxTokens,
-        temperature,
-      }),
+  async function rawCall(content: string, maxTokens: number, temperature: number): Promise<GenAiMilChatResult> {
+    const invoke = () => createGenAiMilChatCompletion({
+      apiKey,
+      model,
+      messages: [{ role: 'user', content }],
+      maxTokens,
+      temperature,
     });
-    if (!r.ok) {
-      const body = await r.text();
-      // GenAI.mil returns an HTML "Unauthorized Access" page when accessed from
-      // outside DoD networks (403/503). Surface a clean message instead of raw HTML.
-      if (body.startsWith('<!doctype') || body.startsWith('<!DOCTYPE') || body.startsWith('<html')) {
-        if (r.status === 401 || r.status === 403) {
-          throw new Error(`GenAI.mil authentication failed (HTTP ${r.status}). Check that your STARK API key is correct in Settings → AI Providers.`);
-        }
-        throw new Error(`GenAI.mil is only accessible from DoD/DoW networks. Odyssey sends this request from the server, and the Odyssey server could not reach GenAI.mil from an approved network. Move the server onto DoD/VPN access or use another model. (HTTP ${r.status})`);
-      }
-      // Parse JSON error to extract unlock_url or clean message
-      try {
-        const errJson = JSON.parse(body) as { error?: { message?: string; unlock_url?: string } };
-        const errMsg = errJson.error?.message ?? '';
-        const unlockUrl = errJson.error?.unlock_url;
-        if (unlockUrl) {
-          throw new Error(`GenAI.mil: API key is locked.\n\nUnlock your key here: ${unlockUrl}`);
-        }
-        if (errMsg) {
-          throw new Error(`GenAI.mil (${r.status}): ${errMsg}`);
-        }
-      } catch (parseErr) {
-        if ((parseErr as Error).message.startsWith('GenAI.mil')) throw parseErr;
-      }
-      throw new Error(`GenAI.mil API ${r.status} (model: ${model}): ${body.slice(0, 300)}`);
+
+    try {
+      return await invoke();
+    } catch (error) {
+      // A deployment can lose access to the configured model while the key remains
+      // valid. Follow STARK's documented model-discovery method and retry once with
+      // an available model instead of turning a stale model ID into a key failure.
+      if (!(error instanceof GenAiMilApiError) || error.code !== 'model_not_found') throw error;
+      const availableModels = await listGenAiMilModels(apiKey);
+      const fallbackModel = selectGenAiMilModel(availableModels, model);
+      if (fallbackModel === model) throw error;
+      model = fallbackModel;
+      return invoke();
     }
-    const raw = await r.text();
-    let d: { choices?: { message?: { content?: string } }[] };
-    try { d = JSON.parse(raw); }
-    catch { throw new Error(`GenAI.mil non-JSON response: ${raw.slice(0, 300)}`); }
-    return d.choices?.[0]?.message?.content ?? '';
+  }
+
+  function combineUsage(...results: GenAiMilChatResult[]): ChatTokenUsage | undefined {
+    const usages = results.map((result) => result.usage).filter((usage) => usage !== undefined);
+    if (usages.length === 0) return undefined;
+    return usages.reduce<ChatTokenUsage>((total, usage) => ({
+      promptTokens: total.promptTokens + usage.promptTokens,
+      completionTokens: total.completionTokens + usage.completionTokens,
+      totalTokens: total.totalTokens + usage.totalTokens,
+    }), { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
   }
 
   // ── Clean input ──────────────────────────────────────────────────────────
@@ -732,7 +724,8 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
       userContent;
 
     console.log(`[GenAI.mil] step1_len=${step1.length} model=${model}`);
-    const analysis = await rawCall(step1, msg.maxTokens ?? 2048, 0.7);
+    const analysisResult = await rawCall(step1, msg.maxTokens ?? 2048, 0.7);
+    const analysis = analysisResult.text;
     console.log(`[GenAI.mil] step1_response_preview=${analysis.slice(0, 120)}`);
 
     // Step 2: convert the natural-language analysis to JSON (short focused prompt)
@@ -748,10 +741,18 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
       analysis;
 
     console.log(`[GenAI.mil] step2_len=${step2.length}`);
-    const jsonText = await rawCall(step2, msg.maxTokens ?? 2048, 0);
+    const jsonResult = await rawCall(step2, msg.maxTokens ?? 2048, 0);
+    const jsonText = jsonResult.text;
     console.log(`[GenAI.mil] step2_response_preview=${jsonText.slice(0, 120)}`);
 
-    return { text: jsonText, provider: 'gemini-pro', model };
+    clearProviderError('genai-mil', apiKey);
+    return {
+      text: jsonText,
+      provider: 'genai-mil',
+      model: jsonResult.model,
+      usage: combineUsage(analysisResult, jsonResult),
+      keySource: 'user',
+    };
   }
 
   // ── Chat mode: question-last structure ───────────────────────────────────
@@ -777,10 +778,16 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
     userContent;
 
   console.log(`[GenAI.mil] chat_len=${chatPrompt.length} model=${model}`);
-  const text = await rawCall(chatPrompt, msg.maxTokens ?? 2048, 0.7);
-  console.log(`[GenAI.mil] chat_response_preview=${text.slice(0, 120)}`);
-  clearProviderError('genai-mil');
-  return { text, provider: 'genai-mil', model };
+  const result = await rawCall(chatPrompt, msg.maxTokens ?? 2048, 0.7);
+  console.log(`[GenAI.mil] chat_response_preview=${result.text.slice(0, 120)}`);
+  clearProviderError('genai-mil', apiKey);
+  return {
+    text: result.text,
+    provider: 'genai-mil',
+    model: result.model,
+    usage: result.usage,
+    keySource: 'user',
+  };
 }
 
 /** Public wrapper for GenAI.mil called via the 'genai-mil' provider route */
@@ -850,9 +857,9 @@ async function callGemini(msg: ChatMessage, apiKeyOverride?: ProviderCredentialO
     : apiKeyOverride?.apiKey ?? '';
   if (!credential) throw new Error('No Google AI credential configured. Add your key in Settings → AI Providers.');
 
-  // GenAI.mil (DoD) — STARK_ prefix, OpenAI-compatible endpoint
+  // GenAI.mil (DoW) — STARK_ prefix, OpenAI-compatible endpoint
   if (isGenAiMilKey(credential)) {
-    return callGeminiGenAiMil(msg, credential);
+    return callGenAiMilProvider(msg, credential);
   }
 
   // Google OAuth linked account

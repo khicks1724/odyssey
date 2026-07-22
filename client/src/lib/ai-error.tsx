@@ -52,6 +52,22 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
   const providerInfo = agent === 'auto' ? null : providers.find((provider) => provider.id === (isOpenAIAgentValue(agent) ? 'gpt-4o' : agent));
   const lower = detail.toLowerCase();
 
+  if (lower.includes('outside of dow networks') || lower.includes("server's network location") || lower.includes('approved dow/vpn egress')) {
+    return {
+      title: 'GenAI.mil Network Access Required',
+      message: 'STARK checks the Odyssey server network, not the network used by your browser. Route the Odyssey server through approved DoW/VPN egress, then retry.',
+      detail,
+    };
+  }
+
+  if (lower.includes('stark api key is locked') || lower.includes('api key locked')) {
+    return {
+      title: 'STARK Key Locked',
+      message: 'Unlock the key using the STARK link in Settings → AI Providers, then retry the request.',
+      detail,
+    };
+  }
+
   if (agent !== 'auto' && providerInfo && !providerInfo.available) {
     return {
       title: `${selectedModel} Unavailable`,

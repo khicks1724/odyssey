@@ -1,0 +1,347 @@
+STARK / GenAI.mil API Documentation
+===================================
+
+Combined text edition of:
+
+- Stark API DOCS.pdf (GenAI.mil documentation portal)
+- Stark API DOCS 2.pdf (STARK API v0.1.0 OpenAPI 3.1 / Swagger reference)
+
+The source PDFs contained screenshots rather than embedded text. Duplicate
+material has been consolidated below while retaining the distinct examples,
+schemas, status codes, and portal endpoint shown in the two sources.
+
+
+Overview
+--------
+
+STARK (Secure Trusted API Resource Kit) is an API gateway for managing LLM
+access across multiple organizations. It provides:
+
+- Scoped API-key authentication
+- Multi-tenant hierarchy: Organizations -> Teams -> Users
+- Token and request-based rate limiting
+- OpenAI-compatible LLM proxy endpoints
+- Anthropic-compatible LLM proxy endpoints
+
+The OpenAI-compatible base URL shown by GenAI.mil is:
+
+    https://api.genai.mil/v1/
+
+The Swagger document identifies the current server as `/` and lists the API
+under an MIT license.
+
+
+Authentication
+--------------
+
+LLM endpoints require a scoped API key. The documented general format is:
+
+    {PREFIX}_{random_64_chars}
+
+GenAI.mil keys use the STARK prefix. Send the key in the Authorization header
+as a bearer token:
+
+    Authorization: Bearer YOUR_API_KEY
+
+Also send JSON request bodies with:
+
+    Content-Type: application/json
+
+
+Quick start: JavaScript
+-----------------------
+
+The API is compatible with the OpenAI JavaScript client:
+
+    import OpenAI from 'openai';
+
+    const client = new OpenAI({
+      baseURL: 'https://api.genai.mil/v1/',
+      apiKey: 'YOUR_API_KEY',
+    });
+
+    const response = await client.chat.completions.create({
+      model: 'gemini-2.5-flash',
+      messages: [
+        { role: 'user', content: 'Hello, how are you?' },
+      ],
+    });
+
+    console.log(response.choices[0].message.content);
+
+
+Quick start: cURL
+-----------------
+
+    curl -X POST https://api.genai.mil/v1/chat/completions \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "model": "gemini-2.5-flash",
+        "messages": [
+          {"role": "user", "content": "Write a story"}
+        ],
+        "stream": true
+      }'
+
+
+Key locking
+-----------
+
+As a security measure, API keys are automatically locked every eight hours.
+A locked key returns HTTP 401 Unauthorized with an unlock URL:
+
+    {
+      "error": {
+        "type": "unauthorized",
+        "message": "API key locked - visit the unlock URL to re-enable your key",
+        "unlock_url": "https://.../unlock/your-key-id"
+      }
+    }
+
+To unlock the key:
+
+1. Visit the `unlock_url` returned in the error response. This automatically
+   re-enables the key.
+2. Alternatively, open the GenAI.mil API Keys page and select the key's unlock
+   action.
+
+
+LLM endpoint: Create chat completion
+------------------------------------
+
+    POST /v1/chat/completions
+
+Generates a chat completion for the supplied messages. The endpoint is
+OpenAI-compatible and supports streaming.
+
+Rate-limited: this endpoint consumes tokens from the caller's quota.
+
+No query or path parameters are required.
+
+Request body (`application/json`)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Fields:
+
+- `model` (string, required): model ID to use for completion.
+- `messages` (array of objects, required): messages in the conversation.
+  Each message has:
+  - `role` (string, required): sender role. The GenAI.mil reference explicitly
+    shows `system`, `user`, and `assistant` roles.
+  - `content` (string, required): message content.
+- `max_tokens` (integer or null, optional): maximum response tokens.
+- `stream` (boolean or null, optional): whether to stream the response.
+- `temperature` (number or null, optional): sampling temperature from 0 to 2.
+  The portal reference lists a default of 1.
+
+Swagger request example:
+
+    {
+      "max_tokens": 1000,
+      "messages": [
+        {
+          "content": "Hello, how are you?",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-4",
+      "stream": false,
+      "temperature": 0.7
+    }
+
+GenAI.mil request example:
+
+    {
+      "model": "gemini-2.5-flash",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful"
+        },
+        {
+          "role": "user",
+          "content": "Hello!"
+        }
+      ],
+      "temperature": 0.7,
+      "max_tokens": 1000,
+      "stream": false
+    }
+
+Success response: HTTP 200 (`application/json`)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "Hello, how are you?",
+            "role": "user"
+          }
+        }
+      ],
+      "created": 1686935002,
+      "id": "chatcmpl-abc123",
+      "model": "gpt-4",
+      "object": "chat.completion",
+      "usage": null
+    }
+
+Response schema:
+
+- `choices` (array of `ChatChoice`, required)
+  - `finish_reason` (string or null): reason generation stopped.
+  - `index` (integer): choice index.
+  - `message` (`ChatMessage`): generated message with `content` and `role`.
+- `created` (integer, Unix timestamp, required): completion creation time.
+- `id` (string, required): unique completion ID.
+- `model` (string, required): model used.
+- `object` (string, required): object type, normally `chat.completion`.
+- `usage` (`Usage` object or null): token-usage statistics.
+  - `completion_tokens` (integer): tokens used in the completion.
+  - `prompt_tokens` (integer): tokens used in the prompt.
+  - `total_tokens` (integer): total tokens used.
+
+Documented error responses:
+
+- 400 Bad Request: invalid request body or parameters.
+- 401 Unauthorized: missing or invalid authentication, or a locked key.
+- 403 Forbidden: insufficient scope for the requested model or endpoint.
+- 404 Not Found: model does not exist or is not enabled.
+- 429 Too Many Requests: rate limit exceeded.
+- 500 Internal Server Error: server error (listed by the portal reference).
+- 502 Bad Gateway: upstream LLM/backend failure.
+
+
+LLM endpoint: List models
+-------------------------
+
+    GET /v1/models
+
+Lists the models currently available to the authenticated caller. The response
+uses the OpenAI-compatible model-list shape.
+
+Representative response:
+
+    {
+      "data": [
+        {
+          "created": 1686935002,
+          "id": "gpt-4",
+          "object": "model",
+          "owned_by": "stark-proxy"
+        }
+      ],
+      "object": "list"
+    }
+
+Response schema (`ModelsListResponse`):
+
+- `data` (array of `ModelObject`, required): available models.
+  - `created` (integer, Unix timestamp, required): model creation time.
+  - `id` (string, required): model identifier.
+  - `object` (string, required): always `model`.
+  - `owned_by` (string, required): model owner, shown as `stark-proxy`.
+- `object` (string, required): always `list`.
+
+Clients should discover available model IDs with this endpoint instead of
+assuming that every key can access every model.
+
+
+Streaming
+---------
+
+Streaming responses are supported with Server-Sent Events (SSE). Set:
+
+    "stream": true
+
+in the chat-completion request body to enable streaming.
+
+
+Rate limiting
+-------------
+
+LLM proxy endpoints are rate-limited according to team configuration. Limits
+are based on:
+
+- Token usage per time window
+- Requests per minute
+
+Responses can include these headers:
+
+- `X-RateLimit-Limit-Tokens`: token limit.
+- `X-RateLimit-Remaining-Tokens`: remaining tokens.
+- `X-RateLimit-Limit-Requests`: request limit.
+- `X-RateLimit-Remaining-Requests`: remaining requests.
+
+When rate-limited, the API returns HTTP 429 and can include `Retry-After`:
+
+    HTTP/1.1 429 Too Many Requests
+    Retry-After: 3600
+
+    {
+      "error": {
+        "type": "rate_limit_exceeded",
+        "message": "Token limit exceeded: 1050000/1000000 used",
+        "retry_after_seconds": 3600
+      }
+    }
+
+
+Portal endpoint: Retrieve a newly created API key
+-------------------------------------------------
+
+    GET /portal/v1/keys/auth/complete
+
+Retrieves a newly created API key using a one-time token. The token is
+generated during the PKCE callback and stored in Redis with a 60-second TTL.
+It can be consumed only once.
+
+Query parameter:
+
+- `token` (string, required): one-time retrieval token from the callback
+  redirect.
+
+Success response: HTTP 200 (`ApiKeyCreatedResponse`)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    {
+      "expires_at": "2026-07-22T17:08:30.076Z",
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "key": "STARK_a1b2c3d4e5f6...",
+      "name": "My API Key",
+      "scopes": [
+        "string"
+      ],
+      "status": "active"
+    }
+
+Response fields:
+
+- `expires_at` (ISO 8601 date-time, nullable): key expiry, if configured.
+- `id` (UUID string, required): API key ID.
+- `key` (string, required): complete secret key; shown only once.
+- `name` (string, required): human-readable key name.
+- `scopes` (array of strings, required): scopes granted to the key.
+- `status` (string, required): key status, shown as `active`.
+
+Error response:
+
+- 404 Not Found: one-time token was not found or has expired.
+
+
+Operational checklist
+---------------------
+
+1. Obtain a scoped STARK key from GenAI.mil.
+2. Ensure the application server, not only the user's browser, has approved
+   DoW network egress to `api.genai.mil`.
+3. Send the key as `Authorization: Bearer <key>`.
+4. Call `GET /v1/models` to discover models available to that key.
+5. Use an available model ID with `POST /v1/chat/completions`.
+6. If the API returns a locked-key 401, visit its `unlock_url` and retry.
+7. Honor 429 rate-limit headers and retry delays.
+
