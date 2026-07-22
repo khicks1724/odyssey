@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import OpenAI from 'openai';
-import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, isGenAiMilKey, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, getGenAiMilModelFromSelection, isGenAiMilKey, isGenAiMilProviderSelection, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models.js';
 import { decryptUserKey } from './user-ai-keys.js';
@@ -72,7 +72,7 @@ function getOpenAiModelFromSelection(provider: OpenAiProviderSelection): string 
 function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4' {
   if (provider === 'gpt-4o' || isOpenAiProviderSelection(provider)) return 'openai';
   if (provider === 'gemini-pro') return 'google_ai'; // Google AI Studio keys (AIza…)
-  if (provider === 'genai-mil') return 'google';     // DoW STARK keys still live in 'google' slot
+  if (provider === 'genai-mil' || isGenAiMilProviderSelection(provider)) return 'google'; // DoW STARK keys still live in 'google' slot
   if (provider === 'nvidia') return 'nvidia';
   if (provider === 'gemma4') return 'gemma4';
   return 'anthropic'; // claude-haiku, claude-sonnet, claude-opus
@@ -81,6 +81,7 @@ function providerToService(provider: AIProviderSelection): 'anthropic' | 'openai
 function normalizeAgentValue(agent: string): AIProviderSelection | null {
   if (ALL_PROVIDERS.includes(agent as AIProvider)) return agent as AIProvider;
   if (isOpenAiProviderSelection(agent) && getOpenAiModelFromSelection(agent).length > 0) return agent;
+  if (isGenAiMilProviderSelection(agent)) return agent;
   return null;
 }
 
@@ -156,6 +157,16 @@ function normalizeConfiguredModelIds(values: unknown): string[] {
       .map((value) => value.trim())
       .filter(Boolean),
   )];
+}
+
+function normalizeGenAiMilModelIds(values: unknown): string[] {
+  return normalizeConfiguredModelIds(values)
+    .map((model) => model.startsWith('genai-mil:') ? model.slice('genai-mil:'.length).trim() : model)
+    .filter((model) => model && model !== 'genai-mil');
+}
+
+function normalizeGenAiMilModelId(value: unknown): string {
+  return normalizeGenAiMilModelIds(typeof value === 'string' ? [value] : [])[0] ?? '';
 }
 
 function parseStoredNvidiaApiKeys(plaintext: string): string[] {
@@ -312,6 +323,16 @@ function getConfiguredOpenAiSelection(config: unknown): OpenAiProviderSelection 
   return `openai:${model}`;
 }
 
+function getConfiguredGenAiMilSelection(config: unknown): AIProviderSelection {
+  const raw = config && typeof config === 'object'
+    ? config as { preferredModel?: unknown; enabledModels?: unknown }
+    : {};
+  const enabledModels = normalizeGenAiMilModelIds(raw.enabledModels);
+  const preferredModel = normalizeGenAiMilModelId(raw.preferredModel);
+  const model = preferredModel || enabledModels[0];
+  return model ? `genai-mil:${model}` : 'genai-mil';
+}
+
 /**
  * Resolve the best available provider for a given auth token.
  * When the user has a personal key stored in the DB, prefer that service.
@@ -340,9 +361,11 @@ async function resolveAutoProvider(authHeader: string | undefined, fallback: AIP
           if (service === 'openai') {
             return getConfiguredOpenAiSelection(configsByService.get(service));
           }
+          if (service === 'google') {
+            return getConfiguredGenAiMilSelection(configsByService.get(service));
+          }
           if (service === 'anthropic' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes(p)) continue;
           if (service === 'google_ai' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemini-pro')) continue;
-          if (service === 'google' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('genai-mil')) continue;
           if (service === 'nvidia' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('nvidia')) continue;
           if (service === 'gemma4' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemma4')) continue;
 
@@ -419,6 +442,18 @@ async function getUserApiKey(authHeader: string | undefined, provider: AIProvide
           chat_template_kwargs: { enable_thinking: true },
           reasoning_budget: 16384,
         },
+      };
+    }
+    if (service === 'google' && isGenAiMilKey(apiKey)) {
+      const config = (data.config ?? {}) as { preferredModel?: string; enabledModels?: unknown };
+      const configuredModels = normalizeGenAiMilModelIds(config.enabledModels);
+      const selectedModel = isGenAiMilProviderSelection(provider)
+        ? getGenAiMilModelFromSelection(provider)
+        : normalizeGenAiMilModelId(config.preferredModel) || configuredModels[0];
+      return {
+        apiKey,
+        authMode: 'bearer',
+        ...(selectedModel ? { modelOverride: selectedModel } : {}),
       };
     }
     if (service !== 'openai') return apiKey;
@@ -777,7 +812,7 @@ async function chatWithAudit(
 ): Promise<ChatResult> {
   const run = () => chat(provider, msg, apiKey);
   let result: ChatResult;
-  if (provider === 'genai-mil') {
+  if (provider === 'genai-mil' || isGenAiMilProviderSelection(provider)) {
     const userId = options.userId ?? await getUserFromAuthHeader(authHeader);
     if (!userId || !hasActiveGenAiBrowserRelay(userId)) {
       throw new GenAiMilApiError({
@@ -819,7 +854,7 @@ async function streamChatWithAudit(
 ): Promise<ChatResult> {
   const run = () => streamChat(provider, msg, onToken, apiKey);
   let result: ChatResult;
-  if (provider === 'genai-mil') {
+  if (provider === 'genai-mil' || isGenAiMilProviderSelection(provider)) {
     const userId = options.userId ?? await getUserFromAuthHeader(authHeader);
     if (!userId || !hasActiveGenAiBrowserRelay(userId)) {
       throw new GenAiMilApiError({
@@ -913,7 +948,7 @@ export async function aiRoutes(server: FastifyInstance) {
         }
       }
       const googleRow = (keys ?? []).find((k: { provider: string }) => k.provider === 'google') as
-        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { enabledModels?: unknown } } | undefined;
+        { provider: string; encrypted_key: string; iv: string; auth_tag: string; config?: { preferredModel?: string; enabledModels?: unknown; availableModels?: unknown } } | undefined;
       if (googleRow) {
         try {
           const decrypted = decryptUserKey(googleRow.encrypted_key, googleRow.iv, googleRow.auth_tag);
@@ -981,7 +1016,15 @@ export async function aiRoutes(server: FastifyInstance) {
         }
       }
 
-      const genaiMilModel = userStarkKey ? (process.env.GENAI_MIL_MODEL ?? 'gemini-2.5-flash') : undefined;
+      const genAiAvailableModels = normalizeGenAiMilModelIds(googleRow?.config?.availableModels);
+      const genAiConfiguredModels = normalizeGenAiMilModelIds(
+        googleRow?.config && typeof googleRow.config === 'object'
+          ? (googleRow.config as { enabledModels?: unknown }).enabledModels
+          : undefined,
+      );
+      const genaiMilModel = userStarkKey
+        ? normalizeGenAiMilModelId(googleRow?.config?.preferredModel) || genAiConfiguredModels[0] || process.env.GENAI_MIL_MODEL?.trim()
+        : undefined;
       const openAiMode = openAiRow?.config?.mode === 'azure_openai' ? 'azure_openai' : 'openai';
       const serverOpenAiCredential = getServerOpenAiCredential();
       const openAiModels = await getOpenAiModelsForRequest(authHeader);
@@ -995,7 +1038,11 @@ export async function aiRoutes(server: FastifyInstance) {
       const anthropicEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(anthropicRow?.config), DEFAULT_ANTHROPIC_MODELS);
       const openAiEnabledModels = getConfiguredVisibleModels(openAiConfiguredModelsCanonical, openAiModels, openAiPreferredModelCanonical);
       const googleAiEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(googleAiRow?.config), ['gemini-pro']);
-      const genAiEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(googleRow?.config), ['genai-mil']);
+      const genAiEnabledModels = genAiConfiguredModels.length > 0
+        ? genAiConfiguredModels
+        : genaiMilModel
+          ? [genaiMilModel]
+          : [];
       const nvidiaEnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(nvidiaRow?.config), ['nvidia']);
       const gemma4EnabledModels = getConfiguredVisibleModels(getEnabledModelsFromConfig(gemma4Row?.config), ['gemma4']);
       const openAiPrimaryModel = getPrimaryModelSelection(openAiEnabledModels, openAiPreferredModelCanonical)
@@ -1036,7 +1083,8 @@ export async function aiRoutes(server: FastifyInstance) {
             status: genAiMilStatus,
             userKeyLinked: !!userStarkKey,
             keySource: userStarkKey ? 'user' : 'none',
-            visibleModels: genAiEnabledModels,
+            models: genAiAvailableModels,
+            visibleModels: genAiEnabledModels.map((model) => `genai-mil:${model}`),
             ...(genaiMilModel ? { activeModel: genaiMilModel } : {}),
           };
         }

@@ -838,11 +838,19 @@ async function resolveGraphInferenceProvider(userId: string | null): Promise<{ p
   const googleRow = rowMap.get('google');
   if (googleRow) {
     try {
-      const credential = decryptUserKey(googleRow.encrypted_key, googleRow.iv, googleRow.auth_tag);
-      if (isGenAiMilKey(credential)) {
+      const apiKey = decryptUserKey(googleRow.encrypted_key, googleRow.iv, googleRow.auth_tag);
+      if (isGenAiMilKey(apiKey)) {
+        const config = asRecord(googleRow.config) ?? {};
+        const normalizeModel = (value: string): string => {
+          const model = value.startsWith('genai-mil:') ? value.slice('genai-mil:'.length).trim() : value.trim();
+          return model === 'genai-mil' ? '' : model;
+        };
+        const model = normalizeModel(readString(config.preferredModel) ?? '')
+          || safeStringArray(config.enabledModels).map(normalizeModel).find(Boolean)
+          || '';
         return {
-          provider: 'genai-mil',
-          credential,
+          provider: model ? `genai-mil:${model}` : 'genai-mil',
+          credential: model ? { apiKey, modelOverride: model } : apiKey,
         };
       }
     } catch {

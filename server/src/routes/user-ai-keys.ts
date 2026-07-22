@@ -30,12 +30,10 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { clearProviderError } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import {
-  DEFAULT_GENAI_MIL_MODEL,
   GenAiMilApiError,
   createGenAiMilChatCompletion,
   isGenAiMilKey,
   listGenAiMilModels,
-  selectGenAiMilModel,
 } from '../lib/genai-mil.js';
 
 type Provider = 'anthropic' | 'openai' | 'google' | 'google_ai' | 'nvidia' | 'gemma4';
@@ -46,6 +44,7 @@ type ProviderCredentialConfig = {
   endpoint?: string;
   preferredModel?: string;
   enabledModels?: string[];
+  availableModels?: string[];
 };
 
 type CredentialTestResult = {
@@ -192,6 +191,12 @@ function normalizeEnabledModels(values: unknown): string[] {
   )];
 }
 
+function normalizeGenAiMilModels(values: unknown): string[] {
+  return normalizeEnabledModels(values)
+    .map((model) => model.startsWith('genai-mil:') ? model.slice('genai-mil:'.length).trim() : model)
+    .filter((model) => model && model !== 'genai-mil');
+}
+
 function normalizeNvidiaApiKeys(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   return [...new Set(
@@ -235,6 +240,21 @@ function sanitizeConfig(provider: Provider, raw: unknown): ProviderCredentialCon
     return {
       preferredModel: preferredModel || (provider === 'gemma4' ? DEFAULT_GEMMA4_MODEL : DEFAULT_NVIDIA_MODEL),
       enabledModels: enabledModels.length > 0 ? enabledModels : [provider],
+    };
+  }
+
+  if (provider === 'google' && raw && typeof raw === 'object') {
+    const preferredModel = normalizeGenAiMilModels(
+      typeof (raw as { preferredModel?: unknown }).preferredModel === 'string'
+        ? [(raw as { preferredModel: string }).preferredModel]
+        : [],
+    )[0];
+    const enabledModels = normalizeGenAiMilModels((raw as { enabledModels?: unknown }).enabledModels);
+    const availableModels = normalizeGenAiMilModels((raw as { availableModels?: unknown }).availableModels);
+    return {
+      ...(preferredModel ? { preferredModel } : {}),
+      ...(enabledModels.length ? { enabledModels } : {}),
+      ...(availableModels.length ? { availableModels } : {}),
     };
   }
 
@@ -508,30 +528,37 @@ async function testGeminiBearer(accessToken: string): Promise<{ message: string;
   return { message: 'Google account credential is valid.', model: 'gemini-2.0-flash' };
 }
 
-async function testGoogleCredential(provider: Provider, credential: string): Promise<CredentialTestResult> {
+async function testGoogleCredential(provider: Provider, credential: string, config: ProviderCredentialConfig = {}): Promise<CredentialTestResult> {
   const oauth = parseGoogleOAuthCredential(credential);
   if (oauth) {
     return testGeminiBearer(oauth.access_token);
   }
 
   if (provider === 'google' && isGenAiMilKey(credential)) {
-    // STARK documents model discovery as the credential/scope check. Then make a
-    // minimal completion so the Test button verifies both documented API methods.
+    // STARK documents model discovery as the credential/scope check. Do not pick
+    // an arbitrary completion model: only verify one explicitly configured by the user.
     const models = await listGenAiMilModels(credential);
-    const configuredModel = process.env.GENAI_MIL_MODEL?.trim() || DEFAULT_GENAI_MIL_MODEL;
-    const model = selectGenAiMilModel(models, configuredModel);
-    await createGenAiMilChatCompletion({
-      apiKey: credential,
-      model,
-      messages: [{ role: 'user', content: 'Reply with OK.' }],
-      maxTokens: TEST_OUTPUT_TOKENS,
-      temperature: 0,
-      timeoutMs: 30_000,
-    });
+    const configuredModel = config.preferredModel?.trim() || process.env.GENAI_MIL_MODEL?.trim();
+    if (configuredModel && !models.includes(configuredModel)) {
+      throw new GenAiMilApiError({
+        code: 'model_not_found',
+        message: `The selected GenAI.mil model is no longer available: ${configuredModel}`,
+      });
+    }
+    if (configuredModel) {
+      await createGenAiMilChatCompletion({
+        apiKey: credential,
+        model: configuredModel,
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        maxTokens: TEST_OUTPUT_TOKENS,
+        temperature: 0,
+        timeoutMs: 30_000,
+      });
+    }
     clearProviderError('genai-mil', credential);
     return {
       message: `GenAI.mil key is valid (${models.length} model${models.length === 1 ? '' : 's'} available).`,
-      model,
+      ...(configuredModel ? { model: configuredModel } : {}),
       models,
     };
   }
@@ -581,7 +608,7 @@ async function testPlaintextCredential(provider: Provider, apiKey: string, confi
   if (provider === 'gemma4') {
     return testGemma4Credential(normalizeNvidiaApiKeys([apiKey]), config);
   }
-  return testGoogleCredential(provider, apiKey);
+  return testGoogleCredential(provider, apiKey, config);
 }
 
 // ── Route plugin ───────────────────────────────────────────────────────────

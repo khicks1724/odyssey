@@ -2,12 +2,9 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import {
-  DEFAULT_GENAI_MIL_MODEL,
   GenAiMilApiError,
   createGenAiMilChatCompletion,
   isGenAiMilKey,
-  listGenAiMilModels,
-  selectGenAiMilModel,
   type GenAiMilChatResult,
 } from './lib/genai-mil.js';
 
@@ -15,7 +12,8 @@ export { isGenAiMilKey };
 
 export type AIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAiProviderSelection = `openai:${string}`;
-export type AIProviderSelection = AIProvider | OpenAiProviderSelection;
+export type GenAiMilProviderSelection = `genai-mil:${string}`;
+export type AIProviderSelection = AIProvider | OpenAiProviderSelection | GenAiMilProviderSelection;
 type OpenAiReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 const OPENAI_REASONING_SUFFIX = /::reasoning:(low|medium|high|xhigh)$/i;
 
@@ -317,6 +315,17 @@ async function callGemma4(msg: ChatMessage, apiKeyOverride?: ProviderCredentialO
 
 function isOpenAiProviderSelection(provider: AIProviderSelection): provider is OpenAiProviderSelection {
   return provider.startsWith('openai:');
+}
+
+export function isGenAiMilProviderSelection(provider: string): provider is GenAiMilProviderSelection {
+  const model = provider.startsWith('genai-mil:')
+    ? provider.slice('genai-mil:'.length).trim()
+    : '';
+  return model.length > 0 && model !== 'genai-mil';
+}
+
+export function getGenAiMilModelFromSelection(provider: GenAiMilProviderSelection): string {
+  return provider.slice('genai-mil:'.length).trim();
 }
 
 function shouldRetryWithMaxCompletionTokens(error: unknown): boolean {
@@ -632,32 +641,24 @@ function scrubUrlsForGenAiMil(text: string): string {
  *     Fix → restructure prompt so the user question appears at the END (most attended
  *     position) and project data is directly above it, not buried under a long preamble.
  */
-async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<ChatResult> {
-  let model = process.env.GENAI_MIL_MODEL?.trim() || DEFAULT_GENAI_MIL_MODEL;
+async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string, selectedModel?: string): Promise<ChatResult> {
+  const model = selectedModel?.trim() || process.env.GENAI_MIL_MODEL?.trim() || '';
+  if (!model) {
+    throw new GenAiMilApiError({
+      code: 'model_not_found',
+      message: 'No GenAI.mil model is selected. Test the STARK key in Settings, select an available model, and click Save.',
+    });
+  }
 
   // ── Helper: single raw API call ──────────────────────────────────────────
   async function rawCall(content: string, maxTokens: number, temperature: number): Promise<GenAiMilChatResult> {
-    const invoke = () => createGenAiMilChatCompletion({
+    return createGenAiMilChatCompletion({
       apiKey,
       model,
       messages: [{ role: 'user', content }],
       maxTokens,
       temperature,
     });
-
-    try {
-      return await invoke();
-    } catch (error) {
-      // A deployment can lose access to the configured model while the key remains
-      // valid. Follow STARK's documented model-discovery method and retry once with
-      // an available model instead of turning a stale model ID into a key failure.
-      if (!(error instanceof GenAiMilApiError) || error.code !== 'model_not_found') throw error;
-      const availableModels = await listGenAiMilModels(apiKey);
-      const fallbackModel = selectGenAiMilModel(availableModels, model);
-      if (fallbackModel === model) throw error;
-      model = fallbackModel;
-      return invoke();
-    }
   }
 
   function combineUsage(...results: GenAiMilChatResult[]): ChatTokenUsage | undefined {
@@ -748,7 +749,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
     clearProviderError('genai-mil', apiKey);
     return {
       text: jsonText,
-      provider: 'genai-mil',
+      provider: `genai-mil:${jsonResult.model}`,
       model: jsonResult.model,
       usage: combineUsage(analysisResult, jsonResult),
       keySource: 'user',
@@ -783,7 +784,7 @@ async function callGeminiGenAiMil(msg: ChatMessage, apiKey: string): Promise<Cha
   clearProviderError('genai-mil', apiKey);
   return {
     text: result.text,
-    provider: 'genai-mil',
+    provider: `genai-mil:${result.model}`,
     model: result.model,
     usage: result.usage,
     keySource: 'user',
@@ -797,7 +798,8 @@ async function callGenAiMilProvider(msg: ChatMessage, apiKeyOverride?: ProviderC
     : apiKeyOverride?.apiKey ?? '';
   if (!key || !isGenAiMilKey(key)) throw new Error('No STARK API key configured. Add your GenAI.mil key in Settings → AI Providers.');
   try {
-    return await callGeminiGenAiMil(msg, key);
+    const selectedModel = typeof apiKeyOverride === 'string' ? undefined : apiKeyOverride?.modelOverride;
+    return await callGeminiGenAiMil(msg, key, selectedModel);
   } catch (err: any) {
     markProviderError('genai-mil', err?.status ?? 0, err?.message ?? String(err), apiKeyOverride);
     throw err;
@@ -974,6 +976,15 @@ export async function chat(provider: AIProviderSelection, msg: ChatMessage, apiK
       ...(effectiveReasoningEffort ? { reasoningEffort: effectiveReasoningEffort } : {}),
     }, apiKey);
   }
+  if (isGenAiMilProviderSelection(provider)) {
+    const modelOverride = getGenAiMilModelFromSelection(provider);
+    const credential = typeof apiKey === 'string'
+      ? { apiKey, modelOverride }
+      : apiKey
+        ? { ...apiKey, modelOverride }
+        : undefined;
+    return callGenAiMilProvider(msg, credential);
+  }
   const fn = providers[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);
   return fn(msg, apiKey);
@@ -998,7 +1009,9 @@ export async function streamChat(
   onToken: (text: string) => void,
   apiKeyOverride?: ProviderCredentialOverride,
 ): Promise<ChatResult> {
-  const anthropicModel = isOpenAiProviderSelection(provider) ? undefined : ANTHROPIC_MODELS[provider];
+  const anthropicModel = isOpenAiProviderSelection(provider) || isGenAiMilProviderSelection(provider)
+    ? undefined
+    : ANTHROPIC_MODELS[provider];
 
   // Non-Anthropic providers: call normally, then emit the whole result as one chunk
   if (!anthropicModel) {

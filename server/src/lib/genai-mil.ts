@@ -14,8 +14,6 @@ import {
 } from './genai-browser-relay.js';
 
 export const GENAI_MIL_BASE_URL = 'https://api.genai.mil/v1';
-export const DEFAULT_GENAI_MIL_MODEL = 'gemini-2.5-flash';
-
 export function isGenAiMilKey(value: string): boolean {
   const key = value.trim();
   return key.startsWith('STARK_') || key.startsWith('STARK-');
@@ -357,13 +355,6 @@ export async function listGenAiMilModels(apiKey: string, timeoutMs = 20_000): Pr
   return uniqueModelIds;
 }
 
-export function selectGenAiMilModel(models: string[], preferredModel?: string): string {
-  const preferred = preferredModel?.trim();
-  if (preferred && models.includes(preferred)) return preferred;
-  if (models.includes(DEFAULT_GENAI_MIL_MODEL)) return DEFAULT_GENAI_MIL_MODEL;
-  return models[0] ?? preferred ?? DEFAULT_GENAI_MIL_MODEL;
-}
-
 export async function createGenAiMilChatCompletion(options: {
   apiKey: string;
   model: string;
@@ -372,7 +363,13 @@ export async function createGenAiMilChatCompletion(options: {
   temperature: number;
   timeoutMs?: number;
 }): Promise<GenAiMilChatResult> {
-  const model = options.model.trim() || DEFAULT_GENAI_MIL_MODEL;
+  const model = options.model.trim();
+  if (!model) {
+    throw new GenAiMilApiError({
+      code: 'model_not_found',
+      message: 'No GenAI.mil model was selected. Test the STARK key and choose an available model in Settings.',
+    });
+  }
   const payload = await starkRequest('/chat/completions', {
     apiKey: options.apiKey,
     method: 'POST',

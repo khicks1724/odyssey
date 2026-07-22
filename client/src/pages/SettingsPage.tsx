@@ -1,4 +1,4 @@
-import { Suspense, useState, useEffect, useRef } from 'react';
+import { Suspense, useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../lib/auth';
 import { useProfile } from '../hooks/useProfile';
 import { useTimeFormat, type HourCycle } from '../lib/time-format';
@@ -37,6 +37,7 @@ interface AiKeyConfig {
   endpoint?: string;
   preferredModel?: string;
   enabledModels?: string[];
+  availableModels?: string[];
 }
 
 interface AiKeyStatus {
@@ -63,10 +64,6 @@ const GOOGLE_AI_MODEL_OPTIONS: ProviderModelOption[] = [
   { id: 'gemini-pro', label: 'Gemini 2.5 Flash', description: 'Google AI Studio chat model' },
 ];
 
-const GENAI_MIL_MODEL_OPTIONS: ProviderModelOption[] = [
-  { id: 'genai-mil', label: 'GenAI.mil', description: 'STARK-backed DoW model access' },
-];
-
 const DEFAULT_NVIDIA_MODEL_ID = 'nvidia/nemotron-3-super-120b-a12b';
 const DEFAULT_GEMMA4_MODEL_ID = 'google/gemma-4-31b-it';
 const NVIDIA_MODEL_OPTIONS: ProviderModelOption[] = [
@@ -78,6 +75,16 @@ const GEMMA4_MODEL_OPTIONS: ProviderModelOption[] = [
 
 function uniqueModelIds(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function normalizeGenAiMilModelIds(values: string[]): string[] {
+  return uniqueModelIds(values
+    .map((value) => value.startsWith('genai-mil:') ? value.slice('genai-mil:'.length) : value)
+    .filter((value) => value !== 'genai-mil'));
+}
+
+function sameModelIds(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function normalizeAzureOpenAiEndpoint(endpoint: string): string {
@@ -246,15 +253,22 @@ function AiProviderCard({
     provider === 'gemma4' ? status?.config?.preferredModel ?? DEFAULT_GEMMA4_MODEL_ID : DEFAULT_GEMMA4_MODEL_ID,
   );
   const [selectedModels, setSelectedModels] = useState<string[]>(
-    uniqueModelIds(
-      status?.config?.enabledModels?.length
-        ? status.config.enabledModels
-        : getDefaultSelectedModelIds(
-            modelOptions,
-            provider === 'openai' ? status?.config?.preferredModel : undefined,
-          ),
-    ),
+    provider === 'google'
+      ? normalizeGenAiMilModelIds(status?.config?.enabledModels ?? [])
+      : uniqueModelIds(
+          status?.config?.enabledModels?.length
+            ? status.config.enabledModels
+            : getDefaultSelectedModelIds(
+                modelOptions,
+                provider === 'openai' ? status?.config?.preferredModel : undefined,
+              ),
+        ),
   );
+  const [genAiMilModels, setGenAiMilModels] = useState<string[]>(() => normalizeGenAiMilModelIds([
+    ...(status?.config?.availableModels ?? []),
+    ...(status?.config?.enabledModels ?? []),
+    ...(status?.config?.preferredModel ? [status.config.preferredModel] : []),
+  ]));
   const [azureDeploymentInput, setAzureDeploymentInput] = useState('');
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [showKey, setShowKey] = useState(false);
@@ -289,17 +303,25 @@ function AiProviderCard({
     ? (hasReplacementCredential || hasKey)
       && (!isAzureOpenAi || !!azureEndpoint.trim())
       && (isAzureOpenAi || selectedModels.length > 0)
+    : provider === 'google'
+      ? (hasReplacementCredential || hasKey) && (genAiMilModels.length === 0 || selectedModels.length > 0)
     : isNvidiaCompatible
       ? (hasReplacementCredential || hasKey) && !!(isNvidia ? nvidiaModelId : gemma4ModelId).trim() && selectedModels.length > 0
       : (hasReplacementCredential || hasKey) && selectedModels.length > 0;
-  const availableModelIds = modelOptions.map((option) => option.id);
+  const genAiMilModelOptions = useMemo(() => genAiMilModels.map((id) => ({
+        id,
+        label: id,
+        description: `Available through this STARK key`,
+      })), [genAiMilModels]);
+  const effectiveModelOptions = provider === 'google' ? genAiMilModelOptions : modelOptions;
+  const availableModelIds = effectiveModelOptions.map((option) => option.id);
   const azureDeploymentOptions = isAzureOpenAi
     ? uniqueModelIds([...selectedModels, ...availableModelIds.map(normalizeAzureCatalogModelId)]).map((id) => ({
         id,
         label: id,
         description: 'Exact Azure OpenAI deployment ID',
       }))
-    : modelOptions;
+    : effectiveModelOptions;
 
   useEffect(() => {
     if (provider !== 'openai') return;
@@ -318,21 +340,38 @@ function AiProviderCard({
   }, [provider, status?.config?.preferredModel]);
 
   useEffect(() => {
-    const defaults = getDefaultSelectedModelIds(
-      modelOptions,
-      provider === 'openai' ? status?.config?.preferredModel : undefined,
-    );
-    const nextSelectedModels = uniqueModelIds(status?.config?.enabledModels?.length ? status.config.enabledModels : defaults);
+    if (provider !== 'google') return;
+    const catalog = normalizeGenAiMilModelIds([
+      ...(status?.config?.availableModels ?? []),
+      ...(status?.config?.enabledModels ?? []),
+      ...(status?.config?.preferredModel ? [status.config.preferredModel] : []),
+    ]);
+    if (catalog.length > 0) {
+      setGenAiMilModels((current) => sameModelIds(current, catalog) ? current : catalog);
+    }
+  }, [provider, status?.config?.availableModels, status?.config?.enabledModels, status?.config?.preferredModel]);
+
+  useEffect(() => {
+    const configuredModels = provider === 'google'
+      ? normalizeGenAiMilModelIds(status?.config?.enabledModels ?? [])
+      : uniqueModelIds(status?.config?.enabledModels ?? []);
+    const defaults = provider === 'google'
+      ? []
+      : getDefaultSelectedModelIds(
+          effectiveModelOptions,
+          provider === 'openai' ? status?.config?.preferredModel : undefined,
+        );
+    const nextSelectedModels = uniqueModelIds(configuredModels.length ? configuredModels : defaults);
     if (provider === 'openai' && openAiMode === 'azure_openai' && status?.config?.mode !== 'azure_openai') {
       setSelectedModels([]);
       return;
     }
     if (provider === 'openai' && openAiMode !== 'azure_openai') {
-      setSelectedModels(canonicalizeSelectedModelIds(nextSelectedModels, modelOptions.map((option) => option.id)));
+      setSelectedModels(canonicalizeSelectedModelIds(nextSelectedModels, effectiveModelOptions.map((option) => option.id)));
       return;
     }
     setSelectedModels(nextSelectedModels);
-  }, [modelOptions, openAiMode, provider, status?.config?.enabledModels, status?.config?.mode, status?.config?.preferredModel]);
+  }, [effectiveModelOptions, openAiMode, provider, status?.config?.enabledModels, status?.config?.mode, status?.config?.preferredModel]);
 
   useEffect(() => {
     if (!modelPickerOpen) return;
@@ -384,7 +423,7 @@ function AiProviderCard({
       }
       const next = [...current, modelId];
       if (provider === 'openai' && openAiMode !== 'azure_openai') {
-        return canonicalizeSelectedModelIds(next, modelOptions.map((option) => option.id));
+        return canonicalizeSelectedModelIds(next, effectiveModelOptions.map((option) => option.id));
       }
       return next;
     });
@@ -457,7 +496,12 @@ function AiProviderCard({
               ? {
                   preferredModel: gemma4ModelId.trim() || DEFAULT_GEMMA4_MODEL_ID,
                 }
-            : {}),
+            : provider === 'google'
+              ? {
+                  ...(selectedModels[0] ? { preferredModel: selectedModels[0] } : {}),
+                  availableModels: genAiMilModels,
+                }
+              : {}),
         enabledModels: uniqueModelIds(selectedModels),
       };
 
@@ -489,8 +533,11 @@ function AiProviderCard({
       }
 
       const savedConfig = (body as { config?: AiKeyConfig }).config;
-      if (provider === 'openai' && savedConfig?.enabledModels?.length) {
+      if ((provider === 'openai' || provider === 'google') && savedConfig?.enabledModels?.length) {
         setSelectedModels(uniqueModelIds(savedConfig.enabledModels));
+      }
+      if (provider === 'google' && savedConfig?.availableModels?.length) {
+        setGenAiMilModels(uniqueModelIds(savedConfig.availableModels));
       }
 
       if (provider === 'google' && trimmed) setGenAiMilBrowserKey(trimmed);
@@ -538,7 +585,11 @@ function AiProviderCard({
       if (provider === 'gemma4') {
         setGemma4ModelId(DEFAULT_GEMMA4_MODEL_ID);
       }
-      if (provider === 'google') clearGenAiMilBrowserKey();
+      if (provider === 'google') {
+        clearGenAiMilBrowserKey();
+        setGenAiMilModels([]);
+        setSelectedModels([]);
+      }
       onRemoved(provider);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to remove');
@@ -557,7 +608,37 @@ function AiProviderCard({
         if (!browserKey) {
           throw new Error('Re-enter your STARK key once in this browser tab, then click Test. Stored server keys are never revealed back to the browser.');
         }
-        const data = await testGenAiMilFromBrowser(browserKey);
+        const requestedModel = selectedModels.find((model) => genAiMilModels.includes(model));
+        const data = await testGenAiMilFromBrowser(browserKey, requestedModel);
+        const discoveredModels = normalizeGenAiMilModelIds(data.models);
+        const stillSelected = selectedModels.filter((model) => discoveredModels.includes(model));
+        const nextSelectedModels = stillSelected;
+        setGenAiMilModels((current) => sameModelIds(current, discoveredModels) ? current : discoveredModels);
+        setSelectedModels(nextSelectedModels);
+        setModelPickerOpen(true);
+
+        let catalogSaved = false;
+        if (hasKey && !inputKey.trim()) {
+          const authHeader = await getAuthHeader();
+          if (authHeader) {
+            const catalogResponse = await fetch('/api/user/ai-keys/google/config', {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: authHeader,
+              },
+              body: JSON.stringify({
+                config: {
+                  ...(nextSelectedModels[0] ? { preferredModel: nextSelectedModels[0] } : {}),
+                  ...(nextSelectedModels.length ? { enabledModels: nextSelectedModels } : {}),
+                  availableModels: discoveredModels,
+                },
+              }),
+            });
+            catalogSaved = catalogResponse.ok;
+            if (catalogSaved) onSaved(provider);
+          }
+        }
         const transportLabel = data.transport === 'extension'
           ? 'Chrome/Edge bridge'
           : data.transport === 'localhost'
@@ -565,7 +646,9 @@ function AiProviderCard({
             : 'direct browser connection';
         setTestResult({
           ok: true,
-          message: `GenAI.mil is working through the ${transportLabel} (${data.models.length} model${data.models.length === 1 ? '' : 's'} available). Model: ${data.model}`,
+          message: data.model
+            ? `GenAI.mil is working through the ${transportLabel}. Loaded ${data.models.length} available model${data.models.length === 1 ? '' : 's'} and verified your selected model: ${data.model}.`
+            : `GenAI.mil is working through the ${transportLabel}. Loaded ${data.models.length} available model${data.models.length === 1 ? '' : 's'}.${catalogSaved ? ' The catalog is saved.' : ''} Select the exact model${data.models.length === 1 ? '' : 's'} you want, then click Save. No model was chosen automatically.`,
         });
         setTesting(false);
         return;
@@ -642,7 +725,7 @@ function AiProviderCard({
   };
 
   const selectedModelSummary = selectedModels.length === 1
-    ? (modelOptions.find((option) => option.id === selectedModels[0])?.label ?? selectedModels[0] ?? 'Choose a model')
+    ? (effectiveModelOptions.find((option) => option.id === selectedModels[0])?.label ?? selectedModels[0] ?? 'Choose a model')
     : selectedModels.length > 1
       ? `${selectedModels.length} models selected`
       : 'Choose a model';
@@ -921,7 +1004,9 @@ function AiProviderCard({
             ? 'Enable NVIDIA here to show it in the top AI dropdown. The exact hosted model comes from the NVIDIA model ID above.'
             : isGemma4
               ? 'Enable Gemma 4 here to show it in the top AI dropdown. The exact hosted model comes from the Gemma 4 model ID above.'
-            : 'The first selected model is used as this provider&apos;s default, and new keys start with the most capable model selected by itself.'}
+            : provider === 'google'
+              ? 'Select one or more exact STARK model IDs. The first selected model is the default; Odyssey will not choose one automatically.'
+              : 'The first selected model is used as this provider&apos;s default, and new keys start with the most capable model selected by itself.'}
         </p>
       </div>
 
@@ -1361,7 +1446,18 @@ export default function SettingsPage() {
   const getModelOptionsForProvider = (provider: AiServiceProvider, currentStatus?: AiKeyStatus): ProviderModelOption[] => {
     if (provider === 'anthropic') return ANTHROPIC_MODEL_OPTIONS;
     if (provider === 'google_ai') return GOOGLE_AI_MODEL_OPTIONS;
-    if (provider === 'google') return GENAI_MIL_MODEL_OPTIONS;
+    if (provider === 'google') {
+      return normalizeGenAiMilModelIds([
+        ...(currentStatus?.config?.availableModels ?? []),
+        ...(currentStatus?.config?.enabledModels ?? []),
+        ...(currentStatus?.config?.preferredModel ? [currentStatus.config.preferredModel] : []),
+      ])
+        .map((id) => ({
+          id,
+          label: id,
+          description: 'Available through this STARK key',
+        }));
+    }
     if (provider === 'nvidia') return NVIDIA_MODEL_OPTIONS;
     if (provider === 'gemma4') return GEMMA4_MODEL_OPTIONS;
 

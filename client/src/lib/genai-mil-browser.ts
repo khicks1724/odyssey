@@ -2,7 +2,6 @@ const GENAI_MIL_BASE_URL = 'https://api.genai.mil/v1';
 const LOCAL_RELAY_BASE_URL = 'http://127.0.0.1:43127/v1';
 const SESSION_STORAGE_KEY = 'odyssey-genai-mil-browser-key-v1';
 const SESSION_VERIFIED_KEY = 'odyssey-genai-mil-browser-verified-v1';
-const DEFAULT_MODEL = 'gemini-2.5-flash';
 const PAGE_MESSAGE_SOURCE = 'odyssey-genai-mil-page-v1';
 const EXTENSION_MESSAGE_SOURCE = 'odyssey-genai-mil-extension-v1';
 
@@ -474,9 +473,9 @@ function parseBrowserResponse(response: GenAiMilRawBrowserResponse): unknown {
   });
 }
 
-export async function testGenAiMilFromBrowser(apiKey: string): Promise<{
+export async function testGenAiMilFromBrowser(apiKey: string, preferredModel?: string): Promise<{
   models: string[];
-  model: string;
+  model?: string;
   transport: GenAiMilBrowserTransport;
 }> {
   const previousKey = getGenAiMilBrowserKey();
@@ -504,7 +503,18 @@ export async function testGenAiMilFromBrowser(apiKey: string): Promise<{
         message: 'The STARK key is valid, but it has no available GenAI.mil models.',
       });
     }
-    const model = models.includes(DEFAULT_MODEL) ? DEFAULT_MODEL : models[0]!;
+    const requestedModel = preferredModel?.trim();
+    const model = requestedModel && models.includes(requestedModel) ? requestedModel : undefined;
+
+    // Listing models validates the key and exposes the exact catalog without
+    // silently spending a request on an arbitrary (and potentially legacy)
+    // model. Only test a completion after the user has selected that model.
+    if (!model) {
+      setActiveTransport(modelsResponse.transport);
+      setSessionVerified(true);
+      return { models, transport: modelsResponse.transport };
+    }
+
     const completionResponse = await performGenAiMilBrowserFetch({
       path: '/chat/completions',
       method: 'POST',

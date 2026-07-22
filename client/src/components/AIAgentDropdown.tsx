@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Zap, Bot, RefreshCw } from 'lucide-react';
-import { isOpenAIAgentValue, useAIAgent, type AIAgentValue, type FixedAIProvider, type KeySource, type ProviderInfo, type ProviderStatus } from '../lib/ai-agent';
+import { getGenAiMilModelId, isGenAiMilAgentValue, isOpenAIAgentValue, useAIAgent, type AIAgentValue, type FixedAIProvider, type KeySource, type ProviderInfo, type ProviderStatus } from '../lib/ai-agent';
 import { buildOpenAiAgentValue, canonicalizeOpenAiModelId, parseOpenAiAgentValue, type OpenAiReasoningEffort } from '../lib/openai-models';
 import './AIAgentDropdown.css';
 
@@ -26,6 +26,16 @@ function getAgentMeta(agent: AIAgentValue) {
       description: `OpenAI · ${model}${reasoningEffort ? ` · ${reasoningEffort} reasoning` : ''}`,
       colorClass: 'aid-gpt4o',
       provider: 'OpenAI',
+    };
+  }
+  if (isGenAiMilAgentValue(agent)) {
+    const model = getGenAiMilModelId(agent);
+    return {
+      name: model,
+      shortName: model,
+      description: `DoW / GenAI.mil · ${model}`,
+      colorClass: 'aid-genaimil',
+      provider: 'DoW / GenAI.mil',
     };
   }
   return fixedAgentMeta[agent];
@@ -73,7 +83,12 @@ function KeySourceBadge({ keySource }: { keySource?: KeySource }) {
 }
 
 function getProviderForAgent(id: AIAgentValue, providers: ProviderInfo[]) {
-  return providers.find((p) => p.id === (isOpenAIAgentValue(id) ? 'gpt-4o' : id));
+  const providerId = isOpenAIAgentValue(id)
+    ? 'gpt-4o'
+    : isGenAiMilAgentValue(id)
+      ? 'genai-mil'
+      : id;
+  return providers.find((p) => p.id === providerId);
 }
 
 function toAgentValues(values: string[] | undefined): AIAgentValue[] {
@@ -243,7 +258,7 @@ export default function AIAgentDropdown() {
                               <KeySourceBadge keySource={pInfo?.keySource} />
                             </div>
                             <div className="text-[10px] text-[var(--color-muted)] truncate">
-                              {pInfo?.activeModel
+                              {pInfo?.activeModel && !isGenAiMilAgentValue(id)
                                 ? `${meta.provider} · ${pInfo.activeModel}`
                                 : meta.description}
                             </div>

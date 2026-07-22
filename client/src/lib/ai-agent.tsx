@@ -5,7 +5,8 @@ import { isGenAiMilBrowserReady, subscribeToGenAiMilBrowserReadiness } from './g
 
 export type FixedAIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAIAgentValue = `openai:${string}`;
-export type AIProvider = FixedAIProvider | OpenAIAgentValue;
+export type GenAiMilAgentValue = `genai-mil:${string}`;
+export type AIProvider = FixedAIProvider | OpenAIAgentValue | GenAiMilAgentValue;
 export type AIAgentValue = AIProvider | 'auto';
 
 export type ProviderStatus = 'ready' | 'no_key' | 'no_credits' | 'invalid_key' | 'browser_required' | 'error';
@@ -69,10 +70,21 @@ export function isOpenAIAgentValue(value: string): value is OpenAIAgentValue {
   return value.startsWith('openai:') && parseOpenAiAgentValue(value).modelId.length > 0;
 }
 
+export function isGenAiMilAgentValue(value: string): value is GenAiMilAgentValue {
+  const model = value.startsWith('genai-mil:')
+    ? value.slice('genai-mil:'.length).trim()
+    : '';
+  return model.length > 0 && model !== 'genai-mil';
+}
+
+export function getGenAiMilModelId(value: GenAiMilAgentValue): string {
+  return value.slice('genai-mil:'.length).trim();
+}
+
 export function AIAgentProvider({ children }: { children: ReactNode }) {
   const [agent, setAgentState] = useState<AIAgentValue>(() => {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && (stored === 'auto' || FIXED_VALUES.includes(stored as FixedAIProvider) || isOpenAIAgentValue(stored))) {
+    if (stored && (stored === 'auto' || FIXED_VALUES.includes(stored as FixedAIProvider) || isOpenAIAgentValue(stored) || isGenAiMilAgentValue(stored))) {
       return stored as AIAgentValue;
     }
     return 'auto';
