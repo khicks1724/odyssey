@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -667,15 +668,15 @@ export default function ThesisFileExplorer({
     });
   };
 
-  const selectNode = (nodeId: string | null) => {
+  const selectNode = useCallback((nodeId: string | null) => {
     onSelectedNodeIdChange(nodeId);
-  };
+  }, [onSelectedNodeIdChange]);
 
-  const updateSelection = (nextSelectedNodeIds: Set<string>, primaryNodeId: string | null, anchorNodeId: string | null) => {
+  const updateSelection = useCallback((nextSelectedNodeIds: Set<string>, primaryNodeId: string | null, anchorNodeId: string | null) => {
     setSelectedNodeIds(nextSelectedNodeIds);
     selectionAnchorNodeIdRef.current = anchorNodeId;
     selectNode(primaryNodeId);
-  };
+  }, [selectNode]);
 
   const resolvePrimarySelectedNodeId = (nextSelectedNodeIds: Set<string>, preferredNodeId: string | null = null) => {
     if (preferredNodeId && nextSelectedNodeIds.has(preferredNodeId)) return preferredNodeId;
@@ -695,9 +696,9 @@ export default function ThesisFileExplorer({
     return new Set(visibleNodeIds.slice(start, end + 1));
   };
 
-  const selectSingleNode = (nodeId: string | null) => {
+  const selectSingleNode = useCallback((nodeId: string | null) => {
     updateSelection(nodeId ? new Set([nodeId]) : new Set(), nodeId, nodeId);
-  };
+  }, [updateSelection]);
 
   const openFileAndSelect = (fileId: string) => {
     selectSingleNode(fileId);
@@ -862,7 +863,7 @@ export default function ThesisFileExplorer({
       nodeElementRefs.current[selectedNodeId]?.scrollIntoView({ block: 'nearest' });
     });
     return () => window.cancelAnimationFrame(animationId);
-  }, [activeFile?.id, nodeMap, selectedNodeId, visibleNodes]);
+  }, [activeFile?.id, nodeMap, selectSingleNode, selectedNodeId, visibleNodes]);
 
   useEffect(() => {
     if (!draftState) {

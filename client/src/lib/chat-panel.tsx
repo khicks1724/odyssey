@@ -128,7 +128,7 @@ export function ChatPanelProvider({ children }: { children: ReactNode }) {
   const [allowProjectSwitching, setAllowProjectSwitching] = useState(true);
   const [onGoalMutated, setOnGoalMutated] = useState<(() => void) | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [contextKey, setContextKey] = useState('project:none');
+  const [, setContextKey] = useState('project:none');
 
   // Panels are mutually exclusive — opening one closes the other
   const openChat = useCallback((v: boolean) => { setOpen(v); if (v) setIuOpen(false); }, []);

@@ -6,7 +6,6 @@ function PreviewDots({ colors }: { colors: [string, string, string] }) {
   return (
     <span className="flex gap-0.5 shrink-0">
       {colors.map((c, i) => (
-        // eslint-disable-next-line react/forbid-component-props
         <span key={i} className="w-3 h-3 rounded-full border border-black/20" style={{ background: c }} />
       ))}
     </span>

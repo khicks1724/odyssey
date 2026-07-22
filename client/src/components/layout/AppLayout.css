@@ -70,3 +70,46 @@ html[data-view-mode="extended"] .app-route-shell--page > [class~="mx-auto"][clas
 html[data-view-mode="extended"] .app-route-shell--chat .app-chat-thread-width {
   max-width: min(100%, 108rem) !important;
 }
+
+@media (max-width: 70rem) {
+  .app-header-fixed {
+    padding-inline: 0.75rem;
+  }
+
+  .app-header-controls {
+    justify-content: flex-end;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .app-header-controls::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (max-width: 56rem) {
+  .app-content-row > .chat-divider {
+    display: none;
+  }
+
+  .app-content-row > .chat-panel:not(.chat-panel--closed) {
+    position: absolute;
+    z-index: 40;
+    inset-block: 0;
+    right: 0;
+    width: min(var(--chat-panel-w, 380px), 100%);
+    max-width: 100%;
+    box-shadow: -1rem 0 2.5rem color-mix(in srgb, #000 28%, transparent);
+  }
+}
+
+@media (max-width: 44rem) {
+  .app-header-date,
+  .app-chat-toggle-label {
+    display: none;
+  }
+
+  .app-header-controls {
+    width: 100%;
+  }
+}

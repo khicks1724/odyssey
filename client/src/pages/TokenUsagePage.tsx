@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarRange, ChartNoAxesColumn, RefreshCw, Users, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
@@ -137,11 +137,6 @@ function formatProviderLabel(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
-}
-
-function formatModelLabel(value: string) {
-  const trimmed = value.trim();
-  return trimmed || 'Unknown model';
 }
 
 function percentage(value: number, total: number) {
@@ -423,7 +418,7 @@ export default function TokenUsagePage() {
   const viewerIsAdmin = data?.viewer?.isAdmin === true;
   const canManageServerFallback = viewerIsAdmin && data?.viewer?.email === SERVER_FALLBACK_CONTROL_ADMIN_EMAIL;
 
-  const loadUsage = async () => {
+  const loadUsage = useCallback(async () => {
     if (!user) return;
     setLoading(true);
     setError(null);
@@ -451,12 +446,12 @@ export default function TokenUsagePage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [endDate, granularity, settings.timezone, sourceFilter, startDate, user]);
 
   useEffect(() => {
     if (!accessResolved || !user) return;
     void loadUsage();
-  }, [accessResolved, user, granularity, settings.timezone, sourceFilter, startDate, endDate]);
+  }, [accessResolved, loadUsage, user]);
 
   const sortedUsers = useMemo(() => {
     const users = [...(data?.users ?? [])];

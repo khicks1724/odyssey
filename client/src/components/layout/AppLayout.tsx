@@ -1,4 +1,4 @@
-import { useRef, useCallback, useState, useEffect } from 'react';
+import { Suspense, useRef, useCallback, useState, useEffect } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { MessageCircle, X } from 'lucide-react';
 import Sidebar from './Sidebar';
@@ -8,17 +8,28 @@ import FontSizeControl from '../FontSizeControl';
 import ViewModeToggle from '../ViewModeToggle';
 import AIAgentDropdown from '../AIAgentDropdown';
 import DateTime from '../DateTime';
-import ProjectChat from '../ProjectChat';
-import IntelligentUpdatePanel from '../IntelligentUpdatePanel';
 import { useChatPanel } from '../../lib/chat-panel';
 import { useProjects } from '../../hooks/useProjects';
+import { lazyWithRetry } from '../../lib/lazy-with-retry';
+import ErrorBoundary from '../ErrorBoundary';
 import './AppLayout.css';
+
+const ProjectChat = lazyWithRetry(() => import('../ProjectChat'), 'panel-project-chat');
+const IntelligentUpdatePanel = lazyWithRetry(() => import('../IntelligentUpdatePanel'), 'panel-intelligent-update');
 
 const PANEL_MIN = 280;
 const PANEL_MAX = 640;
 const PANEL_DEFAULT = 380;
 // Keep main content at least this wide before chat panel is clamped
 const MAIN_MIN = 500;
+
+function PanelFallback() {
+  return (
+    <div className="flex flex-1 items-center justify-center p-6 text-xs uppercase tracking-wider text-muted">
+      Loading panel…
+    </div>
+  );
+}
 
 export default function AppLayout() {
   const location = useLocation();
@@ -81,10 +92,10 @@ export default function AppLayout() {
         {/* Top header — counter-zoomed so A+/A- never shifts its contents */}
         <header className="app-header-fixed relative z-30 flex items-center justify-between px-6 h-11 shrink-0
                             border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="app-header-date flex items-center gap-3 min-w-0">
             <DateTime />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="app-header-controls flex min-w-0 items-center gap-2">
             <AIAgentDropdown />
             <ViewModeToggle />
             <FontSizeControl />
@@ -102,13 +113,13 @@ export default function AppLayout() {
                 }`}
             >
               {open ? <X size={13} /> : <MessageCircle size={13} />}
-              <span className="text-xs font-medium">{mode === 'thesis' ? 'Thesis AI' : 'AI Chat'}</span>
+              <span className="app-chat-toggle-label text-xs font-medium">{mode === 'thesis' ? 'Thesis AI' : 'AI Chat'}</span>
             </button>
           </div>
         </header>
 
         {/* Content row: main + optional chat panel */}
-        <div className="flex-1 flex overflow-hidden min-h-0">
+        <div className="app-content-row relative flex min-h-0 flex-1 overflow-hidden">
           <main className={`flex-1 min-w-0 ${isChatRoute ? 'flex flex-col overflow-hidden bg-surface' : 'overflow-y-auto'}`}>
             <div
               key={location.pathname}
@@ -134,19 +145,27 @@ export default function AppLayout() {
                         ${anyPanelOpen ? '' : 'chat-panel--closed'}`}
           >
             {open && (
-              <ProjectChat
-                projectId={projectId}
-                projectName={projectName ?? ''}
-                projects={projects}
-                onGoalMutated={onGoalMutated ?? undefined}
-              />
+              <ErrorBoundary label={panelTitle}>
+                <Suspense fallback={<PanelFallback />}>
+                  <ProjectChat
+                    projectId={projectId}
+                    projectName={projectName ?? ''}
+                    projects={projects}
+                    onGoalMutated={onGoalMutated ?? undefined}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
             {iuOpen && projectId && (
-              <IntelligentUpdatePanel
-                projectId={projectId}
-                onClose={() => setIuOpen(false)}
-                onGoalMutated={onGoalMutated ?? (() => {})}
-              />
+              <ErrorBoundary label="Intelligent Update">
+                <Suspense fallback={<PanelFallback />}>
+                  <IntelligentUpdatePanel
+                    projectId={projectId}
+                    onClose={() => setIuOpen(false)}
+                    onGoalMutated={onGoalMutated ?? (() => {})}
+                  />
+                </Suspense>
+              </ErrorBoundary>
             )}
           </div>
         </div>

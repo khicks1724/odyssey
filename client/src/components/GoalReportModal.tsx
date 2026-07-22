@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { X, FileText, Paperclip, Send, Trash2, Download, Loader2, MessageSquare } from 'lucide-react';
 import type { Goal, GoalComment } from '../types';
 import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
@@ -66,7 +66,7 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
     return acc;
   }, {});
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     const [{ data: reps }, { data: atts }, { data: cmts }] = await Promise.all([
       supabase.from('goal_reports').select('*').eq('goal_id', goal.id).order('created_at', { ascending: false }),
@@ -79,7 +79,7 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
     // Fetch author display names
     const commentList = cmts ?? [];
     const authorIds = [...new Set(commentList.map((c: GoalComment) => c.author_id).filter(Boolean))] as string[];
-    let nameMap: Record<string, string> = {};
+    const nameMap: Record<string, string> = {};
     if (authorIds.length > 0) {
       const { data: profiles } = await supabase.from('profiles').select('id, display_name').in('id', authorIds);
       if (profiles) {
@@ -88,9 +88,9 @@ export default function GoalReportModal({ goal, projectId, onClose }: GoalReport
     }
     setComments(commentList.map((c: GoalComment) => ({ ...c, author_name: c.author_id ? (nameMap[c.author_id] ?? 'Unknown') : 'Anonymous' })));
     setLoading(false);
-  };
+  }, [goal.id]);
 
-  useEffect(() => { loadData(); }, [goal.id]);
+  useEffect(() => { void loadData(); }, [loadData]);
 
   // Realtime subscription for new comments
   useEffect(() => {

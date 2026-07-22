@@ -28,6 +28,127 @@ export interface ChatThreadState {
   unread_count: number;
 }
 
+interface ChatThreadSummaryRow {
+  thread: ChatThread;
+  participants: ChatParticipant[];
+  last_message: ChatThreadPreview | null;
+  last_read_at: string | null;
+  hidden_at: string | null;
+  unread_count: number | string;
+}
+
+type FetchThreadOptions = {
+  force?: boolean;
+  syncMemberships?: boolean;
+};
+
+const CHAT_THREAD_POLL_INTERVAL_MS = 30_000;
+const CHAT_THREAD_MAX_RETRY_MS = 5 * 60_000;
+
+function getSupabaseErrorText(error: unknown): string {
+  if (!error) return '';
+  if (error instanceof Error) return error.message.toLowerCase();
+  if (typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    return [record.message, record.details, record.hint, record.code]
+      .filter((value) => typeof value === 'string')
+      .join(' ')
+      .toLowerCase();
+  }
+  return String(error).toLowerCase();
+}
+
+function isMissingChatRpc(error: unknown, functionName: string): boolean {
+  const message = getSupabaseErrorText(error);
+  return message.includes(`public.${functionName}`)
+    && (message.includes('could not find') || message.includes('schema cache') || message.includes('pgrst202'));
+}
+
+function isTransientSupabaseError(error: unknown): boolean {
+  const message = getSupabaseErrorText(error);
+  return (
+    message.includes('failed to fetch')
+    || message.includes('networkerror')
+    || message.includes('load failed')
+    || message.includes('aborted')
+    || message.includes('502')
+    || message.includes('503')
+    || message.includes('504')
+    || message.includes('bad gateway')
+    || message.includes('gateway time')
+    || message.includes('service unavailable')
+    || message.includes('<html')
+    || message.includes('<!doctype')
+  );
+}
+
+async function loadLegacyChatThreadSummaries(userId: string): Promise<ChatThreadSummaryRow[]> {
+  const membershipResult = await supabase
+    .from('chat_thread_members')
+    .select('thread_id')
+    .eq('user_id', userId);
+  if (membershipResult.error) throw membershipResult.error;
+
+  const ids = (membershipResult.data ?? []).map((membership) => membership.thread_id);
+  if (ids.length === 0) return [];
+
+  const [threadsResult, membersResult, messagesResult, statesResult] = await Promise.all([
+    supabase.from('chat_threads').select('*').in('id', ids).order('updated_at', { ascending: false }),
+    supabase.from('chat_thread_members').select('thread_id, user_id').in('thread_id', ids),
+    supabase
+      .from('chat_messages')
+      .select('id, thread_id, sender_id, role, content, created_at')
+      .in('thread_id', ids)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('chat_thread_user_state')
+      .select('thread_id, last_read_at, hidden_at')
+      .eq('user_id', userId)
+      .in('thread_id', ids),
+  ]);
+
+  const firstError = threadsResult.error || membersResult.error || messagesResult.error || statesResult.error;
+  if (firstError) throw firstError;
+
+  const memberIds = [...new Set((membersResult.data ?? []).map((row) => row.user_id))];
+  const profileResult = memberIds.length
+    ? await supabase.from('profiles').select('id, display_name, avatar_url').in('id', memberIds)
+    : { data: [] as ChatParticipant[], error: null };
+  if (profileResult.error) throw profileResult.error;
+
+  const profiles = new Map((profileResult.data ?? []).map((profile) => [profile.id, profile]));
+  const states = new Map((statesResult.data ?? []).map((state) => [state.thread_id, state]));
+  const membersByThread = (membersResult.data ?? []).reduce<Record<string, ChatParticipant[]>>((acc, member) => {
+    const profile = profiles.get(member.user_id);
+    (acc[member.thread_id] ??= []).push({
+      id: member.user_id,
+      display_name: profile?.display_name ?? null,
+      avatar_url: profile?.avatar_url ?? null,
+    });
+    return acc;
+  }, {});
+  const latestByThread = (messagesResult.data ?? []).reduce<Record<string, ChatThreadPreview>>((acc, message) => {
+    if (!acc[message.thread_id]) acc[message.thread_id] = message as ChatThreadPreview;
+    return acc;
+  }, {});
+  const unreadByThread = (messagesResult.data ?? []).reduce<Record<string, number>>((acc, message) => {
+    const lastReadAt = states.get(message.thread_id)?.last_read_at;
+    if (message.sender_id !== userId && (!lastReadAt || message.created_at > lastReadAt)) {
+      acc[message.thread_id] = (acc[message.thread_id] ?? 0) + 1;
+    }
+    return acc;
+  }, {});
+
+  return ((threadsResult.data ?? []) as ChatThread[]).map((thread) => ({
+    thread,
+    participants: membersByThread[thread.id] ?? [],
+    last_message: latestByThread[thread.id] ?? null,
+    last_read_at: states.get(thread.id)?.last_read_at ?? null,
+    hidden_at: states.get(thread.id)?.hidden_at ?? null,
+    unread_count: unreadByThread[thread.id] ?? 0,
+  }));
+}
+
 function applyLocalThreadRead(
   threadId: string,
   readAt: string,
@@ -59,12 +180,18 @@ function useChatThreadsState() {
   const [threadStateByThread, setThreadStateByThread] = useState<Record<string, ChatThreadState>>({});
   const [loading, setLoading] = useState(true);
   const fetchSequenceRef = useRef(0);
+  const fetchRequestRef = useRef<symbol | null>(null);
   const hasLoadedOnceRef = useRef(false);
+  const failureCountRef = useRef(0);
+  const retryAfterRef = useRef(0);
 
-  const fetchThreads = useCallback(async () => {
+  const fetchThreads = useCallback(async (options: FetchThreadOptions = {}) => {
     if (!user) {
       fetchSequenceRef.current += 1;
+      fetchRequestRef.current = null;
       hasLoadedOnceRef.current = false;
+      failureCountRef.current = 0;
+      retryAfterRef.current = 0;
       setThreads([]);
       setThreadIds([]);
       setParticipantsByThread({});
@@ -73,162 +200,133 @@ function useChatThreadsState() {
       setLoading(false);
       return;
     }
+
+    if (!options.force && Date.now() < retryAfterRef.current) return;
+    if (fetchRequestRef.current) return;
+
+    const requestToken = Symbol('chat-thread-fetch');
+    fetchRequestRef.current = requestToken;
     const fetchSequence = ++fetchSequenceRef.current;
     const isInitialLoad = !hasLoadedOnceRef.current;
-    if (isInitialLoad) {
-      setLoading(true);
-    }
-    const syncResult = await supabase.rpc('sync_my_project_chat_memberships');
-    if (syncResult.error) {
-      const msg = syncResult.error.message.toLowerCase();
-      const missing = msg.includes('could not find the function public.sync_my_project_chat_memberships') || msg.includes('schema cache');
-      // Transient infrastructure failures self-recover on the next fetch, so
-      // don't spam the console with them: "Failed to fetch" (network/abort),
-      // and upstream gateway hiccups that come back as 502/503/504 or an HTML
-      // error page body instead of JSON.
-      const transient =
-        msg.includes('failed to fetch') ||
-        msg.includes('networkerror') ||
-        msg.includes('load failed') ||
-        msg.includes('aborted') ||
-        msg.includes('502') || msg.includes('503') || msg.includes('504') ||
-        msg.includes('bad gateway') || msg.includes('gateway time') ||
-        msg.includes('service unavailable') ||
-        msg.includes('<html') || msg.includes('<!doctype');
-      if (!missing && !transient) {
-        console.error('Failed to sync chat memberships:', syncResult.error);
-      }
-    }
+    if (isInitialLoad) setLoading(true);
 
-    const { data: memberships } = await supabase
-      .from('chat_thread_members')
-      .select('thread_id')
-      .eq('user_id', user.id);
-    if (fetchSequence !== fetchSequenceRef.current) return;
-    const ids = (memberships ?? []).map((m) => m.thread_id);
-    setThreadIds(ids);
-    if (ids.length === 0) {
-      if (isInitialLoad) {
-        setThreads([]);
-        setParticipantsByThread({});
-        setLastMessageByThread({});
-        setThreadStateByThread({});
+    try {
+      if (options.syncMemberships) {
+        const syncResult = await supabase.rpc('sync_my_project_chat_memberships');
+        if (syncResult.error && !isMissingChatRpc(syncResult.error, 'sync_my_project_chat_memberships')) {
+          if (isTransientSupabaseError(syncResult.error)) throw syncResult.error;
+          console.error('Failed to sync chat memberships:', syncResult.error);
+        }
       }
+
+      const summaryResult = await supabase.rpc('get_my_chat_thread_summaries');
+      const summaries = summaryResult.error
+        ? isMissingChatRpc(summaryResult.error, 'get_my_chat_thread_summaries')
+          ? await loadLegacyChatThreadSummaries(user.id)
+          : (() => { throw summaryResult.error; })()
+        : ((summaryResult.data ?? []) as unknown as ChatThreadSummaryRow[]);
+
+      if (fetchSequence !== fetchSequenceRef.current) return;
+
+      const validSummaries = summaries.filter((summary) => summary?.thread?.id);
+      const nextThreadIds = validSummaries.map((summary) => summary.thread.id);
+      const nextParticipants = validSummaries.reduce<Record<string, ChatParticipant[]>>((acc, summary) => {
+        acc[summary.thread.id] = Array.isArray(summary.participants) ? summary.participants : [];
+        return acc;
+      }, {});
+      const nextPreviews = validSummaries.reduce<Record<string, ChatThreadPreview | null>>((acc, summary) => {
+        acc[summary.thread.id] = summary.last_message ?? null;
+        return acc;
+      }, {});
+      const nextThreadState = validSummaries.reduce<Record<string, ChatThreadState>>((acc, summary) => {
+        acc[summary.thread.id] = {
+          thread_id: summary.thread.id,
+          last_read_at: summary.last_read_at ?? null,
+          hidden_at: summary.hidden_at ?? null,
+          unread_count: Math.max(0, Number(summary.unread_count) || 0),
+        };
+        return acc;
+      }, {});
+      const nextThreads = validSummaries
+        .map((summary) => summary.thread)
+        .filter((thread) => !(thread.kind === 'direct' && nextThreadState[thread.id]?.hidden_at));
+
+      setThreadIds(nextThreadIds);
+      setParticipantsByThread(nextParticipants);
+      setLastMessageByThread(nextPreviews);
+      setThreadStateByThread(nextThreadState);
+      setThreads(nextThreads);
       hasLoadedOnceRef.current = true;
+      failureCountRef.current = 0;
+      retryAfterRef.current = 0;
       setLoading(false);
-      return;
+    } catch (error) {
+      if (fetchSequence !== fetchSequenceRef.current) return;
+
+      failureCountRef.current += 1;
+      const retryDelay = Math.min(
+        CHAT_THREAD_POLL_INTERVAL_MS * (2 ** Math.min(failureCountRef.current - 1, 4)),
+        CHAT_THREAD_MAX_RETRY_MS,
+      );
+      retryAfterRef.current = Date.now() + retryDelay;
+      setLoading(false);
+
+      if (!isTransientSupabaseError(error)) {
+        console.error('Failed to refresh chat threads:', error);
+      }
+    } finally {
+      if (fetchRequestRef.current === requestToken) {
+        fetchRequestRef.current = null;
+      }
     }
-    const threadIds = ids;
-
-    const [{ data: threadsData }, { data: memberRows }, { data: previewRows }, { data: stateRows }] = await Promise.all([
-      supabase.from('chat_threads').select('*').in('id', threadIds).order('updated_at', { ascending: false }),
-      supabase.from('chat_thread_members').select('thread_id, user_id').in('thread_id', threadIds),
-      supabase
-        .from('chat_messages')
-        .select('id, thread_id, sender_id, role, content, created_at')
-        .in('thread_id', threadIds)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('chat_thread_user_state')
-        .select('thread_id, last_read_at, hidden_at')
-        .eq('user_id', user.id)
-        .in('thread_id', threadIds),
-    ]);
-    if (fetchSequence !== fetchSequenceRef.current) return;
-
-    const rawThreads = (threadsData ?? []) as ChatThread[];
-    const stateMap = new Map(
-      (stateRows ?? []).map((row) => [
-        row.thread_id,
-        {
-          thread_id: row.thread_id,
-          last_read_at: row.last_read_at,
-          hidden_at: row.hidden_at,
-          unread_count: 0,
-        } satisfies ChatThreadState,
-      ]),
-    );
-
-    const memberIds = [...new Set((memberRows ?? []).map((row) => row.user_id))];
-    const { data: profiles } = memberIds.length
-      ? await supabase.from('profiles').select('id, display_name, avatar_url').in('id', memberIds)
-      : { data: [] as { id: string; display_name: string | null; avatar_url: string | null }[] };
-    if (fetchSequence !== fetchSequenceRef.current) return;
-    const profileMap = new Map((profiles ?? []).map((p) => [p.id, p]));
-
-    const nextParticipants = (memberRows ?? []).reduce<Record<string, ChatParticipant[]>>((acc, row) => {
-      const profile = profileMap.get(row.user_id);
-      if (!acc[row.thread_id]) acc[row.thread_id] = [];
-      acc[row.thread_id].push({
-        id: row.user_id,
-        display_name: profile?.display_name ?? null,
-        avatar_url: profile?.avatar_url ?? null,
-      });
-      return acc;
-    }, {});
-
-    setParticipantsByThread(nextParticipants);
-    const nextPreviews = (previewRows ?? []).reduce<Record<string, ChatThreadPreview | null>>((acc, row) => {
-      if (!acc[row.thread_id]) {
-        acc[row.thread_id] = row as ChatThreadPreview;
-      }
-      return acc;
-    }, {});
-    setLastMessageByThread(nextPreviews);
-    const unreadCounts = (previewRows ?? []).reduce<Record<string, number>>((acc, row) => {
-      if (row.sender_id === user.id) return acc;
-      const lastReadAt = stateMap.get(row.thread_id)?.last_read_at;
-      if (!lastReadAt || row.created_at > lastReadAt) {
-        acc[row.thread_id] = (acc[row.thread_id] ?? 0) + 1;
-      }
-      return acc;
-    }, {});
-
-    const nextThreadState = rawThreads.reduce<Record<string, ChatThreadState>>((acc, thread) => {
-      const existing = stateMap.get(thread.id);
-      acc[thread.id] = {
-        thread_id: thread.id,
-        last_read_at: existing?.last_read_at ?? null,
-        hidden_at: existing?.hidden_at ?? null,
-        unread_count: unreadCounts[thread.id] ?? 0,
-      };
-      return acc;
-    }, {});
-
-    setThreadStateByThread(nextThreadState);
-    setThreads(
-      rawThreads.filter((thread) => !(thread.kind === 'direct' && nextThreadState[thread.id]?.hidden_at)),
-    );
-    hasLoadedOnceRef.current = true;
-    setLoading(false);
   }, [user]);
 
   useEffect(() => {
-    if (!user) return;
-    fetchThreads();
+    fetchSequenceRef.current += 1;
+    fetchRequestRef.current = null;
+    hasLoadedOnceRef.current = false;
+    failureCountRef.current = 0;
+    retryAfterRef.current = 0;
+    void fetchThreads({ force: true, syncMemberships: Boolean(user) });
+
+    return () => {
+      fetchSequenceRef.current += 1;
+      fetchRequestRef.current = null;
+    };
   }, [user, fetchThreads]);
 
   useEffect(() => {
     if (!user) return;
-    const handleRefresh = () => { void fetchThreads(); };
+
+    const handleFocus = () => {
+      void fetchThreads({ force: true });
+    };
+    const handleProjectsChanged = () => {
+      void fetchThreads({ force: true, syncMemberships: true });
+    };
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        void fetchThreads();
+        void fetchThreads({ force: true });
       }
     };
-    window.addEventListener('focus', handleRefresh);
-    window.addEventListener('odyssey:projects-changed', handleRefresh);
+
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('odyssey:projects-changed', handleProjectsChanged);
     document.addEventListener('visibilitychange', handleVisibility);
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void fetchThreads();
-      }
-    }, 10000);
+
+    const interval = supabaseRealtimeEnabled
+      ? null
+      : window.setInterval(() => {
+          if (document.visibilityState === 'visible') {
+            void fetchThreads();
+          }
+        }, CHAT_THREAD_POLL_INTERVAL_MS);
+
     return () => {
-      window.removeEventListener('focus', handleRefresh);
-      window.removeEventListener('odyssey:projects-changed', handleRefresh);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('odyssey:projects-changed', handleProjectsChanged);
       document.removeEventListener('visibilitychange', handleVisibility);
-      window.clearInterval(interval);
+      if (interval !== null) window.clearInterval(interval);
     };
   }, [user, fetchThreads]);
 
@@ -236,9 +334,9 @@ function useChatThreadsState() {
     if (!user || !supabaseRealtimeEnabled) return;
     const channel = supabase
       .channel(`chat-threads:${user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_threads' }, () => fetchThreads())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_thread_members', filter: `user_id=eq.${user.id}` }, () => fetchThreads())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_thread_user_state', filter: `user_id=eq.${user.id}` }, () => fetchThreads())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_threads' }, () => { void fetchThreads({ force: true }); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_thread_members', filter: `user_id=eq.${user.id}` }, () => { void fetchThreads({ force: true }); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_thread_user_state', filter: `user_id=eq.${user.id}` }, () => { void fetchThreads({ force: true }); })
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
@@ -318,7 +416,7 @@ function useChatThreadsState() {
       p_related_project_id: relatedProjectId ?? null,
     });
     if (error) throw error;
-    await fetchThreads();
+    await fetchThreads({ force: true });
     return data as string;
   };
 
@@ -340,11 +438,11 @@ function useChatThreadsState() {
     }));
     const { data, error } = await supabase.rpc('mark_chat_thread_read', { p_thread_id: threadId });
     if (error) {
-      void fetchThreads();
+      void fetchThreads({ force: true });
       throw error;
     }
     if ((data as { error?: string } | null)?.error) {
-      void fetchThreads();
+      void fetchThreads({ force: true });
       throw new Error((data as { error: string }).error);
     }
   };

@@ -43,14 +43,14 @@ if (isProd) {
     wildcard: false,
     setHeaders(res, filePath) {
       if (path.basename(filePath) === 'index.html') {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
+        res.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.header('Pragma', 'no-cache');
+        res.header('Expires', '0');
         return;
       }
 
       if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.header('Cache-Control', 'public, max-age=31536000, immutable');
       }
     },
   });

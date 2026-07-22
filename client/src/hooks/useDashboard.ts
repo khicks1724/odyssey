@@ -119,7 +119,6 @@ export function useDashboardHoverDetails() {
 
   useEffect(() => {
     if (!user) return;
-    const currentUserId = user.id;
 
     async function load() {
       setLoading(true);

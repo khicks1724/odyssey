@@ -44,7 +44,6 @@ import {
   writeStoredThesisPaperSnapshot,
   type ThesisRenderDiagnostic,
   type ThesisPaperSnapshot,
-  type ThesisPaperEditorState,
   type ThesisRemoteSaveState,
   type ThesisWorkspaceFile,
   type ThesisWorkspace,
@@ -824,11 +823,6 @@ function findReferencesBibFile(workspace: ThesisWorkspace) {
     ?? null;
 }
 
-function hasBibtexKey(content: string, citeKey: string) {
-  const escapedKey = citeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`@\\w+\\s*\\{\\s*${escapedKey}\\s*,`, 'i').test(content);
-}
-
 function buildLatexCitationCommand(sourceIds: string[], bibliographyFormat: BibliographyFormat) {
   const citeCommand = bibliographyFormat === 'informs' ? '\\citep' : '\\cite';
   return `${citeCommand}{${sourceIds.join(',')}}`;
@@ -1099,7 +1093,7 @@ function collectBibtexCitationSuggestions(workspace: ThesisWorkspace, sourceLibr
   const suggestions = new Map<string, BibtexCitationSuggestion>();
 
   for (const file of workspace.files.filter((item) => /\.bib$/i.test(item.path))) {
-    const entryMatches = file.content.matchAll(/@(\w+)\s*\{\s*([^,\s]+)\s*,([\s\S]*?)(?=^\s*@\w+\s*\{|\s*\Z)/gm);
+    const entryMatches = file.content.matchAll(/@(\w+)\s*\{\s*([^,\s]+)\s*,([\s\S]*?)(?=^\s*@\w+\s*\{|\s*(?![\s\S]))/gm);
     for (const match of entryMatches) {
       const entryType = match[1]?.trim() || 'misc';
       const key = match[2]?.trim();
@@ -1588,7 +1582,7 @@ function configureLatexMonaco(monaco: Monaco) {
         [/\\./, 'keyword.command'],
         [/\$\$/, 'delimiter.math'],
         [/\$/, 'delimiter.math'],
-        [/[\{\}\[\]\(\)]/, 'delimiter.bracket'],
+        [/[{}[\]()]/, 'delimiter.bracket'],
         [/[&_^~]/, 'operator'],
         [/\b\d+(\.\d+)?\b/, 'number'],
         [/"[^"]*"/, 'string'],
@@ -1817,38 +1811,6 @@ interface VisualDocumentModel {
   mainFilePrefix?: string;
   mainFileSuffix?: string;
   layout?: VisualDocumentLayoutEntry[];
-}
-
-function buildEditorStateSnapshot(editor: MonacoEditor.IStandaloneCodeEditor, draft: string): ThesisPaperEditorState {
-  const position = editor.getPosition();
-  const selection = editor.getSelection();
-  const model = editor.getModel();
-  const visibleRange = editor.getVisibleRanges()[0] ?? null;
-  const selectionText = selection && model && !selection.isEmpty()
-    ? model.getValueInRange(selection).slice(0, 4000)
-    : '';
-
-  return {
-    cursorLineNumber: position?.lineNumber ?? 1,
-    cursorColumn: position?.column ?? 1,
-    selection: selection ? {
-      startLineNumber: selection.startLineNumber,
-      startColumn: selection.startColumn,
-      endLineNumber: selection.endLineNumber,
-      endColumn: selection.endColumn,
-      isEmpty: selection.isEmpty(),
-      selectedText: selectionText,
-    } : null,
-    viewport: visibleRange ? {
-      firstLineNumber: visibleRange.startLineNumber,
-      lastLineNumber: visibleRange.endLineNumber,
-      centerLineNumber: Math.round((visibleRange.startLineNumber + visibleRange.endLineNumber) / 2),
-    } : {
-      firstLineNumber: 1,
-      lastLineNumber: Math.max(1, draft.split('\n').length),
-      centerLineNumber: 1,
-    },
-  };
 }
 
 function resolveExplorerSelection(workspace: ThesisWorkspace, preferredNodeId: string | null) {
@@ -2682,6 +2644,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   const lastRemoteSavedFileSignaturesRef = useRef<Map<string, string>>(new Map());
   const lastLocalSnapshotUpdateRef = useRef<number | null>(null);
   const latestWorkspaceRef = useRef<ThesisWorkspace>(initialWorkspace);
+  const latestDraftRef = useRef(draft);
   const latestSourceLibraryRef = useRef<SourceLibraryItem[]>(sourceLibrary);
   const lastSavedWorkspaceStructureRef = useRef<string>(buildWorkspaceStructureSignature(initialWorkspace));
   const localChangesDuringHydrationRef = useRef(false);
@@ -3047,7 +3010,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
         workspace: nextWorkspace,
         updatedAt: Date.now(),
       });
-      const result = await saveThesisDocument({
+      await saveThesisDocument({
         draft: nextDraft,
         editorTheme: nextTheme,
         snapshot,
@@ -3069,7 +3032,8 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
 
   useEffect(() => {
     latestWorkspaceRef.current = workspace;
-  }, [workspace]);
+    latestDraftRef.current = draft;
+  }, [draft, workspace]);
 
   useEffect(() => {
     latestSourceLibraryRef.current = sourceLibrary;
@@ -3278,7 +3242,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- hydrate exactly once; callbacks read synchronization refs
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -3299,7 +3263,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener(THESIS_PAPER_STATE_EVENT, handlePaperState as EventListener);
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- listeners intentionally read the mounted synchronization callbacks
 
   useEffect(() => {
     if (!remoteReady) return;
@@ -3307,13 +3271,13 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       void persistRemoteDraft(draft, editorTheme, latestWorkspaceRef.current);
     }, 1200);
     return () => window.clearTimeout(timeout);
-  }, [draft, editorTheme, remoteReady]);
+  }, [draft, editorTheme, remoteReady]); // eslint-disable-line react-hooks/exhaustive-deps -- draft/theme changes own the debounce lifecycle
 
   useEffect(() => {
     if (!remoteReady) return;
     if (lastSavedWorkspaceStructureRef.current === workspaceStructureSignature) return;
     persistRemoteWorkspaceNow(draft, workspace);
-  }, [draft, remoteReady, workspace, workspaceStructureSignature]);
+  }, [draft, remoteReady, workspace, workspaceStructureSignature]); // eslint-disable-line react-hooks/exhaustive-deps -- signature changes own structural persistence
 
   useEffect(() => {
     if (!previewPdfUrl) {
@@ -3534,7 +3498,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
 
   useEffect(() => {
     applyEditorDiagnostics(latexDiagnostics);
-  }, [activeEditorLanguage, draft, latexDiagnostics, sourceLibrary, workspace]);
+  }, [activeEditorLanguage, draft, latexDiagnostics, sourceLibrary, workspace]); // eslint-disable-line react-hooks/exhaustive-deps -- listed state fully describes marker inputs
 
   useEffect(() => {
     if (autofixHighlights.length === 0) {
@@ -3544,7 +3508,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       return;
     }
     applyAutofixDecorations(autofixHighlights);
-  }, [activeEditorLanguage, autofixHighlights, draft]);
+  }, [activeEditorLanguage, autofixHighlights, draft]); // eslint-disable-line react-hooks/exhaustive-deps -- listed state fully describes decoration inputs
 
   useEffect(() => {
     clearAutofixFeedback();
@@ -3580,7 +3544,9 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
         window.clearTimeout(previewIndicatorTimeoutRef.current);
       }
       clearPreviewObjectUrl();
+      // The latest scheduled frame is the resource that must be cancelled at unmount.
       if (editorSyncFrameRef.current !== null) {
+        // eslint-disable-next-line react-hooks/exhaustive-deps
         window.cancelAnimationFrame(editorSyncFrameRef.current);
       }
       insertSourceActionRef.current?.dispose();
@@ -4001,6 +3967,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
     setVisualDocument(nextVisualDocument);
     const nextWorkspace = nextState.workspace;
     latestWorkspaceRef.current = nextWorkspace;
+    latestDraftRef.current = nextState.draft;
     setDraft(nextState.draft);
     setWorkspace(nextWorkspace);
     setRenderError(null);
@@ -4008,17 +3975,6 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
       suppressNextEditorChangeRef.current = true;
       editorRef.current.setValue(nextState.draft);
     }
-  };
-
-  const restoreVisualDocumentHistory = (direction: 'undo' | 'redo') => {
-    const currentIndex = visualHistoryIndexRef.current;
-    const nextIndex = direction === 'undo'
-      ? Math.max(0, currentIndex - 1)
-      : Math.min(visualHistoryRef.current.length - 1, currentIndex + 1);
-    if (nextIndex === currentIndex) return;
-    visualHistoryIndexRef.current = nextIndex;
-    setVisualSelection({ blockId: null, itemIndex: null });
-    applyVisualDocument(cloneVisualDocument(visualHistoryRef.current[nextIndex]), { recordHistory: false });
   };
 
   const updateVisualBlock = (blockId: string, updater: (block: VisualBlock) => VisualBlock) => {
@@ -4115,6 +4071,35 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
   };
 
   useEffect(() => {
+    const restoreVisualDocumentHistory = (direction: 'undo' | 'redo') => {
+      const currentIndex = visualHistoryIndexRef.current;
+      const nextIndex = direction === 'undo'
+        ? Math.max(0, currentIndex - 1)
+        : Math.min(visualHistoryRef.current.length - 1, currentIndex + 1);
+      if (nextIndex === currentIndex) return;
+
+      const nextVisualDocument = cloneVisualDocument(visualHistoryRef.current[nextIndex]);
+      const nextState = syncVisualDocumentToWorkspace(
+        nextVisualDocument,
+        latestWorkspaceRef.current,
+        latestDraftRef.current,
+      );
+      visualHistoryIndexRef.current = nextIndex;
+      setVisualSelection({ blockId: null, itemIndex: null });
+      skipNextVisualModelSyncRef.current = true;
+      if (!remoteReady) localChangesDuringHydrationRef.current = true;
+      setVisualDocument(nextVisualDocument);
+      latestWorkspaceRef.current = nextState.workspace;
+      latestDraftRef.current = nextState.draft;
+      setDraft(nextState.draft);
+      setWorkspace(nextState.workspace);
+      setRenderError(null);
+      if (editorRef.current && editorRef.current.getValue() !== nextState.draft) {
+        suppressNextEditorChangeRef.current = true;
+        editorRef.current.setValue(nextState.draft);
+      }
+    };
+
     const handleKeyDown = (event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
       if (!isModifierPressed || event.altKey) return;
@@ -4140,7 +4125,7 @@ export default function ThesisPaperTab({ sourceLibrary, bibliographyFormat }: Th
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [overleafEditorMode]);
+  }, [overleafEditorMode, remoteReady]);
 
   const renderVisualEditor = () => {
     if (activeEditorLanguage !== 'latex' || !visualDocument.canEdit) {

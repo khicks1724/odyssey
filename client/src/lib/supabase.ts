@@ -63,12 +63,16 @@ function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise
   const timeoutId = setTimeout(() => controller.abort(), SUPABASE_FETCH_TIMEOUT_MS);
 
   const callerSignal = init?.signal;
+  const handleCallerAbort = () => controller.abort();
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort();
-    else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+    else callerSignal.addEventListener('abort', handleCallerAbort, { once: true });
   }
 
-  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener('abort', handleCallerAbort);
+  });
 }
 
 export const supabase = createClient(

@@ -7,7 +7,6 @@ import {
   Sparkles,
   Plus,
   Trash2,
-  Clock,
   Search,
   Link,
   Loader2,
@@ -410,7 +409,7 @@ function ProjectNameForm({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!isOwner || !name.trim()) return;
     setSaving(true);
     await updateProject({
       name: name.trim(),
@@ -480,11 +479,13 @@ function ProjectNameForm({
   }, [cropDialogOpen]);
 
   const handleReplaceProjectImage = () => {
+    if (!isOwner) return;
     setImageMenuOpen(false);
     projectImageInputRef.current?.click();
   };
 
   const handleProjectImageFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isOwner) return;
     const file = event.target.files?.[0];
     if (!file) return;
     await Promise.resolve(handleImageUpload?.(file, event.target));
@@ -492,7 +493,7 @@ function ProjectNameForm({
   };
 
   const handleOpenImageEditor = async () => {
-    if (!project.image_url) return;
+    if (!isOwner || !project.image_url) return;
 
     setEditImageLoading(true);
     setCropError(null);
@@ -512,7 +513,7 @@ function ProjectNameForm({
   };
 
   const handleSaveCroppedImage = async () => {
-    if (!cropSourceUrl) return;
+    if (!isOwner || !cropSourceUrl) return;
 
     setCropSaving(true);
     setCropError(null);
@@ -565,6 +566,7 @@ function ProjectNameForm({
       <div className="flex items-center gap-2 mb-6">
         <Settings size={14} className="text-heading" />
         <h3 className="font-sans text-sm font-bold text-heading">Project Details</h3>
+        {!isOwner && <span className="ml-auto text-[10px] uppercase tracking-wider text-muted">Owner-managed</span>}
       </div>
       <form onSubmit={handleSave}>
         <div className="flex flex-col xl:flex-row gap-5 xl:items-stretch">
@@ -574,30 +576,33 @@ function ProjectNameForm({
               <div className="relative shrink-0" ref={imageMenuRef}>
                 <button
                   type="button"
+                  disabled={!isOwner}
                   onClick={() => setImageMenuOpen((current) => !current)}
-                  className="group relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-lg border border-border bg-surface2 transition-colors hover:border-accent/35"
-                  title={project.image_url ? 'Edit or replace project image' : 'Upload project image'}
+                  className="group relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-lg border border-border bg-surface2 transition-colors hover:border-accent/35 disabled:cursor-default disabled:opacity-80"
+                  title={!isOwner ? 'Only project owners can change the project image' : project.image_url ? 'Edit or replace project image' : 'Upload project image'}
                 >
                   {project.image_url
                     ? <img src={project.image_url} alt="Project" className="w-full h-full object-cover" />
                     : <span className="text-xl font-bold text-muted/40">{project.name[0]?.toUpperCase()}</span>
                   }
-                  <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
-                    {imageUploading || editImageLoading
-                      ? <Loader2 size={14} className="animate-spin text-white" />
-                      : <Pencil size={14} className="text-white" />
-                    }
-                  </span>
+                  {isOwner && (
+                    <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/55 opacity-0 transition-opacity group-hover:opacity-100">
+                      {imageUploading || editImageLoading
+                        ? <Loader2 size={14} className="animate-spin text-white" />
+                        : <Pencil size={14} className="text-white" />
+                      }
+                    </span>
+                  )}
                 </button>
                 <input
                   ref={projectImageInputRef}
                   type="file"
                   accept="image/*"
                   className="sr-only"
-                  disabled={imageUploading || cropSaving}
+                  disabled={!isOwner || imageUploading || cropSaving}
                   onChange={handleProjectImageFileChange}
                 />
-                {imageMenuOpen && (
+                {imageMenuOpen && isOwner && (
                   <div className="absolute left-0 top-full z-20 mt-2 w-40 overflow-hidden rounded-lg border border-border bg-surface shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
                     <button
                       type="button"
@@ -619,7 +624,7 @@ function ProjectNameForm({
                     </button>
                   </div>
                 )}
-                {project.image_url && (
+                {project.image_url && isOwner && (
                   <button type="button" title="Remove image"
                     onClick={() => updateProject({ image_url: null })}
                     className="absolute -bottom-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white flex items-center justify-center border border-surface hover:bg-danger/80 transition-colors">
@@ -633,6 +638,7 @@ function ProjectNameForm({
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  disabled={!isOwner}
                   required
                   title="Project name"
                   placeholder="Project name"
@@ -645,7 +651,8 @@ function ProjectNameForm({
               <input
                 type="date"
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  disabled={!isOwner}
                 title="Project start date"
                 className="w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono focus:outline-none focus:border-accent/50 transition-colors rounded"
               />
@@ -669,7 +676,8 @@ function ProjectNameForm({
                   <button
                     type="button"
                     onClick={() => setInviteCode(generateProjectCode())}
-                    className="text-[10px] font-mono text-accent hover:underline"
+                    disabled={!isOwner}
+                    className="text-[10px] font-mono text-accent hover:underline disabled:cursor-not-allowed disabled:text-muted"
                   >
                     Generate
                   </button>
@@ -680,6 +688,7 @@ function ProjectNameForm({
                   type="text"
                   value={inviteCode}
                   onChange={(e) => setInviteCode(sanitizeProjectCode(e.target.value))}
+                  disabled={!isOwner}
                   title="Project ID code"
                   placeholder="Project ID code"
                   className="min-w-0 flex-1 px-3 py-2 bg-surface border border-border text-heading text-sm font-mono tracking-[0.12em] uppercase focus:outline-none focus:border-accent/50 transition-colors rounded"
@@ -706,6 +715,7 @@ function ProjectNameForm({
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              disabled={!isOwner}
               placeholder="What is this project about?"
               className="flex-1 w-full px-3 py-2 bg-surface border border-border text-heading text-sm font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent/50 transition-colors rounded resize-none"
             />
@@ -714,7 +724,7 @@ function ProjectNameForm({
         <div className="mt-3">
           <button
             type="submit"
-            disabled={saving || !dirty || !name.trim()}
+            disabled={!isOwner || saving || !dirty || !name.trim()}
             className="flex items-center gap-2 px-5 py-2 bg-accent/10 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/20 transition-colors rounded-md disabled:opacity-50"
           >
             {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <CheckCircle size={12} /> : null}
@@ -1701,9 +1711,22 @@ function SettingsTab({
 
       {/* GitHub Repository */}
       <div className="border border-border bg-surface p-6">
-        <div className="flex items-center gap-2 mb-6">
-          <Github size={14} className="text-heading" />
-          <h3 className="font-sans text-sm font-bold text-heading">GitHub Repositories</h3>
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Github size={14} className="text-heading" />
+            <h3 className="font-sans text-sm font-bold text-heading">GitHub Repositories</h3>
+          </div>
+          {githubRepos.length > 0 && (
+            <button
+              type="button"
+              onClick={handleRepoScan}
+              disabled={scanLoading}
+              className="inline-flex items-center gap-1.5 rounded border border-accent/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+            >
+              {scanLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+              {scanLoading ? 'Analyzing…' : 'Analyze Primary Repo'}
+            </button>
+          )}
         </div>
 
         {githubRepos.length > 0 ? (
@@ -1986,7 +2009,6 @@ function SettingsTab({
               <div className="flex flex-wrap gap-2">
                 {typeLabels.map((lbl) => (
                   <div key={lbl.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border bg-surface2 group">
-                    {/* eslint-disable-next-line react/forbid-dom-props */}
                     <span className="w-2.5 h-2.5 rounded-full shrink-0 block" title={lbl.color}
                       style={{ background: lbl.color }} />
                     <span className="text-xs text-heading font-mono">{lbl.name}</span>

@@ -54,13 +54,13 @@ function CustomPicker({ value, onChange }: CustomPickerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const draggingCanvas = useRef(false);
   const draggingHue = useRef(false);
+  const hue = hsv[0];
 
   // Sync from external value change
   useEffect(() => {
     const newHsv = hexToHsv(value);
     setHsv(newHsv);
     setRgb(hexToRgb(value));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   // Draw the SV canvas whenever hue changes
@@ -72,7 +72,7 @@ function CustomPicker({ value, onChange }: CustomPickerProps) {
     const { width, height } = canvas;
 
     // Fill with pure hue
-    ctx.fillStyle = hueToHex(hsv[0]);
+    ctx.fillStyle = hueToHex(hue);
     ctx.fillRect(0, 0, width, height);
 
     // White gradient: left = white, right = transparent
@@ -88,7 +88,7 @@ function CustomPicker({ value, onChange }: CustomPickerProps) {
     blackGrad.addColorStop(1, 'rgba(0,0,0,1)');
     ctx.fillStyle = blackGrad;
     ctx.fillRect(0, 0, width, height);
-  }, [hsv[0]]);
+  }, [hue]);
 
   const pickFromCanvas = useCallback((clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -197,7 +197,6 @@ function CustomPicker({ value, onChange }: CustomPickerProps) {
         </button>
 
         {/* Color preview */}
-        {/* eslint-disable-next-line react/forbid-dom-props */}
         <div className="w-8 h-8 rounded-full border border-[var(--color-border)] shrink-0 shadow-inner" style={{ background: value }} />
 
         {/* Hue slider */}
@@ -266,7 +265,6 @@ export default function LabelColorPicker({ value, onChange }: LabelColorPickerPr
         title="Pick color"
         onClick={() => setOpen((o) => !o)}
         className="w-8 h-8 rounded border border-[var(--color-border)] cursor-pointer shadow-inner transition-transform hover:scale-105 active:scale-95"
-        // eslint-disable-next-line react/forbid-dom-props
         style={{ background: value }}
       />
 
@@ -313,7 +311,6 @@ export default function LabelColorPicker({ value, onChange }: LabelColorPickerPr
               </div>
               {/* Selected preview */}
               <div className="mt-3 flex items-center gap-2 px-1">
-                {/* eslint-disable-next-line react/forbid-dom-props */}
                 <div className="w-6 h-6 rounded-full border border-[var(--color-border)] shrink-0" style={{ background: value }} />
                 <span className="text-xs font-mono text-[var(--color-muted)]">{value}</span>
               </div>

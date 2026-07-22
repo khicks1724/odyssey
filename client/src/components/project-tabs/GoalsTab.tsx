@@ -468,7 +468,9 @@ function GoalsTab({
   return (
     <div>
       <div className="flex items-center mb-4 gap-2 min-w-0 overflow-x-auto">
-        <h3 className="font-sans text-sm font-bold text-heading shrink-0">Tasks ({goals.length})</h3>
+        <h3 className="font-sans text-sm font-bold text-heading shrink-0">
+          Tasks ({isFiltered ? `${filteredGoals.length}/${goals.length}` : goals.length})
+        </h3>
         <div className="flex items-center gap-2 flex-1 min-w-0 flex-nowrap">
           <SearchPanel
             ref={searchRef}
@@ -544,6 +546,16 @@ function GoalsTab({
               </button>
             )}
           </div>
+          <button
+            type="button"
+            onClick={handleSyncOfficeProgress}
+            disabled={syncingProgress}
+            title="Update task progress from imported Office documents"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 font-sans text-xs font-semibold uppercase tracking-wider text-muted transition-colors hover:bg-surface2 hover:text-heading disabled:opacity-50"
+          >
+            {syncingProgress ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+            {syncingProgress ? 'Syncing…' : 'Sync Docs'}
+          </button>
         </div>
       </div>
 
@@ -632,6 +644,13 @@ function GoalsTab({
         <div className="mb-4 border border-danger/20 bg-danger/5 rounded p-3 text-xs text-danger font-mono flex items-center justify-between">
           {notesError}
           <button type="button" title="Dismiss" onClick={() => setNotesError(null)}><X size={12} /></button>
+        </div>
+      )}
+
+      {notesLoading && (
+        <div className="mb-4 flex items-center gap-2 rounded border border-accent/20 bg-accent/5 p-3 text-xs text-accent" role="status">
+          <Loader2 size={13} className="animate-spin" />
+          Extracting suggested tasks from meeting notes…
         </div>
       )}
 

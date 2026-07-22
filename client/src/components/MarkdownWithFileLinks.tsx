@@ -24,7 +24,7 @@ interface MarkdownWithFileLinksProps {
 
 /** Regex: matches file paths like server/src/foo.ts or just foo.tsx outside backticks */
 const FILE_PATH_RE =
-  /\b((?:[\w\-]+\/)*[\w\-\.]+\.(?:ts|tsx|py|js|jsx|json|yaml|yml|md|sh|html|css|toml|ini|cfg|rs|go|java|c|cpp|h|rb|php|vue|svelte|kt|swift|sql|txt|env))\b/g;
+  /\b((?:[\w-]+\/)*[\w.-]+\.(?:ts|tsx|py|js|jsx|json|yaml|yml|md|sh|html|css|toml|ini|cfg|rs|go|java|c|cpp|h|rb|php|vue|svelte|kt|swift|sql|txt|env))\b/g;
 
 function normalizePathCandidate(value: string) {
   return value.trim().replace(/^`+|`+$/g, '').replace(/^\.?\//, '').replace(/\\/g, '/');

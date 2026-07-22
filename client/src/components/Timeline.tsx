@@ -313,13 +313,10 @@ export default function Timeline({ goals, members = [], onGoalClick, header }: T
   const toPct = (ms: number): string =>
     `${Math.min(100, Math.max(0, ((ms - viewStart.getTime()) / viewRange) * 100)).toFixed(3)}%`;
 
-  const nowPct  = toPct(now.getTime());
   const todayStart    = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const nowDayStartPct = toPct(todayStart.getTime());
   const dayWidthPct   = `${(24 * 60 * 60 * 1000 / viewRange * 100).toFixed(3)}%`;
   const ticks   = buildTicks(viewStart, viewEnd, toPct);
-  const fmtDate = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
-
   // Build groups
   type Group = { key: string; goals: Goal[]; color: { color: string; track: string } };
   let groups: Group[];

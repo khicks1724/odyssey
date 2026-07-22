@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
-import { X, Save, Loader2, Sparkles, RefreshCw, Link, ShieldAlert } from 'lucide-react';
+import { X, Save, Loader2, Sparkles, RefreshCw, ShieldAlert } from 'lucide-react';
 import type { Goal } from '../types';
-import { useGoalDependencies } from '../hooks/useGoalDependencies';
 import type { FileRef } from '../hooks/useProjectFilePaths';
 import MarkdownWithFileLinks from './MarkdownWithFileLinks';
 import { supabase } from '../lib/supabase';
@@ -90,11 +89,6 @@ export default function GoalEditModal({
   const [guidance,        setGuidance]        = useState<string | null>(goal.ai_guidance ?? null);
   const [guidanceLoading, setGuidanceLoading] = useState(false);
   const [guidanceError,   setGuidanceError]   = useState<string | null>(null);
-
-  // Dependency management
-  const { dependencies, addDependency, removeDependency } = useGoalDependencies(goal.id, projectId);
-  const dependencySet = new Set(dependencies.map(d => d.depends_on_goal_id));
-  const otherGoals = allGoals.filter(g => g.id !== goal.id);
 
   const riskLabel = getRiskLabel(goal.risk_score);
 

@@ -7,7 +7,6 @@ import {
 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
 import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask, type TaskProposal, type TaskProposalState } from '../lib/chat-panel';
-import { downloadReport, exportGoalsCSV } from '../lib/report-download';
 import { supabase } from '../lib/supabase';
 import { saveGeneratedReportToProject } from '../lib/report-storage';
 import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
@@ -709,10 +708,21 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
 
   const handleReportDownload = useCallback(async (data: NonNullable<Message['reportReady']>['data'], format: NonNullable<Message['reportReady']>['format']) => {
     try {
+      const { downloadReport } = await import('../lib/report-download');
       await downloadReport(data, format);
     } catch (downloadError) {
       console.error('Failed to download generated report:', downloadError);
       setError('Failed to download report.');
+    }
+  }, []);
+
+  const handleGoalsCsvExport = useCallback(async (data: NonNullable<Message['reportReady']>['data']) => {
+    try {
+      const { exportGoalsCSV } = await import('../lib/report-download');
+      exportGoalsCSV(data);
+    } catch (downloadError) {
+      console.error('Failed to export report data:', downloadError);
+      setError('Failed to export report data.');
     }
   }, []);
 
@@ -1132,6 +1142,201 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     }
   };
 
+  // ── Actions ──────────────────────────────────────────────────────────────
+
+  const executeAction = useCallback(async (action: PendingAction): Promise<string> => {
+    const { type, args } = action;
+    if (type === 'create_goal') {
+      const requestedAssignees = Array.isArray(args.assignees)
+        ? args.assignees.map((value) => String(value)).filter(Boolean)
+        : (args.assignedTo ? [String(args.assignedTo)] : []);
+      const { assignees, unresolved, ambiguous } = resolveAssigneeIdentifiers(requestedAssignees, projectMembers);
+      if (unresolved.length > 0 || ambiguous.length > 0) {
+        throw buildAssigneeResolutionError(unresolved, ambiguous);
+      }
+      const { data, error: err } = await supabase.from('goals').insert({
+        project_id:  resolvedProjectId ?? projectId,
+        title:       args.title as string,
+        deadline:    (args.deadline as string) || null,
+        category:    (args.category as string) || null,
+        loe:         (args.loe as string) || null,
+        assigned_to: assignees[0] ?? null,
+        assignees,
+        status:      'not_started',
+        progress:    0,
+      }).select().single();
+      if (err) throw err;
+      setProjectGoals((prev) => [...prev, { id: String(data.id), title: String(data.title ?? args.title ?? '') }]);
+      return `Created goal: "${data.title}"`;
+    }
+    if (type === 'update_goal') {
+      const updates = normalizeUpdateArgs(args);
+      const hasAssignmentChange = Object.prototype.hasOwnProperty.call(updates, 'assigned_to')
+        || Object.prototype.hasOwnProperty.call(updates, 'assignees');
+      if (hasAssignmentChange) {
+        const requestedAssignees = Array.isArray(updates.assignees)
+          ? updates.assignees
+          : (updates.assigned_to ? [updates.assigned_to] : []);
+        const { assignees, unresolved, ambiguous } = resolveAssigneeIdentifiers(requestedAssignees, projectMembers);
+        if ((requestedAssignees as unknown[]).length > 0 && (unresolved.length > 0 || ambiguous.length > 0)) {
+          throw buildAssigneeResolutionError(unresolved, ambiguous);
+        }
+        updates.assignees = assignees;
+        updates.assigned_to = assignees[0] ?? null;
+      }
+      const goalId = resolveGoalId(action, projectGoals);
+      if (!goalId) throw new Error('Missing task target for update.');
+      if (Object.keys(updates).length === 0) throw new Error('No valid task changes were included in this proposal.');
+      const { error: err } = await supabase.from('goals')
+        .update(updates).eq('id', goalId);
+      if (err) throw err;
+      if (typeof updates.title === 'string' && updates.title.trim()) {
+        setProjectGoals((prev) => prev.map((goal) => (
+          goal.id === goalId
+            ? { ...goal, title: updates.title as string }
+            : goal
+        )));
+      }
+      return `Updated goal: "${action.title ?? action.description}"`;
+    }
+    if (type === 'extend_deadline' || type === 'contract_deadline') {
+      const goalId = resolveGoalId(action, projectGoals);
+      const deadline = typeof args.suggestedDeadline === 'string' ? args.suggestedDeadline : null;
+      if (!goalId || !deadline) throw new Error('Missing task target or deadline for this proposal.');
+      const { error: err } = await supabase.from('goals')
+        .update({ deadline }).eq('id', goalId);
+      if (err) throw err;
+      return `Updated deadline for "${String(args.goalTitle ?? action.title ?? 'task')}"`;
+    }
+    if (type === 'delete_goal') {
+      const goalId = resolveGoalId(action, projectGoals);
+      const deletedGoal = goalId
+        ? await supabase.from('goals').select('*').eq('id', goalId).maybeSingle()
+        : { data: null, error: null };
+      if (deletedGoal?.error) throw deletedGoal.error;
+      const { error: err } = await supabase.from('goals').delete().eq('id', goalId);
+      if (err) throw err;
+      setProjectGoals((prev) => prev.filter((goal) => goal.id !== goalId));
+      if (deletedGoal?.data) {
+        pushUndoAction({
+          label: `Deleted task ${String(deletedGoal.data.title ?? args.goalTitle ?? 'task')}`,
+          undo: async () => {
+            const { data, error } = await supabase
+              .from('goals')
+              .insert(deletedGoal.data)
+              .select()
+              .single();
+            if (error) throw error;
+            setProjectGoals((prev) => {
+              if (prev.some((goal) => goal.id === data.id)) return prev;
+              return [...prev, { id: String(data.id), title: String(data.title ?? args.goalTitle ?? '') }];
+            });
+            onGoalMutated?.();
+          },
+        });
+      }
+      return `Deleted goal: "${args.goalTitle}"`;
+    }
+    if (type === 'review_redundancy') {
+      const goalTitles = Array.isArray(args.goalTitles) ? args.goalTitles.map((value) => String(value)).filter(Boolean) : [];
+      return `Reviewed redundancy candidate: ${goalTitles.join(', ') || 'task set'}`;
+    }
+    if (type === 'update_paper_draft') {
+      if (mode !== 'thesis') {
+        throw new Error('Paper draft edits are only available in Thesis AI.');
+      }
+      const lineStart = Number(args.lineStart);
+      const lineEnd = Number(args.lineEnd);
+      const replacement = typeof args.replacement === 'string' ? args.replacement : '';
+      const currentSnapshot = readStoredThesisPaperSnapshot();
+      const currentWorkspace = getThesisWorkspaceFromSnapshot(
+        currentSnapshot,
+        currentSnapshot.draft,
+        currentSnapshot.activeFilePath ?? DEFAULT_THESIS_EXAMPLE_PATH,
+      );
+      const activeFile = getThesisWorkspaceActiveFile(currentWorkspace);
+      if (!activeFile) {
+        throw new Error('No thesis file is currently open.');
+      }
+
+      const nextDraft = applyThesisPaperDraftEdit(activeFile.content, {
+        lineStart,
+        lineEnd,
+        replacement,
+      });
+      const nextWorkspace = {
+        ...currentWorkspace,
+        files: currentWorkspace.files.map((file) => (
+          file.id === activeFile.id ? { ...file, content: nextDraft } : file
+        )),
+        activeFileId: activeFile.id,
+      };
+
+      updateStoredThesisPaperSnapshot({
+        draft: nextDraft,
+        previewStatus: 'rendering',
+        renderError: null,
+        workspace: nextWorkspace,
+        activeFileId: activeFile.id,
+        activeFilePath: activeFile.path,
+      });
+      return `Updated thesis draft lines ${lineStart}-${lineEnd}.`;
+    }
+    if (type === 'add_thesis_source') {
+      if (mode !== 'thesis') {
+        throw new Error('Thesis source ingest is only available in Thesis AI.');
+      }
+
+      const url = typeof args.url === 'string' ? args.url.trim() : '';
+      const attachmentName = typeof args.attachmentName === 'string' ? args.attachmentName.trim() : '';
+
+      let parsed: ParsedThesisSourceRecord;
+      let method: 'url' | 'pdf';
+      let locator: string;
+      let attachment: ThesisSourceAttachment | null = null;
+
+      if (url) {
+        parsed = await parseThesisSourceUrl(url);
+        method = 'url';
+        locator = parsed.locator || url;
+      } else if (attachmentName) {
+        const pdfAttachment = findAttachmentByName(messagesStateRef.current, attachmentName);
+        if (!pdfAttachment?.base64) {
+          throw new Error(`Could not find the attached PDF "${attachmentName}".`);
+        }
+        const mimeType = pdfAttachment.mimeType || 'application/pdf';
+        if (!/pdf/i.test(mimeType) && !/\.pdf$/i.test(pdfAttachment.name)) {
+          throw new Error('Only PDF attachments can be added as thesis sources right now.');
+        }
+
+        const binary = atob(pdfAttachment.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        const file = new globalThis.File([bytes], pdfAttachment.name, { type: mimeType });
+        parsed = await parseThesisSourcePdf(file);
+        attachment = await uploadThesisSourcePdf(file);
+        method = 'pdf';
+        locator = pdfAttachment.name;
+      } else {
+        throw new Error('No URL or PDF attachment was provided for this source action.');
+      }
+
+      const queued = buildQueuedThesisSource(parsed, method, locator, attachmentName || undefined, attachment);
+      const response = await queueThesisSource(queued);
+      window.dispatchEvent(new CustomEvent(THESIS_SOURCE_SYNC_EVENT, {
+        detail: {
+          sourceLibrary: response.sourceLibrary,
+          sourceQueueItems: response.sourceQueueItems,
+        },
+      }));
+
+      return `Added source: "${queued.libraryItem.title}" (${parsed.sourceTypeLabel || parsed.sourceKind || method}).`;
+    }
+    throw new Error(`Unknown action type: ${type}`);
+  }, [mode, onGoalMutated, projectGoals, projectMembers, projectId, resolvedProjectId]);
+
   // ── Send ─────────────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async (overrideText?: string, historyOverride?: Message[]) => {
@@ -1379,202 +1584,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
       showAIError('Network error — is the server running?', 502);
     }
     setLoading(false);
-  }, [input, attachments, loading, messages, agent, projectId, projects, resolvedProjectId, notifyModelUsed, allowProjectSwitching, mode, workspaceContext, stopDictation]);
-
-  // ── Actions ──────────────────────────────────────────────────────────────
-
-  async function executeAction(action: PendingAction): Promise<string> {
-    const { type, args } = action;
-    if (type === 'create_goal') {
-      const requestedAssignees = Array.isArray(args.assignees)
-        ? args.assignees.map((value) => String(value)).filter(Boolean)
-        : (args.assignedTo ? [String(args.assignedTo)] : []);
-      const { assignees, unresolved, ambiguous } = resolveAssigneeIdentifiers(requestedAssignees, projectMembers);
-      if (unresolved.length > 0 || ambiguous.length > 0) {
-        throw buildAssigneeResolutionError(unresolved, ambiguous);
-      }
-      const { data, error: err } = await supabase.from('goals').insert({
-        project_id:  resolvedProjectId ?? projectId,
-        title:       args.title as string,
-        deadline:    (args.deadline as string) || null,
-        category:    (args.category as string) || null,
-        loe:         (args.loe as string) || null,
-        assigned_to: assignees[0] ?? null,
-        assignees,
-        status:      'not_started',
-        progress:    0,
-      }).select().single();
-      if (err) throw err;
-      setProjectGoals((prev) => [...prev, { id: String(data.id), title: String(data.title ?? args.title ?? '') }]);
-      return `Created goal: "${data.title}"`;
-    }
-    if (type === 'update_goal') {
-      const updates = normalizeUpdateArgs(args);
-      const hasAssignmentChange = Object.prototype.hasOwnProperty.call(updates, 'assigned_to')
-        || Object.prototype.hasOwnProperty.call(updates, 'assignees');
-      if (hasAssignmentChange) {
-        const requestedAssignees = Array.isArray(updates.assignees)
-          ? updates.assignees
-          : (updates.assigned_to ? [updates.assigned_to] : []);
-        const { assignees, unresolved, ambiguous } = resolveAssigneeIdentifiers(requestedAssignees, projectMembers);
-        if ((requestedAssignees as unknown[]).length > 0 && (unresolved.length > 0 || ambiguous.length > 0)) {
-          throw buildAssigneeResolutionError(unresolved, ambiguous);
-        }
-        updates.assignees = assignees;
-        updates.assigned_to = assignees[0] ?? null;
-      }
-      const goalId = resolveGoalId(action, projectGoals);
-      if (!goalId) throw new Error('Missing task target for update.');
-      if (Object.keys(updates).length === 0) throw new Error('No valid task changes were included in this proposal.');
-      const { error: err } = await supabase.from('goals')
-        .update(updates).eq('id', goalId);
-      if (err) throw err;
-      if (typeof updates.title === 'string' && updates.title.trim()) {
-        setProjectGoals((prev) => prev.map((goal) => (
-          goal.id === goalId
-            ? { ...goal, title: updates.title as string }
-            : goal
-        )));
-      }
-      return `Updated goal: "${action.title ?? action.description}"`;
-    }
-    if (type === 'extend_deadline' || type === 'contract_deadline') {
-      const goalId = resolveGoalId(action, projectGoals);
-      const deadline = typeof args.suggestedDeadline === 'string' ? args.suggestedDeadline : null;
-      if (!goalId || !deadline) throw new Error('Missing task target or deadline for this proposal.');
-      const { error: err } = await supabase.from('goals')
-        .update({ deadline }).eq('id', goalId);
-      if (err) throw err;
-      return `Updated deadline for "${String(args.goalTitle ?? action.title ?? 'task')}"`;
-    }
-    if (type === 'delete_goal') {
-      const goalId = resolveGoalId(action, projectGoals);
-      const deletedGoal = goalId
-        ? await supabase.from('goals').select('*').eq('id', goalId).maybeSingle()
-        : { data: null, error: null };
-      if (deletedGoal?.error) throw deletedGoal.error;
-      const { error: err } = await supabase.from('goals').delete().eq('id', goalId);
-      if (err) throw err;
-      setProjectGoals((prev) => prev.filter((goal) => goal.id !== goalId));
-      if (deletedGoal?.data) {
-        pushUndoAction({
-          label: `Deleted task ${String(deletedGoal.data.title ?? args.goalTitle ?? 'task')}`,
-          undo: async () => {
-            const { data, error } = await supabase
-              .from('goals')
-              .insert(deletedGoal.data)
-              .select()
-              .single();
-            if (error) throw error;
-            setProjectGoals((prev) => {
-              if (prev.some((goal) => goal.id === data.id)) return prev;
-              return [...prev, { id: String(data.id), title: String(data.title ?? args.goalTitle ?? '') }];
-            });
-            onGoalMutated?.();
-          },
-        });
-      }
-      return `Deleted goal: "${args.goalTitle}"`;
-    }
-    if (type === 'review_redundancy') {
-      const goalTitles = Array.isArray(args.goalTitles) ? args.goalTitles.map((value) => String(value)).filter(Boolean) : [];
-      return `Reviewed redundancy candidate: ${goalTitles.join(', ') || 'task set'}`;
-    }
-    if (type === 'update_paper_draft') {
-      if (mode !== 'thesis') {
-        throw new Error('Paper draft edits are only available in Thesis AI.');
-      }
-      const lineStart = Number(args.lineStart);
-      const lineEnd = Number(args.lineEnd);
-      const replacement = typeof args.replacement === 'string' ? args.replacement : '';
-      const currentSnapshot = readStoredThesisPaperSnapshot();
-      const currentWorkspace = getThesisWorkspaceFromSnapshot(
-        currentSnapshot,
-        currentSnapshot.draft,
-        currentSnapshot.activeFilePath ?? DEFAULT_THESIS_EXAMPLE_PATH,
-      );
-      const activeFile = getThesisWorkspaceActiveFile(currentWorkspace);
-      if (!activeFile) {
-        throw new Error('No thesis file is currently open.');
-      }
-
-      const nextDraft = applyThesisPaperDraftEdit(activeFile.content, {
-        lineStart,
-        lineEnd,
-        replacement,
-      });
-      const nextWorkspace = {
-        ...currentWorkspace,
-        files: currentWorkspace.files.map((file) => (
-          file.id === activeFile.id ? { ...file, content: nextDraft } : file
-        )),
-        activeFileId: activeFile.id,
-      };
-
-      updateStoredThesisPaperSnapshot({
-        draft: nextDraft,
-        previewStatus: 'rendering',
-        renderError: null,
-        workspace: nextWorkspace,
-        activeFileId: activeFile.id,
-        activeFilePath: activeFile.path,
-      });
-      return `Updated thesis draft lines ${lineStart}-${lineEnd}.`;
-    }
-    if (type === 'add_thesis_source') {
-      if (mode !== 'thesis') {
-        throw new Error('Thesis source ingest is only available in Thesis AI.');
-      }
-
-      const url = typeof args.url === 'string' ? args.url.trim() : '';
-      const attachmentName = typeof args.attachmentName === 'string' ? args.attachmentName.trim() : '';
-
-      let parsed: ParsedThesisSourceRecord;
-      let method: 'url' | 'pdf';
-      let locator: string;
-      let attachment: ThesisSourceAttachment | null = null;
-
-      if (url) {
-        parsed = await parseThesisSourceUrl(url);
-        method = 'url';
-        locator = parsed.locator || url;
-      } else if (attachmentName) {
-        const pdfAttachment = findAttachmentByName(messagesStateRef.current, attachmentName);
-        if (!pdfAttachment?.base64) {
-          throw new Error(`Could not find the attached PDF "${attachmentName}".`);
-        }
-        const mimeType = pdfAttachment.mimeType || 'application/pdf';
-        if (!/pdf/i.test(mimeType) && !/\.pdf$/i.test(pdfAttachment.name)) {
-          throw new Error('Only PDF attachments can be added as thesis sources right now.');
-        }
-
-        const binary = atob(pdfAttachment.base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index += 1) {
-          bytes[index] = binary.charCodeAt(index);
-        }
-        const file = new globalThis.File([bytes], pdfAttachment.name, { type: mimeType });
-        parsed = await parseThesisSourcePdf(file);
-        attachment = await uploadThesisSourcePdf(file);
-        method = 'pdf';
-        locator = pdfAttachment.name;
-      } else {
-        throw new Error('No URL or PDF attachment was provided for this source action.');
-      }
-
-      const queued = buildQueuedThesisSource(parsed, method, locator, attachmentName || undefined, attachment);
-      const response = await queueThesisSource(queued);
-      window.dispatchEvent(new CustomEvent(THESIS_SOURCE_SYNC_EVENT, {
-        detail: {
-          sourceLibrary: response.sourceLibrary,
-          sourceQueueItems: response.sourceQueueItems,
-        },
-      }));
-
-      return `Added source: "${queued.libraryItem.title}" (${parsed.sourceTypeLabel || parsed.sourceKind || method}).`;
-    }
-    throw new Error(`Unknown action type: ${type}`);
-  }
+  }, [input, attachments, loading, messages, agent, projectId, projects, resolvedProjectId, notifyModelUsed, allowProjectSwitching, mode, workspaceContext, stopDictation, executeAction, setMessages, showAIError]);
 
   const setProposalState = useCallback((msgIdx: number, action: PendingAction, actionIdx: number, state: 'pending' | 'approved' | 'denied' | 'executing') => {
     setMessages((prev) => withProposalState(prev, msgIdx, action, actionIdx, state));
@@ -2027,7 +2037,7 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
                       Download {msg.reportReady.format.toUpperCase()}
                     </button>
                     {msg.reportReady.data.rawData?.goals?.length ? (
-                      <button type="button" onClick={() => exportGoalsCSV(msg.reportReady!.data)}
+                      <button type="button" onClick={() => { void handleGoalsCsvExport(msg.reportReady!.data); }}
                         className="flex items-center gap-1 text-[10px] text-muted hover:text-heading border border-border rounded px-2 py-1 hover:bg-surface2 transition-colors">
                         <TableIcon size={9} /> Export CSV
                       </button>

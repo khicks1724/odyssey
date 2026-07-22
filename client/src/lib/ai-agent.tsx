@@ -114,7 +114,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, [agent]);
 
-  useEffect(() => { fetchProviders(); }, []);
+  useEffect(() => { fetchProviders(); }, [fetchProviders]);
 
   const setAgent = useCallback((a: AIAgentValue) => {
     const nextAgent = isOpenAIAgentValue(a)

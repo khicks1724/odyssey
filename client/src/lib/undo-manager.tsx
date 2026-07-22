@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 
 type UndoAction = {
@@ -86,7 +86,7 @@ export function UndoProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => subscribeUndoStack(() => setStack([...getUndoStackSnapshot()])), []);
 
-  const undoLatest = async () => {
+  const undoLatest = useCallback(async () => {
     if (busy) return;
     const action = shiftLatestUndoAction();
     if (!action) return;
@@ -101,7 +101,7 @@ export function UndoProvider({ children }: { children: ReactNode }) {
     } finally {
       setBusy(false);
     }
-  };
+  }, [busy]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -113,19 +113,20 @@ export function UndoProvider({ children }: { children: ReactNode }) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [busy, stack.length]);
+  }, [undoLatest]);
 
   const latestAction = stack.at(-1) ?? null;
+  const latestActionId = latestAction?.id ?? null;
   const shouldShowActionToast = Boolean(latestAction && !error && latestAction.id !== dismissedActionId);
   const shouldShowErrorToast = Boolean(error && isErrorVisible);
 
   useEffect(() => {
-    if (!latestAction) {
+    if (!latestActionId) {
       setDismissedActionId(null);
       return;
     }
-    setDismissedActionId((current) => (current === latestAction.id ? current : null));
-  }, [latestAction?.id]);
+    setDismissedActionId((current) => (current === latestActionId ? current : null));
+  }, [latestActionId]);
 
   useEffect(() => {
     if (!error) {
@@ -155,7 +156,7 @@ export function UndoProvider({ children }: { children: ReactNode }) {
     canUndo: stack.length > 0 && !busy,
     latestLabel: latestAction?.label ?? null,
     undoLatest,
-  }), [busy, latestAction?.label, stack.length]);
+  }), [busy, latestAction?.label, stack.length, undoLatest]);
 
   return (
     <UndoContext.Provider value={value}>

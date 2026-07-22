@@ -411,7 +411,7 @@ export default function ChatPage() {
       setProjectDocs(docs);
       setProjectGoals(goalsRes.error ? [] : (goalsRes.data ?? []));
     });
-  }, [selectedThread?.project_id, selectedThread?.related_project_id]);
+  }, [relatedProjectId]);
 
   const projectMap = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
 
@@ -444,17 +444,18 @@ export default function ChatPage() {
     setRepoPreview({ repo, type, projectId: type === 'gitlab' ? relatedProjectId : null });
   };
 
-  const getOtherParticipant = (threadId: string): ChatParticipant | null =>
-    (participantsByThread[threadId] ?? []).find((person) => person.id !== user?.id) ?? null;
+  const getOtherParticipant = React.useCallback((threadId: string): ChatParticipant | null =>
+    (participantsByThread[threadId] ?? []).find((person) => person.id !== user?.id) ?? null,
+  [participantsByThread, user?.id]);
 
-  const getThreadTitle = (threadId: string) => {
+  const getThreadTitle = React.useCallback((threadId: string) => {
     const thread = threads.find((item) => item.id === threadId);
     if (!thread) return 'Conversation';
     if (thread.kind === 'project') {
       return projectMap.get(thread.project_id ?? '')?.name ?? thread.title ?? 'Project Chat';
     }
     return getOtherParticipant(threadId)?.display_name ?? 'Direct Message';
-  };
+  }, [getOtherParticipant, projectMap, threads]);
 
   const getLastSender = (threadId: string) => {
     const preview = lastMessageByThread[threadId];
@@ -465,7 +466,7 @@ export default function ChatPage() {
     return getOtherParticipant(threadId)?.display_name ?? 'Member';
   };
 
-  const getPreviewText = (threadId: string) => {
+  const getPreviewText = React.useCallback((threadId: string) => {
     const preview = lastMessageByThread[threadId];
     if (!preview) {
       const thread = threads.find((item) => item.id === threadId);
@@ -476,7 +477,7 @@ export default function ChatPage() {
       preview.role === 'system' ? 'System' :
       preview.sender_id === user?.id ? 'You' : getOtherParticipant(threadId)?.display_name ?? 'Member';
     return `${prefix}: ${preview.content.replace(/\s+/g, ' ').trim()}`;
-  };
+  }, [getOtherParticipant, lastMessageByThread, threads, user?.id]);
 
   const threadCards = useMemo(() => {
     const lowered = search.trim().toLowerCase();
@@ -485,7 +486,7 @@ export default function ChatPage() {
       const haystack = [getThreadTitle(thread.id), getPreviewText(thread.id), thread.kind].join(' ').toLowerCase();
       return haystack.includes(lowered);
     });
-  }, [threads, search, participantsByThread, lastMessageByThread, projects, user?.id]);
+  }, [getPreviewText, getThreadTitle, search, threads]);
 
   const groupedThreads = useMemo(() => ({
     project: threadCards.filter((thread) => thread.kind === 'project'),
@@ -708,7 +709,6 @@ export default function ChatPage() {
       const decoder = new TextDecoder();
       let buffer = '';
 
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;

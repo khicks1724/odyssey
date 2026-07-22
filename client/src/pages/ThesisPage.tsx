@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
@@ -15,7 +15,6 @@ import {
   FolderOpen,
   GraduationCap,
   GripVertical,
-  History,
   Link2,
   Loader2,
   Network,
@@ -54,7 +53,6 @@ import {
   type ThesisPaperSnapshot,
 } from '../lib/thesis-paper';
 import { setStoredSidebarCollapsed } from '../lib/sidebar-state';
-import { getCitationReferenceGuide, searchCitationReferenceChunks } from '../lib/citation-references';
 import { getPublicationDatePlaceholder, normalizePublicationDate } from '../lib/citation-date';
 import {
   buildSourceVenueDisplay,
@@ -367,7 +365,6 @@ const DEFAULT_THESIS_MILESTONES: ThesisMilestone[] = [
 ];
 const DEFAULT_THESIS_MILESTONE_IDS = new Set(DEFAULT_THESIS_MILESTONES.map((milestone) => milestone.id));
 
-const LEGACY_SOURCE_QUEUE_IDS = new Set(['src-1', 'src-2', 'src-3', 'src-4']);
 const LEGACY_SOURCE_LIBRARY_IDS = new Set(['lib-1', 'lib-2', 'lib-3', 'lib-4', 'lib-5', 'lib-6']);
 
 const sourceIntakeMethods: {
@@ -958,12 +955,6 @@ function serializeSourceCreditEntries(entries: ParsedCreditEntry[]) {
     .map((entry) => formatParsedCreditEntry(entry))
     .filter(Boolean)
     .join('; ');
-}
-
-function extractCreditPeople(value: string) {
-  return parseSourceCreditEntries(value)
-    .filter((entry): entry is Extract<ParsedCreditEntry, { kind: 'person' }> => entry.kind === 'person')
-    .map((entry) => formatParsedCreditEntry(entry));
 }
 
 function normalizeSourceCreditValue(value: string) {
@@ -1634,7 +1625,7 @@ function normalizeBibtexFieldDisplayValue(value: string) {
 }
 
 function extractBibtexFieldValue(entry: string, field: string) {
-  const match = entry.match(new RegExp(`\\b${field}\\s*=\\s*(\\{(?:[^{}]|\\{[^{}]*\\})*\\}|\"[^\"]*\")`, 'i'));
+  const match = entry.match(new RegExp(`\\b${field}\\s*=\\s*(\\{(?:[^{}]|\\{[^{}]*\\})*\\}|"[^"]*")`, 'i'));
   if (!match?.[1]) return '';
   return normalizeBibtexFieldDisplayValue(match[1]);
 }
@@ -2668,17 +2659,6 @@ export default function ThesisPage() {
     if (sourceIntakeKind === 'documentation') return 'Manual number, standard, or documentation site';
     return 'Journal, publisher, conference, or source venue';
   }, [sourceIntakeKind]);
-  const sourceKindVerificationLabel = useMemo(() => {
-    if (sourceIntakeKind === 'conference_paper') return 'Proceedings and publication status';
-    if (sourceIntakeKind === 'book') return 'Edition and publication status';
-    if (sourceIntakeKind === 'dataset') return 'Reuse and provenance status';
-    if (sourceIntakeKind === 'interview_notes') return 'Consent and attribution status';
-    if (sourceIntakeKind === 'archive_record') return 'Archive verification status';
-    if (sourceIntakeKind === 'government_report') return 'Document provenance status';
-    if (sourceIntakeKind === 'thesis_dissertation') return 'Degree and archive status';
-    if (sourceIntakeKind === 'documentation') return 'Version and source status';
-    return 'Review and citation status';
-  }, [sourceIntakeKind]);
   const activeParsedSource = sourceIntakeMethod === 'url' ? parsedUrlSource : null;
   const sourceLocatorValue = useMemo(() => {
     if (sourceIntakeMethod === 'url') return sourceUrl.trim();
@@ -2819,24 +2799,43 @@ export default function ThesisPage() {
   useEffect(() => {
     setSourceYear((current) => (current.trim() ? normalizePublicationDate(current, bibliographyFormat) : current));
   }, [bibliographyFormat]);
+  const [citationReferences, setCitationReferences] = useState<typeof import('../lib/citation-references') | null>(null);
+  useEffect(() => {
+    let active = true;
+    void import('../lib/citation-references')
+      .then((module) => {
+        if (active) setCitationReferences(module);
+      })
+      .catch(() => {
+        // Citation guidance is supplemental; keep the rest of the workspace
+        // usable if its large reference bundle cannot be loaded.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const activeCitationReferenceGuide = useMemo(
-    () => getCitationReferenceGuide(citationFormat),
-    [citationFormat],
+    () => citationReferences?.getCitationReferenceGuide(citationFormat) ?? null,
+    [citationFormat, citationReferences],
+  );
+  const activeCitationReferenceGuides = useMemo(
+    () => activeCitationReferenceGuide?.guides ?? [],
+    [activeCitationReferenceGuide],
   );
   const citationReferenceContextQuery = useMemo(() => {
     return getCitationReferenceQueryForSourceKind(sourceIntakeKind);
   }, [sourceIntakeKind]);
   const citationReferenceMatches = useMemo(
-    () => searchCitationReferenceChunks(citationFormat, citationReferenceContextQuery, 6),
-    [citationFormat, citationReferenceContextQuery],
+    () => citationReferences?.searchCitationReferenceChunks(citationFormat, citationReferenceContextQuery, 6) ?? [],
+    [citationFormat, citationReferenceContextQuery, citationReferences],
   );
   const citationReferencePdfLinks = useMemo(
-    () => activeCitationReferenceGuide.guides.map((guide) => ({
+    () => activeCitationReferenceGuides.map((guide) => ({
       id: guide.id,
       fileName: guide.fileName,
       url: getCitationReferencePdfUrl(guide.fileName),
     })),
-    [activeCitationReferenceGuide.guides],
+    [activeCitationReferenceGuides],
   );
   const citationReferenceUiExample = useMemo(
     () => CITATION_REFERENCE_UI_EXAMPLES[citationFormat],
@@ -3168,7 +3167,7 @@ export default function ThesisPage() {
     setSelectedLibrarySourceDraft(cloneSourceLibraryItem(source));
     setSelectedLibrarySourceUndoStack([]);
     setSelectedLibrarySourceRedoStack([]);
-  }, [selectedLibrarySourceId]);
+  }, [selectedLibrarySourceId, sourceLibrary]);
 
   useEffect(() => {
     if (!selectedDocumentId || activeTab !== 'documents') return;
@@ -3334,33 +3333,6 @@ export default function ThesisPage() {
     return { completed, active, dueSoon, averageProgress };
   }, [linkedGoals]);
 
-  const linkedProjectRollups = useMemo(() => {
-    return linkedProjects.map((project) => {
-      const projectGoals = linkedGoals.filter((goal) => goal.project_id === project.id);
-      const active = projectGoals.filter((goal) => goal.status !== 'complete').length;
-      const completed = projectGoals.filter((goal) => goal.status === 'complete').length;
-      const averageProgress = projectGoals.length > 0
-        ? Math.round(projectGoals.reduce((sum, goal) => sum + goal.progress, 0) / projectGoals.length)
-        : 0;
-      const nextDueGoal = [...projectGoals]
-        .filter((goal) => goal.status !== 'complete' && Boolean(goal.deadline))
-        .sort((left, right) => new Date(left.deadline ?? 0).getTime() - new Date(right.deadline ?? 0).getTime())[0] ?? null;
-      const latestEvent = [...linkedEvents]
-        .filter((event) => event.project_id === project.id)
-        .sort((left, right) => new Date(right.occurred_at).getTime() - new Date(left.occurred_at).getTime())[0] ?? null;
-
-      return {
-        id: project.id,
-        name: project.name,
-        active,
-        completed,
-        averageProgress,
-        nextDueGoal,
-        latestEvent,
-      };
-    });
-  }, [linkedEvents, linkedGoals, linkedProjects]);
-
   const linkedFocusGoals = useMemo(() => {
     return [...linkedGoals]
       .filter((goal) => goal.status !== 'complete')
@@ -3372,13 +3344,6 @@ export default function ThesisPage() {
       })
       .slice(0, 6);
   }, [linkedGoals]);
-
-  const recentLinkedActivity = useMemo(
-    () => [...linkedEvents]
-      .sort((left, right) => new Date(right.occurred_at).getTime() - new Date(left.occurred_at).getTime())
-      .slice(0, 6),
-    [linkedEvents],
-  );
 
   const linkedContextCards = useMemo(() => {
     if (linkedProjects.length === 0) return [];
@@ -3521,7 +3486,7 @@ Thesis description: ${description}
 Thesis department: ${department || 'Not selected'}
 Graduating quarter: ${graduatingQuarter || 'Not selected'}
 Citation format: ${BIBLIOGRAPHY_FORMAT_LABELS[citationFormat]}
-Citation reference guides: ${activeCitationReferenceGuide.guides.map((guide) => guide.title).join(', ')}
+Citation reference guides: ${activeCitationReferenceGuides.map((guide) => guide.title).join(', ') || 'Loading reference library'}
 Thesis members:
 ${memberLines}
 Overall thesis progress: ${overallProgress}%
@@ -3574,7 +3539,7 @@ ${numberedPaperDraft || '1 | '}
 Thesis AI should help with literature synthesis, argument structure, methodology framing, chapter drafting, LaTeX paper authoring, defense preparation, and translating linked project execution into thesis-relevant analysis. Prioritize advice that fits the current thesis tab: ${activeTabLabel}.`;
   }, [
     activeTabLabel,
-    activeCitationReferenceGuide.guides,
+    activeCitationReferenceGuides,
     citationReferenceMatches,
     citationFormat,
     department,
@@ -3588,6 +3553,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     linkedGoalStats.dueSoon,
     linkedProjectNameById,
     linkedProjects,
+    milestones,
     overallProgress,
     paperSnapshot,
     members,
@@ -4001,7 +3967,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     });
   };
 
-  const saveSelectedLibrarySourceDraft = () => {
+  const saveSelectedLibrarySourceDraft = useCallback(() => {
     if (!selectedLibrarySource || !selectedLibrarySourceDraft) return;
     if (JSON.stringify(selectedLibrarySourceDraft) === JSON.stringify(selectedLibrarySource)) return;
 
@@ -4026,7 +3992,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     setSelectedLibrarySourceDraft(nextSource);
     setSelectedLibrarySourceUndoStack([]);
     setSelectedLibrarySourceRedoStack([]);
-  };
+  }, [selectedLibrarySource, selectedLibrarySourceDraft]);
 
   const closeSelectedLibrarySourceEditor = () => {
     if (selectedLibrarySourceDirty && !window.confirm('Discard unsaved source edits?')) {

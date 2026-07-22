@@ -1,4 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
+import './WorkspaceTabBar.css';
 
 type WorkspaceTab<T extends string> = {
   id: T;
@@ -21,27 +22,27 @@ export default function WorkspaceTabBar<T extends string>({
   stretch = false,
   className = '',
 }: WorkspaceTabBarProps<T>) {
-  const gridTemplateColumns = stretch
-    ? tabs
-        .map(({ label }) => {
-          const weight = Math.max(8, Math.min(18, label.replace(/\s+/g, '').length));
-          return `minmax(0, ${weight}fr)`;
-        })
-        .join(' ')
-    : undefined;
-
   return (
-    <div className={`mb-8 ${className}`.trim()}>
+    <div className={`workspace-tab-bar mb-8 ${className}`.trim()}>
       <div
-        className={`w-full gap-px border border-border bg-border ${stretch ? 'grid' : 'flex'}`}
-        style={gridTemplateColumns ? { gridTemplateColumns } : undefined}
+        className={`workspace-tab-list w-full gap-px border border-border bg-border ${stretch ? 'grid' : 'flex'}`}
+        role="tablist"
+        aria-label="Workspace sections"
+        style={{
+          '--workspace-tab-count': tabs.length,
+          '--workspace-tab-min-width': `${tabs.length * 2.75}rem`,
+        } as React.CSSProperties}
       >
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
             onClick={() => onChange(id)}
-            className={`relative flex min-w-0 items-center justify-center gap-1 bg-surface px-2 py-3 text-[10px] font-semibold leading-none tracking-[0.08em] uppercase text-center transition-colors first:rounded-tl last:rounded-tr sm:gap-1.5 sm:px-3 sm:text-[11px] sm:tracking-[0.1em] lg:gap-2 lg:px-4 lg:py-3.5 lg:text-xs lg:tracking-[0.14em] ${
+            role="tab"
+            aria-selected={activeTab === id}
+            aria-label={label}
+            title={label}
+            className={`workspace-tab-button relative flex min-w-0 items-center justify-center gap-1 bg-surface px-2 py-3 text-[10px] font-semibold leading-none tracking-[0.08em] uppercase text-center transition-colors sm:gap-1.5 sm:px-3 sm:text-[11px] sm:tracking-[0.1em] lg:gap-2 lg:px-4 lg:py-3.5 lg:text-xs lg:tracking-[0.14em] ${
               stretch ? '' : 'grow'
             } ${
               activeTab === id
@@ -49,8 +50,8 @@ export default function WorkspaceTabBar<T extends string>({
                 : 'text-muted hover:bg-surface2 hover:text-heading'
             }`}
           >
-            <Icon size={13} className="shrink-0" />
-            <span className="min-w-0 whitespace-nowrap">
+            <Icon aria-hidden="true" className="workspace-tab-icon shrink-0" />
+            <span className="workspace-tab-label min-w-0 whitespace-nowrap">
               {label}
             </span>
           </button>

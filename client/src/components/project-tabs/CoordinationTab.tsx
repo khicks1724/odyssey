@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Loader2,
@@ -40,15 +40,6 @@ const GRAPH_TYPE_LABELS: Record<string, string> = {
   repo: 'Repos',
   file: 'Files',
 };
-const GRAPH_TYPE_COLORS: Record<string, string> = {
-  person: '#6fb7ff',
-  task: '#7ce3b2',
-  deliverable: '#f5c66a',
-  concept: '#f08ca0',
-  document: '#b9a1ff',
-  repo: '#8bd0f6',
-  file: '#8b95a7',
-};
 const GRAPH_VIEWBOX = { width: 1200, height: 560 };
 const GRAPH_INFOBOX = {
   minWidth: 260,
@@ -77,13 +68,6 @@ type VisibleGraphNode = CoordinationGraphNode & {
   showCard: boolean;
   cardWidth: number;
   cardHeight: number;
-};
-
-type GraphClusterAnchor = {
-  nodeType: string;
-  x: number;
-  y: number;
-  radius: number;
 };
 
 type StringStyleLaneConfig = {
@@ -243,7 +227,7 @@ type StringStyleCellRect = {
   height: number;
 };
 
-function buildStringStyleProjectLayout(nodes: VisibleGraphNode[], selectedNodeId: string | null): {
+function buildStringStyleProjectLayout(nodes: VisibleGraphNode[]): {
   nodes: VisibleGraphNode[];
   cells: StringStyleCellRect[];
 } {
@@ -489,10 +473,6 @@ function describeDonutSlice(
   ].join(' ');
 }
 
-function getSliceMidpoint(centerX: number, centerY: number, radius: number, startAngle: number, endAngle: number) {
-  return polarToCartesian(centerX, centerY, radius, (startAngle + endAngle) / 2);
-}
-
 function priorityClasses(priority: PersonQueue['items'][number]['priority']): string {
   switch (priority) {
     case 'critical':
@@ -693,13 +673,6 @@ function ContributionCard({ profile, workload }: { profile: ContributionProfile;
     const previousWeight = profile.topConcepts.slice(0, index).reduce((sum, entry) => sum + entry.score, 0);
     const startAngle = totalConceptWeight > 0 ? (previousWeight / totalConceptWeight) * 360 : 0;
     const endAngle = totalConceptWeight > 0 ? ((previousWeight + concept.score) / totalConceptWeight) * 360 : 0;
-    const midpoint = getSliceMidpoint(
-      CONTRIBUTION_CHART.size / 2,
-      CONTRIBUTION_CHART.size / 2,
-      (CONTRIBUTION_CHART.radius + CONTRIBUTION_CHART.innerRadius) / 2,
-      startAngle,
-      endAngle,
-    );
     const share = totalConceptWeight > 0 ? (concept.score / totalConceptWeight) * 100 : 0;
 
     return {
@@ -716,7 +689,6 @@ function ContributionCard({ profile, workload }: { profile: ContributionProfile;
       share,
     };
   });
-  const hoveredConcept = hoveredConceptIndex !== null ? conceptSlices[hoveredConceptIndex] ?? null : null;
   const statusLabel = workload?.capacityStatus?.toUpperCase() ?? 'BALANCED';
   const statusClasses = workloadClasses(workload?.capacityStatus ?? 'balanced');
 
@@ -861,169 +833,6 @@ function trimRepoLabel(label: string, sharedPrefix: string): string {
 
 function getGraphNodeCardWidth(label: string) {
   return Math.min(190, Math.max(118, 84 + label.length * 3.1));
-}
-
-function hashGraphString(value: string) {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
-  }
-  return Math.abs(hash);
-}
-
-function buildRowboatLayout(
-  nodes: VisibleGraphNode[],
-  edges: CoordinationGraphEdge[],
-  focusNodeId: string | null,
-  selectedNodeId: string | null,
-): {
-  nodes: VisibleGraphNode[];
-  edges: CoordinationGraphEdge[];
-  anchors: GraphClusterAnchor[];
-} {
-  const centerX = GRAPH_VIEWBOX.width / 2 - 12;
-  const centerY = GRAPH_VIEWBOX.height / 2 + 6;
-  const anchorRadiusX = GRAPH_VIEWBOX.width * 0.4;
-  const anchorRadiusY = GRAPH_VIEWBOX.height * 0.3;
-  const anchors = GRAPH_TYPE_ORDER.map((nodeType, index) => {
-    const angle = ((Math.PI * 2) / GRAPH_TYPE_ORDER.length) * index - Math.PI / 2;
-    return {
-      nodeType,
-      x: centerX + Math.cos(angle) * anchorRadiusX,
-      y: centerY + Math.sin(angle) * anchorRadiusY,
-      radius: 40,
-    };
-  });
-  const anchorByType = new Map(anchors.map((anchor) => [anchor.nodeType, anchor]));
-  const positioned = new Map<string, { x: number; y: number }>();
-  const focusNeighborIds = new Set<string>();
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const topRankedNodes = [...nodes]
-    .sort((left, right) => {
-      const leftMatched = left.matched ? 1 : 0;
-      const rightMatched = right.matched ? 1 : 0;
-      if (rightMatched !== leftMatched) return rightMatched - leftMatched;
-      if (right.degree !== left.degree) return right.degree - left.degree;
-      return left.label.localeCompare(right.label);
-    });
-
-  const activeFocusId = focusNodeId && nodeMap.has(focusNodeId)
-    ? focusNodeId
-    : topRankedNodes[0]?.id ?? null;
-
-  if (activeFocusId && nodeMap.has(activeFocusId)) {
-    positioned.set(activeFocusId, { x: centerX, y: centerY });
-    const neighbors = edges
-      .filter((edge) => edge.fromNodeId === activeFocusId || edge.toNodeId === activeFocusId)
-      .map((edge) => (edge.fromNodeId === activeFocusId ? edge.toNodeId : edge.fromNodeId))
-      .filter((nodeId, index, values) => values.indexOf(nodeId) === index)
-      .map((nodeId) => nodeMap.get(nodeId))
-      .filter((node): node is VisibleGraphNode => Boolean(node))
-      .sort((left, right) => right.degree - left.degree || left.label.localeCompare(right.label));
-
-    neighbors.forEach((node, index) => {
-      focusNeighborIds.add(node.id);
-      const typeIndex = Math.max(0, GRAPH_TYPE_ORDER.indexOf(node.nodeType as typeof GRAPH_TYPE_ORDER[number]));
-      const anchorAngle = ((Math.PI * 2) / GRAPH_TYPE_ORDER.length) * typeIndex - Math.PI / 2;
-      const localAngle = anchorAngle + (((index % 4) - 1.5) * 0.22);
-      const ring = Math.floor(index / 4);
-      positioned.set(node.id, {
-        x: clampGraphCoordinate(centerX + Math.cos(localAngle) * (150 + ring * 52), 78, GRAPH_VIEWBOX.width - 78),
-        y: clampGraphCoordinate(centerY + Math.sin(localAngle) * (118 + ring * 46), 78, GRAPH_VIEWBOX.height - 78),
-      });
-    });
-  }
-
-  const nodesByType = new Map<string, VisibleGraphNode[]>();
-  for (const nodeType of GRAPH_TYPE_ORDER) nodesByType.set(nodeType, []);
-  nodes.forEach((node) => {
-    if (!positioned.has(node.id)) {
-      const bucket = nodesByType.get(node.nodeType) ?? [];
-      bucket.push(node);
-      nodesByType.set(node.nodeType, bucket);
-    }
-  });
-
-  for (const nodeType of GRAPH_TYPE_ORDER) {
-    const anchor = anchorByType.get(nodeType);
-    if (!anchor) continue;
-
-    const bucket = [...(nodesByType.get(nodeType) ?? [])].sort((left, right) => {
-      const leftMatched = left.matched ? 1 : 0;
-      const rightMatched = right.matched ? 1 : 0;
-      if (rightMatched !== leftMatched) return rightMatched - leftMatched;
-      if (right.degree !== left.degree) return right.degree - left.degree;
-      return left.label.localeCompare(right.label);
-    });
-
-    bucket.forEach((node, index) => {
-      const ring = Math.floor(index / 7);
-      const slot = index % 7;
-      const angleSeed = hashGraphString(`${node.nodeType}:${node.id}`) % 360;
-      const angle = (Math.PI * 2 * slot) / 7 + (angleSeed * Math.PI) / 180 / 6 + ring * 0.18;
-      const spreadX = 56 + ring * 52;
-      const spreadY = 42 + ring * 40;
-      positioned.set(node.id, {
-        x: clampGraphCoordinate(anchor.x + Math.cos(angle) * spreadX, 64, GRAPH_VIEWBOX.width - 64),
-        y: clampGraphCoordinate(anchor.y + Math.sin(angle) * spreadY, 64, GRAPH_VIEWBOX.height - 64),
-      });
-    });
-  }
-
-  const laidOutNodes = nodes.map((node) => {
-    const position = positioned.get(node.id) ?? { x: node.x, y: node.y };
-    const emphasized = node.id === selectedNodeId || node.id === activeFocusId || focusNeighborIds.has(node.id) || node.matched;
-    const shouldShowCard = node.id === activeFocusId
-      || node.id === selectedNodeId
-      || node.matched
-      || focusNeighborIds.has(node.id)
-      || (node.degree >= 11 && (node.nodeType === 'person' || node.nodeType === 'repo' || node.nodeType === 'document'));
-
-    return {
-      ...node,
-      x: position.x,
-      y: position.y,
-      radius: emphasized ? Math.min(node.radius + 1.5, 20) : node.radius,
-      showCard: shouldShowCard,
-      cardWidth: shouldShowCard ? Math.min((emphasized ? node.cardWidth + 10 : node.cardWidth), 208) : node.cardWidth,
-      cardHeight: emphasized ? node.cardHeight + 2 : node.cardHeight,
-    };
-  });
-
-  const renderedEdgeIds = new Set<string>();
-  const filteredEdges = edges.filter((edge) => {
-    const from = nodeMap.get(edge.fromNodeId);
-    const to = nodeMap.get(edge.toNodeId);
-    if (!from || !to) return false;
-
-    const touchesFocus = edge.fromNodeId === activeFocusId || edge.toNodeId === activeFocusId;
-    const touchesFocusNeighbor = focusNeighborIds.has(edge.fromNodeId) || focusNeighborIds.has(edge.toNodeId);
-    const touchesMatched = from.matched || to.matched;
-    const strongBridge = (from.degree >= 10 && to.degree >= 8) || (to.degree >= 10 && from.degree >= 8);
-    const sameTypeLocal = from.nodeType === to.nodeType && (from.degree >= 8 || to.degree >= 8);
-    const keep = touchesFocus || touchesFocusNeighbor || touchesMatched || strongBridge || sameTypeLocal;
-    if (!keep || renderedEdgeIds.has(edge.id)) return false;
-    renderedEdgeIds.add(edge.id);
-    return true;
-  });
-
-  return { nodes: laidOutNodes, edges: filteredEdges, anchors };
-}
-
-function buildCurvedGraphEdgePath(
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-  highlighted: boolean,
-) {
-  const midpointX = (from.x + to.x) / 2;
-  const midpointY = (from.y + to.y) / 2;
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const bend = Math.min(180, length) * (highlighted ? 0.18 : 0.1);
-  const controlX = midpointX + (GRAPH_VIEWBOX.width / 2 - midpointX) * 0.16 - (dy / length) * bend;
-  const controlY = midpointY + (GRAPH_VIEWBOX.height / 2 - midpointY) * 0.14 + (dx / length) * bend;
-  return `M ${from.x} ${from.y} Q ${controlX} ${controlY} ${to.x} ${to.y}`;
 }
 
 function buildVisibleGraph(
@@ -1197,18 +1006,24 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
   const inlineGraphRef = useRef<HTMLDivElement | null>(null);
   const expandedGraphRef = useRef<HTMLDivElement | null>(null);
 
-  const degreeMap = buildDegreeMap(graph, true);
-  const { nodes, edges } = buildVisibleGraph(graph, searchTerm, graphMode, selectedNodeId);
-  const stringLayout = buildStringStyleProjectLayout(nodes, selectedNodeId);
-  const stringNodeIds = new Set(stringLayout.nodes.map((node) => node.id));
+  const degreeMap = useMemo(() => buildDegreeMap(graph, true), [graph]);
+  const { nodes, edges } = useMemo(
+    () => buildVisibleGraph(graph, searchTerm, graphMode, selectedNodeId),
+    [graph, graphMode, searchTerm, selectedNodeId],
+  );
+  const stringLayout = useMemo(() => buildStringStyleProjectLayout(nodes), [nodes]);
+  const stringNodeIds = useMemo(() => new Set(stringLayout.nodes.map((node) => node.id)), [stringLayout.nodes]);
   const renderedNodes = stringLayout.nodes;
-  const renderedEdges = edges.filter((edge) => stringNodeIds.has(edge.fromNodeId) && stringNodeIds.has(edge.toNodeId));
-  const nodeMap = new Map(renderedNodes.map((node) => [node.id, node]));
+  const renderedEdges = useMemo(
+    () => edges.filter((edge) => stringNodeIds.has(edge.fromNodeId) && stringNodeIds.has(edge.toNodeId)),
+    [edges, stringNodeIds],
+  );
+  const nodeMap = useMemo(() => new Map(renderedNodes.map((node) => [node.id, node])), [renderedNodes]);
 
   useEffect(() => {
     if (!selectedNodeId || nodeMap.has(selectedNodeId)) return;
     setSelectedNodeId(null);
-  }, [nodeMap, nodes, selectedNodeId]);
+  }, [nodeMap, selectedNodeId]);
 
   const selectedNode = selectedNodeId ? nodeMap.get(selectedNodeId) ?? null : null;
   const hoveredNode = hoveredNodeId ? nodeMap.get(hoveredNodeId) ?? null : null;
@@ -1329,11 +1144,6 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
   const stopDragging = useCallback(() => {
     dragRef.current = null;
     setDragging(false);
-  }, []);
-
-  const resetViewport = useCallback(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
   }, []);
 
   if (!graph || graph.nodes.length === 0) {

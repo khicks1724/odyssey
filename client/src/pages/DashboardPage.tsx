@@ -15,17 +15,11 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { useDashboardStats, useActivityByDate, useLatestInsight, useRecentCommits, useDashboardHoverDetails, useMyAssignedTasks, useDashboardAISummary } from '../hooks/useDashboard';
+import { useDashboardStats, useActivityByDate, useRecentCommits, useDashboardHoverDetails, useMyAssignedTasks, useDashboardAISummary } from '../hooks/useDashboard';
 import { useProjects } from '../hooks/useProjects';
 import { getSortMode, sortProjects } from '../lib/project-sort';
 import ContributionGraph from '../components/ContributionGraph';
-import MarkdownWithFileLinks from '../components/MarkdownWithFileLinks';
-import FilePreviewModal from '../components/FilePreviewModal';
-import RepoTreeModal from '../components/RepoTreeModal';
-import { getGitLabRepoPaths, type GitLabIntegrationConfig } from '../lib/gitlab';
-import { getGitHubRepos } from '../lib/github';
 import { supabase } from '../lib/supabase';
-import { useProjectFilePaths, type FileRef } from '../hooks/useProjectFilePaths';
 
 const statusColors: Record<string, string> = {
   at_risk: 'text-accent',
@@ -37,13 +31,6 @@ const statusColors: Record<string, string> = {
 const statusIcons: Record<string, typeof Circle> = {
   at_risk: AlertTriangle,
   complete: CheckCircle,
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  not_started: 'Not Started',
-  in_progress: 'In Progress',
-  in_review: 'In Review',
-  complete: 'Complete',
 };
 
 function StatHoverCard({
@@ -90,7 +77,6 @@ export default function DashboardPage() {
   const projects = sortProjects(rawProjects, getSortMode());
   const [projectMemberCounts, setProjectMemberCounts] = useState<Record<string, number>>({});
   const { data: activityData, loading: activityLoading } = useActivityByDate();
-  const { insight, loading: insightLoading } = useLatestInsight();
   const { commits: recentCommits, loading: commitsLoading } = useRecentCommits();
   const { tasks: hoverTasks, events: hoverEvents, breakdown, loading: hoverLoading } = useDashboardHoverDetails();
   const { tasks: myTasks, loading: myTasksLoading } = useMyAssignedTasks();
@@ -106,34 +92,6 @@ export default function DashboardPage() {
   const [canScrollMyTasksLeft, setCanScrollMyTasksLeft] = useState(false);
   const [canScrollMyTasksRight, setCanScrollMyTasksRight] = useState(false);
   const [isMyTasksDragging, setIsMyTasksDragging] = useState(false);
-
-  // Repo context for the insight's project
-  const [insightGitlabRepos, setInsightGitlabRepos] = useState<string[]>([]);
-  const [repoTreeTarget, setRepoTreeTarget] = useState<{ repo: string; type: 'github' | 'gitlab'; projectId?: string | null } | null>(null);
-  const [previewFileRef, setPreviewFileRef] = useState<FileRef | null>(null);
-  const [previewContent, setPreviewContent] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-
-  const insightProject = insight ? projects.find((p) => p.id === insight.project_id) ?? null : null;
-  const { filePaths: insightFilePaths, fetchFileContent } = useProjectFilePaths(
-    insight?.project_id ?? null,
-    getGitHubRepos(insightProject),
-    insightGitlabRepos,
-  );
-
-  useEffect(() => {
-    if (!insight?.project_id) return;
-    supabase
-      .from('integrations')
-      .select('config')
-      .eq('project_id', insight.project_id)
-      .eq('type', 'gitlab')
-      .maybeSingle()
-      .then(({ data }) => {
-        setInsightGitlabRepos(data?.config ? getGitLabRepoPaths(data.config as GitLabIntegrationConfig) : []);
-      });
-  }, [insight?.project_id]);
 
   useEffect(() => {
     const projectIds = projects.map((p) => p.id);
@@ -152,24 +110,6 @@ export default function DashboardPage() {
         setProjectMemberCounts(counts);
       });
   }, [projects]);
-
-  const handleRepoClick = (repo: string, type: 'github' | 'gitlab') =>
-    setRepoTreeTarget({ repo, type, projectId: type === 'gitlab' ? insight?.project_id ?? null : null });
-
-  const handleFileClick = async (ref: FileRef) => {
-    setPreviewFileRef(ref);
-    setPreviewContent(null);
-    setPreviewError(null);
-    setPreviewLoading(true);
-    try {
-      const content = await fetchFileContent(ref);
-      setPreviewContent(content);
-    } catch (err: any) {
-      setPreviewError(err?.message ?? 'Failed to load file');
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
 
   const statCards = [
     { label: 'Active Projects', value: statsLoading ? '…' : String(stats.activeProjects), icon: FolderKanban, color: 'text-accent' },
@@ -621,23 +561,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {repoTreeTarget && (
-        <RepoTreeModal
-          repo={repoTreeTarget.repo}
-          type={repoTreeTarget.type}
-          projectId={repoTreeTarget.projectId}
-          onClose={() => setRepoTreeTarget(null)}
-        />
-      )}
-      {previewFileRef && (
-        <FilePreviewModal
-          fileRef={previewFileRef}
-          content={previewContent}
-          loading={previewLoading}
-          error={previewError}
-          onClose={() => setPreviewFileRef(null)}
-        />
-      )}
     </div>
   );
 }

@@ -310,7 +310,7 @@ function AiProviderCard({
       return;
     }
     setSelectedModels(nextSelectedModels);
-  }, [modelOptions, openAiMode, provider, status?.config?.enabledModels, status?.config?.preferredModel]);
+  }, [modelOptions, openAiMode, provider, status?.config?.enabledModels, status?.config?.mode, status?.config?.preferredModel]);
 
   useEffect(() => {
     if (!modelPickerOpen) return;

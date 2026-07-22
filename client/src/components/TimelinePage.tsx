@@ -6,7 +6,7 @@ import './TimelinePage.css';
 import './Timeline.css';
 import CalendarView from './CalendarView';
 import FilterDropdown from './FilterDropdown';
-import { Clock, CalendarDays, Plus, X, Layers } from 'lucide-react';
+import { Clock, CalendarDays, Plus, X } from 'lucide-react';
 
 type GroupBy = 'category';
 
@@ -34,9 +34,7 @@ const DAY_MS    = 86_400_000;
 const ROW_H     = 36;
 const SECTION_H = 26; // must match .tl-section-row height in CSS
 const SPRINT_H  = 26;  // height per sprint row
-const MONTH_H   = 24;  // month label row
 const DAY_H     = 20;  // day-number row
-const AXIS_H    = 36;
 const MIN_PPD   = 8;
 const MAX_PPD   = 140;
 
@@ -197,7 +195,7 @@ export default function TimelinePage({
     { name: '', type: 'sprint', start_date: '', end_date: '' }
   );
 
-  const setHoverFromRect = useCallback((goalId: string, rect: DOMRect, align: 'label' | 'bar' = 'bar') => {
+  const setHoverFromRect = useCallback((goalId: string, rect: DOMRect) => {
     const tooltipGap = 12;
     const preferredX = rect.right + tooltipGap;
     setHovered({
@@ -378,7 +376,6 @@ export default function TimelinePage({
     // the browser's native Ctrl+scroll page-zoom handler
     document.addEventListener('wheel', handler, { passive: false });
     return () => document.removeEventListener('wheel', handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
@@ -466,8 +463,6 @@ export default function TimelinePage({
   const rangeEnd   = new Date(Math.max(now.getTime(), new Date(allGoalsWithDeadline[allGoalsWithDeadline.length - 1].deadline!).getTime()) + 60 * DAY_MS);
   const totalDays  = Math.ceil((rangeEnd.getTime() - rangeStart.getTime()) / DAY_MS);
   const totalWidth = totalDays * pxPerDay;
-  const todayOff   = ((now.getTime() - rangeStart.getTime()) / DAY_MS) * pxPerDay;
-
   /* ─── Sprint rows ─── */
   const sprintRows  = packSprints(sprints);
   const sprintAreaH    = sprintRows.length * SPRINT_H;
@@ -685,7 +680,7 @@ export default function TimelinePage({
                   className={`tl-row tl-label-hover flex items-center px-3 gap-2 border-b border-border/30 ${onGoalClick ? 'cursor-pointer' : ''}`}
                   {...({ style: cv({ '--tl-cat': c.border, '--tl-cat-label': c.label }) } as any)}
                   onMouseEnter={(e) => {
-                    setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect(), 'label');
+                    setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect());
                   }}
                   onMouseLeave={() => setHovered(null)}
                   onClick={() => onGoalClick?.(goal)}
@@ -830,7 +825,7 @@ export default function TimelinePage({
                   <div key={goal.id}
                     className={`tl-bar-wrap ${onGoalClick ? 'cursor-pointer' : ''}`}
                     {...({ style: cv({ '--tl-top': `${barTop}px`, '--tl-left': `${createdOff}px`, '--tl-w': `${barW}px` }) } as any)}
-                    onMouseEnter={(e) => setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect(), 'bar')}
+                    onMouseEnter={(e) => setHoverFromRect(goal.id, e.currentTarget.getBoundingClientRect())}
                     onMouseLeave={() => setHovered(null)}
                     onClick={() => onGoalClick?.(goal)}
                     onKeyDown={(event) => {

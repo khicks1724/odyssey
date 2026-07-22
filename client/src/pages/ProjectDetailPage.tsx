@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import ErrorBoundary from '../components/ErrorBoundary';
 import type { SearchPanelHandle } from '../components/SearchPanel';
-import { downloadDocx, downloadPdf, downloadPptx, exportGoalsCSV, type ReportContent } from '../lib/report-download';
+import type { ReportContent } from '../lib/report-download';
 import { useProject, useJoinRequests, deleteProjectCascade, removeSelfFromProjectAccess } from '../hooks/useProjects';
 import { useProjectLabels } from '../hooks/useProjectLabels';
 import { useProjectPrompts, type PromptFeature } from '../hooks/useProjectPrompts';
@@ -827,7 +827,7 @@ export default function ProjectDetailPage() {
         const report: RiskReport = { assessments: data.assessments ?? [], generatedAt: new Date().toISOString() };
         setRiskReport(report);
         setRiskPanelOpen(true);
-        try { localStorage.setItem(`odyssey-risk-${projectId}`, JSON.stringify(report)); } catch {}
+        try { localStorage.setItem(`odyssey-risk-${projectId}`, JSON.stringify(report)); } catch { /* Storage can be unavailable in privacy mode. */ }
       } else {
         const data = await res.json().catch(() => ({}));
         showAIError((data as { error?: string }).error ?? `Error ${res.status}`, res.status);
@@ -1435,7 +1435,7 @@ export default function ProjectDetailPage() {
 
   return (
     <>
-    <div className="app-page-width app-page-width--wide p-8 max-w-6xl mx-auto">
+    <div className="app-page-width app-page-width--wide max-w-6xl mx-auto px-4 py-6 sm:px-6 lg:p-8">
       {/* Back button */}
       <button
         type="button"
@@ -1446,10 +1446,10 @@ export default function ProjectDetailPage() {
       </button>
 
       {/* Project Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between gap-5 mb-1">
-          <div className="flex items-center gap-5 min-w-0 flex-1">
-            <div className="w-24 h-24 rounded-2xl border border-border bg-surface overflow-hidden flex items-center justify-center shrink-0">
+      <div className="mb-6 lg:mb-8">
+        <div className="flex flex-col items-stretch justify-between gap-5 xl:flex-row xl:items-center">
+          <div className="flex min-w-0 flex-1 items-start gap-4 sm:items-center sm:gap-5">
+            <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-border bg-surface sm:h-24 sm:w-24">
               {project.image_url ? (
                 <img src={project.image_url} alt={project.name} className="w-full h-full object-cover" />
               ) : (
@@ -1463,6 +1463,7 @@ export default function ProjectDetailPage() {
                   <form
                     onSubmit={async (e) => {
                       e.preventDefault();
+                      if (!isOwner) return;
                       const trimmed = nameInput.trim();
                       if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
                       setEditingName(false);
@@ -1475,6 +1476,7 @@ export default function ProjectDetailPage() {
                       onChange={(e) => setNameInput(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Escape') setEditingName(false); }}
                       onBlur={async () => {
+                        if (!isOwner) return;
                         const trimmed = nameInput.trim();
                         if (trimmed && trimmed !== project.name) await updateProject({ name: trimmed });
                         setEditingName(false);
@@ -1486,9 +1488,13 @@ export default function ProjectDetailPage() {
                   </form>
                 ) : (
                   <h1
-                    onClick={() => { setNameInput(project.name); setEditingName(true); }}
-                    title="Click to rename"
-                    className="font-sans text-3xl font-extrabold text-heading tracking-tight cursor-pointer hover:text-accent transition-colors"
+                    onClick={() => {
+                      if (!isOwner) return;
+                      setNameInput(project.name);
+                      setEditingName(true);
+                    }}
+                    title={isOwner ? 'Click to rename' : undefined}
+                    className={`break-words font-sans text-2xl font-extrabold tracking-tight text-heading sm:text-3xl ${isOwner ? 'cursor-pointer transition-colors hover:text-accent' : ''}`}
                   >
                     {project.name}
                   </h1>
@@ -1506,22 +1512,22 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
               {project.description && (
-                <p className="text-sm text-muted">{project.description}</p>
+                <p className="max-w-3xl text-sm leading-relaxed text-muted">{project.description}</p>
               )}
-              <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5">
-                <span className="text-[10px] uppercase tracking-[0.18em] text-muted font-mono">Project Hash</span>
-                <span className="text-xs font-mono text-heading">{projectFingerprint}</span>
+              <div className="mt-3 inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-surface px-3 py-1.5">
+                <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-muted">Project Hash</span>
+                <span className="break-all font-mono text-xs text-heading">{projectFingerprint}</span>
               </div>
             </div>
           </div>
-          <div className="flex items-start gap-3 shrink-0 flex-wrap justify-end">
-            <div className="relative group shrink-0">
+          <div className="flex w-full shrink-0 flex-wrap items-start justify-start gap-3 xl:w-auto xl:justify-end">
+            <div className="group relative w-full sm:w-auto sm:shrink-0">
               <button
                 type="button"
                 onClick={() => navigate(`/thesis?projectId=${encodeURIComponent(project.id)}`, {
                   state: { projectId: project.id, source: 'project-detail' },
                 })}
-                className="flex items-center gap-2 px-4 py-2 border border-accent3/30 text-accent3 text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent3/5 transition-colors rounded-md"
+                className="flex min-h-10 w-full items-center justify-center gap-2 rounded-md border border-accent3/30 px-4 py-2 font-sans text-xs font-semibold uppercase tracking-wider text-accent3 transition-colors hover:bg-accent3/5 sm:w-auto"
               >
                 <GraduationCap size={13} /> Open In Thesis
               </button>
@@ -1531,11 +1537,11 @@ export default function ProjectDetailPage() {
               </div>
             </div>
 
-            <div className="relative group shrink-0">
+            <div className="group relative w-full sm:w-auto sm:shrink-0">
               <button
                 type="button"
                 onClick={() => setIuOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 border border-accent/30 text-accent text-xs font-sans font-semibold tracking-wider uppercase hover:bg-accent/5 transition-colors rounded-md"
+                className="flex min-h-10 w-full items-center justify-center gap-2 rounded-md border border-accent/30 px-4 py-2 font-sans text-xs font-semibold uppercase tracking-wider text-accent transition-colors hover:bg-accent/5 sm:w-auto"
               >
                 <Sparkles size={13} /> Intelligent Update
               </button>
@@ -2452,7 +2458,7 @@ function DocumentsTab({
               const rangeStr = r.date_range_from && r.date_range_to
                 ? `${r.date_range_from} → ${r.date_range_to}` : '';
               return (
-                <div key={r.id} className="flex items-center gap-3 px-4 py-3 hover:bg-surface2 transition-colors group">
+                <div key={r.id} className="group flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-surface2">
                   <span className="text-base shrink-0">{fmtIcon}</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-heading font-medium truncate">{r.title}</p>
@@ -2462,46 +2468,51 @@ function DocumentsTab({
                       {r.format && <span className="text-[9px] px-1.5 py-0.5 border border-border rounded text-muted font-mono uppercase">{r.format}</span>}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    title="Preview report"
-                    onClick={() => setPreviewReport(r)}
-                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
-                  >
-                    <FileText size={11} /> View
-                  </button>
-                  <button
-                    type="button"
-                    title="Download report"
-                    onClick={async () => {
-                      const rc = r.content as unknown as ReportContent;
-                      if (r.format === 'pptx') await downloadPptx(rc);
-                      else if (r.format === 'pdf') await downloadPdf(rc);
-                      else await downloadDocx(rc);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
-                  >
-                    <Download size={11} /> Download
-                  </button>
-                  <button
-                    type="button"
-                    title="Export goals as CSV"
-                    onClick={async () => {
-                      exportGoalsCSV(r.content as unknown as ReportContent);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 text-[10px] border border-border text-muted rounded hover:text-heading hover:border-border/80 transition-all"
-                  >
-                    <Table size={11} /> CSV
-                  </button>
-                  <button
-                    type="button"
-                    title="Delete report"
-                    onClick={() => handleDeleteReport(r.id)}
-                    disabled={deletingReportId === r.id}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-muted hover:text-danger transition-all disabled:opacity-40"
-                  >
-                    {deletingReportId === r.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                  </button>
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+                    <button
+                      type="button"
+                      title="Preview report"
+                      onClick={() => setPreviewReport(r)}
+                      className="flex min-h-8 items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-border/80 hover:text-heading focus-visible:outline-2 focus-visible:outline-accent"
+                    >
+                      <FileText size={11} /> View
+                    </button>
+                    <button
+                      type="button"
+                      title="Download report"
+                      onClick={async () => {
+                        const { downloadDocx, downloadPdf, downloadPptx } = await import('../lib/report-download');
+                        const rc = r.content as unknown as ReportContent;
+                        if (r.format === 'pptx') await downloadPptx(rc);
+                        else if (r.format === 'pdf') await downloadPdf(rc);
+                        else await downloadDocx(rc);
+                      }}
+                      className="flex min-h-8 items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-border/80 hover:text-heading focus-visible:outline-2 focus-visible:outline-accent"
+                    >
+                      <Download size={11} /> Download
+                    </button>
+                    <button
+                      type="button"
+                      title="Export goals as CSV"
+                      onClick={async () => {
+                        const { exportGoalsCSV } = await import('../lib/report-download');
+                        exportGoalsCSV(r.content as unknown as ReportContent);
+                      }}
+                      className="flex min-h-8 items-center gap-1 rounded border border-border px-2 py-1 text-[10px] text-muted transition-colors hover:border-border/80 hover:text-heading focus-visible:outline-2 focus-visible:outline-accent"
+                    >
+                      <Table size={11} /> CSV
+                    </button>
+                    <button
+                      type="button"
+                      title="Delete report"
+                      aria-label={`Delete ${r.title}`}
+                      onClick={() => handleDeleteReport(r.id)}
+                      disabled={deletingReportId === r.id}
+                      className="flex h-8 w-8 items-center justify-center rounded text-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
+                    >
+                      {deletingReportId === r.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -3076,7 +3087,7 @@ function RepoPanel({
   );
 }
 
-function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gitlabRepos, goals, o365Docs, onNavigateSettings }: IntegrationsPreviewTabProps) {
+function IntegrationsPreviewTab({ projectId, project, githubRepo, gitlabRepos, goals, o365Docs, onNavigateSettings }: IntegrationsPreviewTabProps) {
   const { agent } = useAIAgent();
   const githubRepoList = Array.isArray(githubRepo) ? githubRepo : (githubRepo ? [githubRepo] : []);
   const [selectedGhRepo, setSelectedGhRepo] = useState<string>(githubRepoList[0] ?? '');
@@ -3094,6 +3105,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
   const [glLoading, setGlLoading] = useState(false);
   const [glScanLoading, setGlScanLoading] = useState(false);
   const [glScanResults, setGlScanResults] = useState<{ completed: string[]; suggested: { title: string; reason: string }[]; provider?: string } | null>(null);
+  const [glScanError, setGlScanError] = useState<string | null>(null);
 
   const parseCommits = (raw: string[]): CommitEntry[] =>
     raw.filter((commit) => !isGeneratedThesisLatexCommitMessage(commit)).slice(0, 30).map((c) => {
@@ -3111,8 +3123,8 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
       const headers: Record<string, string> = {};
       if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
       Promise.all([
-        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
-        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(_projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
+        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/recent?projectId=${encodeURIComponent(projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
+        fetch(`/api/github/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/tree?projectId=${encodeURIComponent(projectId)}`, { headers }).then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e?.error ?? `HTTP ${r.status}`); })),
       ]).then(([recent, tree]) => {
         if (recent) {
           setGhCommits(parseCommits(recent.commits ?? []));
@@ -3124,7 +3136,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         setGhError(msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('api rate') ? 'GitHub API rate limit exceeded — add a GITHUB_TOKEN to the server to fix this.' : msg);
       }).finally(() => setGhLoading(false));
     })();
-  }, [activeGithubRepo]);
+  }, [activeGithubRepo, projectId]);
 
   useEffect(() => {
     if (!gitlabRepo) return;
@@ -3134,8 +3146,8 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
       const headers: Record<string, string> = {};
       if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
       Promise.all([
-        fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
-        fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
+        fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
+        fetch(`/api/gitlab/tree?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers }).then((r) => r.ok ? r.json() : null),
       ]).then(([recent, tree]) => {
         if (recent) {
           setGlCommits(parseCommits(recent.commits ?? []));
@@ -3144,21 +3156,22 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         if (tree?.files) setGlFiles(tree.files);
       }).catch(() => {}).finally(() => setGlLoading(false));
     })();
-  }, [gitlabRepo, _projectId]);
+  }, [gitlabRepo, projectId]);
 
   const handleGitLabScan = async () => {
     if (!gitlabRepo || !project) return;
     setGlScanLoading(true);
     setGlScanResults(null);
+    setGlScanError(null);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const headers: Record<string, string> = {};
       if (sessionData.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
-      const recentRes = await fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(_projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers });
+      const recentRes = await fetch(`/api/gitlab/recent?projectId=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(gitlabRepo)}`, { headers });
       const recentData = recentRes.ok ? await recentRes.json() : {};
       const scanRes = await fetch('/api/ai/repo-scan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent,
           projectName: project.name,
@@ -3167,8 +3180,12 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
           readme: recentData.readme ?? '',
         }),
       });
-      if (scanRes.ok) setGlScanResults(await scanRes.json());
-    } catch { /* ignore */ } finally {
+      const scanData = await scanRes.json().catch(() => ({}));
+      if (!scanRes.ok) throw new Error(scanData.error ?? `GitLab scan failed (${scanRes.status})`);
+      setGlScanResults(scanData);
+    } catch (error) {
+      setGlScanError(error instanceof Error ? error.message : 'GitLab scan failed.');
+    } finally {
       setGlScanLoading(false);
     }
   };
@@ -3180,7 +3197,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         icon={<Github size={14} className={activeGithubRepo ? 'text-heading' : 'text-muted'} />}
         source="github"
         repoId={activeGithubRepo ?? ''}
-        projectId={_projectId}
+        projectId={projectId}
         repoLabel={activeGithubRepo ?? undefined}
         repoUrl={activeGithubRepo ? `https://github.com/${activeGithubRepo}` : undefined}
         titleExtra={githubRepoList.length > 1 ? (
@@ -3213,7 +3230,7 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         }
         source="gitlab"
         repoId={gitlabRepo ?? ''}
-        projectId={_projectId}
+        projectId={projectId}
         repoLabel={undefined}
         titleExtra={gitlabRepos.length > 1 ? (
           <select
@@ -3235,8 +3252,24 @@ function IntegrationsPreviewTab({ projectId: _projectId, project, githubRepo, gi
         loading={glLoading}
         connected={!!gitlabRepo}
         onNavigateSettings={onNavigateSettings}
-        scanButton={undefined}
+        scanButton={gitlabRepo ? (
+          <button
+            type="button"
+            onClick={handleGitLabScan}
+            disabled={glScanLoading}
+            className="inline-flex items-center gap-1.5 rounded border border-[#FC6D26]/30 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#FC6D26] transition-colors hover:bg-[#FC6D26]/10 disabled:opacity-50"
+          >
+            {glScanLoading ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+            {glScanLoading ? 'Scanning…' : 'AI Scan'}
+          </button>
+        ) : undefined}
       />
+
+      {glScanError && (
+        <div className="rounded border border-danger/20 bg-danger/5 px-4 py-3 text-xs text-danger" role="alert">
+          {glScanError}
+        </div>
+      )}
 
       {/* GitLab scan results */}
       {glScanResults && (

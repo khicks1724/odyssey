@@ -124,7 +124,7 @@ function parseDateRange(text: string): { from: string | null; to: string | null 
   }
 
   // "since [date]" or "from [date]" — open-ended
-  const sinceRe = /(?:since|from)\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\w+\s+\d{4})/;
+  const sinceRe = /(?:since|from)\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\w+\s+\d{4})/;
   const sinceM = t.match(sinceRe);
   if (sinceM) {
     const d = new Date(sinceM[1]);
