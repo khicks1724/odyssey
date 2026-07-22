@@ -52,15 +52,23 @@ function buildAIErrorState(agent: AIAgentValue, providers: ProviderInfo[], error
   const providerInfo = agent === 'auto' ? null : providers.find((provider) => provider.id === (isOpenAIAgentValue(agent) ? 'gpt-4o' : agent));
   const lower = detail.toLowerCase();
 
-  if (lower.includes('browser-direct mode is not active') || lower.includes('no browser-session stark key')) {
+  if (lower.includes('workstation bridge is not active') || lower.includes('browser-direct mode is not active') || lower.includes('no browser-session stark key')) {
     return {
-      title: 'GenAI.mil Browser Session Required',
-      message: 'Open Settings → AI Providers, re-enter your STARK key, and click Test. The browser copy stays only in this tab session so GenAI.mil traffic can leave through your DoW connection.',
+      title: 'GenAI.mil Workstation Session Required',
+      message: 'Open Settings → AI Providers, install or start the workstation bridge, re-enter your STARK key, and click Test. The key copy stays only in this tab session.',
       detail,
     };
   }
 
-  if (lower.includes("browser's network location") || lower.includes('this browser to an approved dow network')) {
+  if (lower.includes('normal cross-origin browser request') || lower.includes('install the odyssey genai.mil chrome/edge bridge')) {
+    return {
+      title: 'GenAI.mil Workstation Bridge Required',
+      message: 'STARK does not permit a normal cross-origin site request. Install the browser bridge from Settings → AI Providers, reload Odyssey, and test the key again.',
+      detail,
+    };
+  }
+
+  if (lower.includes("browser's network location") || lower.includes("workstation's network location") || lower.includes('this browser to an approved dow network')) {
     return {
       title: 'GenAI.mil Network Access Required',
       message: 'GenAI.mil rejected this device’s network location. Connect this browser to an approved DoW network, then retry.',

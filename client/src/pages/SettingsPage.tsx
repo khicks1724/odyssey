@@ -6,16 +6,23 @@ import { useAIAgent } from '../lib/ai-agent';
 import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models';
 import { supabase } from '../lib/supabase';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
+import { withBasePath } from '../lib/base-path';
 import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Clock, KeyRound, Eye, EyeOff, Trash2, ExternalLink, RefreshCw, Camera, X, Github } from 'lucide-react';
 import {
   GenAiMilBrowserApiError,
   clearGenAiMilBrowserKey,
+  detectGenAiMilBrowserTransport,
   getGenAiMilBrowserKey,
+  getGenAiMilBrowserTransport,
   hasGenAiMilBrowserKey,
   isGenAiMilBrowserKey,
+  isGenAiMilBrowserReady,
   setGenAiMilBrowserKey,
   subscribeToGenAiMilBrowserKey,
+  subscribeToGenAiMilBrowserReadiness,
+  subscribeToGenAiMilBrowserTransport,
   testGenAiMilFromBrowser,
+  type GenAiMilBrowserTransport,
 } from '../lib/genai-mil-browser';
 
 const TimezoneGlobe = lazyWithRetry(() => import('../components/TimezoneGlobe'), 'settings-timezone-globe');
@@ -177,7 +184,7 @@ const AI_PROVIDER_META: Record<AiServiceProvider, { label: string; hint: string;
   },
   google: {
     label: 'GenAI.mil (DoW)',
-    hint: 'Browser-direct STARK access using this device\'s DoW network connection',
+    hint: 'Workstation-routed STARK access using this device\'s DoW network connection',
     placeholder: 'STARK_…',
     keyUrl: 'https://api.genai.mil',
   },
@@ -258,7 +265,10 @@ function AiProviderCard({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [testErrorAction, setTestErrorAction] = useState<{ href: string; label: string } | null>(null);
-  const [browserDirectReady, setBrowserDirectReady] = useState(hasGenAiMilBrowserKey);
+  const [browserKeyLoaded, setBrowserKeyLoaded] = useState(hasGenAiMilBrowserKey);
+  const [browserSessionReady, setBrowserSessionReady] = useState(isGenAiMilBrowserReady);
+  const [browserTransport, setBrowserTransport] = useState<GenAiMilBrowserTransport | null>(getGenAiMilBrowserTransport);
+  const [bridgeChecking, setBridgeChecking] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
   const hasKey = status?.hasKey ?? false;
@@ -339,9 +349,33 @@ function AiProviderCard({
 
   useEffect(() => {
     if (provider !== 'google') return;
-    setBrowserDirectReady(hasGenAiMilBrowserKey());
-    return subscribeToGenAiMilBrowserKey(setBrowserDirectReady);
+    setBrowserKeyLoaded(hasGenAiMilBrowserKey());
+    setBrowserSessionReady(isGenAiMilBrowserReady());
+    setBrowserTransport(getGenAiMilBrowserTransport());
+    const unsubscribeKey = subscribeToGenAiMilBrowserKey(setBrowserKeyLoaded);
+    const unsubscribeReady = subscribeToGenAiMilBrowserReadiness(setBrowserSessionReady);
+    const unsubscribeTransport = subscribeToGenAiMilBrowserTransport(setBrowserTransport);
+    let cancelled = false;
+    setBridgeChecking(true);
+    void detectGenAiMilBrowserTransport().finally(() => {
+      if (!cancelled) setBridgeChecking(false);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribeKey();
+      unsubscribeReady();
+      unsubscribeTransport();
+    };
   }, [provider]);
+
+  const handleDetectBridge = async () => {
+    setBridgeChecking(true);
+    try {
+      await detectGenAiMilBrowserTransport();
+    } finally {
+      setBridgeChecking(false);
+    }
+  };
 
   const toggleSelectedModel = (modelId: string) => {
     setSelectedModels((current) => {
@@ -524,9 +558,14 @@ function AiProviderCard({
           throw new Error('Re-enter your STARK key once in this browser tab, then click Test. Stored server keys are never revealed back to the browser.');
         }
         const data = await testGenAiMilFromBrowser(browserKey);
+        const transportLabel = data.transport === 'extension'
+          ? 'Chrome/Edge bridge'
+          : data.transport === 'localhost'
+            ? 'workstation relay'
+            : 'direct browser connection';
         setTestResult({
           ok: true,
-          message: `GenAI.mil is working through this browser (${data.models.length} model${data.models.length === 1 ? '' : 's'} available). Model: ${data.model}`,
+          message: `GenAI.mil is working through the ${transportLabel} (${data.models.length} model${data.models.length === 1 ? '' : 's'} available). Model: ${data.model}`,
         });
         setTesting(false);
         return;
@@ -628,13 +667,64 @@ function AiProviderCard({
       </div>
 
       {provider === 'google' && (
-        <div className={`flex items-center justify-between gap-3 border px-3 py-2 rounded ${browserDirectReady ? 'border-accent3/25 bg-accent3/5' : 'border-accent/20 bg-accent/5'}`}>
-          <p className="text-[10px] text-muted">
-            GenAI.mil calls leave through this browser, not the Odyssey AWS server. Its browser copy is retained only for this tab session.
-          </p>
-          <span className={`shrink-0 text-[9px] font-mono uppercase ${browserDirectReady ? 'text-accent3' : 'text-accent'}`}>
-            {browserDirectReady ? 'Browser ready' : 'Re-enter key'}
-          </span>
+        <div className={`space-y-2 border px-3 py-2.5 rounded ${browserSessionReady ? 'border-accent3/25 bg-accent3/5' : 'border-accent/20 bg-accent/5'}`}>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[10px] text-muted">
+              GenAI.mil calls leave through this workstation, not the Odyssey AWS server. Its browser copy is retained only for this tab session.
+            </p>
+            <span className={`shrink-0 text-[9px] font-mono uppercase ${browserSessionReady ? 'text-accent3' : 'text-accent'}`}>
+              {browserSessionReady
+                ? `${browserTransport === 'extension' ? 'Extension' : browserTransport === 'localhost' ? 'Local relay' : 'Direct'} ready`
+                : browserTransport
+                  ? `${browserTransport === 'extension' ? 'Extension' : browserTransport === 'localhost' ? 'Local relay' : 'Direct'} detected · Test key`
+                  : bridgeChecking
+                    ? 'Checking bridge'
+                    : browserKeyLoaded ? 'Bridge required' : 'Install bridge'}
+            </span>
+          </div>
+
+          <details open={!browserTransport} className="border-t border-border/50 pt-2">
+            <summary className="cursor-pointer text-[10px] font-semibold text-heading">
+              Workstation bridge setup
+            </summary>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div className="border border-border/70 bg-surface/60 p-2.5 space-y-1.5 rounded">
+                <p className="text-[10px] font-semibold text-heading">Recommended · Chrome / Edge extension</p>
+                <p className="text-[10px] text-muted leading-relaxed">
+                  Download and unzip it, open <span className="font-mono text-heading">chrome://extensions</span> or <span className="font-mono text-heading">edge://extensions</span>, enable Developer mode, then Load unpacked and reload Odyssey.
+                </p>
+                <a
+                  href={withBasePath('/api/ai/genai-mil-bridge/extension.zip')}
+                  download
+                  className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline"
+                >
+                  Download browser bridge <ExternalLink size={9} />
+                </a>
+              </div>
+              <div className="border border-border/70 bg-surface/60 p-2.5 space-y-1.5 rounded">
+                <p className="text-[10px] font-semibold text-heading">Fallback · Local Python relay</p>
+                <p className="text-[10px] text-muted leading-relaxed">
+                  Download and run <span className="font-mono text-heading">py odyssey-genai-mil-relay.py</span> on Windows or <span className="font-mono text-heading">python3 odyssey-genai-mil-relay.py</span> on macOS/Linux. Keep its window open.
+                </p>
+                <a
+                  href={withBasePath('/genai-mil-bridge/odyssey-genai-mil-relay.py')}
+                  download
+                  className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline"
+                >
+                  Download local relay <ExternalLink size={9} />
+                </a>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleDetectBridge()}
+              disabled={bridgeChecking}
+              className="mt-2 inline-flex items-center gap-1.5 border border-border px-2 py-1 text-[9px] font-mono uppercase text-muted hover:text-heading hover:bg-surface2 disabled:opacity-50 rounded"
+            >
+              <RefreshCw size={9} className={bridgeChecking ? 'animate-spin' : ''} />
+              {bridgeChecking ? 'Checking' : 'Detect bridge'}
+            </button>
+          </details>
         </div>
       )}
 

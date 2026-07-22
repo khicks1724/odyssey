@@ -266,7 +266,7 @@ async function starkRequest(path: string, options: {
       if (path !== '/models' && path !== '/chat/completions') {
         throw new GenAiMilApiError({
           code: 'browser_request_failed',
-          message: 'Odyssey refused an unsupported GenAI.mil browser-direct path.',
+          message: 'Odyssey refused an unsupported GenAI.mil workstation-bridge path.',
         });
       }
       const relayResponse = await requestGenAiFromBrowser(relayUserId, {

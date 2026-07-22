@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   clearGenAiMilBrowserKey,
+  detectGenAiMilBrowserTransport,
   hasGenAiMilBrowserKey,
+  isGenAiMilBrowserReady,
   performGenAiMilBrowserFetch,
-  subscribeToGenAiMilBrowserKey,
+  subscribeToGenAiMilBrowserReadiness,
 } from '../lib/genai-mil-browser';
 import { supabase } from '../lib/supabase';
 
@@ -74,13 +76,13 @@ async function handleRelayRequest(request: RelayRequest, signal: AbortSignal): P
   } catch (error) {
     await postResult(request.id, {
       ok: false,
-      error: error instanceof Error ? error.message : 'Browser-direct GenAI.mil request failed.',
+      error: error instanceof Error ? error.message : 'Workstation-routed GenAI.mil request failed.',
     }, signal);
   }
 }
 
 async function runWorker(clientId: string, signal: AbortSignal): Promise<void> {
-  while (!signal.aborted && hasGenAiMilBrowserKey()) {
+  while (!signal.aborted && isGenAiMilBrowserReady()) {
     const authorization = await getAuthHeader();
     if (!authorization) {
       await wait(1_000, signal);
@@ -110,9 +112,13 @@ async function runWorker(clientId: string, signal: AbortSignal): Promise<void> {
 }
 
 export default function GenAiMilBrowserRelay() {
-  const [enabled, setEnabled] = useState(hasGenAiMilBrowserKey);
+  const [enabled, setEnabled] = useState(isGenAiMilBrowserReady);
 
-  useEffect(() => subscribeToGenAiMilBrowserKey(setEnabled), []);
+  useEffect(() => subscribeToGenAiMilBrowserReadiness(setEnabled), []);
+
+  useEffect(() => {
+    if (hasGenAiMilBrowserKey()) void detectGenAiMilBrowserTransport();
+  }, []);
 
   useEffect(() => {
     const { data: subscription } = supabase.auth.onAuthStateChange((event) => {

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { supabase } from './supabase';
 import { buildOpenAiAgentValue, canonicalizeOpenAiModelId, parseOpenAiAgentValue, type OpenAiReasoningEffort } from './openai-models';
-import { hasGenAiMilBrowserKey, subscribeToGenAiMilBrowserKey } from './genai-mil-browser';
+import { isGenAiMilBrowserReady, subscribeToGenAiMilBrowserReadiness } from './genai-mil-browser';
 
 export type FixedAIProvider = 'claude-haiku' | 'claude-sonnet' | 'claude-opus' | 'gpt-4o' | 'gemini-pro' | 'genai-mil' | 'nvidia' | 'gemma4';
 export type OpenAIAgentValue = `openai:${string}`;
@@ -54,7 +54,7 @@ const PROVIDERS_TTL_MS = 5 * 60 * 1000; // re-fetch at most once every 5 minutes
 let lastProvidersFetch = 0;
 const FIXED_VALUES: FixedAIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'gemini-pro', 'genai-mil', 'nvidia', 'gemma4'];
 
-function applyBrowserProviderReadiness(list: ProviderInfo[], browserReady = hasGenAiMilBrowserKey()): ProviderInfo[] {
+function applyBrowserProviderReadiness(list: ProviderInfo[], browserReady = isGenAiMilBrowserReady()): ProviderInfo[] {
   return list.map((provider) => {
     if (provider.id !== 'genai-mil' || !provider.userKeyLinked) return provider;
     return {
@@ -128,7 +128,7 @@ export function AIAgentProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { fetchProviders(); }, [fetchProviders]);
 
-  useEffect(() => subscribeToGenAiMilBrowserKey((browserReady) => {
+  useEffect(() => subscribeToGenAiMilBrowserReadiness((browserReady) => {
     setProviders((current) => applyBrowserProviderReadiness(current, browserReady));
   }), []);
 

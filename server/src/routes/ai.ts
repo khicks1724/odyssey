@@ -782,7 +782,7 @@ async function chatWithAudit(
     if (!userId || !hasActiveGenAiBrowserRelay(userId)) {
       throw new GenAiMilApiError({
         code: 'browser_relay_unavailable',
-        message: 'GenAI.mil browser-direct mode is not active. Open Settings → AI Providers and save or test your STARK key in this browser tab, then retry.',
+        message: 'The GenAI.mil workstation bridge is not active. Open Settings → AI Providers, install or start a bridge, and test your STARK key in this browser tab, then retry.',
       });
     }
     result = await withGenAiBrowserRelay(userId, run);
@@ -824,7 +824,7 @@ async function streamChatWithAudit(
     if (!userId || !hasActiveGenAiBrowserRelay(userId)) {
       throw new GenAiMilApiError({
         code: 'browser_relay_unavailable',
-        message: 'GenAI.mil browser-direct mode is not active. Open Settings → AI Providers and save or test your STARK key in this browser tab, then retry.',
+        message: 'The GenAI.mil workstation bridge is not active. Open Settings → AI Providers, install or start a bridge, and test your STARK key in this browser tab, then retry.',
       });
     }
     result = await withGenAiBrowserRelay(userId, run);

@@ -156,13 +156,13 @@ export async function requestGenAiFromBrowser(
   if (!hasActiveGenAiBrowserRelay(userId)) {
     throw new GenAiBrowserRelayError(
       'browser_relay_unavailable',
-      'GenAI.mil browser-direct mode is not active. Open Settings → AI Providers and save or test your STARK key in this browser tab, then retry.',
+      'The GenAI.mil workstation bridge is not active. Open Settings → AI Providers, install or start a bridge, and test your STARK key in this browser tab, then retry.',
     );
   }
   if (state.queue.length >= MAX_QUEUE_DEPTH) {
     throw new GenAiBrowserRelayError(
       'browser_request_failed',
-      'The GenAI.mil browser-direct queue is full. Wait for the current requests to finish, then retry.',
+      'The GenAI.mil workstation bridge queue is full. Wait for the current requests to finish, then retry.',
     );
   }
 

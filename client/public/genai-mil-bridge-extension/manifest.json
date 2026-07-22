@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Odyssey GenAI.mil Bridge",
+  "version": "1.0.0",
+  "description": "Lets Odyssey call GenAI.mil through this workstation's approved DoW network without exposing the STARK key to the Odyssey server.",
+  "host_permissions": [
+    "https://api.genai.mil/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://asterias.ssag.nps.edu/odyssey/*",
+        "http://localhost:5173/*",
+        "http://127.0.0.1:5173/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}
