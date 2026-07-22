@@ -1,15 +1,12 @@
 import React from 'react';
 import {
-  Activity,
   BarChart3,
-  CalendarDays,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Clock3,
   FolderKanban,
   GitCommitHorizontal,
-  Layers3,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -617,6 +614,7 @@ function ActivityTab({
     }
 
     const totalCommits = repoHistory.commits.reduce((sum, commit) => sum + commit.count, 0);
+    const firstAccessIssue = repoHistory.error ?? repoHistory.warnings[0] ?? null;
     const sourceStats = Array.from(repoCountBySource.entries())
       .map(([source, value]) => ({ label: SOURCE_LABELS[source] ?? source, value }))
       .filter((entry) => entry.value > 0)
@@ -626,6 +624,8 @@ function ActivityTab({
       ? 'Syncing'
       : repoHistory.hasData
         ? 'Live'
+        : firstAccessIssue
+          ? 'Unavailable'
         : linkedRepoCount > 0
           ? 'Idle'
           : 'Quiet';
@@ -633,7 +633,9 @@ function ActivityTab({
     const meta = repoHistory.loading
       ? 'Checking linked GitHub and GitLab repositories for recent commit history.'
       : repoHistory.hasData
-        ? `${totalCommits} commits across ${Math.max(repoHistory.byRepo.length, 1)} linked repo${repoHistory.byRepo.length === 1 ? '' : 's'} in the last 12 months.`
+        ? `${totalCommits} commits across ${Math.max(repoHistory.byRepo.length, 1)} linked repo${repoHistory.byRepo.length === 1 ? '' : 's'} in the last 12 months.${firstAccessIssue ? ' Some repository history is unavailable.' : ''}`
+        : firstAccessIssue
+          ? `Repository history could not be read: ${firstAccessIssue}`
         : linkedRepoCount > 0
           ? `${linkedRepoCount} linked repo${linkedRepoCount === 1 ? '' : 's'} found, but no commits were returned in the last 12 months.`
           : 'No GitHub or GitLab repositories are currently linked to this project.';
@@ -646,8 +648,9 @@ function ActivityTab({
       sourceStats,
       repoView,
       meta,
+      firstAccessIssue,
     };
-  }, [repoHistory.byRepo, repoHistory.commits, repoHistory.hasData, repoHistory.linkedRepos.length, repoHistory.loading]);
+  }, [repoHistory.byRepo, repoHistory.commits, repoHistory.error, repoHistory.hasData, repoHistory.linkedRepos.length, repoHistory.loading, repoHistory.warnings]);
 
   const activityModel = React.useMemo(() => {
     const now = Date.now();
@@ -1091,7 +1094,7 @@ function ActivityTab({
           hoverContent={
             <div className="space-y-4">
               <div className="grid grid-cols-3 gap-2">
-                <HoverPanelStat label="Repo View" value={repoSummary.repoView} tone={repoHistory.hasData ? 'positive' : repoSummary.linkedRepoCount > 0 ? 'warning' : 'danger'} />
+                <HoverPanelStat label="Repo View" value={repoSummary.repoView} tone={repoHistory.hasData ? 'positive' : repoSummary.firstAccessIssue ? 'danger' : repoSummary.linkedRepoCount > 0 ? 'warning' : 'danger'} />
                 <HoverPanelStat label="Linked Repos" value={String(repoSummary.linkedRepoCount)} tone={repoSummary.linkedRepoCount > 0 ? 'warning' : 'neutral'} />
                 <HoverPanelStat label="30d Commits" value={String(repoSummary.recentCommitCount)} tone={repoSummary.recentCommitCount > 0 ? 'positive' : 'neutral'} />
               </div>
@@ -1116,6 +1119,8 @@ function ActivityTab({
                     ? 'Repository history is syncing now, so this card will update as soon as linked repo commits are loaded.'
                     : repoHistory.hasData
                       ? 'Repository history is connected into this activity view, so the momentum card and commit charts are now reading from the same linked-repo feed.'
+                      : repoSummary.firstAccessIssue
+                        ? `Odyssey found the linked repository but could not read its history: ${repoSummary.firstAccessIssue}`
                       : repoSummary.linkedRepoCount > 0
                         ? 'Linked repositories were found, but no recent commit history was returned, so the project appears connected but currently quiet.'
                         : 'No linked repositories are configured yet, so repo momentum cannot be measured from GitHub or GitLab.'}
@@ -1129,6 +1134,8 @@ function ActivityTab({
                     ? repoSummary.recentCommitCount > 0
                       ? `${repoSummary.recentCommitCount} commit${repoSummary.recentCommitCount === 1 ? '' : 's'} landed in the last 30 days across ${Math.max(repoSummary.activeRepoCount, 1)} active repo${repoSummary.activeRepoCount === 1 ? '' : 's'}.`
                       : `${repoSummary.totalCommits} commit${repoSummary.totalCommits === 1 ? '' : 's'} are linked in the last 12 months, but the last 30 days have been quiet.`
+                    : repoSummary.firstAccessIssue
+                      ? 'Repository access needs attention; Odyssey no longer treats a failed history request as zero activity.'
                     : repoSummary.linkedRepoCount > 0
                       ? 'The repo integration is present, but commit history did not return any activity in the lookback window.'
                       : 'Link GitHub or GitLab here to add a real code-momentum lane instead of relying only on task and collaboration activity.'}
@@ -1144,14 +1151,41 @@ function ActivityTab({
             <h3 className="text-sm font-semibold text-heading">Repository Activity</h3>
             <p className="text-xs text-muted mt-1">Combined commit heatmap and commit velocity across all linked project repos.</p>
           </div>
-          <span className="text-[11px] font-mono text-muted">
-            {repoHistory.loading ? 'syncing repo data' : repoHistory.hasData ? 'repo data connected' : repoSummary.linkedRepoCount > 0 ? 'repos linked, no commits returned' : 'waiting for repo data'}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-mono text-muted">
+              {repoHistory.loading
+                ? 'syncing repo data'
+                : repoHistory.hasData
+                  ? `updated ${repoHistory.lastUpdated ? formatRelativeDay(repoHistory.lastUpdated) : 'just now'}`
+                  : repoSummary.firstAccessIssue
+                    ? 'repository access issue'
+                    : repoSummary.linkedRepoCount > 0
+                      ? 'repos linked, no commits returned'
+                      : 'waiting for repo data'}
+            </span>
+            <button
+              type="button"
+              onClick={() => void repoHistory.refresh()}
+              disabled={repoHistory.loading || repoHistory.refreshing}
+              title="Refresh repository history"
+              className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1.5 text-[10px] font-mono text-muted transition-colors hover:bg-surface2 hover:text-heading disabled:cursor-wait disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={repoHistory.loading || repoHistory.refreshing ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
         </div>
-        <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} />
+        <CommitActivityCharts projectId={project.id} onHasData={setHasCommitData} history={repoHistory} />
+        {!repoHistory.loading && repoHistory.warnings.length > 0 && (
+          <div className="mt-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">
+            {repoHistory.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+          </div>
+        )}
         {!repoHistory.loading && !repoHistory.hasData && (
           <div className="mt-3 rounded-xl border border-border/70 bg-surface2/35 px-4 py-3 text-xs text-muted">
-            {repoSummary.linkedRepoCount > 0
+            {repoSummary.firstAccessIssue
+              ? 'Odyssey could not read commit history. Check the repository path and reconnect a GitHub or GitLab token with repository read access.'
+              : repoSummary.linkedRepoCount > 0
               ? 'Linked repositories are connected, but no commit activity was returned for the current lookback window.'
               : 'Link GitHub or GitLab repositories to surface combined commit heatmaps and daily commit velocity here.'}
           </div>

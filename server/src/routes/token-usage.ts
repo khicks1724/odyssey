@@ -54,6 +54,13 @@ interface LogAiTokenUsageInput {
   knownUserId?: string | null;
 }
 
+interface AuthorizedTokenUsageUser {
+  userId: string;
+  email: string;
+  displayName: string;
+  isAdmin: boolean;
+}
+
 function normalizeDateOnly(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim() ?? '';
   if (!trimmed) return fallback;
@@ -71,6 +78,14 @@ function normalizeTimeZone(value: string | undefined): string {
   } catch {
     return 'UTC';
   }
+}
+
+function parseGranularity(value: string | undefined): UsageGranularity {
+  return value === 'week' || value === 'month' ? value : 'day';
+}
+
+function parseKeySource(value: string | undefined): TokenUsageScope {
+  return value === 'server' || value === 'user' ? value : 'all';
 }
 
 function formatDateKey(year: number, month: number, day: number): string {
@@ -161,8 +176,9 @@ function getBucketInfo(value: string, granularity: UsageGranularity, timeZone: s
   };
 }
 
-async function getAuthorizedTokenUsageUser(authHeader: string | undefined) {
+async function authorizeTokenUsageViewer(authHeader: string | undefined): Promise<AuthorizedTokenUsageUser | null> {
   if (!authHeader?.startsWith('Bearer ')) return null;
+
   const token = authHeader.slice(7);
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user?.id) return null;
@@ -180,13 +196,12 @@ async function getAuthorizedTokenUsageUser(authHeader: string | undefined) {
     profile?.email?.trim().toLowerCase() ?? '',
     typeof user.user_metadata?.email === 'string' ? user.user_metadata.email.trim().toLowerCase() : '',
   ];
-  const authorizedEmail = emailCandidates.find((value) => TOKEN_USAGE_ADMIN_EMAILS.has(value));
 
   return {
     userId: user.id,
-    email: authorizedEmail ?? emailCandidates.find(Boolean) ?? '',
+    email: emailCandidates.find(Boolean) ?? '',
     displayName: (profile?.display_name ?? '').trim(),
-    isAdmin: Boolean(authorizedEmail),
+    isAdmin: emailCandidates.some((value) => TOKEN_USAGE_ADMIN_EMAILS.has(value)),
   };
 }
 
@@ -203,6 +218,7 @@ export async function logAiTokenUsage(input: LogAiTokenUsageInput) {
     const token = input.authHeader.slice(7);
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     if (authError || !user?.id) return;
+
     userId = user.id;
     email = user.email?.trim().toLowerCase() ?? '';
 
@@ -248,7 +264,7 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
       keySource?: TokenUsageScope;
     };
   }>('/admin/token-usage', async (request, reply) => {
-    const authorized = await getAuthorizedTokenUsageUser(request.headers.authorization);
+    const authorized = await authorizeTokenUsageViewer(request.headers.authorization);
     if (!authorized) {
       return reply.status(404).send({ error: 'Not found' });
     }
@@ -258,12 +274,8 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
     const defaultStart = addDaysToDateKey(today, -29);
     const start = normalizeDateOnly(request.query.start, defaultStart);
     const end = normalizeDateOnly(request.query.end, today);
-    const granularity: UsageGranularity = request.query.granularity === 'week' || request.query.granularity === 'month'
-      ? request.query.granularity
-      : 'day';
-    const keySource: TokenUsageScope = request.query.keySource === 'server' || request.query.keySource === 'user'
-      ? request.query.keySource
-      : 'all';
+    const granularity = parseGranularity(request.query.granularity);
+    const keySource = parseKeySource(request.query.keySource);
 
     const startDateUtc = zonedDateStartToUtc(start, timeZone);
     const endDateUtc = zonedDateStartToUtc(end, timeZone);

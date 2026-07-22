@@ -1086,12 +1086,16 @@ export async function aiRoutes(server: FastifyInstance) {
     const userId = await ensureProjectAccess(reply, request.headers.authorization, projectId);
     if (!userId) return;
 
-    const [projectRes, gitlabRes] = await Promise.all([
+    reply.header('Cache-Control', 'no-store');
+
+    const [projectRes, gitlabRes, githubAccess] = await Promise.all([
       supabase.from('projects').select('github_repo, github_repos').eq('id', projectId).single(),
       supabase.from('integrations').select('config').eq('project_id', projectId).eq('type', 'gitlab').maybeSingle(),
+      getStoredGitHubTokenForUser(userId),
     ]);
 
     const githubRepos = getGitHubRepos(projectRes.data);
+    const githubToken = githubAccess?.token?.trim() || process.env.GITHUB_TOKEN?.trim() || '';
     const gitlabCfg = gitlabRes.data?.config as GitLabIntegrationConfig | null;
     const gitlabRepos = getGitLabRepoPaths(gitlabCfg);
     const gitlabHost = getGitLabHost(gitlabCfg);
@@ -1103,6 +1107,15 @@ export async function aiRoutes(server: FastifyInstance) {
     // Individual recent commits for the feed (author, message, date, repo, source)
     interface RecentCommit { sha: string; date: string; author: string; message: string; repo: string; source: 'github' | 'gitlab'; }
     const recentCommits: RecentCommit[] = [];
+    interface RepositoryStatus {
+      source: 'github' | 'gitlab';
+      repo: string;
+      status: 'ok' | 'empty' | 'partial' | 'error';
+      commitCount: number;
+      message?: string;
+    }
+    const repositoryStatuses: RepositoryStatus[] = [];
+    const warnings: string[] = [];
 
     function addCommit(repoKey: string, date: string) {
       countByDate.set(date, (countByDate.get(date) ?? 0) + 1);
@@ -1116,59 +1129,139 @@ export async function aiRoutes(server: FastifyInstance) {
     oneYearAgo.setDate(oneYearAgo.getDate() - 364);
     const sinceIso = oneYearAgo.toISOString();
 
+    async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+      let response: Response | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        response = await fetch(url, init);
+        if (![429, 502, 503, 504].includes(response.status) || attempt === 2) return response;
+        await response.text().catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+      return response!;
+    }
+
+    async function readApiError(response: Response): Promise<string> {
+      try {
+        const body = await response.json() as { message?: string };
+        return body.message?.trim() || `HTTP ${response.status}`;
+      } catch {
+        return `HTTP ${response.status}`;
+      }
+    }
+
     // GitHub commits — paginate until we've covered a full year
     for (const githubRepo of githubRepos) {
       const [owner, repo] = githubRepo.split('/');
-      const token = process.env.GITHUB_TOKEN;
       const ghHeaders: Record<string, string> = { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'Odyssey-App' };
-      if (token) ghHeaders.Authorization = `Bearer ${token}`;
+      if (githubToken) ghHeaders.Authorization = `Bearer ${githubToken}`;
       const repoKey = `github:${githubRepo}`;
+      repoBreakdown.set(repoKey, new Map());
+      let repoCommitCount = 0;
+      let failureMessage = '';
+
+      if (!owner || !repo) {
+        failureMessage = 'The linked repository name is invalid; expected owner/repository.';
+      }
+
       for (let page = 1; page <= 13; page++) {
+        if (failureMessage) break;
         try {
-          const r = await fetch(
+          const r = await fetchWithRetry(
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits?since=${sinceIso}&per_page=100&page=${page}`,
             { headers: ghHeaders }
           );
-          if (!r.ok) break;
-          const commits: { sha: string; commit: { author: { name: string; date: string }; message: string } }[] = await r.json();
+          if (!r.ok) {
+            const apiMessage = await readApiError(r);
+            const rateRemaining = r.headers.get('x-ratelimit-remaining');
+            const accessHint = !githubToken
+              ? ' Connect a GitHub token in Settings to read private repositories and avoid anonymous rate limits.'
+              : r.status === 404
+                ? ' The saved GitHub token does not have access to this repository, or the repository path is incorrect.'
+                : rateRemaining === '0'
+                  ? ' The GitHub API rate limit is exhausted for the connected token.'
+                  : '';
+            failureMessage = `GitHub returned ${r.status}: ${apiMessage}.${accessHint}`.replace(/\.\./g, '.');
+            server.log.warn({ repo: githubRepo, status: r.status, rateRemaining, hasUserToken: Boolean(githubAccess?.token) }, 'Commit history GitHub request failed');
+            break;
+          }
+          const commits: {
+            sha: string;
+            author?: { login?: string } | null;
+            commit: {
+              author?: { name?: string; date?: string } | null;
+              committer?: { name?: string; date?: string } | null;
+              message?: string;
+            };
+          }[] = await r.json();
           if (!commits.length) break;
           for (const c of commits) {
-            if (isGeneratedThesisLatexCommitMessage(c.commit.message)) continue;
-            const date = c.commit.author.date.slice(0, 10);
+            const message = c.commit.message?.trim() || '(no commit message)';
+            if (isGeneratedThesisLatexCommitMessage(message)) continue;
+            const committedAt = c.commit.author?.date ?? c.commit.committer?.date;
+            if (!committedAt) continue;
+            const date = committedAt.slice(0, 10);
             addCommit(repoKey, date);
+            repoCommitCount += 1;
             if (page === 1) {
               recentCommits.push({
                 sha: c.sha.slice(0, 7),
-                date: c.commit.author.date,
-                author: c.commit.author.name,
-                message: c.commit.message.split('\n')[0].slice(0, 80),
+                date: committedAt,
+                author: c.commit.author?.name?.trim() || c.commit.committer?.name?.trim() || c.author?.login?.trim() || 'Unknown author',
+                message: message.split('\n')[0].slice(0, 80),
                 repo: githubRepo,
                 source: 'github',
               });
             }
           }
           if (commits.length < 100) break;
-        } catch { break; }
+        } catch (error) {
+          failureMessage = error instanceof Error ? error.message : 'GitHub request failed.';
+          server.log.warn({ err: error, repo: githubRepo, hasUserToken: Boolean(githubAccess?.token) }, 'Commit history GitHub request threw');
+          break;
+        }
+      }
+
+      if (failureMessage) {
+        const message = `${githubRepo}: ${failureMessage}`;
+        warnings.push(message);
+        repositoryStatuses.push({ source: 'github', repo: githubRepo, status: repoCommitCount > 0 ? 'partial' : 'error', commitCount: repoCommitCount, message: failureMessage });
+      } else {
+        repositoryStatuses.push({ source: 'github', repo: githubRepo, status: repoCommitCount > 0 ? 'ok' : 'empty', commitCount: repoCommitCount });
       }
     }
 
     // GitLab commits — paginate with since filter, up to 13 pages per repo
-    if (gitlabToken && gitlabHost) for (const repo of gitlabRepos) {
+    for (const repo of gitlabRepos) {
       const encoded = encodeURIComponent(repo);
       const repoKey = `gitlab:${repo}`;
       const repoLabel = repo.includes('/') ? repo.split('/').slice(-2).join('/') : repo;
+      repoBreakdown.set(repoKey, new Map());
+      let repoCommitCount = 0;
+      let failureMessage = '';
+
+      if (!gitlabToken || !gitlabHost) {
+        failureMessage = 'The linked GitLab repository is missing a usable host or access token.';
+      }
+
       for (let page = 1; page <= 13; page++) {
+        if (failureMessage) break;
         try {
-          const r = await fetch(
+          const r = await fetchWithRetry(
             `${gitlabHost}/api/v4/projects/${encoded}/repository/commits?since=${sinceIso}&per_page=100&page=${page}&order_by=created_at&sort=desc`,
             { headers: gitlabToken ? { 'PRIVATE-TOKEN': gitlabToken } : {} }
           );
-          if (!r.ok) break;
+          if (!r.ok) {
+            failureMessage = `GitLab returned ${r.status}: ${await readApiError(r)}.`;
+            server.log.warn({ repo, status: r.status }, 'Commit history GitLab request failed');
+            break;
+          }
           const commits: { id: string; created_at: string; author_name: string; title: string }[] = await r.json();
           if (!commits.length) break;
           for (const c of commits) {
             if (isGeneratedThesisLatexCommitMessage(c.title)) continue;
+            if (!c.created_at) continue;
             addCommit(repoKey, c.created_at.slice(0, 10));
+            repoCommitCount += 1;
             if (page === 1) {
               recentCommits.push({
                 sha: c.id.slice(0, 7),
@@ -1181,7 +1274,19 @@ export async function aiRoutes(server: FastifyInstance) {
             }
           }
           if (commits.length < 100) break;
-        } catch { break; }
+        } catch (error) {
+          failureMessage = error instanceof Error ? error.message : 'GitLab request failed.';
+          server.log.warn({ err: error, repo }, 'Commit history GitLab request threw');
+          break;
+        }
+      }
+
+      if (failureMessage) {
+        const message = `${repo}: ${failureMessage}`;
+        warnings.push(message);
+        repositoryStatuses.push({ source: 'gitlab', repo, status: repoCommitCount > 0 ? 'partial' : 'error', commitCount: repoCommitCount, message: failureMessage });
+      } else {
+        repositoryStatuses.push({ source: 'gitlab', repo, status: repoCommitCount > 0 ? 'ok' : 'empty', commitCount: repoCommitCount });
       }
     }
 
@@ -1208,7 +1313,15 @@ export async function aiRoutes(server: FastifyInstance) {
       ...gitlabRepos.map((repo) => ({ source: 'gitlab' as const, repo })),
     ];
 
-    return reply.send({ commits, byRepo, recentCommits: topRecent, linkedRepos });
+    return reply.send({
+      commits,
+      byRepo,
+      recentCommits: topRecent,
+      linkedRepos,
+      repositoryStatuses,
+      warnings,
+      fetchedAt: new Date().toISOString(),
+    });
   });
 
   server.post<{ Body: AISummarizeBody }>('/ai/summarize', async (request, reply) => {

@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useProjectCommitHistory, type ProjectCommitHistoryRepo } from '../hooks/useProjectCommitHistory';
+import {
+  useProjectCommitHistory,
+  type ProjectCommitHistoryRepo,
+  type ProjectCommitHistoryState,
+} from '../hooks/useProjectCommitHistory';
 import './CommitActivityCharts.css';
 
 interface Props {
   projectId: string;
   onHasData?: (hasData: boolean) => void;
+  history?: ProjectCommitHistoryState;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -166,7 +171,6 @@ function CommitHeatmap({ countByDate, totalCommits, byRepo }: HeatmapProps) {
       {tooltip && (
         <div
           className="cac-tooltip"
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           {...({ style: { '--cac-tip-x': `${tooltip.x + 12}px`, '--cac-tip-y': `${tooltip.y - 8}px` } } as any)}
         >
           <div className="cac-tooltip-date">{tooltip.date}</div>
@@ -282,7 +286,6 @@ function CommitBarChart({ countByDate, firstDate }: BarChartProps) {
           <span
             key={label}
             className="cac-x-label"
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             {...({ style: { '--cac-x-pct': `${pct}%` } } as any)}
           >{label}</span>
         ))}
@@ -291,7 +294,6 @@ function CommitBarChart({ countByDate, firstDate }: BarChartProps) {
       {hovered && hovered.bar.count > 0 && (
         <div
           className="cac-tooltip"
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           {...({ style: { '--cac-tip-x': `${hovered.screenX + 12}px`, '--cac-tip-y': `${hovered.screenY - 8}px` } } as any)}
         >
           <div className="cac-tooltip-date">{hovered.bar.date}</div>
@@ -304,8 +306,9 @@ function CommitBarChart({ countByDate, firstDate }: BarChartProps) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function CommitActivityCharts({ projectId, onHasData }: Props) {
-  const { loading, commits, byRepo, hasData } = useProjectCommitHistory(projectId);
+export default function CommitActivityCharts({ projectId, onHasData, history }: Props) {
+  const ownedHistory = useProjectCommitHistory(history ? null : projectId);
+  const { loading, commits, byRepo, hasData } = history ?? ownedHistory;
 
   useEffect(() => {
     onHasData?.(hasData);
