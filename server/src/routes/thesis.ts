@@ -14,6 +14,10 @@ import {
   isKyleHicksDisplayName,
 } from '../lib/thesis-default.js';
 import { chat, getServerOpenAiCredential, getServerOpenAiPrimaryModel, type AIProviderSelection } from '../ai-providers.js';
+import {
+  listThesisSources,
+  persistThesisSourceSnapshot,
+} from '../lib/zotero-sync.js';
 
 type ThesisDocumentRow = {
   user_id: string;
@@ -74,7 +78,7 @@ type ThesisSourceKind =
   | 'archive_record'
   | 'web_article'
   | 'documentation';
-type ThesisSourceLibraryType = 'pdf' | 'link' | 'book' | 'paper' | 'report' | 'notes' | 'dataset';
+type ThesisSourceLibraryType = 'pdf' | 'link' | 'book' | 'paper' | 'report' | 'notes' | 'dataset' | 'document';
 type ThesisSourceRole = 'primary' | 'secondary' | 'contextual';
 type ThesisSourceVerification = 'verified' | 'provisional' | 'restricted';
 type ThesisSourceChapterTarget = 'literature_review' | 'methods' | 'findings' | 'appendix';
@@ -111,6 +115,13 @@ type ThesisSourceLibraryItem = {
   attachmentStoragePath: string;
   attachmentMimeType: string;
   attachmentUploadedAt: string;
+  zoteroAnnotations?: Array<{
+    text?: string;
+    comment?: string;
+    pageLabel?: string;
+  }>;
+  zoteroFulltextEnabled?: boolean;
+  zoteroFulltextPreview?: string;
 };
 
 type ThesisSourceSnapshot = {
@@ -596,7 +607,7 @@ function normalizeSourceQueueType(value: unknown): ThesisSourceQueueType {
 }
 
 function normalizeSourceLibraryType(value: unknown): ThesisSourceLibraryType {
-  return value === 'pdf' || value === 'link' || value === 'book' || value === 'report' || value === 'notes' || value === 'dataset'
+  return value === 'pdf' || value === 'link' || value === 'book' || value === 'report' || value === 'notes' || value === 'dataset' || value === 'document'
     ? value
     : 'paper';
 }
@@ -660,9 +671,10 @@ function normalizeSourceLibraryItem(value: unknown): ThesisSourceLibraryItem | n
   const venue = normalizeStringField(record.venue, 240);
   const year = normalizeStringField(record.year, 16);
   const locator = normalizeStringField(record.locator, 1_000);
-  if (!title || !credit || !venue || !year || !locator) return null;
+  if (!title) return null;
 
   return {
+    ...record,
     id: normalizeStringField(record.id, 120) || `lib-${Date.now().toString(36)}`,
     citeKey: normalizeStringField(record.citeKey, 160) || normalizeStringField(record.id, 120) || `source_${Date.now().toString(36)}`,
     title,
@@ -673,10 +685,10 @@ function normalizeSourceLibraryItem(value: unknown): ThesisSourceLibraryItem | n
     role: normalizeSourceRole(record.role),
     verification: normalizeSourceVerification(record.verification),
     chapterTarget: normalizeSourceChapterTarget(record.chapterTarget),
-    credit,
-    venue,
-    year,
-    locator,
+    credit: credit ?? '',
+    venue: venue ?? '',
+    year: year ?? '',
+    locator: locator ?? '',
     citation: normalizeStringField(record.citation, 8_000),
     abstract: normalizeStringField(record.abstract, 4_000),
     notes: normalizeStringField(record.notes, 4_000),
@@ -2189,6 +2201,14 @@ async function buildThesisKnowledgeGraph(
   linkedEvents: ThesisKnowledgeLinkedEvent[],
 ): Promise<ThesisKnowledgeGraphPayload> {
   const hydratedSources = await Promise.all(sourceLibrary.map(async (source) => {
+    const zoteroAnnotationText = (source.zoteroAnnotations ?? [])
+      .slice(0, 20)
+      .map((annotation) => [annotation.text, annotation.comment].filter(Boolean).join(' '))
+      .filter(Boolean)
+      .join('\n');
+    const approvedZoteroFulltext = source.zoteroFulltextEnabled
+      ? source.zoteroFulltextPreview?.slice(0, 20_000) ?? ''
+      : '';
     const urlMetadata = isHttpUrl(source.locator)
       ? await inferUrlSourceMetadata(source.locator).catch(() => null)
       : null;
@@ -2231,6 +2251,8 @@ async function buildThesisKnowledgeGraph(
       urlMetadata?.abstract,
       urlMetadata?.summary,
       attachmentPreview,
+      zoteroAnnotationText,
+      approvedZoteroFulltext,
       source.notes,
       source.citation,
     ], 20, 420) ?? 'Metadata compiled from the thesis source record.';
@@ -2244,6 +2266,8 @@ async function buildThesisKnowledgeGraph(
       urlMetadata?.abstract,
       urlMetadata?.summary,
       attachmentPreview,
+      zoteroAnnotationText,
+      approvedZoteroFulltext,
       extractedReferences.map((reference) => reference.label).join(' '),
     ], [
       ...source.tags,
@@ -2259,12 +2283,13 @@ async function buildThesisKnowledgeGraph(
       venue,
       summary,
       terms,
-      hydrated: Boolean(urlMetadata || attachmentPreview),
+      hydrated: Boolean(urlMetadata || attachmentPreview || zoteroAnnotationText || approvedZoteroFulltext),
       extractedReferences,
       detail: [
         credit ? `Credit: ${credit}.` : null,
         venue ? `Context: ${venue}.` : null,
         source.year ? `Publication date: ${source.year}.` : null,
+        source.zoteroAnnotations?.length ? `${source.zoteroAnnotations.length} Zotero annotation${source.zoteroAnnotations.length === 1 ? '' : 's'} available as evidence.` : null,
         extractedReferences.length > 0 ? `${extractedReferences.length} cited reference${extractedReferences.length === 1 ? '' : 's'} extracted.` : null,
         summary,
       ].filter(Boolean).join(' '),
@@ -3335,7 +3360,17 @@ async function getThesisDocument(userId: string): Promise<ThesisDocumentRow | nu
     .eq('user_id', userId)
     .maybeSingle();
   if (error) throw error;
-  return (data as ThesisDocumentRow | null) ?? null;
+  const document = (data as ThesisDocumentRow | null) ?? null;
+  if (!document) return null;
+  const normalizedSources = await listThesisSources(userId);
+  if (normalizedSources.length === 0) return document;
+  return {
+    ...document,
+    snapshot: {
+      ...(asObject(document.snapshot) ?? {}),
+      sourceLibrary: normalizedSources,
+    },
+  };
 }
 
 async function getProfileDisplayName(userId: string): Promise<string | null> {
@@ -3700,6 +3735,10 @@ export async function thesisRoutes(server: FastifyInstance) {
     try {
       const document = await getThesisDocument(userId);
       const nextSnapshot = mergeThesisSourceSnapshot(document?.snapshot, libraryItem, queueItem);
+      await persistThesisSourceSnapshot(
+        userId,
+        readSourceSnapshot(nextSnapshot).sourceLibrary as Parameters<typeof persistThesisSourceSnapshot>[1],
+      );
 
       const { error: upsertError } = await supabase
         .from('thesis_documents')
@@ -3782,6 +3821,10 @@ export async function thesisRoutes(server: FastifyInstance) {
         sourceQueueItems,
         thesisDocuments,
       };
+      await persistThesisSourceSnapshot(
+        userId,
+        sourceLibrary as Parameters<typeof persistThesisSourceSnapshot>[1],
+      );
 
       const { error: upsertError } = await supabase
         .from('thesis_documents')

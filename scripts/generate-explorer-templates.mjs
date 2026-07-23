@@ -126,7 +126,8 @@ async function buildTemplateDefinition(templateDirectoryName) {
     if (isTextLikeFile(normalizedPath, mimeType, buffer)) {
       files.push({
         path: normalizedPath,
-        content: buffer.toString('utf8'),
+        // Keep generated output stable across Windows and Linux checkouts.
+        content: buffer.toString('utf8').replace(/\r\n?/g, '\n'),
         encoding: 'utf-8',
         mimeType,
       });

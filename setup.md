@@ -593,6 +593,12 @@ MICROSOFT_CLIENT_SECRET=
 MICROSOFT_REDIRECT_URI=http://localhost:3000/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=
 
+# Zotero thesis-library integration
+ZOTERO_CLIENT_KEY=
+ZOTERO_CLIENT_SECRET=
+ZOTERO_REDIRECT_URI=http://localhost:3000/api/zotero/auth/callback
+ZOTERO_TOKEN_ENCRYPT_KEY=
+
 # Production static hosting
 CLIENT_DIST_PATH=
 ```
@@ -707,6 +713,19 @@ This enables:
 - OneDrive access
 - OneNote import
 - related Microsoft Graph-backed document flows
+
+### Zotero
+
+Register an OAuth application at `https://www.zotero.org/oauth/apps`, then add these values to `server/.env` (or `deploy/odyssey.env` in production):
+
+```env
+ZOTERO_CLIENT_KEY=...
+ZOTERO_CLIENT_SECRET=...
+ZOTERO_REDIRECT_URI=http://localhost:3000/api/zotero/auth/callback
+ZOTERO_TOKEN_ENCRYPT_KEY=64_CHAR_HEX
+```
+
+Generate the encryption key with `openssl rand -hex 32`. On a subpath deployment, use the full public callback URL, such as `https://example.mil/odyssey/api/zotero/auth/callback`.
 
 [Back to top](#table-of-contents)
 

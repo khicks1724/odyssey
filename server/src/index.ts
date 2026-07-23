@@ -20,9 +20,11 @@ import { goalActivityRoutes } from './routes/goal-activity.js';
 import { financialRoutes } from './routes/financials.js';
 import { thesisRoutes } from './routes/thesis.js';
 import { tokenUsageRoutes } from './routes/token-usage.js';
+import { zoteroRoutes } from './routes/zotero.js';
 import { genAiBrowserRelayRoutes } from './routes/genai-browser-relay.js';
 import { getAvailableProviders } from './ai-providers.js';
 import { startNightlyCoordinationRebuild } from './lib/coordination.js';
+import { startZoteroBackgroundSync } from './lib/zotero-sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isProd = process.env.NODE_ENV === 'production';
@@ -44,14 +46,14 @@ if (isProd) {
     wildcard: false,
     setHeaders(res, filePath) {
       if (path.basename(filePath) === 'index.html') {
-        res.header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-        res.header('Pragma', 'no-cache');
-        res.header('Expires', '0');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
         return;
       }
 
       if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-        res.header('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       }
     },
   });
@@ -84,6 +86,7 @@ await server.register(goalActivityRoutes, { prefix: '/api' });
 await server.register(financialRoutes, { prefix: '/api' });
 await server.register(thesisRoutes, { prefix: '/api' });
 await server.register(tokenUsageRoutes, { prefix: '/api' });
+await server.register(zoteroRoutes, { prefix: '/api' });
 await server.register(genAiBrowserRelayRoutes, { prefix: '/api' });
 await server.register(supabaseProxyRoutes);
 
@@ -94,6 +97,7 @@ try {
   await server.listen({ port, host });
   console.log(`Odyssey API running on ${host}:${port}`);
   startNightlyCoordinationRebuild(server.log);
+  startZoteroBackgroundSync(server.log);
 
   const providers = getAvailableProviders();
   const active = providers.filter((p) => p.available).map((p) => p.name);
@@ -105,6 +109,8 @@ try {
   if (!process.env.AI_KEY_SECRET) console.warn('WARNING: AI_KEY_SECRET not set — encrypted provider credentials and GitLab tokens will be unavailable');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
+  if (!process.env.ZOTERO_CLIENT_KEY || !process.env.ZOTERO_CLIENT_SECRET || !process.env.ZOTERO_REDIRECT_URI) console.warn('WARNING: Zotero OAuth is not configured - Zotero integration disabled');
+  if (!process.env.ZOTERO_TOKEN_ENCRYPT_KEY) console.warn('WARNING: ZOTERO_TOKEN_ENCRYPT_KEY not set - Zotero integration disabled');
   console.log('GitLab integration uses per-project repository URLs and personal access tokens');
   console.log(`Supabase service key loaded: ${process.env.SUPABASE_SERVICE_KEY ? 'YES' : 'NO'}`);
 } catch (err) {

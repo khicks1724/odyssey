@@ -7,7 +7,8 @@ import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/opena
 import { supabase } from '../lib/supabase';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { withBasePath } from '../lib/base-path';
-import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Clock, KeyRound, Eye, EyeOff, Trash2, ExternalLink, RefreshCw, Camera, X, Github } from 'lucide-react';
+import { useZoteroIntegration } from '../hooks/useZoteroIntegration';
+import { Monitor, Bell, Palette, Shield, Check, ChevronDown, Loader2, Clock, KeyRound, Eye, EyeOff, Trash2, ExternalLink, RefreshCw, Camera, X, Github, BookOpen } from 'lucide-react';
 import {
   GenAiMilBrowserApiError,
   clearGenAiMilBrowserKey,
@@ -1155,6 +1156,89 @@ function AiProviderCard({
   );
 }
 
+function ZoteroConnectionCard() {
+  const { status, loading, connecting, syncing, error, connect, disconnect, sync } = useZoteroIntegration();
+  const params = new URLSearchParams(window.location.search);
+  const connectedNotice = params.get('zotero_connected') === 'true';
+  const callbackError = params.get('zotero_error');
+
+  const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect Zotero? Imported thesis sources will remain in Odyssey.')) return;
+    await disconnect();
+  };
+
+  return (
+    <div className="border border-border p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <BookOpen size={12} className="text-heading shrink-0" />
+            <span className="text-xs font-semibold text-heading">Zotero Thesis Library</span>
+          </div>
+          <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
+            Two-way bibliography, collection, tag, note, citation, and on-demand attachment sync for your personal Zotero library.
+          </p>
+        </div>
+        {loading ? (
+          <Loader2 size={12} className="animate-spin text-muted shrink-0" />
+        ) : status?.connected ? (
+          <span className="flex items-center gap-1 text-[10px] font-mono border border-accent3/30 text-accent3 px-2 py-0.5 rounded shrink-0">
+            <Check size={9} /> Connected
+          </span>
+        ) : (
+          <span className="text-[10px] text-muted font-mono border border-border px-2 py-0.5 rounded shrink-0">Not connected</span>
+        )}
+      </div>
+
+      {status?.connected ? (
+        <div className="space-y-3">
+          <div className="grid gap-2 text-[10px] text-muted sm:grid-cols-3">
+            <div className="border border-border bg-surface2 px-3 py-2">
+              <span className="block uppercase tracking-[0.14em]">Account</span>
+              <span className="mt-1 block truncate font-mono text-heading">{status.username || status.zoteroUserId}</span>
+            </div>
+            <div className="border border-border bg-surface2 px-3 py-2">
+              <span className="block uppercase tracking-[0.14em]">Sync</span>
+              <span className="mt-1 block font-mono text-heading">{status.lastSyncStatus || 'idle'}</span>
+            </div>
+            <div className="border border-border bg-surface2 px-3 py-2">
+              <span className="block uppercase tracking-[0.14em]">Conflicts</span>
+              <span className="mt-1 block font-mono text-heading">{status.conflictCount}</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => { void sync(); }} disabled={syncing}
+              className="inline-flex items-center gap-1.5 rounded border border-accent/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent hover:bg-accent/5 disabled:opacity-50">
+              <RefreshCw size={10} className={syncing ? 'animate-spin' : ''} /> {syncing ? 'Syncing' : 'Sync now'}
+            </button>
+            <button type="button" onClick={() => { void handleDisconnect(); }}
+              className="inline-flex items-center gap-1.5 rounded border border-danger/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-danger hover:bg-danger/5">
+              <Trash2 size={10} /> Disconnect
+            </button>
+          </div>
+          <p className="text-[10px] text-muted">
+            Standard metadata is shared both ways. Thesis role, chapter, verification, insights, and stable LaTeX keys remain Odyssey-only.
+          </p>
+          {status.lastSyncAt && <p className="text-[10px] font-mono text-muted">Last synchronized: {new Date(status.lastSyncAt).toLocaleString()}</p>}
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" onClick={() => { void connect(); }} disabled={connecting || status?.configured === false}
+            className="inline-flex items-center gap-1.5 rounded border border-accent/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent hover:bg-accent/5 disabled:opacity-50">
+            {connecting ? <Loader2 size={10} className="animate-spin" /> : <BookOpen size={10} />}
+            {connecting ? 'Opening Zotero' : 'Connect Zotero'}
+          </button>
+          <span className="text-[10px] text-muted">Requests personal-library, notes, and write access. Group libraries are not requested.</span>
+        </div>
+      )}
+
+      {connectedNotice && <p className="text-[10px] font-mono text-accent3">Zotero connected successfully.</p>}
+      {(error || callbackError) && <p className="text-[10px] font-mono text-danger">{error || `Zotero authorization failed: ${callbackError}`}</p>}
+      {status?.configured === false && <p className="text-[10px] font-mono text-danger">This server still needs Zotero OAuth credentials and an encryption key.</p>}
+    </div>
+  );
+}
+
 // ── GitHub PAT card ────────────────────────────────────────────────────────
 
 function GitHubTokenCard() {
@@ -1704,7 +1788,10 @@ export default function SettingsPage() {
           <p className="text-[11px] text-muted mb-5">
             Personal tokens for external services. Used only for your own requests.
           </p>
-          <GitHubTokenCard />
+          <div className="space-y-3">
+            <ZoteroConnectionCard />
+            <GitHubTokenCard />
+          </div>
         </div>
 
         {/* Preferences */}

@@ -21,6 +21,7 @@ import {
   Plus,
   AlertTriangle,
   Search,
+  RefreshCw,
   SquarePen,
   Trash2,
   Users,
@@ -64,10 +65,18 @@ import {
 } from '../lib/bibliography-metadata';
 import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { pushUndoAction } from '../lib/undo-manager';
+import {
+  fetchZoteroStatus,
+  syncZotero,
+  type ZoteroStatus,
+} from '../lib/zotero';
 
 const ThesisPaperTab = lazyWithRetry(() => import('../components/ThesisPaperTab'), 'thesis-paper-tab');
 const ThesisKnowledgeTab = lazyWithRetry(() => import('../components/ThesisKnowledgeTab'), 'thesis-knowledge-tab');
 const PdfFieldCaptureModal = lazyWithRetry(() => import('../components/PdfFieldCaptureModal'), 'thesis-pdf-field-capture-modal');
+const ZoteroLibraryModal = lazyWithRetry(() => import('../components/ZoteroLibraryModal'), 'zotero-library-modal');
+const ZoteroConflictModal = lazyWithRetry(() => import('../components/ZoteroConflictModal'), 'zotero-conflict-modal');
+const ZoteroSourcePanel = lazyWithRetry(() => import('../components/ZoteroSourcePanel'), 'zotero-source-panel');
 
 type ThesisTabId = 'overview' | 'milestones' | 'sources' | 'documents' | 'graph' | 'paper';
 
@@ -124,7 +133,7 @@ type SourceIntakeKind =
   | 'web_article'
   | 'documentation';
 
-type SourceLibraryType = 'pdf' | 'link' | 'book' | 'paper' | 'report' | 'notes' | 'dataset';
+type SourceLibraryType = 'pdf' | 'link' | 'book' | 'paper' | 'report' | 'notes' | 'dataset' | 'document';
 
 export type BibliographyFormat = 'apa' | 'chicago' | 'ieee' | 'informs' | 'asme' | 'aiaa' | 'ams';
 
@@ -152,6 +161,59 @@ export type SourceLibraryItem = {
   attachmentStoragePath: string;
   attachmentMimeType: string;
   attachmentUploadedAt: string;
+  creators?: Array<{ creatorType: string; firstName?: string; lastName?: string; name?: string }>;
+  date?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  publisher?: string;
+  place?: string;
+  doi?: string;
+  isbn?: string;
+  issn?: string;
+  language?: string;
+  rights?: string;
+  zoteroCollectionKeys?: string[];
+  zoteroLink?: {
+    libraryType: 'user' | 'group';
+    libraryId: string;
+    itemKey: string;
+    itemVersion: number;
+    itemType: string;
+    collectionKeys: string[];
+    syncStatus: 'synced' | 'local_pending' | 'remote_pending' | 'conflict' | 'removed_remote' | 'error';
+    lastError: string | null;
+    lastSyncedAt: string | null;
+  };
+  zoteroNotes?: Array<{ key: string; version: number; html: string; text: string }>;
+  zoteroAttachments?: Array<{
+    key: string;
+    version: number;
+    title: string;
+    filename: string;
+    contentType: string;
+    linkMode: string;
+    url: string;
+    md5: string;
+    mtime: unknown;
+  }>;
+  zoteroAnnotations?: Array<{
+    key: string;
+    version: number;
+    text: string;
+    comment: string;
+    pageLabel: string;
+    color: string;
+  }>;
+  zoteroFulltextEnabled?: boolean;
+  zoteroFulltextPreview?: string;
+  zoteroFulltextStats?: {
+    indexedPages?: number;
+    totalPages?: number;
+    indexedChars?: number;
+    totalChars?: number;
+  };
+  revision?: number;
 };
 
 type BibliographyReadiness = {
@@ -2197,6 +2259,12 @@ export default function ThesisPage() {
   const [selectedLibrarySourceUndoStack, setSelectedLibrarySourceUndoStack] = useState<SourceLibraryItem[]>([]);
   const [selectedLibrarySourceRedoStack, setSelectedLibrarySourceRedoStack] = useState<SourceLibraryItem[]>([]);
   const [pendingLibrarySourceDelete, setPendingLibrarySourceDelete] = useState<SourceLibraryItem | null>(null);
+  const [zoteroStatus, setZoteroStatus] = useState<ZoteroStatus | null>(null);
+  const [zoteroLibraryOpen, setZoteroLibraryOpen] = useState(false);
+  const [zoteroConflictOpen, setZoteroConflictOpen] = useState(false);
+  const [zoteroSyncing, setZoteroSyncing] = useState(false);
+  const [zoteroError, setZoteroError] = useState<string | null>(null);
+  const zoteroRealtimeTimerRef = useRef<number | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null);
   const [librarySort, setLibrarySort] = useState<'recent' | 'title' | 'year' | 'type' | 'status'>('recent');
@@ -2240,6 +2308,14 @@ export default function ThesisPage() {
       setStoredSidebarCollapsed(true);
     }
   };
+
+  const applySyncedSources = useCallback((value: unknown[]) => {
+    const next = readSourceLibraryItems(value);
+    setSourceLibrary(next);
+    window.dispatchEvent(new CustomEvent(THESIS_SOURCE_SYNC_EVENT, {
+      detail: { sourceLibrary: next },
+    }));
+  }, []);
 
   const routeProjectId = useMemo(() => {
     const queryProjectId = new URLSearchParams(location.search).get('projectId');
@@ -3127,6 +3203,51 @@ export default function ThesisPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    void fetchZoteroStatus()
+      .then((status) => {
+        if (!cancelled) setZoteroStatus(status);
+      })
+      .catch((error) => {
+        if (!cancelled) setZoteroError(error instanceof Error ? error.message : 'Could not load Zotero status.');
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!profile?.id) return undefined;
+    const refreshFromServer = () => {
+      if (zoteroRealtimeTimerRef.current !== null) window.clearTimeout(zoteroRealtimeTimerRef.current);
+      zoteroRealtimeTimerRef.current = window.setTimeout(() => {
+        void Promise.all([fetchThesisDocument(), fetchZoteroStatus()])
+          .then(([document, status]) => {
+            const snapshot = document?.snapshot && typeof document.snapshot === 'object'
+              ? document.snapshot as { sourceLibrary?: unknown }
+              : null;
+            if (Array.isArray(snapshot?.sourceLibrary)) applySyncedSources(snapshot.sourceLibrary);
+            setZoteroStatus(status);
+          })
+          .catch(() => {
+            // The local source snapshot remains usable during a transient realtime refresh failure.
+          });
+      }, 250);
+    };
+    const channel = supabase
+      .channel(`thesis-zotero-sources-${profile.id}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'thesis_sources',
+        filter: `user_id=eq.${profile.id}`,
+      }, refreshFromServer)
+      .subscribe();
+    return () => {
+      if (zoteroRealtimeTimerRef.current !== null) window.clearTimeout(zoteroRealtimeTimerRef.current);
+      void supabase.removeChannel(channel);
+    };
+  }, [applySyncedSources, profile?.id]);
+
+  useEffect(() => {
     const params = new URLSearchParams(location.search);
     const sourceId = params.get('source');
     const documentId = params.get('document');
@@ -3416,7 +3537,15 @@ export default function ThesisPage() {
         .map((source) => {
           const link = `/thesis?tab=sources&source=${encodeURIComponent(source.id)}`;
           const summary = truncateResourceText(source.abstract || source.notes || source.citation, 180);
-          return `- [${source.id}] ${source.title} | ${source.type} | ${source.credit} | ${source.year} | ${source.venue} | available at: ${truncateResourceText(source.locator, 100)}${summary ? ` | summary: ${summary}` : ''} | Odyssey link: ${link}`;
+          const approvedFulltext = source.zoteroFulltextEnabled
+            ? truncateResourceText(source.zoteroFulltextPreview, 900)
+            : '';
+          const annotations = (source.zoteroAnnotations ?? [])
+            .slice(0, 5)
+            .map((annotation) => truncateResourceText(annotation.text || annotation.comment, 180))
+            .filter(Boolean)
+            .join(' / ');
+          return `- [${source.id}] ${source.title} | ${source.type} | ${source.credit} | ${source.year} | ${source.venue} | available at: ${truncateResourceText(source.locator, 100)}${summary ? ` | summary: ${summary}` : ''}${annotations ? ` | Zotero annotations: ${annotations}` : ''}${approvedFulltext ? ` | user-approved Zotero full text: ${approvedFulltext}` : ''} | Odyssey link: ${link}`;
         })
         .join('\n')
       : '- No saved sources in the thesis library yet.';
@@ -4173,6 +4302,29 @@ Thesis AI should help with literature synthesis, argument structure, methodology
     if (new URLSearchParams(location.search).get('document') === documentId) {
       updateThesisRoute({ document: null });
     }
+  };
+
+  const handleZoteroSync = async () => {
+    setZoteroSyncing(true);
+    setZoteroError(null);
+    try {
+      const result = await syncZotero();
+      applySyncedSources(result.sources);
+      setZoteroStatus(await fetchZoteroStatus());
+    } catch (error) {
+      setZoteroError(error instanceof Error ? error.message : 'Zotero sync failed.');
+    } finally {
+      setZoteroSyncing(false);
+    }
+  };
+
+  const updateSourceFromZotero = (nextSource: SourceLibraryItem) => {
+    setSourceLibrary((current) => current.map((source) => (
+      source.id === nextSource.id ? nextSource : source
+    )));
+    setSelectedLibrarySourceDraft((current) => (
+      current?.id === nextSource.id ? cloneSourceLibraryItem(nextSource) : current
+    ));
   };
 
   const handleAddMilestone = () => {
@@ -5314,6 +5466,43 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     if (sectionKey === 'verification') setLibraryVerificationFilters(selected);
                   }}
                 />
+                {zoteroStatus?.connected ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setZoteroLibraryOpen(true)}
+                      className="inline-flex h-11 items-center gap-2 border border-border bg-surface px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                    >
+                      <BookOpen size={13} /> Import Zotero
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleZoteroSync(); }}
+                      disabled={zoteroSyncing}
+                      className="inline-flex h-11 items-center gap-2 border border-accent/40 bg-accent/5 px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+                    >
+                      <RefreshCw size={13} className={zoteroSyncing ? 'animate-spin' : ''} />
+                      {zoteroSyncing ? 'Syncing' : 'Sync Zotero'}
+                    </button>
+                    {(zoteroStatus.conflictCount ?? 0) > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setZoteroConflictOpen(true)}
+                        className="inline-flex h-11 items-center gap-2 border border-danger/40 bg-danger/5 px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-danger"
+                      >
+                        <AlertTriangle size={13} /> {zoteroStatus.conflictCount} Conflicts
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => navigate('/settings?section=integrations')}
+                    className="inline-flex h-11 items-center gap-2 border border-border bg-surface px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                  >
+                    <BookOpen size={13} /> Connect Zotero
+                  </button>
+                )}
                 {sourceLibrary.length > 0 && (
                   <button
                     type="button"
@@ -5338,6 +5527,15 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                 </button>
               </div>
             </div>
+
+            {(zoteroError || zoteroStatus?.lastSyncError || zoteroStatus?.lastSyncStatus === 'backoff') && (
+              <div className="mb-4 flex items-start gap-2 border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {zoteroError || zoteroStatus?.lastSyncError || `Zotero requested a pause until ${zoteroStatus?.backoffUntil ? new Date(zoteroStatus.backoffUntil).toLocaleString() : 'later'}.`}
+                </span>
+              </div>
+            )}
 
             <div className="border border-border bg-surface2/40">
               <div className={`grid gap-4 border-b border-border px-4 py-3 text-[10px] uppercase tracking-[0.18em] text-muted font-mono ${
@@ -5372,7 +5570,12 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     }`}
                   >
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-heading truncate">{source.title}</p>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-heading">{source.title}</p>
+                        {source.zoteroLink && (
+                          <span className="shrink-0 border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-accent">Zotero</span>
+                        )}
+                      </div>
                       <p className="text-xs text-muted mt-1 truncate">{source.credit} · {source.year} · {source.venue}</p>
                     </div>
                     <div className="text-xs text-muted uppercase tracking-[0.14em] font-mono">{source.type}</div>
@@ -5548,6 +5751,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                                 <option value="report">Report</option>
                                 <option value="notes">Notes</option>
                                 <option value="dataset">Dataset</option>
+                                <option value="document">Document</option>
                               </select>
                             </label>
                           </div>
@@ -5565,6 +5769,17 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                         </div>
 
                         <label className="mt-4 space-y-2 block">
+                      <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Tags</span>
+                      <input
+                        type="text"
+                        value={editableLibrarySource.tags.join(', ')}
+                        onChange={(event) => updateLibrarySourceDraft('tags', [...new Set(event.target.value.split(',').map((tag) => tag.trim()).filter(Boolean))])}
+                        placeholder="literature review, methods, case study"
+                        className="w-full border border-border bg-surface2 px-4 py-3 text-sm text-heading outline-none focus:border-accent"
+                      />
+                    </label>
+
+                        <label className="mt-4 space-y-2 block">
                       <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted font-mono">Thesis use notes</span>
                       <textarea
                         rows={5}
@@ -5575,6 +5790,17 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       </textarea>
                     </label>
                     </div>
+                  </div>
+
+                  <div className="mt-6">
+                    <Suspense fallback={<div className="border border-border bg-surface2 p-4 text-xs text-muted">Loading Zotero source tools...</div>}>
+                      <ZoteroSourcePanel
+                        source={editableLibrarySource}
+                        connected={Boolean(zoteroStatus?.connected)}
+                        onSourcesUpdated={applySyncedSources}
+                        onSourceUpdated={updateSourceFromZotero}
+                      />
+                    </Suspense>
                   </div>
 
                   <div className="mt-6 border border-border bg-surface2/40 p-5">
@@ -6069,6 +6295,31 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               setSourceAccessUrl(captured.locator);
             }}
             onClose={() => setPdfFieldCaptureOpen(false)}
+          />
+        </Suspense>
+      )}
+
+      {zoteroLibraryOpen && (
+        <Suspense fallback={<div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/65 text-sm text-white">Loading Zotero library...</div>}>
+          <ZoteroLibraryModal
+            bibliographyFormat={bibliographyFormat}
+            onClose={() => setZoteroLibraryOpen(false)}
+            onImported={(sources) => {
+              applySyncedSources(sources);
+              void fetchZoteroStatus().then(setZoteroStatus).catch(() => undefined);
+            }}
+          />
+        </Suspense>
+      )}
+
+      {zoteroConflictOpen && (
+        <Suspense fallback={<div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/65 text-sm text-white">Loading Zotero conflicts...</div>}>
+          <ZoteroConflictModal
+            onClose={() => setZoteroConflictOpen(false)}
+            onResolved={(sources) => {
+              applySyncedSources(sources);
+              void fetchZoteroStatus().then(setZoteroStatus).catch(() => undefined);
+            }}
           />
         </Suspense>
       )}

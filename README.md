@@ -223,6 +223,11 @@ MICROSOFT_TENANT_URL=https://login.microsoftonline.com/common
 MICROSOFT_REDIRECT_URI=http://localhost:3000/api/microsoft/auth/callback
 MICROSOFT_TOKEN_ENCRYPT_KEY=
 
+ZOTERO_CLIENT_KEY=
+ZOTERO_CLIENT_SECRET=
+ZOTERO_REDIRECT_URI=http://localhost:3000/api/zotero/auth/callback
+ZOTERO_TOKEN_ENCRYPT_KEY=
+
 AI_KEY_SECRET=
 ```
 
@@ -230,7 +235,7 @@ AI_KEY_SECRET=
 
 Before exposing Odyssey to real users, verify these deployment controls:
 
-- set `AI_KEY_SECRET` and `MICROSOFT_TOKEN_ENCRYPT_KEY`; do not rely on `SUPABASE_SERVICE_KEY` for token encryption
+- set `AI_KEY_SECRET`, `MICROSOFT_TOKEN_ENCRYPT_KEY`, and `ZOTERO_TOKEN_ENCRYPT_KEY`; do not rely on `SUPABASE_SERVICE_KEY` for token encryption
 - set `GITHUB_WEBHOOK_SECRET` and reject unsigned webhook traffic
 - set `CLIENT_URL` to the exact trusted browser origin and avoid wildcard origins in reverse proxies or storage gateways
 - keep the `goal-attachments` bucket private and review Supabase Storage policies before importing production data
@@ -332,6 +337,12 @@ Common keys:
 - `MICROSOFT_TENANT_URL`
 - `MICROSOFT_REDIRECT_URI`
 - `MICROSOFT_TOKEN_ENCRYPT_KEY`
+- `ZOTERO_CLIENT_KEY`
+- `ZOTERO_CLIENT_SECRET`
+- `ZOTERO_REDIRECT_URI`
+- `ZOTERO_TOKEN_ENCRYPT_KEY`
+
+Register a Zotero OAuth application at `https://www.zotero.org/oauth/apps`. The callback must be the public Odyssey URL plus `/api/zotero/auth/callback`; for this deployment that is `https://asterias.ssag.nps.edu/odyssey/api/zotero/auth/callback`. Generate `ZOTERO_TOKEN_ENCRYPT_KEY` with `openssl rand -hex 32` and keep it server-only.
 
 ### Derived Supabase Runtime
 
