@@ -605,12 +605,32 @@ async function loadOpeningSourceChunks(userId: string, limit: number) {
   } satisfies ThesisSourceTextMatch));
 }
 
+async function loadZoteroWebLinks(userId: string, sourceIds: string[]) {
+  if (sourceIds.length === 0) return new Map<string, string>();
+  const { data, error } = await supabase.from('thesis_zotero_item_links')
+    .select('source_id,library_type,library_id,item_key')
+    .eq('user_id', userId)
+    .in('source_id', [...new Set(sourceIds)]);
+  if (error) throw error;
+  return new Map((data ?? []).map((row) => {
+    const libraryPath = row.library_type === 'group'
+      ? `groups/${encodeURIComponent(String(row.library_id))}`
+      : `users/${encodeURIComponent(String(row.library_id))}`;
+    return [
+      String(row.source_id),
+      `https://www.zotero.org/${libraryPath}/items/${encodeURIComponent(String(row.item_key))}`,
+    ];
+  }));
+}
+
 export async function buildThesisSourceContext(userId: string, userQuery: string) {
   let matches = await searchThesisSourceText(userId, userQuery, 10, false);
   if (matches.length === 0 && /\b(zotero|sources?|documents?|papers?|library|uploaded|added)\b/i.test(userQuery)) {
     matches = await loadOpeningSourceChunks(userId, 8);
   }
   if (matches.length === 0) return '';
+  const zoteroWebLinks = await loadZoteroWebLinks(userId, matches.map((match) => match.sourceId))
+    .catch(() => new Map<string, string>());
 
   const seen = new Set<string>();
   let remaining = 14_000;
@@ -625,6 +645,7 @@ export async function buildThesisSourceContext(userId: string, userQuery: string
       `SOURCE: ${match.sourceTitle}`,
       `ATTACHMENT: ${match.attachmentName || match.attachmentKey}`,
       `ODYSSEY LINK: /thesis?tab=sources&source=${encodeURIComponent(match.sourceId)}`,
+      ...(zoteroWebLinks.get(match.sourceId) ? [`ZOTERO WEB LINK: ${zoteroWebLinks.get(match.sourceId)}`] : []),
       `EXTRACTED PASSAGE:\n${excerpt}`,
     ].join('\n'));
   }

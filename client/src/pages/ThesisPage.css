@@ -1,0 +1,145 @@
+.thesis-sources-tab {
+  container: thesis-sources / inline-size;
+}
+
+.thesis-zotero-summary__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.thesis-zotero-meta > span + span::before {
+  content: "·";
+  margin-right: 0.75rem;
+  color: var(--color-border);
+}
+
+.thesis-source-toolbar {
+  display: grid;
+  grid-template-columns: minmax(16rem, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.thesis-source-row {
+  display: grid;
+  grid-template-columns: minmax(13rem, 1.45fr) minmax(18rem, 1fr) auto;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.thesis-source-row__details {
+  display: grid;
+  grid-template-columns: 0.65fr 0.75fr minmax(7rem, 1fr);
+  gap: 1rem;
+  min-width: 0;
+}
+
+.thesis-source-row__details > div {
+  min-width: 0;
+}
+
+.thesis-source-row__details dt {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.thesis-source-row__details dd {
+  margin-top: 0.2rem;
+  overflow: hidden;
+  color: var(--color-heading);
+  font-size: 0.67rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container thesis-sources (max-width: 68rem) {
+  .thesis-source-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .thesis-source-toolbar__controls {
+    justify-content: flex-start;
+  }
+
+  .thesis-source-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.7rem 1rem;
+  }
+
+  .thesis-source-row__details {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: 34rem;
+  }
+
+  .thesis-source-row__tail {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
+@container thesis-sources (max-width: 48rem) {
+  .thesis-zotero-summary__inner {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .thesis-zotero-summary__actions {
+    margin-left: 3rem;
+  }
+
+  .thesis-source-library__heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .thesis-source-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .thesis-source-row__primary,
+  .thesis-source-row__details,
+  .thesis-source-row__tail {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .thesis-source-row__tail {
+    justify-content: flex-start;
+  }
+}
+
+@container thesis-sources (max-width: 36rem) {
+  .thesis-zotero-summary__description {
+    display: none;
+  }
+
+  .thesis-zotero-summary__actions {
+    margin-left: 0;
+  }
+
+  .thesis-source-toolbar__controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .thesis-source-toolbar__controls > * {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .thesis-source-toolbar__controls select,
+  .thesis-source-toolbar__controls button {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .thesis-source-row__details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

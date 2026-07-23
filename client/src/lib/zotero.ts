@@ -58,6 +58,62 @@ export type ZoteroConflict = {
   createdAt: string;
 };
 
+export type ZoteroLinkedItem = {
+  libraryType: 'user' | 'group';
+  libraryId: string;
+  itemKey: string;
+};
+
+export type ZoteroLinkedAttachment = {
+  key: string;
+  filename?: string;
+  contentType?: string;
+  linkMode?: string;
+  url?: string;
+};
+
+function zoteroDesktopLibraryPath(link: ZoteroLinkedItem) {
+  return link.libraryType === 'group'
+    ? `groups/${encodeURIComponent(link.libraryId)}`
+    : 'library';
+}
+
+function zoteroWebLibraryPath(link: ZoteroLinkedItem) {
+  return link.libraryType === 'group'
+    ? `groups/${encodeURIComponent(link.libraryId)}`
+    : `users/${encodeURIComponent(link.libraryId)}`;
+}
+
+/** URLs for opening a linked citation without copying its attachment into Odyssey. */
+export function getZoteroItemOpenLinks(link: ZoteroLinkedItem) {
+  const itemKey = encodeURIComponent(link.itemKey);
+  return {
+    desktopUrl: `zotero://select/${zoteroDesktopLibraryPath(link)}/items/${itemKey}`,
+    webUrl: `https://www.zotero.org/${zoteroWebLibraryPath(link)}/items/${itemKey}`,
+  };
+}
+
+/** PDFs use Zotero's direct reader protocol; other file types are selected in
+ * Zotero Desktop, where the native attachment can be opened. */
+export function getZoteroAttachmentOpenLinks(
+  link: ZoteroLinkedItem,
+  attachment: ZoteroLinkedAttachment,
+) {
+  const attachmentKey = encodeURIComponent(attachment.key);
+  const isPdf = /pdf/i.test(attachment.contentType ?? '') || /\.pdf$/i.test(attachment.filename ?? '');
+  const linkedUrl = attachment.linkMode === 'linked_url' && /^https?:\/\//i.test(attachment.url ?? '')
+    ? attachment.url
+    : null;
+  return {
+    desktopUrl: isPdf
+      ? `zotero://open-pdf/${zoteroDesktopLibraryPath(link)}/items/${attachmentKey}`
+      : `zotero://select/${zoteroDesktopLibraryPath(link)}/items/${attachmentKey}`,
+    webUrl: linkedUrl
+      ?? `https://www.zotero.org/${zoteroWebLibraryPath(link)}/items/${attachmentKey}`,
+    opensPdfReader: isPdf,
+  };
+}
+
 async function authHeaders(json = false) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) throw new Error('Not authenticated');

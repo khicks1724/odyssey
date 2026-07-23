@@ -344,7 +344,7 @@ Common keys:
 
 Register a Zotero OAuth application at `https://www.zotero.org/oauth/apps`. The callback must be the public Odyssey URL plus `/api/zotero/auth/callback`; for this deployment that is `https://asterias.ssag.nps.edu/odyssey/api/zotero/auth/callback`. Generate `ZOTERO_TOKEN_ENCRYPT_KEY` with `openssl rand -hex 32` and keep it server-only.
 
-Imported Zotero attachments are indexed for Sources search and query-relevant Thesis AI retrieval. Odyssey prefers Zotero's own full-text index, then falls back to PDF, DOCX, or text extraction. Image-only PDFs use Poppler plus Tesseract OCR (up to the first 20 pages); both tools are included in the production Docker image. Install `poppler-utils` and `tesseract-ocr` on a non-Docker development host to exercise the OCR fallback there. Potential credentials and restricted sources remain excluded from Thesis AI until the user explicitly approves them.
+Imported Zotero attachments are indexed for Sources search and query-relevant Thesis AI retrieval without retaining a duplicate file in Odyssey storage. Source and attachment actions open Zotero Desktop through `zotero://` links, with Zotero Web Library fallbacks. Odyssey prefers Zotero's own full-text index, then temporarily downloads a file for PDF, DOCX, or text extraction and discards it after indexing. Image-only PDFs use Poppler plus Tesseract OCR (up to the first 20 pages); both tools are included in the production Docker image. Install `poppler-utils` and `tesseract-ocr` on a non-Docker development host to exercise the OCR fallback there. Potential credentials and restricted sources remain excluded from Thesis AI until the user explicitly approves them.
 
 ### Derived Supabase Runtime
 

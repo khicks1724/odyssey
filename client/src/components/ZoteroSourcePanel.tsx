@@ -6,7 +6,8 @@ import {
   exportAttachmentToZotero,
   exportSourceToZotero,
   fetchZoteroCollections,
-  importZoteroAttachment,
+  getZoteroAttachmentOpenLinks,
+  getZoteroItemOpenLinks,
   reindexZoteroSourceFulltext,
   saveZoteroNote,
   unlinkZoteroSource,
@@ -116,7 +117,7 @@ export default function ZoteroSourcePanel({
     );
   }
 
-  const openUrl = `https://www.zotero.org/users/${encodeURIComponent(link.libraryId)}/items/${encodeURIComponent(link.itemKey)}`;
+  const itemOpenLinks = getZoteroItemOpenLinks(link);
 
   return (
     <section className="space-y-4 border border-border bg-surface2/40 p-4">
@@ -136,9 +137,13 @@ export default function ZoteroSourcePanel({
           {link.lastError && <p className="mt-1 text-xs text-danger">{link.lastError}</p>}
         </div>
         <div className="flex flex-wrap gap-2">
-          <a href={openUrl} target="_blank" rel="noopener noreferrer"
+          <a href={itemOpenLinks.desktopUrl}
+            className="inline-flex items-center gap-1.5 border border-accent/30 bg-accent/5 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-accent hover:bg-accent/10">
+            <BookOpen size={11} /> Zotero Desktop
+          </a>
+          <a href={itemOpenLinks.webUrl} target="_blank" rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 border border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted hover:text-heading">
-            <ArrowUpRight size={11} /> Open Zotero
+            <ArrowUpRight size={11} /> Web Library
           </a>
           <button type="button" onClick={() => { void run('unlink', async () => {
             const result = await unlinkZoteroSource(source.id);
@@ -227,28 +232,32 @@ export default function ZoteroSourcePanel({
             </p>
             <span className="text-[10px] text-muted">{attachments.length}</span>
           </div>
+          <p className="text-[10px] leading-relaxed text-muted">
+            Files remain in Zotero. Odyssey keeps citation metadata and the extracted search index, not a duplicate attachment.
+          </p>
           <div className="max-h-44 space-y-2 overflow-y-auto">
-            {attachments.map((attachment) => (
-              <div key={attachment.key} className="flex items-center justify-between gap-3 border border-border bg-surface px-3 py-2">
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold text-heading">{attachment.filename || attachment.title || attachment.key}</p>
-                  <p className="mt-0.5 text-[10px] text-muted">{attachment.contentType || attachment.linkMode}</p>
+            {attachments.map((attachment) => {
+              const attachmentOpenLinks = getZoteroAttachmentOpenLinks(link, attachment);
+              return (
+                <div key={attachment.key} className="flex items-center justify-between gap-3 border border-border bg-surface px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-heading">{attachment.filename || attachment.title || attachment.key}</p>
+                    <p className="mt-0.5 text-[10px] text-muted">{attachment.contentType || attachment.linkMode}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <a href={attachmentOpenLinks.desktopUrl}
+                      className="inline-flex items-center gap-1 border border-accent/30 bg-accent/5 px-2 py-1 text-[9px] uppercase tracking-wider text-accent hover:bg-accent/10"
+                      title={attachmentOpenLinks.opensPdfReader ? 'Open in the Zotero PDF reader' : 'Select this attachment in Zotero Desktop'}>
+                      <FileText size={9} /> Desktop
+                    </a>
+                    <a href={attachmentOpenLinks.webUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 border border-border px-2 py-1 text-[9px] uppercase tracking-wider text-muted hover:text-heading">
+                      <ArrowUpRight size={9} /> Web
+                    </a>
+                  </div>
                 </div>
-                {attachment.linkMode !== 'linked_url' && (
-                  <button type="button" onClick={() => { void run(`import-${attachment.key}`, async () => {
-                    const confirmed = source.verification !== 'restricted'
-                      || window.confirm('This source is marked restricted. Confirm that it may be copied into Odyssey.');
-                    if (!confirmed) return;
-                    const result = await importZoteroAttachment(source.id, attachment.key, confirmed);
-                    onSourceUpdated(result.source as SourceLibraryItem);
-                  }); }}
-                    disabled={Boolean(pending)}
-                    className="inline-flex shrink-0 items-center gap-1 border border-border px-2 py-1 text-[9px] uppercase tracking-wider text-muted hover:text-heading disabled:opacity-50">
-                    {pending === `import-${attachment.key}` ? <Loader2 size={9} className="animate-spin" /> : <Download size={9} />} Import
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
             {attachments.length === 0 && <p className="text-xs text-muted">No Zotero attachments.</p>}
           </div>
           {source.attachmentStoragePath && (

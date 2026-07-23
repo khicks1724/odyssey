@@ -67,10 +67,13 @@ import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { pushUndoAction } from '../lib/undo-manager';
 import {
   fetchZoteroStatus,
+  getZoteroAttachmentOpenLinks,
+  getZoteroItemOpenLinks,
   searchZoteroSourceText,
   syncZotero,
   type ZoteroStatus,
 } from '../lib/zotero';
+import './ThesisPage.css';
 
 const ThesisPaperTab = lazyWithRetry(() => import('../components/ThesisPaperTab'), 'thesis-paper-tab');
 const ThesisKnowledgeTab = lazyWithRetry(() => import('../components/ThesisKnowledgeTab'), 'thesis-knowledge-tab');
@@ -229,6 +232,13 @@ export type SourceLibraryItem = {
   };
   revision?: number;
 };
+
+function getPrimaryZoteroAttachment(source: SourceLibraryItem) {
+  const attachments = source.zoteroAttachments ?? [];
+  return attachments.find((attachment) => (
+    /pdf/i.test(attachment.contentType || '') || /\.pdf$/i.test(attachment.filename || '')
+  )) ?? attachments[0] ?? null;
+}
 
 type BibliographyReadiness = {
   status: 'ready' | 'manual';
@@ -2939,6 +2949,19 @@ export default function ThesisPage() {
     [selectedLibrarySourceId, sourceLibrary],
   );
   const editableLibrarySource = selectedLibrarySourceDraft ?? selectedLibrarySource;
+  const editableZoteroItemLinks = useMemo(() => (
+    editableLibrarySource?.zoteroLink
+      ? getZoteroItemOpenLinks(editableLibrarySource.zoteroLink)
+      : null
+  ), [editableLibrarySource]);
+  const editableZoteroAttachment = useMemo(() => (
+    editableLibrarySource ? getPrimaryZoteroAttachment(editableLibrarySource) : null
+  ), [editableLibrarySource]);
+  const editableZoteroAttachmentLinks = useMemo(() => (
+    editableLibrarySource?.zoteroLink && editableZoteroAttachment
+      ? getZoteroAttachmentOpenLinks(editableLibrarySource.zoteroLink, editableZoteroAttachment)
+      : null
+  ), [editableLibrarySource, editableZoteroAttachment]);
   const selectedLibrarySourceDirty = useMemo(
     () => Boolean(
       selectedLibrarySource
@@ -5007,57 +5030,55 @@ Thesis AI should help with literature synthesis, argument structure, methodology
 
       {activeTab === 'sources' && (
         <>
-        <div className="space-y-8">
-          <section className={`overflow-hidden border ${zoteroStatus?.connected ? 'border-accent3/30 bg-accent3/5' : 'border-accent/30 bg-accent/5'}`}>
-            <div className="flex flex-col gap-5 p-5 lg:flex-row lg:items-center lg:justify-between lg:p-6">
-              <div className="flex min-w-0 items-start gap-4">
-                <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border ${zoteroStatus?.connected ? 'border-accent3/30 bg-accent3/10 text-accent3' : 'border-accent/30 bg-accent/10 text-accent'}`}>
-                  {zoteroStatus?.connected ? <CheckCircle2 size={21} /> : <BookOpen size={21} />}
+        <div className="thesis-sources-tab space-y-5">
+          <section className={`thesis-zotero-summary overflow-hidden border ${zoteroStatus?.connected ? 'border-accent3/30 bg-accent3/5' : 'border-accent/30 bg-accent/5'}`}>
+            <div className="thesis-zotero-summary__inner gap-4 px-4 py-3.5">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border ${zoteroStatus?.connected ? 'border-accent3/30 bg-accent3/10 text-accent3' : 'border-accent/30 bg-accent/10 text-accent'}`}>
+                  {zoteroStatus?.connected ? <CheckCircle2 size={17} /> : <BookOpen size={17} />}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">Zotero integration</p>
-                  <h2 className="mt-1 text-base font-bold text-heading">
-                    {zoteroStatus?.connected ? `Connected${zoteroStatus.username ? ` as ${zoteroStatus.username}` : ''}` : 'Bring your Zotero library into Thesis Sources'}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <p className="text-[9px] font-mono uppercase tracking-[0.18em] text-muted">Zotero library</p>
+                    {zoteroStatus?.connected && (
+                      <span className="inline-flex items-center gap-1.5 text-[9px] font-mono uppercase tracking-[0.14em] text-accent3">
+                        <span className="h-1.5 w-1.5 rounded-full bg-accent3" /> Connected
+                      </span>
+                    )}
+                  </div>
+                  <h2 className="mt-0.5 text-sm font-bold text-heading">
+                    {zoteroStatus?.connected ? (zoteroStatus.username || 'Personal library') : 'Bring your Zotero library into Thesis Sources'}
                   </h2>
-                  <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted">
+                  <p className="thesis-zotero-summary__description mt-0.5 max-w-3xl text-[11px] leading-relaxed text-muted">
                     {zoteroStatus?.connected
-                      ? 'Zotero Desktop syncs through your Zotero account to Odyssey. Import references, keep metadata and notes synchronized, and handle conflicts here.'
-                      : 'A guided setup links your Zotero account, explains Zotero Desktop sync, and opens your library for citation import in just a few steps.'}
+                      ? 'References, attachments, notes, and indexed document text stay synchronized with this workspace.'
+                      : 'Link your Zotero account to import citations, attachments, notes, and searchable document text.'}
                   </p>
                   {zoteroStatus?.connected && (
-                    <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-mono uppercase tracking-[0.12em] text-muted">
-                      <span className="border border-border bg-surface px-2 py-1">{zoteroStatus.connectionMethod === 'api_key' ? 'Personal API key' : 'Zotero authorization'}</span>
-                      <span className="border border-border bg-surface px-2 py-1">Sync: {zoteroStatus.lastSyncStatus || 'idle'}</span>
-                      <span className="border border-border bg-surface px-2 py-1">{zoteroStatus.conflictCount ?? 0} conflicts</span>
+                    <div className="thesis-zotero-meta mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-mono uppercase tracking-[0.1em] text-muted">
+                      <span>{zoteroStatus.connectionMethod === 'api_key' ? 'Personal API key' : 'Zotero authorization'}</span>
+                      <span>Sync {zoteroStatus.lastSyncStatus || 'idle'}</span>
+                      <span>{zoteroStatus.conflictCount ?? 0} conflicts</span>
                     </div>
                   )}
                 </div>
               </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
+              <div className="thesis-zotero-summary__actions flex shrink-0 flex-wrap gap-2">
                 {zoteroStatus?.connected ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setZoteroLibraryOpen(true)}
-                      className="inline-flex items-center gap-2 border border-accent bg-accent px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-accent-fg)]"
-                    >
-                      <BookOpen size={13} /> Browse Zotero
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setZoteroSetupOpen(true)}
-                      className="border border-border bg-surface px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted hover:text-heading"
-                    >
-                      Connection details
-                    </button>
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => setZoteroSetupOpen(true)}
+                    className="h-9 border border-border bg-surface px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                  >
+                    Connection settings
+                  </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setZoteroSetupOpen(true)}
-                    className="inline-flex items-center gap-2 border border-accent bg-accent px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-accent-fg)]"
+                    className="inline-flex h-9 items-center gap-2 border border-accent bg-accent px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-[var(--color-accent-fg)]"
                   >
-                    Set up Zotero <ArrowRight size={14} />
+                    Set up Zotero <ArrowRight size={12} />
                   </button>
                 )}
               </div>
@@ -5530,115 +5551,128 @@ Thesis AI should help with literature synthesis, argument structure, methodology
             </div>
           )}
 
-          <div className="border border-border bg-surface p-6">
-            <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-start xl:gap-6">
-              <div className="xl:max-w-[42rem] xl:flex-1">
-                <div className="flex items-center gap-2">
-                  <BookOpen size={14} className="text-accent2" />
-                  <h2 className="font-sans text-sm font-bold text-heading">Sources Library</h2>
+          <section className="thesis-source-library overflow-hidden border border-border bg-surface">
+            <div className="thesis-source-library__header border-b border-border px-4 py-4">
+              <div className="thesis-source-library__heading flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <BookOpen size={14} className="text-accent2" />
+                    <h2 className="font-sans text-sm font-bold text-heading">Sources Library</h2>
+                    <span className="text-[10px] font-mono text-muted">{sourceLibrary.length}</span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    Search citations and indexed document text, then open linked files from Zotero.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {zoteroStatus?.connected && (
+                    <button
+                      type="button"
+                      onClick={() => setZoteroLibraryOpen(true)}
+                      className="inline-flex h-9 items-center gap-2 border border-border bg-surface px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                    >
+                      <BookOpen size={12} /> Import
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSourceIntakeOpen(true)}
+                    className="inline-flex h-9 items-center gap-2 border border-accent bg-accent px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-[var(--color-accent-fg)] transition-colors hover:bg-accent/90"
+                  >
+                    <Plus size={12} />
+                    Add source
+                  </button>
                 </div>
               </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center xl:justify-start">
-                <label className="flex h-11 min-w-[19rem] items-center gap-2 border border-border bg-surface px-4 text-xs text-muted">
-                  <Search size={16} className="text-accent" />
+
+              <div className="thesis-source-toolbar mt-3">
+                <label className="thesis-source-search flex h-9 min-w-0 items-center gap-2 border border-border bg-surface2/50 px-3 text-muted transition-colors focus-within:border-accent focus-within:bg-surface">
+                  <Search size={14} className="shrink-0 text-accent" />
                   <input
                     type="search"
                     value={librarySearch}
                     onChange={(event) => setLibrarySearch(event.target.value)}
                     placeholder="Search metadata and document text"
-                    className="w-full bg-transparent text-sm text-heading outline-none placeholder:text-muted"
+                    className="min-w-0 flex-1 bg-transparent text-xs text-heading outline-none placeholder:text-muted"
                   />
                   {indexedLibrarySearchPending && <Loader2 size={13} className="shrink-0 animate-spin text-accent" />}
                 </label>
-                <label className="flex h-11 items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">
-                  <span className="shrink-0">Sort by</span>
-                  <select
-                    value={librarySort}
-                    onChange={(event) => setLibrarySort(event.target.value as typeof librarySort)}
-                    className="h-11 min-w-40 border border-border bg-surface2 px-4 text-[11px] text-heading outline-none focus:border-accent"
-                  >
-                    <option value="recent">Recently added</option>
-                    <option value="title">Title</option>
-                    <option value="year">Year</option>
-                    <option value="type">Type</option>
-                    <option value="status">Status</option>
-                  </select>
-                </label>
-                <FilterDropdown
-                  placeholder="Filter sources"
-                  sections={libraryFilterSections}
-                  buttonClassName="h-11 min-w-[13rem] px-4 py-0 text-[11px]"
-                  onChange={(sectionKey, selected) => {
-                    if (sectionKey === 'type') setLibraryTypeFilters(selected);
-                    if (sectionKey === 'role') setLibraryRoleFilters(selected);
-                    if (sectionKey === 'chapter') setLibraryChapterFilters(selected);
-                    if (sectionKey === 'verification') setLibraryVerificationFilters(selected);
-                  }}
-                />
-                {zoteroStatus?.connected ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setZoteroLibraryOpen(true)}
-                      className="inline-flex h-11 items-center gap-2 border border-border bg-surface px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                <div className="thesis-source-toolbar__controls flex flex-wrap items-center gap-2">
+                  <label>
+                    <span className="sr-only">Sort sources</span>
+                    <select
+                      value={librarySort}
+                      onChange={(event) => setLibrarySort(event.target.value as typeof librarySort)}
+                      className="h-9 min-w-36 border border-border bg-surface2 px-3 text-[10px] text-heading outline-none focus:border-accent"
                     >
-                      <BookOpen size={13} /> Import Zotero
-                    </button>
+                      <option value="recent">Recently added</option>
+                      <option value="title">Title</option>
+                      <option value="year">Year</option>
+                      <option value="type">Type</option>
+                      <option value="status">Status</option>
+                    </select>
+                  </label>
+                  <FilterDropdown
+                    placeholder="Filter sources"
+                    sections={libraryFilterSections}
+                    buttonClassName="h-9 min-w-36 rounded-none px-3 py-0 text-[10px]"
+                    onChange={(sectionKey, selected) => {
+                      if (sectionKey === 'type') setLibraryTypeFilters(selected);
+                      if (sectionKey === 'role') setLibraryRoleFilters(selected);
+                      if (sectionKey === 'chapter') setLibraryChapterFilters(selected);
+                      if (sectionKey === 'verification') setLibraryVerificationFilters(selected);
+                    }}
+                  />
+                  {zoteroStatus?.connected ? (
+                    <>
                     <button
                       type="button"
                       onClick={() => { void handleZoteroSync(); }}
                       disabled={zoteroSyncing}
-                      className="inline-flex h-11 items-center gap-2 border border-accent/40 bg-accent/5 px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+                      className="inline-flex h-9 items-center gap-2 border border-accent/30 bg-accent/5 px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
                     >
-                      <RefreshCw size={13} className={zoteroSyncing ? 'animate-spin' : ''} />
-                      {zoteroSyncing ? 'Syncing' : 'Sync Zotero'}
+                      <RefreshCw size={12} className={zoteroSyncing ? 'animate-spin' : ''} />
+                      {zoteroSyncing ? 'Syncing' : 'Sync'}
                     </button>
                     {(zoteroStatus.conflictCount ?? 0) > 0 && (
                       <button
                         type="button"
                         onClick={() => setZoteroConflictOpen(true)}
-                        className="inline-flex h-11 items-center gap-2 border border-danger/40 bg-danger/5 px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-danger"
+                        className="inline-flex h-9 items-center gap-2 border border-danger/40 bg-danger/5 px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-danger"
                       >
-                        <AlertTriangle size={13} /> {zoteroStatus.conflictCount} Conflicts
+                        <AlertTriangle size={12} /> {zoteroStatus.conflictCount} conflicts
                       </button>
                     )}
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setZoteroSetupOpen(true)}
-                    className="inline-flex h-11 items-center gap-2 border border-border bg-surface px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
-                  >
-                    <BookOpen size={13} /> Connect Zotero
-                  </button>
-                )}
-                {sourceLibrary.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setLibraryEditMode((current) => !current)}
-                    className={`inline-flex h-11 items-center gap-2 border px-4 text-[10px] font-semibold tracking-[0.18em] transition-colors ${
-                      libraryEditMode
-                        ? 'border-accent bg-accent text-[var(--color-accent-fg)]'
-                        : 'border-border bg-surface text-muted hover:bg-surface2 hover:text-heading'
-                    }`}
-                  >
-                    <SquarePen size={14} />
-                    {libraryEditMode ? 'Done editing' : 'Edit Sources'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setSourceIntakeOpen(true)}
-                  className="inline-flex h-11 items-center gap-2 border border-accent bg-accent px-4 text-[10px] font-semibold tracking-[0.18em] text-[var(--color-accent-fg)] transition-colors hover:bg-accent/90"
-                >
-                  <Plus size={14} />
-                  Add A Source
-                </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setZoteroSetupOpen(true)}
+                      className="inline-flex h-9 items-center gap-2 border border-border bg-surface px-3 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                    >
+                      <BookOpen size={12} /> Connect Zotero
+                    </button>
+                  )}
+                  {sourceLibrary.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setLibraryEditMode((current) => !current)}
+                      className={`inline-flex h-9 items-center gap-2 border px-3 text-[9px] font-semibold uppercase tracking-[0.14em] transition-colors ${
+                        libraryEditMode
+                          ? 'border-accent bg-accent text-[var(--color-accent-fg)]'
+                          : 'border-border bg-surface text-muted hover:bg-surface2 hover:text-heading'
+                      }`}
+                    >
+                      <SquarePen size={12} />
+                      {libraryEditMode ? 'Done' : 'Edit'}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
             {(zoteroError || zoteroStatus?.lastSyncError || zoteroStatus?.lastSyncStatus === 'backoff') && (
-              <div className="mb-4 flex items-start gap-2 border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+              <div className="m-3 flex items-start gap-2 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" />
                 <span>
                   {zoteroError || zoteroStatus?.lastSyncError || `Zotero requested a pause until ${zoteroStatus?.backoffUntil ? new Date(zoteroStatus.backoffUntil).toLocaleString() : 'later'}.`}
@@ -5646,58 +5680,68 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               </div>
             )}
 
-            <div className="border border-border bg-surface2/40">
-              <div className={`grid gap-4 border-b border-border px-4 py-3 text-[10px] uppercase tracking-[0.18em] text-muted font-mono ${
-                libraryEditMode
-                  ? 'grid-cols-[minmax(0,1.6fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.9fr)]'
-                  : 'grid-cols-[minmax(0,1.6fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)]'
-              }`}>
-                <span>Source</span>
-                <span>Type</span>
-                <span>Role</span>
-                <span>Chapter</span>
-                <span>Status</span>
-                {libraryEditMode && <span>Actions</span>}
-              </div>
-              <div className="divide-y divide-border">
-                {visibleLibrarySources.map((source) => (
-                  <div
-                    key={source.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openLibrarySourceEditor(source.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        openLibrarySourceEditor(source.id);
-                      }
-                    }}
-                    className={`grid gap-4 px-4 py-4 text-left transition-colors hover:bg-surface ${
-                      libraryEditMode
-                        ? 'grid-cols-[minmax(0,1.6fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.9fr)]'
-                        : 'grid-cols-[minmax(0,1.6fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,0.75fr)]'
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-heading">{source.title}</p>
+            <div className="thesis-source-list divide-y divide-border">
+                {visibleLibrarySources.map((source) => {
+                  const zoteroItemLinks = source.zoteroLink ? getZoteroItemOpenLinks(source.zoteroLink) : null;
+                  const primaryAttachment = getPrimaryZoteroAttachment(source);
+                  const attachmentLinks = source.zoteroLink && primaryAttachment
+                    ? getZoteroAttachmentOpenLinks(source.zoteroLink, primaryAttachment)
+                    : null;
+                  const byline = [formatSourceCreditDisplay(source.credit), source.year, source.venue]
+                    .map((value) => value.trim())
+                    .filter(Boolean)
+                    .join(' · ');
+                  return (
+                    <article key={source.id} className="thesis-source-row px-4 py-3 transition-colors hover:bg-surface2/35">
+                    <div className="thesis-source-row__primary min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                        {zoteroItemLinks ? (
+                          <a
+                            href={zoteroItemLinks.desktopUrl}
+                            className="min-w-0 truncate text-sm font-semibold text-heading underline-offset-2 hover:text-accent hover:underline"
+                            title="Open this reference in Zotero Desktop"
+                          >
+                            {source.title}
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openLibrarySourceEditor(source.id)}
+                            className="min-w-0 truncate text-left text-sm font-semibold text-heading underline-offset-2 hover:text-accent hover:underline"
+                          >
+                            {source.title}
+                          </button>
+                        )}
                         {source.zoteroLink && (
-                          <span className="shrink-0 border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-accent">Zotero</span>
+                          <span className="shrink-0 border border-accent/25 bg-accent/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.1em] text-accent">Zotero</span>
                         )}
                         {source.zoteroFulltextStatus === 'indexed' && (
-                          <span className="shrink-0 border border-accent2/30 bg-accent2/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-accent2">Text indexed</span>
+                          <span className="shrink-0 border border-accent2/25 bg-accent2/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.1em] text-accent2">Indexed</span>
                         )}
                         {source.zoteroFulltextStatus === 'error' && (
-                          <span className="shrink-0 border border-amber-500/30 bg-amber-500/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-amber-600 dark:text-amber-300">Text retry needed</span>
+                          <span className="shrink-0 border border-amber-500/30 bg-amber-500/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.1em] text-amber-600 dark:text-amber-300">Retry text</span>
                         )}
                       </div>
-                      <p className="text-xs text-muted mt-1 truncate">{source.credit} · {source.year} · {source.venue}</p>
+                      <p className="mt-0.5 truncate text-[11px] text-muted">{byline || 'Citation details not available'}</p>
                     </div>
-                    <div className="text-xs text-muted uppercase tracking-[0.14em] font-mono">{source.type}</div>
-                    <div className="text-xs text-muted">{formatSourceLabel(source.role)}</div>
-                    <div className="text-xs text-muted">{formatSourceLabel(source.chapterTarget)}</div>
-                    <div>
-                      <span className={`inline-flex px-2 py-1 text-[10px] font-mono uppercase border ${
+
+                    <dl className="thesis-source-row__details">
+                      <div>
+                        <dt>Type</dt>
+                        <dd>{formatSourceLabel(source.type)}</dd>
+                      </div>
+                      <div>
+                        <dt>Role</dt>
+                        <dd>{formatSourceLabel(source.role)}</dd>
+                      </div>
+                      <div>
+                        <dt>Chapter</dt>
+                        <dd>{formatSourceLabel(source.chapterTarget)}</dd>
+                      </div>
+                    </dl>
+
+                    <div className="thesis-source-row__tail flex items-center justify-end gap-1.5">
+                      <span className={`mr-1 inline-flex border px-2 py-1 text-[9px] font-mono uppercase tracking-[0.1em] ${
                         source.status === 'analyzed'
                           ? 'border-accent2/30 bg-accent2/10 text-accent2'
                           : source.status === 'tagged'
@@ -5706,45 +5750,57 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       }`}>
                         {source.status}
                       </span>
+                      {attachmentLinks && (
+                        <a
+                          href={attachmentLinks.desktopUrl}
+                          className="inline-flex h-7 items-center gap-1 border border-accent/25 bg-accent/5 px-2 text-[8px] font-semibold uppercase tracking-[0.1em] text-accent transition-colors hover:bg-accent/10"
+                          title={attachmentLinks.opensPdfReader ? 'Open the PDF in Zotero Desktop' : 'Select the attachment in Zotero Desktop'}
+                        >
+                          <FileText size={10} /> File
+                        </a>
+                      )}
+                      {zoteroItemLinks && (
+                        <a
+                          href={zoteroItemLinks.webUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex h-7 items-center gap-1 border border-border bg-surface px-2 text-[8px] font-semibold uppercase tracking-[0.1em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                          title="Open this reference in the Zotero web library"
+                        >
+                          <ArrowUpRight size={10} /> Web
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openLibrarySourceEditor(source.id)}
+                        className="inline-flex h-7 items-center gap-1 border border-border bg-surface px-2 text-[8px] font-semibold uppercase tracking-[0.1em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                      >
+                        <SquarePen size={10} /> {libraryEditMode ? 'Edit' : 'Details'}
+                      </button>
+                      {libraryEditMode && (
+                        <button
+                          type="button"
+                          onClick={() => requestDeleteLibrarySource(source)}
+                          className="inline-flex h-7 w-7 items-center justify-center border border-danger/30 bg-danger/8 text-danger transition-colors hover:bg-danger/12"
+                          aria-label={`Delete ${source.title}`}
+                          title="Delete source"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      )}
                     </div>
-                    {libraryEditMode && (
-                      <div className="flex items-start gap-2">
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openLibrarySourceEditor(source.id);
-                          }}
-                          className="inline-flex items-center gap-1.5 border border-border bg-surface px-2.5 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
-                        >
-                          <SquarePen size={12} />
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            requestDeleteLibrarySource(source);
-                          }}
-                          className="inline-flex items-center gap-1.5 border border-danger/30 bg-danger/8 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-danger transition-colors hover:bg-danger/12"
-                        >
-                          <Trash2 size={12} />
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                    </article>
+                  );
+                })}
                 {visibleLibrarySources.length === 0 && (
-                  <div className="px-4 py-8 text-sm text-muted">
+                  <div className="px-4 py-10 text-center text-sm text-muted">
                     {sourceLibrary.length === 0
                       ? 'No sources have been added to this thesis workspace yet. Upload a PDF, paste a URL, or save a manual citation to populate the library.'
                       : 'No sources match the current search and filter set.'}
                   </div>
                 )}
-              </div>
             </div>
-          </div>
+          </section>
 
           {editableLibrarySource && selectedLibrarySource && (
             <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm">
@@ -5759,6 +5815,24 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                       <p className="mt-2 text-sm text-muted">{formatSourceCreditDisplay(editableLibrarySource.credit)} · {editableLibrarySource.year} · {editableLibrarySource.venue}</p>
                     </div>
                     <div className="flex items-center gap-2">
+                      {editableZoteroItemLinks && (
+                        <>
+                          <a
+                            href={editableZoteroItemLinks.desktopUrl}
+                            className="inline-flex items-center gap-2 border border-accent/30 bg-accent/5 px-3 py-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/10"
+                          >
+                            <BookOpen size={12} /> Zotero Desktop
+                          </a>
+                          <a
+                            href={editableZoteroItemLinks.webUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 border border-border bg-surface px-3 py-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                          >
+                            <ArrowUpRight size={12} /> Web
+                          </a>
+                        </>
+                      )}
                       <button
                         type="button"
                         onClick={saveSelectedLibrarySourceDraft}
@@ -5801,17 +5875,38 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                           <SquarePen size={14} className="text-accent" />
                           <h4 className="text-sm font-semibold text-heading">Source Metadata</h4>
                         </div>
-                        {editableLibrarySource.attachmentStoragePath && (
-                          <button
-                            type="button"
-                            onClick={() => { void handleOpenLibraryAttachment(selectedLibrarySource); }}
-                            disabled={libraryAttachmentOpening}
-                            className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent transition-colors hover:bg-accent/15 disabled:opacity-60"
-                          >
-                            <FileText size={12} />
-                            {libraryAttachmentOpening ? 'Opening PDF...' : 'Open PDF'}
-                          </button>
-                        )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          {editableZoteroAttachmentLinks && (
+                            <>
+                              <a
+                                href={editableZoteroAttachmentLinks.desktopUrl}
+                                className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-3 py-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/15"
+                              >
+                                <FileText size={12} />
+                                {editableZoteroAttachmentLinks.opensPdfReader ? 'Open PDF in Zotero' : 'Open file in Zotero'}
+                              </a>
+                              <a
+                                href={editableZoteroAttachmentLinks.webUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 border border-border bg-surface px-3 py-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
+                              >
+                                <ArrowUpRight size={11} /> Web file
+                              </a>
+                            </>
+                          )}
+                          {!editableZoteroAttachmentLinks && editableLibrarySource.attachmentStoragePath && (
+                            <button
+                              type="button"
+                              onClick={() => { void handleOpenLibraryAttachment(selectedLibrarySource); }}
+                              disabled={libraryAttachmentOpening}
+                              className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-3 py-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/15 disabled:opacity-60"
+                            >
+                              <FileText size={12} />
+                              {libraryAttachmentOpening ? 'Opening file...' : 'Open stored file'}
+                            </button>
+                          )}
+                        </div>
                       </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <label className="space-y-2">
