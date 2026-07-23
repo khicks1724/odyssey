@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import {
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
   Loader2,
   Maximize2,
   Minimize2,
@@ -30,17 +32,26 @@ interface CoordinationTabProps {
 
 type WorkloadPerson = CoordinationSnapshot['workloadBalance']['people'][number];
 
-const GRAPH_TYPE_ORDER = ['person', 'task', 'deliverable', 'concept', 'document', 'repo', 'file'] as const;
+const GRAPH_TYPE_ORDER = ['person', 'task', 'concept', 'deliverable', 'repo', 'document', 'file'] as const;
 const GRAPH_TYPE_LABELS: Record<string, string> = {
   person: 'People',
   task: 'Tasks',
   deliverable: 'Deliverables',
-  concept: 'Concepts',
+  concept: 'LOE / Categories',
   document: 'Documents',
-  repo: 'Repos',
+  repo: 'Repositories',
   file: 'Files',
 };
-const GRAPH_VIEWBOX = { width: 1200, height: 560 };
+const GRAPH_TYPE_META_LABELS: Record<string, string> = {
+  person: 'PERSON',
+  task: 'TASK',
+  deliverable: 'DELIVERABLE',
+  concept: 'LOE / CATEGORY',
+  document: 'DOCUMENT',
+  repo: 'REPOSITORY',
+  file: 'FILE',
+};
+const GRAPH_VIEWBOX = { width: 1320, height: 640 };
 const GRAPH_INFOBOX = {
   minWidth: 260,
   maxWidth: 420,
@@ -81,23 +92,23 @@ type StringStyleLaneConfig = {
 };
 
 const STRING_STYLE_LANE_CONFIGS: Record<(typeof GRAPH_TYPE_ORDER)[number], StringStyleLaneConfig> = {
-  person: { label: 'People', x: 36, y: 104, width: 184, height: 404, columns: 1, maxColumns: 1 },
-  concept: { label: 'Concepts', x: 246, y: 60, width: 234, height: 200, columns: 1, maxColumns: 2 },
-  task: { label: 'Tasks', x: 246, y: 288, width: 356, height: 220, columns: 2, maxColumns: 3 },
-  deliverable: { label: 'Deliverables', x: 628, y: 60, width: 150, height: 200, columns: 1, maxColumns: 1 },
-  repo: { label: 'Repos', x: 628, y: 288, width: 150, height: 92, columns: 1, maxColumns: 1 },
-  file: { label: 'Files', x: 628, y: 408, width: 150, height: 100, columns: 1, maxColumns: 1 },
-  document: { label: 'Documents', x: 804, y: 104, width: 360, height: 404, columns: 1, maxColumns: 2 },
+  person: { label: 'People', x: 24, y: 78, width: 176, height: 480, columns: 1, maxColumns: 1 },
+  task: { label: 'Tasks', x: 230, y: 78, width: 300, height: 480, columns: 2, maxColumns: 2 },
+  concept: { label: 'LOE / Categories', x: 560, y: 78, width: 196, height: 480, columns: 1, maxColumns: 1 },
+  deliverable: { label: 'Deliverables', x: 786, y: 78, width: 190, height: 480, columns: 1, maxColumns: 1 },
+  repo: { label: 'Repositories', x: 1006, y: 78, width: 290, height: 140, columns: 2, maxColumns: 2 },
+  document: { label: 'Documents', x: 1006, y: 242, width: 290, height: 180, columns: 2, maxColumns: 2 },
+  file: { label: 'Files', x: 1006, y: 446, width: 290, height: 112, columns: 2, maxColumns: 2 },
 };
 
 const STRING_STYLE_NODE_LIMITS: Record<(typeof GRAPH_TYPE_ORDER)[number], number> = {
-  person: 4,
-  concept: 5,
-  task: 6,
-  deliverable: 3,
-  repo: Number.MAX_SAFE_INTEGER,
-  file: 2,
-  document: 5,
+  person: 6,
+  concept: 6,
+  task: 8,
+  deliverable: 4,
+  repo: 4,
+  file: 4,
+  document: 4,
 };
 
 function formatDateTime(value: string): string {
@@ -176,13 +187,14 @@ function getGraphInfoBoxSize(label: string): { width: number; height: number } {
 }
 
 function getGraphInfoBoxPosition(
-  node: { x: number; y: number; radius: number },
+  node: { x: number; y: number; radius: number; cardHeight?: number },
   box: { width: number; height: number },
 ): { x: number; y: number } {
   const verticalGap = 16;
   const horizontalPadding = 12;
-  const topY = node.y - node.radius - box.height - verticalGap;
-  const bottomY = node.y + node.radius + verticalGap;
+  const halfNodeHeight = Math.max(node.radius, (node.cardHeight ?? 0) / 2);
+  const topY = node.y - halfNodeHeight - box.height - verticalGap;
+  const bottomY = node.y + halfNodeHeight + verticalGap;
   const prefersTop = topY >= 12 || bottomY + box.height > GRAPH_VIEWBOX.height - 12;
 
   return {
@@ -214,7 +226,7 @@ function getStringStyleCardTitle(node: VisibleGraphNode) {
 }
 
 function getStringStyleCardMeta(node: VisibleGraphNode) {
-  const label = (GRAPH_TYPE_LABELS[node.nodeType] ?? node.nodeType).replace(/s$/i, '').toUpperCase();
+  const label = GRAPH_TYPE_META_LABELS[node.nodeType] ?? node.nodeType.toUpperCase();
   return label.length > 10 ? `${label.slice(0, 10)}.` : label;
 }
 
@@ -227,7 +239,7 @@ type StringStyleCellRect = {
   height: number;
 };
 
-function buildStringStyleProjectLayout(nodes: VisibleGraphNode[]): {
+function buildStringStyleProjectLayout(nodes: VisibleGraphNode[], selectedNodeId: string | null): {
   nodes: VisibleGraphNode[];
   cells: StringStyleCellRect[];
 } {
@@ -238,7 +250,7 @@ function buildStringStyleProjectLayout(nodes: VisibleGraphNode[]): {
   // Vertical gap between stacked cells in the same column
   const cellStackGap = 24;
   // Top margin before the first cell in each column
-  const columnTopY = 60;
+  const columnTopY = 78;
 
   // Group lane types by their x-column (same x = same column, stacked vertically)
   const columnGroups: Map<number, (keyof typeof STRING_STYLE_LANE_CONFIGS)[]> = new Map();
@@ -297,6 +309,10 @@ function buildStringStyleProjectLayout(nodes: VisibleGraphNode[]): {
     const ordered = nodes
       .filter((node) => node.nodeType === nodeType)
       .sort((left, right) => {
+        const leftSelected = left.id === selectedNodeId ? 1 : 0;
+        const rightSelected = right.id === selectedNodeId ? 1 : 0;
+        if (rightSelected !== leftSelected) return rightSelected - leftSelected;
+
         const leftMatched = left.matched ? 1 : 0;
         const rightMatched = right.matched ? 1 : 0;
         if (rightMatched !== leftMatched) return rightMatched - leftMatched;
@@ -366,14 +382,55 @@ function buildStringStyleProjectLayout(nodes: VisibleGraphNode[]): {
 }
 
 function buildStringStyleProjectEdgePath(from: VisibleGraphNode, to: VisibleGraphNode) {
-  const direction = from.x <= to.x ? 1 : -1;
-  const deltaX = Math.abs(to.x - from.x);
-  const curvature = clampGraphCoordinate(deltaX * 0.34, 72, 190);
-  const controlX1 = from.x + curvature * direction;
-  const controlY1 = from.y;
-  const controlX2 = to.x - curvature * direction;
-  const controlY2 = to.y;
-  return `M ${from.x} ${from.y} C ${controlX1} ${controlY1}, ${controlX2} ${controlY2}, ${to.x} ${to.y}`;
+  const deltaX = to.x - from.x;
+  const deltaY = to.y - from.y;
+  const followsHorizontalFlow = Math.abs(deltaX) >= Math.abs(deltaY) * 0.55;
+
+  if (followsHorizontalFlow) {
+    const direction = deltaX >= 0 ? 1 : -1;
+    const startX = from.x + direction * (from.cardWidth / 2 + 2);
+    const endX = to.x - direction * (to.cardWidth / 2 + 2);
+    const curvature = clampGraphCoordinate(Math.abs(endX - startX) * 0.42, 38, 170);
+    return `M ${startX} ${from.y} C ${startX + curvature * direction} ${from.y}, ${endX - curvature * direction} ${to.y}, ${endX} ${to.y}`;
+  }
+
+  const direction = deltaY >= 0 ? 1 : -1;
+  const startY = from.y + direction * (from.cardHeight / 2 + 2);
+  const endY = to.y - direction * (to.cardHeight / 2 + 2);
+  const curvature = clampGraphCoordinate(Math.abs(endY - startY) * 0.42, 34, 130);
+  return `M ${from.x} ${startY} C ${from.x} ${startY + curvature * direction}, ${to.x} ${endY - curvature * direction}, ${to.x} ${endY}`;
+}
+
+function getGraphNodeAccent(nodeType: string): string {
+  if (nodeType === 'person') return '#6fb7ff';
+  if (nodeType === 'task') return '#7ce3b2';
+  if (nodeType === 'deliverable') return '#f5c66a';
+  if (nodeType === 'concept') return '#b9a1ff';
+  if (nodeType === 'document') return '#a88dff';
+  if (nodeType === 'repo') return '#8bd0f6';
+  return '#a7b0c2';
+}
+
+function getGraphLanePalette(nodeType: string) {
+  const accent = getGraphNodeAccent(nodeType);
+  return {
+    accent,
+    fill: `color-mix(in srgb, var(--color-surface2) 91%, ${accent} 9%)`,
+    stroke: `color-mix(in srgb, var(--color-border) 68%, ${accent} 32%)`,
+  };
+}
+
+function getGraphEdgeColor(edgeType: string, emphasized = false): string {
+  const alpha = emphasized ? 0.96 : 0.44;
+  if (edgeType === 'owns' || edgeType === 'assigned_to' || edgeType === 'contributes_to') {
+    return `rgba(111, 183, 255, ${alpha})`;
+  }
+  if (edgeType === 'expert_in' || edgeType === 'covers' || edgeType === 'mentions') {
+    return `rgba(185, 161, 255, ${alpha})`;
+  }
+  if (edgeType === 'derived_from') return `rgba(245, 198, 106, ${alpha})`;
+  if (edgeType === 'depends_on' || edgeType === 'blocked_by') return `rgba(240, 140, 160, ${alpha})`;
+  return `rgba(139, 208, 246, ${alpha})`;
 }
 
 function getStringStyleNodePalette(node: VisibleGraphNode, selected: boolean) {
@@ -574,92 +631,136 @@ function SummaryLine({ text }: { text: string }) {
 }
 
 function QueueCard({ queue }: { queue: PersonQueue | null }) {
-  const itemListRef = useRef<HTMLDivElement | null>(null);
-  const [visibleListHeight, setVisibleListHeight] = useState<number | null>(null);
+  const carouselRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateCarouselControls = useCallback(() => {
+    const carousel = carouselRef.current;
+    if (!carousel) return;
+    const maxScrollLeft = Math.max(0, carousel.scrollWidth - carousel.clientWidth);
+    setCanScrollLeft(carousel.scrollLeft > 4);
+    setCanScrollRight(carousel.scrollLeft < maxScrollLeft - 4);
+  }, []);
 
   useEffect(() => {
-    const container = itemListRef.current;
-    if (!container || !queue || queue.items.length <= 3) {
-      setVisibleListHeight(null);
-      return;
-    }
+    const carousel = carouselRef.current;
+    if (!carousel) return undefined;
 
-    const updateVisibleListHeight = () => {
-      const items = Array.from(container.children).slice(0, 3) as HTMLDivElement[];
-      if (!items.length) {
-        setVisibleListHeight(null);
-        return;
-      }
-
-      const styles = window.getComputedStyle(container);
-      const gap = Number.parseFloat(styles.rowGap || styles.gap || '0') || 0;
-      const totalHeight = items.reduce((sum, item) => sum + item.offsetHeight, 0) + gap * (items.length - 1);
-      setVisibleListHeight(totalHeight);
+    let animationFrame = 0;
+    const scheduleUpdate = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updateCarouselControls);
     };
 
-    updateVisibleListHeight();
-
-    const resizeObserver = new ResizeObserver(updateVisibleListHeight);
-    resizeObserver.observe(container);
-    Array.from(container.children).slice(0, 3).forEach((item) => resizeObserver.observe(item));
+    scheduleUpdate();
+    carousel.addEventListener('scroll', scheduleUpdate, { passive: true });
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(carousel);
+    Array.from(carousel.children).forEach((item) => resizeObserver.observe(item));
 
     return () => {
+      window.cancelAnimationFrame(animationFrame);
+      carousel.removeEventListener('scroll', scheduleUpdate);
       resizeObserver.disconnect();
     };
-  }, [queue]);
+  }, [queue?.items.length, updateCarouselControls]);
+
+  const scrollCarousel = useCallback((direction: -1 | 1) => {
+    const carousel = carouselRef.current;
+    const firstCard = carousel?.querySelector<HTMLElement>('[data-action-card]');
+    if (!carousel || !firstCard) return;
+    const styles = window.getComputedStyle(carousel);
+    const gap = Number.parseFloat(styles.columnGap || styles.gap || '0') || 0;
+    carousel.scrollBy({
+      left: direction * (firstCard.offsetWidth + gap),
+      behavior: 'smooth',
+    });
+  }, []);
 
   if (!queue || queue.items.length === 0) {
     return <EmptyState text="No queued coordination actions yet." />;
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-        <span className="rounded-full border border-border bg-surface2 px-3 py-1">
-          {queue.totalOpenTasks} open tasks
-        </span>
-        <span className="rounded-full border border-border bg-surface2 px-3 py-1">
-          {queue.totalBlockedTasks} blocked
-        </span>
-        <span className="rounded-full border border-border bg-surface2 px-3 py-1">
-          {queue.recentHours}h logged recently
-        </span>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+          <span className="rounded-full border border-border bg-surface2 px-3 py-1">
+            {queue.totalOpenTasks} open tasks
+          </span>
+          <span className="rounded-full border border-border bg-surface2 px-3 py-1">
+            {queue.totalBlockedTasks} blocked
+          </span>
+          <span className="rounded-full border border-border bg-surface2 px-3 py-1">
+            {queue.recentHours}h logged recently
+          </span>
+        </div>
+
+        <div className="ml-auto flex items-center gap-2">
+          <span className="mr-1 hidden text-[10px] uppercase tracking-[0.18em] text-muted sm:inline">
+            {queue.items.length} actions
+          </span>
+          <button
+            type="button"
+            onClick={() => scrollCarousel(-1)}
+            disabled={!canScrollLeft}
+            tabIndex={canScrollLeft ? 0 : -1}
+            aria-hidden={!canScrollLeft}
+            aria-label="Show previous actions"
+            className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface2 text-heading transition-all hover:border-accent/45 hover:text-accent disabled:pointer-events-none ${canScrollLeft ? 'opacity-100' : 'opacity-0'}`}
+          >
+            <ChevronLeft size={17} />
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollCarousel(1)}
+            disabled={!canScrollRight}
+            aria-label="Show more actions"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface2 text-heading transition-all hover:border-accent/45 hover:text-accent disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            <ChevronRight size={17} />
+          </button>
+        </div>
       </div>
 
       <div
-        ref={itemListRef}
-        className={queue.items.length > 3 ? 'space-y-3 overflow-y-auto pr-1' : 'space-y-3'}
-        style={queue.items.length > 3 && visibleListHeight ? { maxHeight: `${visibleListHeight}px` } : undefined}
+        ref={carouselRef}
+        className="flex snap-x snap-mandatory items-stretch gap-4 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: 'none' }}
       >
         {queue.items.map((item) => (
-          <div key={`${item.kind}-${item.taskId}`} className="border border-border bg-surface2 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-heading">{item.taskTitle}</p>
-                <p className="mt-1 text-xs text-muted">{item.reason}</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className={`rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${priorityClasses(item.priority)}`}>
-                  {item.priority}
-                </span>
-                <span className="rounded-full border border-border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-muted">
-                  {item.kind.replace('_', ' ')}
-                </span>
-              </div>
+          <article
+            key={`${item.kind}-${item.taskId}`}
+            data-action-card
+            className="flex min-w-[260px] shrink-0 basis-[86%] snap-start flex-col border border-border bg-surface2 p-4 sm:basis-[calc(50%_-_0.5rem)] xl:basis-[calc(33.333%_-_0.667rem)]"
+          >
+            <div className="min-w-0">
+              <p className="break-words text-sm font-semibold leading-5 text-heading [overflow-wrap:anywhere]">{item.taskTitle}</p>
+              <p className="mt-2 break-words text-xs leading-5 text-muted [overflow-wrap:anywhere]">{item.reason}</p>
             </div>
 
-            <div className="mt-3 grid gap-2 text-xs text-muted md:grid-cols-2">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] ${priorityClasses(item.priority)}`}>
+                {item.priority}
+              </span>
+              <span className="rounded-full border border-border px-2.5 py-1 text-[10px] uppercase tracking-[0.18em] text-muted">
+                {item.kind.replaceAll('_', ' ')}
+              </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-border/70 pt-3 text-xs text-muted">
               <p>Due: <span className="text-heading">{formatDueDate(item.dueDate)}</span></p>
-              <p>Status: <span className="text-heading">{item.status.replaceAll('_', ' ')}</span></p>
+              <p className="text-right">Status: <span className="break-words text-heading">{item.status.replaceAll('_', ' ')}</span></p>
               {item.blockedByTaskTitle && (
-                <p className="md:col-span-2">
+                <p className="col-span-2 break-words [overflow-wrap:anywhere]">
                   Blocked by: <span className="text-heading">{item.blockedByTaskTitle}</span>
                 </p>
               )}
             </div>
 
-            <p className="mt-3 text-xs text-accent">{item.suggestedAction}</p>
-          </div>
+            <p className="mt-auto break-words pt-4 text-xs leading-5 text-accent [overflow-wrap:anywhere]">{item.suggestedAction}</p>
+          </article>
         ))}
       </div>
     </div>
@@ -1011,7 +1112,10 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
     () => buildVisibleGraph(graph, searchTerm, graphMode, selectedNodeId),
     [graph, graphMode, searchTerm, selectedNodeId],
   );
-  const stringLayout = useMemo(() => buildStringStyleProjectLayout(nodes), [nodes]);
+  const stringLayout = useMemo(
+    () => buildStringStyleProjectLayout(nodes, selectedNodeId),
+    [nodes, selectedNodeId],
+  );
   const stringNodeIds = useMemo(() => new Set(stringLayout.nodes.map((node) => node.id)), [stringLayout.nodes]);
   const renderedNodes = stringLayout.nodes;
   const renderedEdges = useMemo(
@@ -1030,10 +1134,17 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
   const infoNode = hoveredNode ?? selectedNode;
   const infoBox = infoNode ? getGraphInfoBoxSize(infoNode.label) : null;
   const infoBoxPosition = infoNode && infoBox ? getGraphInfoBoxPosition(infoNode, infoBox) : null;
-  const selectedNeighbors = selectedNode
-    ? renderedEdges
-      .filter((edge) => edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id)
-      .reduce<Array<{
+  const selectedEdges = useMemo(
+    () => selectedNode
+      ? renderedEdges.filter((edge) => edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id)
+      : [],
+    [renderedEdges, selectedNode],
+  );
+  const selectedEdgeIds = useMemo(() => new Set(selectedEdges.map((edge) => edge.id)), [selectedEdges]);
+  const selectedNeighbors = useMemo(
+    () => selectedNode
+      ? selectedEdges.reduce<Array<{
+        edgeId: string;
         edgeType: string;
         weight: number;
         node: VisibleGraphNode;
@@ -1041,20 +1152,24 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
         const relatedNodeId = edge.fromNodeId === selectedNode.id ? edge.toNodeId : edge.fromNodeId;
         const relatedNode = nodeMap.get(relatedNodeId);
         if (relatedNode) {
-          neighbors.push({ edgeType: edge.edgeType, weight: edge.weight, node: relatedNode });
+          neighbors.push({ edgeId: edge.id, edgeType: edge.edgeType, weight: edge.weight, node: relatedNode });
         }
         return neighbors;
       }, [])
       .sort((left, right) => right.node.degree - left.node.degree || left.node.label.localeCompare(right.node.label))
-      .slice(0, 8)
-    : [];
-  const connectedNodeIds = new Set(
-    selectedNode
-      ? [
-        selectedNode.id,
-        ...selectedNeighbors.map((neighbor) => neighbor.node.id),
-      ]
       : [],
+    [nodeMap, selectedEdges, selectedNode],
+  );
+  const connectedNodeIds = useMemo(
+    () => new Set(
+      selectedNode
+        ? [
+          selectedNode.id,
+          ...selectedNeighbors.map((neighbor) => neighbor.node.id),
+        ]
+        : [],
+    ),
+    [selectedNeighbors, selectedNode],
   );
 
   const handleWheelZoom = useCallback((element: HTMLDivElement, clientX: number, clientY: number, deltaY: number) => {
@@ -1152,37 +1267,49 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
 
   const renderWorkspace = (fullscreen: boolean) => (
     <div className={`space-y-5 ${fullscreen ? 'flex h-full flex-col overflow-hidden' : ''}`}>
-      <div className={`space-y-3 ${fullscreen ? 'shrink-0' : ''}`}>
-        <div>
-          <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">View Mode</p>
-          <div className="flex flex-wrap gap-2">
-            {[
-              ['overview', 'Overview'],
-              ['ownership', 'Ownership'],
-              ['expertise', 'Expertise'],
-              ['deliverables', 'Deliverables'],
-            ].map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setGraphMode(value as typeof graphMode)}
-                className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] ${graphMode === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted'}`}
-              >
-                {label}
-              </button>
-            ))}
+      <div className={`space-y-4 ${fullscreen ? 'shrink-0' : ''}`}>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="mb-2 text-[11px] uppercase tracking-[0.24em] text-muted">View Mode</p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                ['overview', 'Overview'],
+                ['ownership', 'Ownership'],
+                ['expertise', 'Expertise'],
+                ['deliverables', 'Deliverables'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setGraphMode(value as typeof graphMode)}
+                  className={`rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.18em] transition-colors ${graphMode === value ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border bg-surface2 text-muted hover:text-heading'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
+
+          <label className="relative block w-full lg:max-w-[420px]">
+            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Find people, tasks, LOEs, repos, or documents"
+              className="w-full border border-border bg-surface2 py-2 pl-9 pr-3 text-sm text-heading outline-none transition-colors focus:border-accent/40"
+            />
+          </label>
         </div>
 
-        <label className="relative block w-full max-w-[420px]">
-          <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Find nodes by label or id"
-            className="w-full border border-border bg-surface2 py-2 pl-9 pr-3 text-sm text-heading outline-none transition-colors focus:border-accent/40"
-          />
-        </label>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/70 pt-3">
+          <span className="text-[10px] uppercase tracking-[0.2em] text-muted">Node types</span>
+          {GRAPH_TYPE_ORDER.filter((nodeType) => renderedNodes.some((node) => node.nodeType === nodeType)).map((nodeType) => (
+            <span key={nodeType} className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: getGraphNodeAccent(nodeType) }} />
+              {GRAPH_TYPE_LABELS[nodeType]}
+            </span>
+          ))}
+        </div>
       </div>
 
       <div className={`grid gap-5 ${fullscreen ? 'min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_360px]' : 'xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]'}`}>
@@ -1209,51 +1336,99 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
             <span>{hovering ? 'Scroll to zoom, drag to pan' : 'Structured string map'}</span>
             <span>{Math.round(zoom * 100)}%</span>
           </div>
-          <svg viewBox={`0 0 ${GRAPH_VIEWBOX.width} ${GRAPH_VIEWBOX.height}`} className={`${fullscreen ? 'h-[calc(100vh-22rem)] min-h-[620px]' : 'h-[560px]'} w-full select-none`}>
+          <svg
+            viewBox={`0 0 ${GRAPH_VIEWBOX.width} ${GRAPH_VIEWBOX.height}`}
+            className={`${fullscreen ? 'h-[calc(100vh-22rem)] min-h-[640px]' : 'h-[620px]'} w-full select-none overflow-hidden`}
+            role="group"
+            aria-label="Interactive project knowledge graph"
+          >
+            <defs>
+              <pattern
+                id={`coordination-grid-${fullscreen ? 'expanded' : 'inline'}`}
+                width="28"
+                height="28"
+                patternUnits="userSpaceOnUse"
+              >
+                <path d="M 28 0 L 0 0 0 28" fill="none" stroke="var(--color-border)" strokeOpacity="0.2" strokeWidth="1" />
+              </pattern>
+              <filter id={`coordination-selected-glow-${fullscreen ? 'expanded' : 'inline'}`} x="-40%" y="-70%" width="180%" height="240%">
+                <feGaussianBlur stdDeviation="5" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <filter id={`coordination-connected-glow-${fullscreen ? 'expanded' : 'inline'}`} x="-25%" y="-50%" width="150%" height="200%">
+                <feGaussianBlur stdDeviation="2.5" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <rect
+              x="0"
+              y="0"
+              width={GRAPH_VIEWBOX.width}
+              height={GRAPH_VIEWBOX.height}
+              fill={`url(#coordination-grid-${fullscreen ? 'expanded' : 'inline'})`}
+              pointerEvents="none"
+            />
             <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
               <>
-                  {stringLayout.cells.map((cell) => (
-                    <g key={cell.nodeType}>
-                      <rect
-                        x={cell.x}
-                        y={cell.y}
-                        width={cell.width}
-                        height={cell.height}
-                        rx={24}
-                        fill="rgba(255,255,255,0.04)"
-                        stroke="rgba(180,195,220,0.22)"
-                        strokeWidth="1.2"
-                      />
-                      <text
-                        x={cell.x + 18}
-                        y={cell.y - 10}
-                        fill="var(--color-muted)"
-                        fontSize="11"
-                        style={{ letterSpacing: '0.2em', textTransform: 'uppercase' }}
-                      >
-                        {cell.label}
-                      </text>
-                    </g>
-                  ))}
+                  {stringLayout.cells.map((cell) => {
+                    const lanePalette = getGraphLanePalette(cell.nodeType);
+                    return (
+                      <g key={cell.nodeType}>
+                        <rect
+                          x={cell.x}
+                          y={cell.y}
+                          width={cell.width}
+                          height={cell.height}
+                          rx={20}
+                          fill={lanePalette.fill}
+                          stroke={lanePalette.stroke}
+                          strokeWidth="1.2"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <circle cx={cell.x + 12} cy={cell.y - 12} r="3.5" fill={lanePalette.accent} />
+                        <text
+                          x={cell.x + 22}
+                          y={cell.y - 8}
+                          fill="var(--color-muted)"
+                          fontSize="10"
+                          fontWeight="600"
+                          style={{ letterSpacing: '0.18em', textTransform: 'uppercase' }}
+                        >
+                          {cell.label}
+                        </text>
+                      </g>
+                    );
+                  })}
 
                   {renderedEdges.map((edge) => {
                     const from = nodeMap.get(edge.fromNodeId);
                     const to = nodeMap.get(edge.toNodeId);
                     if (!from || !to) return null;
-                    const highlighted = selectedNode && (edge.fromNodeId === selectedNode.id || edge.toNodeId === selectedNode.id);
-                    const edgeDimmed = selectedNode
-                      ? !highlighted
-                      : false;
+                    const highlighted = selectedEdgeIds.has(edge.id);
+                    const hovered = !selectedNode && Boolean(hoveredNode && (edge.fromNodeId === hoveredNode.id || edge.toNodeId === hoveredNode.id));
+                    const emphasized = highlighted || hovered;
+                    const edgeDimmed = Boolean(selectedNode && !highlighted);
+                    const defaultWidth = Math.min(2.35, Math.max(1, 0.82 + Math.log2(Math.max(1, edge.weight) + 1) * 0.34));
                     return (
                       <path
                         key={edge.id}
                         d={buildStringStyleProjectEdgePath(from, to)}
                         fill="none"
-                        stroke={highlighted ? 'rgba(245,198,106,0.90)' : edgeDimmed ? 'rgba(180,195,220,0.08)' : 'rgba(180,195,220,0.38)'}
-                        strokeWidth={highlighted ? 3 : Math.max(1.15, edge.weight * 1.1)}
+                        stroke={edgeDimmed ? 'rgba(148, 163, 184, 0.07)' : getGraphEdgeColor(edge.edgeType, emphasized)}
+                        strokeWidth={emphasized ? 3.2 : defaultWidth}
                         strokeLinecap="round"
-                        opacity={highlighted ? 1 : 0.82}
-                      />
+                        opacity={edgeDimmed ? 0.45 : 1}
+                        vectorEffect="non-scaling-stroke"
+                        filter={highlighted ? `url(#coordination-connected-glow-${fullscreen ? 'expanded' : 'inline'})` : undefined}
+                      >
+                        <title>{`${from.label} — ${edge.edgeType.replaceAll('_', ' ')} — ${to.label}`}</title>
+                      </path>
                     );
                   })}
 
@@ -1265,9 +1440,18 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                     return (
                       <g
                         key={node.id}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${GRAPH_TYPE_LABELS[node.nodeType] ?? node.nodeType}: ${node.label}. ${node.degree} connections.`}
                         onClick={(event) => {
                           event.stopPropagation();
-                          setSelectedNodeId(node.id);
+                          setSelectedNodeId((current) => current === node.id ? null : node.id);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setSelectedNodeId((current) => current === node.id ? null : node.id);
                         }}
                         onPointerDown={(event) => event.stopPropagation()}
                         onPointerEnter={(event) => {
@@ -1278,8 +1462,19 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                           event.stopPropagation();
                           setHoveredNodeId((current) => (current === node.id ? null : current));
                         }}
-                        className="cursor-pointer"
+                        className="cursor-pointer outline-none"
+                        opacity={fadedBySelection ? 0.24 : 1}
                       >
+                        <title>{`${node.label} • ${GRAPH_TYPE_LABELS[node.nodeType] ?? node.nodeType} • ${node.degree} connections`}</title>
+                        <rect
+                          x={node.x - node.cardWidth / 2}
+                          y={node.y - node.cardHeight / 2}
+                          width={node.cardWidth}
+                          height={node.cardHeight}
+                          rx={node.nodeType === 'task' ? 18 : 16}
+                          fill="var(--color-surface)"
+                          stroke="none"
+                        />
                         <rect
                           x={node.x - node.cardWidth / 2}
                           y={node.y - node.cardHeight / 2}
@@ -1287,10 +1482,15 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                           height={node.cardHeight}
                           rx={node.nodeType === 'task' ? 18 : 16}
                           fill={palette.fill}
-                          fillOpacity={fadedBySelection ? 0.72 : connected ? 1 : 0.96}
+                          fillOpacity={connected ? 1 : 0.96}
                           stroke={palette.stroke}
-                          strokeOpacity={fadedBySelection ? 0.72 : 1}
                           strokeWidth={selected ? 2.5 : connected ? 2 : 1.45}
+                          vectorEffect="non-scaling-stroke"
+                          filter={selected
+                            ? `url(#coordination-selected-glow-${fullscreen ? 'expanded' : 'inline'})`
+                            : connected && selectedNode
+                              ? `url(#coordination-connected-glow-${fullscreen ? 'expanded' : 'inline'})`
+                              : undefined}
                         />
                         <rect
                           x={node.x - node.cardWidth / 2 + 1}
@@ -1299,19 +1499,19 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                           height={node.cardHeight - 2}
                           rx={3}
                           fill={palette.stroke}
-                          opacity={fadedBySelection ? 0.38 : 0.92}
+                          opacity={0.92}
                         />
                         <circle
                           cx={node.x - node.cardWidth / 2 + 18}
                           cy={node.y - 6}
                           r={4}
                           fill={palette.stroke}
-                          opacity={fadedBySelection ? 0.4 : 0.95}
+                          opacity={0.95}
                         />
                         <text
                           x={node.x - node.cardWidth / 2 + 28}
                           y={node.y - 4}
-                          fill={fadedBySelection ? 'var(--color-muted)' : palette.text}
+                          fill={palette.text}
                           fontSize={node.nodeType === 'task' ? 12 : 11}
                           fontWeight="600"
                         >
@@ -1320,7 +1520,7 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                         <text
                           x={node.x - node.cardWidth / 2 + 28}
                           y={node.y + 13}
-                          fill={fadedBySelection ? 'var(--color-muted)' : palette.meta}
+                          fill={palette.meta}
                           fontSize="8"
                           style={{ letterSpacing: '0.11em', textTransform: 'uppercase' }}
                         >
@@ -1330,7 +1530,7 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                           x={node.x + node.cardWidth / 2 - 12}
                           y={node.y + 13}
                           textAnchor="end"
-                          fill={fadedBySelection ? 'var(--color-muted)' : palette.meta}
+                          fill={palette.meta}
                           fontSize="8"
                           style={{ letterSpacing: '0.1em', textTransform: 'uppercase' }}
                         >
@@ -1409,15 +1609,20 @@ function KnowledgeGraphPanel({ graph }: { graph: CoordinationGraph | null }) {
                 </div>
                 {selectedNeighbors.length > 0 ? (
                   <div>
-                    <p className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">Connected To</p>
+                    <p className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+                      Connected To • {selectedNeighbors.length}
+                    </p>
                     <div className="space-y-2">
-                      {selectedNeighbors.map((neighbor) => (
-                        <div key={`${selectedNode.id}-${neighbor.node.id}-${neighbor.edgeType}`} className="border border-border/80 bg-surface px-3 py-2 text-xs">
+                      {selectedNeighbors.slice(0, 12).map((neighbor) => (
+                        <div key={neighbor.edgeId} className="border border-border/80 bg-surface px-3 py-2 text-xs">
                           <p className="font-semibold text-heading">{neighbor.node.label}</p>
                           <p className="mt-1 text-muted">{neighbor.edgeType.replaceAll('_', ' ')} • weight {neighbor.weight}</p>
                         </div>
                       ))}
                     </div>
+                    {selectedNeighbors.length > 12 && (
+                      <p className="mt-2 text-xs text-muted">{selectedNeighbors.length - 12} more highlighted in the graph.</p>
+                    )}
                   </div>
                 ) : (
                   <EmptyState text="No visible connections for this node in the current graph slice." />
