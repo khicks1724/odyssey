@@ -28,12 +28,14 @@ import {
   listThesisSources,
   listZoteroConflicts,
   performZoteroSync,
+  reindexZoteroSourceFulltext,
   resolveZoteroConflict,
   saveThesisSourceRecord,
   unlinkZoteroSource,
   type ZoteroApiItem,
   type ZoteroCollection,
 } from '../lib/zotero-sync.js';
+import { searchThesisSourceText } from '../lib/zotero-fulltext.js';
 
 const MAX_ZOTERO_ATTACHMENT_BYTES = 32 * 1024 * 1024;
 const THESIS_SOURCE_BUCKET = 'project-documents';
@@ -369,6 +371,43 @@ export async function zoteroRoutes(server: FastifyInstance) {
       return sendZoteroError(reply, error);
     }
   });
+
+  server.get<{
+    Querystring: { q?: string; limit?: string };
+  }>('/zotero/sources/search', async (request, reply) => {
+    const userId = await requireUser(request.headers.authorization, reply);
+    if (!userId) return;
+    const query = stringValue(request.query.q).slice(0, 240);
+    if (!query) return { matches: [] };
+    const limit = Math.max(1, Math.min(Number(request.query.limit) || 20, 50));
+    try {
+      const matches = await searchThesisSourceText(userId, query, limit);
+      return {
+        matches: matches.map((match) => ({
+          sourceId: match.sourceId,
+          sourceTitle: match.sourceTitle,
+          attachmentName: match.attachmentName,
+          snippet: match.snippet,
+          rank: match.rank,
+        })),
+      };
+    } catch (error) {
+      return sendZoteroError(reply, error);
+    }
+  });
+
+  server.post<{ Params: { sourceId: string } }>(
+    '/zotero/sources/:sourceId/fulltext/reindex',
+    async (request, reply) => {
+      const userId = await requireUser(request.headers.authorization, reply);
+      if (!userId) return;
+      try {
+        return { source: await reindexZoteroSourceFulltext(userId, request.params.sourceId) };
+      } catch (error) {
+        return sendZoteroError(reply, error);
+      }
+    },
+  );
 
   server.get<{
     Querystring: { itemKeys?: string; format?: string };

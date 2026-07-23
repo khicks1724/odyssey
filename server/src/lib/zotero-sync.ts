@@ -6,6 +6,10 @@ import {
   ZoteroApiError,
   zoteroJson,
 } from './zotero-client.js';
+import {
+  indexZoteroSourceFulltext,
+  type ZoteroFulltextAttachment,
+} from './zotero-fulltext.js';
 
 export type ZoteroCreator = {
   creatorType: string;
@@ -156,6 +160,10 @@ function stringValue(value: unknown) {
 function stringArray(value: unknown) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(stringValue).filter(Boolean))];
+}
+
+function safeArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function stable(value: unknown): string {
@@ -615,6 +623,66 @@ export async function saveThesisSourceRecord(userId: string, source: SourceRecor
 
 const saveSource = saveThesisSourceRecord;
 
+async function safelyIndexSourceFulltext(
+  userId: string,
+  connection: ZoteroConnection,
+  source: SourceRecord,
+  attachments: Array<Record<string, unknown>>,
+  force = false,
+) {
+  try {
+    return await indexZoteroSourceFulltext({
+      userId,
+      connection,
+      source,
+      attachments: attachments as ZoteroFulltextAttachment[],
+      force,
+    }) as SourceRecord;
+  } catch (error) {
+    // Full-text indexing is supplemental: metadata import and sync must remain
+    // usable if Zotero has not indexed a file yet or extraction storage is
+    // temporarily unavailable.
+    const nextSource: SourceRecord = {
+      ...source,
+      zoteroFulltextStatus: source.zoteroFulltextStatus === 'indexed' ? 'indexed' : 'error',
+      zoteroFulltextError: error instanceof Error ? error.message.slice(0, 1_000) : 'Text extraction failed.',
+      zoteroFulltextIndexedAt: new Date().toISOString(),
+    };
+    await saveSource(userId, nextSource).catch(() => undefined);
+    return nextSource;
+  }
+}
+
+const SERVER_MANAGED_FULLTEXT_FIELDS = [
+  'zoteroFulltextPreview',
+  'zoteroFulltextStatus',
+  'zoteroFulltextStats',
+  'zoteroFulltextFingerprint',
+  'zoteroFulltextIndexedAt',
+  'zoteroFulltextError',
+  'zoteroFulltextSensitive',
+  'zoteroFulltextSensitiveReasons',
+] as const;
+
+const USER_MANAGED_FULLTEXT_FIELDS = [
+  'zoteroFulltextEnabled',
+  'zoteroFulltextAutoInclude',
+  'zoteroFulltextRestrictedApproved',
+  'zoteroFulltextSensitiveApproved',
+] as const;
+
+function preserveIndexedTextFields(incoming: SourceRecord, current: Record<string, unknown> | undefined) {
+  if (!current) return incoming;
+  const merged: SourceRecord = { ...incoming };
+  for (const field of SERVER_MANAGED_FULLTEXT_FIELDS) {
+    if (field in current) merged[field] = current[field];
+  }
+  for (const field of USER_MANAGED_FULLTEXT_FIELDS) {
+    if (!(field in incoming) && field in current) merged[field] = current[field];
+  }
+  return merged;
+}
+
 export async function persistThesisSourceSnapshot(userId: string, sources: SourceRecord[]) {
   const { data: existingRows, error: readError } = await supabase
     .from('thesis_sources')
@@ -623,7 +691,8 @@ export async function persistThesisSourceSnapshot(userId: string, sources: Sourc
   if (readError) throw readError;
   const existing = new Map((existingRows ?? []).map((row) => [row.id, asObject(row.data)]));
   if (sources.length > 0) {
-    const changedRows = sources.flatMap((source) => {
+    const changedRows = sources.flatMap((incomingSource) => {
+      const source = preserveIndexedTextFields(incomingSource, existing.get(incomingSource.id));
       const clean = { ...source };
       delete clean.revision;
       return equal(clean, existing.get(source.id))
@@ -854,7 +923,7 @@ async function createImportedSource(
     updated_at: now,
   }, { onConflict: 'user_id,source_id' });
   if (error) throw error;
-  return source;
+  return safelyIndexSourceFulltext(userId, connection, source, normalizedChildren.attachments);
 }
 
 async function saveConflict(
@@ -935,7 +1004,13 @@ async function syncExistingItem(
     });
     await saveSource(userId, mergedSource);
     await saveConflict(userId, link, merge.conflicts, item, remote, normalizedChildren);
-    return { conflict: true, libraryVersion: item.version };
+    const indexedSource = await safelyIndexSourceFulltext(
+      userId,
+      connection,
+      mergedSource,
+      normalizedChildren.attachments,
+    );
+    return { conflict: true, libraryVersion: item.version, source: indexedSource };
   }
 
   let itemVersion = item.version;
@@ -978,7 +1053,13 @@ async function syncExistingItem(
     last_synced_at: now,
   }).eq('user_id', userId).eq('source_id', link.source_id);
   if (error) throw error;
-  return { conflict: false, libraryVersion: itemVersion };
+  const indexedSource = await safelyIndexSourceFulltext(
+    userId,
+    connection,
+    mergedSource,
+    normalizedChildren.attachments,
+  );
+  return { conflict: false, libraryVersion: itemVersion, source: indexedSource };
 }
 
 async function syncItemWithRetry(
@@ -997,12 +1078,14 @@ async function syncItemWithRetry(
     if (!link) {
       const source = await createImportedSource(userId, connection, currentItem, children, usedCiteKeys);
       sources.set(source.id, source);
-      return { conflict: false, libraryVersion: currentItem.version };
+      return { conflict: false, libraryVersion: currentItem.version, source };
     }
     const source = sources.get(link.source_id);
-    if (!source) return { conflict: false, libraryVersion: currentItem.version };
+    if (!source) return { conflict: false, libraryVersion: currentItem.version, source: null };
     try {
-      return await syncExistingItem(userId, connection, link, source, currentItem, children);
+      const result = await syncExistingItem(userId, connection, link, source, currentItem, children);
+      if (result.source) sources.set(link.source_id, result.source);
+      return result;
     } catch (error) {
       if (!(error instanceof ZoteroApiError) || error.status !== 412 || attempt > 0) throw error;
       const refreshed = await fetchItems(connection, [currentItem.key], style);
@@ -1011,7 +1094,7 @@ async function syncItemWithRetry(
       currentItem = nextItem;
     }
   }
-  return { conflict: false, libraryVersion: currentItem.version };
+  return { conflict: false, libraryVersion: currentItem.version, source: null };
 }
 
 async function versionMapForPath(connection: ZoteroConnection, path: string) {
@@ -1019,6 +1102,18 @@ async function versionMapForPath(connection: ZoteroConnection, path: string) {
   return {
     versions: result.data,
     libraryVersion: result.libraryVersion ?? connection.lastLibraryVersion,
+    backoffSeconds: result.backoffSeconds,
+  };
+}
+
+async function fulltextVersionMap(connection: ZoteroConnection) {
+  const result = await zoteroJson<Record<string, number>>(
+    connection.apiKey,
+    `/users/${encodeURIComponent(connection.zoteroUserId)}/fulltext?since=${connection.lastFulltextVersion}`,
+  );
+  return {
+    versions: result.data,
+    libraryVersion: result.libraryVersion ?? connection.lastFulltextVersion,
     backoffSeconds: result.backoffSeconds,
   };
 }
@@ -1079,6 +1174,7 @@ async function performZoteroSyncInternal(userId: string, options: ZoteroSyncOpti
     const usedCiteKeys = new Set([...sources.values()].map((source) => stringValue(source.citeKey)).filter(Boolean));
     const versions = new Map<string, number>();
     let latestVersion = connection.lastLibraryVersion;
+    let latestFulltextVersion = connection.lastFulltextVersion;
     let backoffSeconds: number | null = null;
     const scopePaths = connection.syncAll
       ? [itemVersionsPath(connection)]
@@ -1125,6 +1221,47 @@ async function performZoteroSyncInternal(userId: string, options: ZoteroSyncOpti
       if (result.conflict) conflictCount += 1;
     }
 
+    // Zotero versions full text independently from item metadata. Refresh only
+    // imported sources whose attachment text changed, and use version 0 as a
+    // one-time backfill for sources imported before automatic indexing existed.
+    const sourceByAttachmentKey = new Map<string, SourceRecord>();
+    const sourceIdsToRefresh = new Set<string>();
+    for (const source of sources.values()) {
+      for (const attachment of safeArray(source.zoteroAttachments)) {
+        const key = stringValue(asObject(attachment).key);
+        if (key) sourceByAttachmentKey.set(key, source);
+      }
+      if (!stringValue(source.zoteroFulltextStatus) && safeArray(source.zoteroAttachments).length > 0) {
+        sourceIdsToRefresh.add(source.id);
+      }
+    }
+    try {
+      const fulltext = await fulltextVersionMap(connection);
+      latestFulltextVersion = Math.max(latestFulltextVersion, fulltext.libraryVersion);
+      backoffSeconds = Math.max(backoffSeconds ?? 0, fulltext.backoffSeconds ?? 0) || null;
+      for (const attachmentKey of Object.keys(fulltext.versions)) {
+        const source = sourceByAttachmentKey.get(attachmentKey);
+        if (source) sourceIdsToRefresh.add(source.id);
+      }
+    } catch (error) {
+      // Metadata sync remains valid when full-text access is unavailable. A
+      // Zotero backoff header is still honored on the next scheduled pass.
+      const retryAfter = error instanceof ZoteroApiError ? error.retryAfterSeconds : null;
+      backoffSeconds = Math.max(backoffSeconds ?? 0, retryAfter ?? 0) || null;
+    }
+    for (const sourceId of sourceIdsToRefresh) {
+      const source = sources.get(sourceId);
+      if (!source) continue;
+      const indexed = await safelyIndexSourceFulltext(
+        userId,
+        connection,
+        source,
+        safeArray(source.zoteroAttachments).map(asObject),
+        true,
+      );
+      sources.set(sourceId, indexed);
+    }
+
     if (connection.lastLibraryVersion > 0) {
       const deleted = await zoteroJson<Record<string, string[]>>(
         connection.apiKey,
@@ -1154,6 +1291,7 @@ async function performZoteroSyncInternal(userId: string, options: ZoteroSyncOpti
     const now = new Date().toISOString();
     await updateConnectionStatus(userId, backoffSeconds ? 'backoff' : 'ok', {
       last_library_version: latestVersion,
+      last_fulltext_version: latestFulltextVersion,
       last_sync_at: now,
       backoff_until: backoffSeconds ? new Date(Date.now() + backoffSeconds * 1000).toISOString() : null,
     });
@@ -1227,6 +1365,20 @@ export async function importZoteroItems(userId: string, itemKeys: string[]) {
     importedCount: importableItems.length,
     skippedCount: Math.max(0, requestedKeys.length - importableItems.length),
   };
+}
+
+export async function reindexZoteroSourceFulltext(userId: string, sourceId: string) {
+  const connection = await getZoteroConnection(userId);
+  if (!connection) throw new Error('Zotero is not connected');
+  const source = (await listThesisSources(userId)).find((item) => item.id === sourceId);
+  if (!source || !asObject(source.zoteroLink).itemKey) throw new Error('Linked Zotero source not found');
+  return indexZoteroSourceFulltext({
+    userId,
+    connection,
+    source,
+    attachments: safeArray(source.zoteroAttachments).map(asObject) as ZoteroFulltextAttachment[],
+    force: true,
+  }) as Promise<SourceRecord>;
 }
 
 export async function exportThesisSourceToZotero(userId: string, sourceId: string) {

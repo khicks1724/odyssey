@@ -27,6 +27,7 @@ import {
   getReachedTokenUsageLimitForUser,
   normalizeTokenUsageProviderFamily,
 } from '../lib/token-usage-limits.js';
+import { buildThesisSourceContext } from '../lib/zotero-fulltext.js';
 
 // Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'genai-mil'];
@@ -2676,6 +2677,9 @@ Analyze which goals these documents show progress on, who did the work, and when
     const lastMsg = history[history.length - 1]?.content ?? '';
     const transcript = history.slice(0, -1).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
     const thesisWorkspaceSection = buildThesisWorkspaceSection(workspaceContext);
+    const thesisSourceSection = workspaceMode === 'thesis'
+      ? await buildThesisSourceContext(userId, lastMsg).catch(() => '')
+      : '';
     const includeActionScaffolding = shouldIncludeActionScaffolding(history, workspaceMode);
 
     const systemPrompt = reportMode
@@ -2694,12 +2698,13 @@ THESIS AI BEHAVIOR:
 - Use the current thesis tab and workspace notes to infer what kind of help is most useful right now.
 - When the linked project exposes tasks, deadlines, repo code, or recent activity, explain how they affect the thesis argument, research scope, supporting evidence, or delivery plan.
 - When the thesis workspace context includes Odyssey links for saved sources or documents, use standard markdown links to those internal \`/thesis?...\` paths when pointing the user to a specific resource.
+- Ground document-specific claims in RELEVANT EXTRACTED ZOTERO TEXT when it is present. Name the source and use its Odyssey link so the user can inspect it.
 - Suggest concrete thesis next steps such as claim rewrites, evidence gaps, outline improvements, chapter priorities, advisor questions, or defense drills.
 - The thesis paper source is provided with explicit line numbers. When the user asks to revise the LaTeX draft, use those line numbers precisely.
 - The live browser preview has parser limitations and may not fully support some valid LaTeX constructs such as tables or bibliography helpers. Never delete or rewrite valid thesis structure solely to satisfy preview limitations. Preserve document meaning and prefer the smallest local edit that fixes a real LaTeX mistake.
 - Do not emit action proposals unless the user explicitly asks you to edit the thesis paper, add a source to the thesis library, or create, update, delete, or otherwise change linked project tasks.
 
-PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}${thesisWorkspaceSection}
+PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}${thesisWorkspaceSection}${thesisSourceSection}
 
 LINKED PROJECT TASKS (${ctx.goals.length} total):
 ${ctx.tasksText}
@@ -2891,6 +2896,9 @@ Rules:
       const lastMsg = history[history.length - 1]?.content ?? '';
       const transcript = history.slice(0, -1).map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
       const thesisWorkspaceSection = buildThesisWorkspaceSection(workspaceContext);
+      const thesisSourceSection = workspaceMode === 'thesis'
+        ? await buildThesisSourceContext(userId, lastMsg).catch(() => '')
+        : '';
       const includeActionScaffolding = shouldIncludeActionScaffolding(history, workspaceMode);
 
       const systemPrompt = reportMode
@@ -2904,12 +2912,13 @@ THESIS AI BEHAVIOR:
 - Be thesis-first. Center your answers on research quality, claim support, structure, evidence, writing, and defense readiness.
 - Use the current thesis tab and workspace notes to infer what kind of help is most useful right now.
 - When the linked project exposes tasks, deadlines, repo code, or recent activity, explain how they affect the thesis argument, research scope, supporting evidence, or delivery plan.
+- Ground document-specific claims in RELEVANT EXTRACTED ZOTERO TEXT when it is present. Name the source and use its Odyssey link so the user can inspect it.
 - Suggest concrete thesis next steps such as claim rewrites, evidence gaps, outline improvements, chapter priorities, advisor questions, or defense drills.
 - The thesis paper source is provided with explicit line numbers. When the user asks to revise the LaTeX draft, use those line numbers precisely.
 - The live browser preview has parser limitations and may not fully support some valid LaTeX constructs such as tables or bibliography helpers. Never delete or rewrite valid thesis structure solely to satisfy preview limitations. Preserve document meaning and prefer the smallest local edit that fixes a real LaTeX mistake.
 - Do not emit action proposals unless the user explicitly asks you to edit the thesis paper, add a source to the thesis library, or create, update, delete, or otherwise change linked project tasks.
 
-PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}${thesisWorkspaceSection}
+PROJECT: ${ctx.project?.name ?? 'Unknown'}${ctx.project?.description ? `\nDescription: ${ctx.project.description}` : ''}${getGitHubRepos(ctx.project).length ? `\nGitHub: ${getGitHubRepos(ctx.project).map((repo) => `github.com/${repo}`).join(', ')}` : ''}${thesisWorkspaceSection}${thesisSourceSection}
 
 LINKED PROJECT TASKS (${ctx.goals.length} total):
 ${ctx.tasksText}

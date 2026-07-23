@@ -2258,7 +2258,14 @@ async function buildThesisKnowledgeGraph(
       .map((annotation) => [annotation.text, annotation.comment].filter(Boolean).join(' '))
       .filter(Boolean)
       .join('\n');
+    const sourceRecord = source as ThesisSourceLibraryItem & {
+      zoteroFulltextRestrictedApproved?: boolean;
+      zoteroFulltextSensitive?: boolean;
+      zoteroFulltextSensitiveApproved?: boolean;
+    };
     const approvedZoteroFulltext = source.zoteroFulltextEnabled
+      && (source.verification !== 'restricted' || sourceRecord.zoteroFulltextRestrictedApproved)
+      && (!sourceRecord.zoteroFulltextSensitive || sourceRecord.zoteroFulltextSensitiveApproved)
       ? source.zoteroFulltextPreview?.slice(0, 20_000) ?? ''
       : '';
     const urlMetadata = isHttpUrl(source.locator)

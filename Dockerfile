@@ -28,6 +28,8 @@ RUN apt-get update \
     ca-certificates \
     curl \
     git \
+    poppler-utils \
+    tesseract-ocr \
   && rm -rf /var/lib/apt/lists/*
 RUN curl -L -o /tmp/tectonic.tar.gz "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
   && tar -xzf /tmp/tectonic.tar.gz -C /usr/local/bin tectonic \

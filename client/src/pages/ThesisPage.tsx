@@ -67,6 +67,7 @@ import { lazyWithRetry } from '../lib/lazy-with-retry';
 import { pushUndoAction } from '../lib/undo-manager';
 import {
   fetchZoteroStatus,
+  searchZoteroSourceText,
   syncZotero,
   type ZoteroStatus,
 } from '../lib/zotero';
@@ -207,12 +208,24 @@ export type SourceLibraryItem = {
     color: string;
   }>;
   zoteroFulltextEnabled?: boolean;
+  zoteroFulltextAutoInclude?: boolean;
+  zoteroFulltextRestrictedApproved?: boolean;
+  zoteroFulltextSensitive?: boolean;
+  zoteroFulltextSensitiveReasons?: string[];
+  zoteroFulltextSensitiveApproved?: boolean;
   zoteroFulltextPreview?: string;
+  zoteroFulltextStatus?: 'indexed' | 'unavailable' | 'error';
+  zoteroFulltextIndexedAt?: string;
+  zoteroFulltextError?: string;
   zoteroFulltextStats?: {
+    attachmentCount?: number;
+    indexedAttachments?: number;
     indexedPages?: number;
     totalPages?: number;
     indexedChars?: number;
     totalChars?: number;
+    chunkCount?: number;
+    extractionMethods?: string[];
   };
   revision?: number;
 };
@@ -2272,6 +2285,8 @@ export default function ThesisPage() {
   const [librarySort, setLibrarySort] = useState<'recent' | 'title' | 'year' | 'type' | 'status'>('recent');
   const [libraryEditMode, setLibraryEditMode] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
+  const [indexedLibrarySearchMatches, setIndexedLibrarySearchMatches] = useState<Set<string>>(new Set());
+  const [indexedLibrarySearchPending, setIndexedLibrarySearchPending] = useState(false);
   const [documentSearch, setDocumentSearch] = useState('');
   const [libraryTypeFilters, setLibraryTypeFilters] = useState<string[]>([]);
   const [libraryRoleFilters, setLibraryRoleFilters] = useState<string[]>([]);
@@ -2970,6 +2985,39 @@ export default function ThesisPage() {
       selected: libraryVerificationFilters,
     },
   ]), [libraryChapterFilters, libraryRoleFilters, libraryTypeFilters, libraryVerificationFilters, sourceLibrary]);
+
+  useEffect(() => {
+    const query = librarySearch.trim();
+    if (query.length < 2) {
+      setIndexedLibrarySearchMatches(new Set());
+      setIndexedLibrarySearchPending(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setIndexedLibrarySearchMatches(new Set());
+    setIndexedLibrarySearchPending(true);
+    const timeoutId = window.setTimeout(() => {
+      void searchZoteroSourceText(query, 50)
+        .then((result) => {
+          if (!cancelled) {
+            setIndexedLibrarySearchMatches(new Set(result.matches.map((match) => match.sourceId)));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setIndexedLibrarySearchMatches(new Set());
+        })
+        .finally(() => {
+          if (!cancelled) setIndexedLibrarySearchPending(false);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [librarySearch]);
+
   const visibleLibrarySources = useMemo(() => {
     const normalizedSearch = librarySearch.trim().toLowerCase();
     const filtered = sourceLibrary.filter((source) => {
@@ -2992,8 +3040,9 @@ export default function ThesisPage() {
           source.verification,
           source.chapterTarget,
           source.tags,
+          source.zoteroFulltextPreview,
         ]);
-        if (!haystack.includes(normalizedSearch)) return false;
+        if (!haystack.includes(normalizedSearch) && !indexedLibrarySearchMatches.has(source.id)) return false;
       }
       return true;
     });
@@ -3005,7 +3054,7 @@ export default function ThesisPage() {
       if (librarySort === 'status') return left.status.localeCompare(right.status) || left.title.localeCompare(right.title);
       return right.addedOn.localeCompare(left.addedOn);
     });
-  }, [libraryChapterFilters, libraryRoleFilters, librarySearch, librarySort, libraryTypeFilters, libraryVerificationFilters, sourceLibrary]);
+  }, [indexedLibrarySearchMatches, libraryChapterFilters, libraryRoleFilters, librarySearch, librarySort, libraryTypeFilters, libraryVerificationFilters, sourceLibrary]);
   const visibleSupportingDocuments = useMemo(() => {
     const normalizedSearch = documentSearch.trim().toLowerCase();
     const filtered = supportingDocuments.filter((document) => {
@@ -3540,6 +3589,8 @@ export default function ThesisPage() {
           const link = `/thesis?tab=sources&source=${encodeURIComponent(source.id)}`;
           const summary = truncateResourceText(source.abstract || source.notes || source.citation, 180);
           const approvedFulltext = source.zoteroFulltextEnabled
+            && (source.verification !== 'restricted' || source.zoteroFulltextRestrictedApproved)
+            && (!source.zoteroFulltextSensitive || source.zoteroFulltextSensitiveApproved)
             ? truncateResourceText(source.zoteroFulltextPreview, 900)
             : '';
           const annotations = (source.zoteroAnnotations ?? [])
@@ -5494,9 +5545,10 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                     type="search"
                     value={librarySearch}
                     onChange={(event) => setLibrarySearch(event.target.value)}
-                    placeholder="Search sources"
+                    placeholder="Search metadata and document text"
                     className="w-full bg-transparent text-sm text-heading outline-none placeholder:text-muted"
                   />
+                  {indexedLibrarySearchPending && <Loader2 size={13} className="shrink-0 animate-spin text-accent" />}
                 </label>
                 <label className="flex h-11 items-center gap-3 text-[10px] uppercase tracking-[0.18em] text-muted font-mono">
                   <span className="shrink-0">Sort by</span>
@@ -5631,6 +5683,12 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                         <p className="truncate text-sm font-semibold text-heading">{source.title}</p>
                         {source.zoteroLink && (
                           <span className="shrink-0 border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-accent">Zotero</span>
+                        )}
+                        {source.zoteroFulltextStatus === 'indexed' && (
+                          <span className="shrink-0 border border-accent2/30 bg-accent2/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-accent2">Text indexed</span>
+                        )}
+                        {source.zoteroFulltextStatus === 'error' && (
+                          <span className="shrink-0 border border-amber-500/30 bg-amber-500/5 px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.12em] text-amber-600 dark:text-amber-300">Text retry needed</span>
                         )}
                       </div>
                       <p className="text-xs text-muted mt-1 truncate">{source.credit} · {source.year} · {source.venue}</p>

@@ -218,6 +218,26 @@ export function fetchZoteroFulltext(itemKey: string) {
   );
 }
 
+export type ZoteroSourceTextMatch = {
+  sourceId: string;
+  sourceTitle: string;
+  attachmentName: string;
+  snippet: string;
+  rank: number;
+};
+
+export function searchZoteroSourceText(query: string, limit = 20) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return request<{ matches: ZoteroSourceTextMatch[] }>(`/api/zotero/sources/search?${params.toString()}`);
+}
+
+export function reindexZoteroSourceFulltext(sourceId: string) {
+  return request<{ source: unknown }>(
+    `/api/zotero/sources/${encodeURIComponent(sourceId)}/fulltext/reindex`,
+    { method: 'POST' },
+  );
+}
+
 export async function downloadZoteroExport(itemKeys: string[], format: 'bibtex' | 'biblatex' | 'ris' | 'csljson') {
   const params = new URLSearchParams({ itemKeys: itemKeys.join(','), format });
   const response = await fetch(toAbsoluteAppUrl(`/api/zotero/export?${params.toString()}`), {
