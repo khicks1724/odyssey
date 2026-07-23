@@ -6,6 +6,11 @@ import {
   setServerFallbackPausedForUser,
 } from '../lib/server-fallback-controls.js';
 import { supabase } from '../lib/supabase.js';
+import {
+  getTokenUsageLimitStatusMap,
+  setUserTokenUsageLimits,
+  type UserTokenUsageLimitStatus,
+} from '../lib/token-usage-limits.js';
 
 const TOKEN_USAGE_ADMIN_EMAILS = new Set([
   'kyle.hicks@nps.edu',
@@ -61,6 +66,12 @@ interface AuthorizedTokenUsageUser {
   isAdmin: boolean;
 }
 
+interface TokenUsageLimitsBody {
+  dailyLimit?: number | null;
+  weeklyLimit?: number | null;
+  monthlyLimit?: number | null;
+}
+
 function normalizeDateOnly(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim() ?? '';
   if (!trimmed) return fallback;
@@ -86,6 +97,14 @@ function parseGranularity(value: string | undefined): UsageGranularity {
 
 function parseKeySource(value: string | undefined): TokenUsageScope {
   return value === 'server' || value === 'user' ? value : 'all';
+}
+
+function parseTokenLimit(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('Limits must be positive whole numbers or blank.');
+  }
+  return value;
 }
 
 function formatDateKey(year: number, month: number, day: number): string {
@@ -319,7 +338,6 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
 
     const profileRows = (profilesRes.data ?? []) as TokenUsageProfileRow[];
     const profileMap = new Map(profileRows.map((profile) => [profile.id, profile]));
-    const pausedFallbackMap = await getServerFallbackPauseMap(profileRows.map((profile) => profile.id));
     const usageMap = new Map<string, {
       userId: string;
       displayName: string;
@@ -408,6 +426,18 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
         email: authorized.email || null,
       }];
 
+    let pausedFallbackMap: Map<string, boolean>;
+    let tokenLimitStatusMap: Map<string, UserTokenUsageLimitStatus>;
+    try {
+      [pausedFallbackMap, tokenLimitStatusMap] = await Promise.all([
+        getServerFallbackPauseMap(userRows.map((profile) => profile.id)),
+        getTokenUsageLimitStatusMap(userRows.map((profile) => profile.id)),
+      ]);
+    } catch (statusError) {
+      server.log.error({ err: statusError }, 'Failed to load token limit status');
+      return reply.status(500).send({ error: 'Failed to load token limits.' });
+    }
+
     const users = userRows
       .map((profile) => {
         const usage = usageMap.get(profile.id);
@@ -418,6 +448,7 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
           displayName: profile.display_name?.trim() || profile.email?.trim() || fallbackName,
           email: profile.email?.trim().toLowerCase() || fallbackEmail,
           serverFallbackPaused: pausedFallbackMap.get(profile.id) === true,
+          tokenLimitStatus: tokenLimitStatusMap.get(profile.id),
           totalTokens: usage?.totalTokens ?? 0,
           promptTokens: usage?.promptTokens ?? 0,
           completionTokens: usage?.completionTokens ?? 0,
@@ -445,6 +476,68 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
         requestCount: users.reduce((sum, user) => sum + user.requestCount, 0),
       },
     };
+  });
+
+  server.patch<{
+    Params: { userId: string };
+    Body: TokenUsageLimitsBody;
+  }>('/admin/token-usage/limits/:userId', async (request, reply) => {
+    const authorizedAdmin = await getAuthorizedServerFallbackAdmin(request.headers.authorization);
+    if (!authorizedAdmin) {
+      return reply.status(404).send({ error: 'Not found' });
+    }
+
+    const userId = request.params.userId?.trim();
+    if (!userId) {
+      return reply.status(400).send({ error: 'User id is required.' });
+    }
+
+    let dailyLimit: number | null;
+    let weeklyLimit: number | null;
+    let monthlyLimit: number | null;
+    try {
+      dailyLimit = parseTokenLimit(request.body?.dailyLimit);
+      weeklyLimit = parseTokenLimit(request.body?.weeklyLimit);
+      monthlyLimit = parseTokenLimit(request.body?.monthlyLimit);
+    } catch (validationError) {
+      return reply.status(400).send({
+        error: validationError instanceof Error ? validationError.message : 'Invalid token limits.',
+      });
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('id, display_name, email')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (profileError) {
+      server.log.error({ err: profileError, userId }, 'Failed to load profile for token limits');
+      return reply.status(500).send({ error: 'Failed to update token limits.' });
+    }
+    if (!profile?.id) {
+      return reply.status(404).send({ error: 'User not found.' });
+    }
+
+    try {
+      const tokenLimitStatus = await setUserTokenUsageLimits(
+        userId,
+        { dailyLimit, weeklyLimit, monthlyLimit },
+        authorizedAdmin.userId,
+      );
+      return {
+        ok: true,
+        userId,
+        tokenLimitStatus,
+        user: {
+          displayName: profile.display_name?.trim() || profile.email?.trim() || profile.id,
+          email: profile.email?.trim().toLowerCase() ?? '',
+        },
+      };
+    } catch (updateError) {
+      server.log.error({ err: updateError, userId }, 'Failed to update token limits');
+      return reply.status(500).send({ error: 'Failed to update token limits.' });
+    }
   });
 
   server.patch<{

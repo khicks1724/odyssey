@@ -1072,6 +1072,8 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = '';
   let fullText = '';
+  let promptTokens = 0;
+  let completionTokens = 0;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -1088,6 +1090,12 @@ export async function streamChat(
       if (!data) continue;
       try {
         const event = JSON.parse(data);
+        if (event.type === 'message_start') {
+          promptTokens = Number(event.message?.usage?.input_tokens ?? promptTokens);
+          completionTokens = Number(event.message?.usage?.output_tokens ?? completionTokens);
+        } else if (event.type === 'message_delta') {
+          completionTokens = Number(event.usage?.output_tokens ?? completionTokens);
+        }
         if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
           const chunk: string = event.delta.text ?? '';
           fullText += chunk;
@@ -1097,5 +1105,12 @@ export async function streamChat(
     }
   }
 
-  return { text: fullText, provider, model: anthropicModel };
+  const totalTokens = promptTokens + completionTokens;
+  return {
+    text: fullText,
+    provider,
+    model: anthropicModel,
+    usage: totalTokens > 0 ? { promptTokens, completionTokens, totalTokens } : undefined,
+    keySource: 'user',
+  };
 }

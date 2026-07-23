@@ -40,7 +40,7 @@ const MAX_SUMMARY_CHARS = 320;
 const CHUNK_TARGET_CHARS = 3_500;
 const REPORT_TEMPLATE_CHUNK_BYTES = 256 * 1024;
 const REPORT_TEMPLATE_UPLOAD_DIR = path.join(tmpdir(), 'odyssey-report-template-uploads');
-const MAX_LOCAL_UPLOAD_BYTES = 25 * 1024 * 1024;
+export const MAX_PROJECT_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const MAX_EXTRACT_UPLOAD_BYTES = 12 * 1024 * 1024;
 const MAX_TEMPLATE_UPLOAD_BYTES = 24 * 1024 * 1024;
 const MAX_TEXT_BUFFER_BYTES = 5 * 1024 * 1024;
@@ -960,6 +960,114 @@ async function persistStructuredDocument(input: {
   return documentRow.id;
 }
 
+export class ProjectDocumentUploadError extends Error {
+  statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = 'ProjectDocumentUploadError';
+    this.statusCode = statusCode;
+  }
+}
+
+export async function storeProjectDocumentFile(input: {
+  projectId: string;
+  userId: string;
+  filename: string;
+  mimeType: string;
+  fileBuffer: Buffer;
+  source?: 'local' | 'teams' | 'onedrive';
+  title?: string;
+  summary?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  let inferredMime: string;
+  try {
+    inferredMime = validateFileShape(
+      input.filename,
+      input.mimeType || 'application/octet-stream',
+      input.fileBuffer,
+      MAX_PROJECT_DOCUMENT_BYTES,
+    );
+    await validateArchiveSafety(input.fileBuffer, input.filename);
+  } catch (error) {
+    throw new ProjectDocumentUploadError(
+      415,
+      error instanceof Error ? error.message : 'Unsupported upload.',
+    );
+  }
+
+  const storagePath = `${input.projectId}/${randomUUID()}-${sanitizeStorageName(input.filename)}`;
+  const { error: storageError } = await supabase.storage
+    .from(BUCKET)
+    .upload(storagePath, input.fileBuffer, { contentType: inferredMime, upsert: false });
+  if (storageError) {
+    throw new ProjectDocumentUploadError(500, `Storage upload failed: ${storageError.message}`);
+  }
+
+  const extractedText = await extractText(input.fileBuffer, input.filename, inferredMime);
+  const processing = buildDocumentProcessingResult(input.filename, extractedText);
+  const sizeKb = (input.fileBuffer.byteLength / 1024).toFixed(1);
+  const summary = input.summary?.trim()
+    || `${input.filename} (${sizeKb} KB) — uploaded to project storage`;
+
+  const { data, error: databaseError } = await supabase.from('events').insert({
+    project_id: input.projectId,
+    actor_id: input.userId,
+    source: input.source ?? 'local',
+    event_type: 'file_upload',
+    title: input.title?.trim() || input.filename,
+    summary,
+    metadata: {
+      filename: input.filename,
+      mime_type: inferredMime,
+      size_bytes: input.fileBuffer.byteLength,
+      storage_path: storagePath,
+      storage_bucket: BUCKET,
+      extracted_text: processing.extractedText,
+      content_preview: processing.contentPreview,
+      document_summary: processing.summary,
+      keywords: processing.keywords,
+      chunk_count: processing.chunks.length,
+      extracted_char_count: processing.extractedText?.length ?? 0,
+      readable: extractedText !== null,
+      ...(input.metadata ?? {}),
+    },
+    occurred_at: new Date().toISOString(),
+  }).select().single();
+
+  if (databaseError || !data) {
+    await supabase.storage.from(BUCKET).remove([storagePath]);
+    throw new ProjectDocumentUploadError(500, databaseError?.message ?? 'Document record could not be created.');
+  }
+
+  const documentId = await persistStructuredDocument({
+    projectId: input.projectId,
+    eventId: data.id,
+    actorId: input.userId,
+    filename: input.filename,
+    mimeType: inferredMime,
+    storagePath,
+    sizeBytes: input.fileBuffer.byteLength,
+    readable: extractedText !== null,
+    processing,
+  });
+
+  if (documentId) {
+    const nextMetadata = {
+      ...((data.metadata as Record<string, unknown> | null) ?? {}),
+      document_id: documentId,
+    };
+    await supabase
+      .from('events')
+      .update({ metadata: nextMetadata })
+      .eq('id', data.id);
+    data.metadata = nextMetadata;
+  }
+
+  return { event: data };
+}
+
 function isValidTemplateType(value: string): value is ReportTemplateType {
   return value === 'docx' || value === 'pptx' || value === 'pdf';
 }
@@ -1153,7 +1261,7 @@ export async function uploadRoutes(server: FastifyInstance) {
   server.post('/uploads/local', async (request, reply) => {
     let payload: MultipartPayload;
     try {
-      payload = await readMultipartPayload(request, { maxFileBytes: MAX_LOCAL_UPLOAD_BYTES });
+      payload = await readMultipartPayload(request, { maxFileBytes: MAX_PROJECT_DOCUMENT_BYTES });
     } catch (error) {
       return reply.status(400).send({ error: error instanceof Error ? error.message : 'Invalid upload payload.' });
     }
@@ -1163,6 +1271,10 @@ export async function uploadRoutes(server: FastifyInstance) {
     const explicitTitle = `${payload.fields.title ?? ''}`.trim();
     const explicitSummary = `${payload.fields.summary ?? ''}`.trim();
     const metadataJson = `${payload.fields.metadataJson ?? ''}`.trim();
+    const requestedSource = `${payload.fields.source ?? ''}`.trim();
+    const source: 'local' | 'teams' | 'onedrive' = requestedSource === 'teams' || requestedSource === 'onedrive'
+      ? requestedSource
+      : 'local';
     const fileBuffer = payload.file?.buffer ?? null;
     if (!projectId || !filename || !fileBuffer || !payload.file) {
       return reply.status(400).send({ error: 'projectId, filename, and file are required' });
@@ -1179,30 +1291,6 @@ export async function uploadRoutes(server: FastifyInstance) {
       });
     }
 
-    let inferredMime: string;
-    try {
-      inferredMime = validateFileShape(filename, payload.file.mimeType, fileBuffer, MAX_LOCAL_UPLOAD_BYTES);
-      await validateArchiveSafety(fileBuffer, filename);
-    } catch (error) {
-      return reply.status(415).send({ error: error instanceof Error ? error.message : 'Unsupported upload.' });
-    }
-
-    // Upload to Supabase Storage: project-documents/{projectId}/{uuid}-{filename}
-    const storagePath = `${projectId}/${randomUUID()}-${sanitizeStorageName(filename)}`;
-    const { error: storageErr } = await supabase.storage
-      .from(BUCKET)
-      .upload(storagePath, fileBuffer, { contentType: inferredMime, upsert: false });
-
-    if (storageErr) {
-      return reply.status(500).send({ error: `Storage upload failed: ${storageErr.message}` });
-    }
-
-    // Extract text from PDF, DOCX, and plain-text formats for AI context
-    const extractedText = await extractText(fileBuffer, filename, inferredMime);
-    const processing = buildDocumentProcessingResult(filename, extractedText);
-
-    const sizeKb = (fileBuffer.byteLength / 1024).toFixed(1);
-    const summary = explicitSummary || `${filename} (${sizeKb} KB) — uploaded to project storage`;
     let extraMetadata: Record<string, unknown> = {};
     if (metadataJson) {
       try {
@@ -1215,64 +1303,24 @@ export async function uploadRoutes(server: FastifyInstance) {
       }
     }
 
-    const { data, error: dbErr } = await supabase.from('events').insert({
-      project_id: projectId,
-      actor_id: access.userId,
-      source: 'local',
-      event_type: 'file_upload',
-      title: explicitTitle || filename,
-      summary,
-      metadata: {
+    try {
+      return await storeProjectDocumentFile({
+        projectId,
+        userId: access.userId,
         filename,
-        mime_type: inferredMime,
-        size_bytes: fileBuffer.byteLength,
-        storage_path: storagePath,
-        storage_bucket: BUCKET,
-        extracted_text: processing.extractedText,
-        content_preview: processing.contentPreview,
-        document_summary: processing.summary,
-        keywords: processing.keywords,
-        chunk_count: processing.chunks.length,
-        extracted_char_count: processing.extractedText?.length ?? 0,
-        readable: extractedText !== null,
-        ...extraMetadata,
-      },
-      occurred_at: new Date().toISOString(),
-    }).select().single();
-
-    if (dbErr) {
-      // Clean up storage if DB insert fails
-      await supabase.storage.from(BUCKET).remove([storagePath]);
-      return reply.status(500).send({ error: dbErr.message });
+        mimeType: payload.file.mimeType,
+        fileBuffer,
+        source,
+        title: explicitTitle,
+        summary: explicitSummary,
+        metadata: extraMetadata,
+      });
+    } catch (error) {
+      const statusCode = error instanceof ProjectDocumentUploadError ? error.statusCode : 500;
+      return reply.status(statusCode).send({
+        error: error instanceof Error ? error.message : 'Upload failed.',
+      });
     }
-
-    const documentId = await persistStructuredDocument({
-      projectId,
-      eventId: data.id,
-      actorId: access.userId,
-      filename,
-      mimeType: inferredMime,
-      storagePath,
-      sizeBytes: fileBuffer.byteLength,
-      readable: extractedText !== null,
-      processing,
-    });
-
-    if (documentId) {
-      const nextMetadata = {
-        ...((data.metadata as Record<string, unknown> | null) ?? {}),
-        document_id: documentId,
-      };
-      await supabase
-        .from('events')
-        .update({
-          metadata: nextMetadata,
-        })
-        .eq('id', data.id);
-      data.metadata = nextMetadata;
-    }
-
-    return { event: data };
   });
 
   // ── Extract text from TXT/DOCX/PDF/etc. without storing the file ─────────

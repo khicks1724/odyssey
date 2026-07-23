@@ -16,6 +16,10 @@ async function getAuthHeader(): Promise<{ Authorization: string } | null> {
   return { Authorization: `Bearer ${session.access_token}` };
 }
 
+export async function getMicrosoftAuthHeaders() {
+  return getAuthHeader();
+}
+
 export function useMicrosoftIntegration() {
   const [status, setStatus] = useState<MSConnectionStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,13 +46,20 @@ export function useMicrosoftIntegration() {
   useEffect(() => {
     // Check if returning from Microsoft OAuth
     const params = new URLSearchParams(window.location.search);
+    const oauthError = params.get('ms_error');
+    if (oauthError) {
+      setConnectError(`Microsoft connection failed (${oauthError.replaceAll('_', ' ')}). Please try again.`);
+    }
     if (params.get('ms_connected') === 'true' || params.get('ms_error')) {
-      window.history.replaceState({}, '', window.location.pathname);
+      params.delete('ms_connected');
+      params.delete('ms_error');
+      const remainingQuery = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}`);
     }
     fetchStatus();
   }, [fetchStatus]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (returnTo = '/settings') => {
     setConnecting(true);
     setConnectError(null);
     const headers = await getAuthHeader();
@@ -59,7 +70,8 @@ export function useMicrosoftIntegration() {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/microsoft/auth/url`, { headers });
+      const query = new URLSearchParams({ returnTo });
+      const res = await fetch(`${API_BASE}/microsoft/auth/url?${query.toString()}`, { headers });
       if (!res.ok) {
         const err = await res.json() as { error?: string };
         setConnectError(err.error ?? `Server error (${res.status}) — is the server running?`);
@@ -120,7 +132,10 @@ export async function fetchTeams() {
   const headers = await getAuthHeader();
   if (!headers) return [];
   const res = await fetch(`${API_BASE}/microsoft/teams`, { headers });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error || 'Failed to load Microsoft Teams.');
+  }
   const data = await res.json() as { teams: unknown[] };
   return data.teams;
 }
@@ -129,7 +144,10 @@ export async function fetchTeamChannels(groupId: string) {
   const headers = await getAuthHeader();
   if (!headers) return [];
   const res = await fetch(`${API_BASE}/microsoft/teams/${encodeURIComponent(groupId)}/channels`, { headers });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error || 'Failed to load Teams channels.');
+  }
   const data = await res.json() as { channels: unknown[] };
   return data.channels;
 }
@@ -142,7 +160,10 @@ export async function fetchTeamChannelFiles(groupId: string, channelId: string, 
   if (opts.driveId) params.set('driveId', opts.driveId);
   const qs = params.toString() ? `?${params.toString()}` : '';
   const res = await fetch(`${API_BASE}/microsoft/teams/${encodeURIComponent(groupId)}/channels/${encodeURIComponent(channelId)}/files${qs}`, { headers });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(payload.error || 'Failed to load Teams files.');
+  }
   const data = await res.json() as { files: unknown[] };
   return data.files;
 }
@@ -153,6 +174,27 @@ export async function fetchTeamFileContent(driveId: string, itemId: string) {
   const res = await fetch(`${API_BASE}/microsoft/teams/drives/${encodeURIComponent(driveId)}/files/${encodeURIComponent(itemId)}/content`, { headers });
   if (!res.ok) return null;
   return res.json() as Promise<{ name: string; mimeType: string; text: string }>;
+}
+
+export async function importTeamFileToProject(opts: {
+  projectId: string;
+  driveId: string;
+  itemId: string;
+  teamId?: string;
+  teamName?: string;
+  channelId?: string;
+  channelName?: string;
+}) {
+  const headers = await getAuthHeader();
+  if (!headers) throw new Error('Please sign in again.');
+  const res = await fetch(`${API_BASE}/microsoft/teams/import`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  const payload = await res.json().catch(() => ({})) as { error?: string; event?: unknown };
+  if (!res.ok) throw new Error(payload.error || 'Failed to import Teams document.');
+  return payload;
 }
 
 export async function deleteImportedEvent(eventId: string) {

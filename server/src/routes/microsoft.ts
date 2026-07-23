@@ -1,6 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { supabase } from '../lib/supabase.js';
+import { userHasProjectAccess } from '../lib/request-auth.js';
+import {
+  MAX_PROJECT_DOCUMENT_BYTES,
+  ProjectDocumentUploadError,
+  storeProjectDocumentFile,
+} from './uploads.js';
 
 // ── Token encryption (AES-256-GCM) ──────────────────────────────────────────
 // Set MICROSOFT_TOKEN_ENCRYPT_KEY to a 64-char hex string (32 random bytes).
@@ -44,37 +50,75 @@ const CLIENT_ID = process.env.MICROSOFT_CLIENT_ID ?? '';
 const CLIENT_SECRET = process.env.MICROSOFT_CLIENT_SECRET ?? '';
 const REDIRECT_URI =
   process.env.MICROSOFT_REDIRECT_URI ?? 'http://localhost:3000/api/microsoft/auth/callback';
-const SCOPES = 'openid profile email User.Read Notes.Read Notes.Read.All Files.Read Sites.Read.All Team.ReadBasic.All offline_access';
+const SCOPES = 'openid profile email User.Read Notes.Read Notes.Read.All Files.Read.All Sites.Read.All Team.ReadBasic.All Channel.ReadBasic.All offline_access';
 const MS_AUTH_BASE = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 const GRAPH_URL = 'https://graph.microsoft.com/v1.0';
 
-// ── HMAC-signed state parameter (binds OAuth flow to a specific user) ────────
-function buildState(userId: string): string {
-  const payload = `${userId}:${Date.now()}`;
+// ── HMAC-signed state parameter (binds OAuth flow to a user + safe return) ───
+function normalizeReturnTo(value: string | null | undefined): string {
+  const trimmed = value?.trim() ?? '';
+  if (
+    !trimmed.startsWith('/')
+    || trimmed.startsWith('//')
+    || trimmed.includes('\\')
+    || trimmed.includes('#')
+    || /[\u0000-\u001f\u007f]/.test(trimmed)
+    || trimmed.length > 1_500
+  ) {
+    return '/settings';
+  }
+  return trimmed;
+}
+
+function buildState(userId: string, returnTo: string): string {
+  const payload = Buffer.from(JSON.stringify({
+    userId,
+    timestamp: Date.now(),
+    returnTo: normalizeReturnTo(returnTo),
+  })).toString('base64url');
   if (!CLIENT_SECRET) {
     throw new Error('Microsoft client secret is not configured');
   }
   const hmac = crypto.createHmac('sha256', CLIENT_SECRET);
   hmac.update(payload);
-  return `${payload}:${hmac.digest('hex')}`;
+  return `${payload}.${hmac.digest('hex')}`;
 }
 
-function verifyState(state: string): string | null {
-  const parts = state.split(':');
-  if (parts.length < 3) return null;
-  const sig = parts.pop()!;
-  const payload = parts.join(':');
+function verifyState(state: string): { userId: string; returnTo: string } | null {
+  const separatorIndex = state.lastIndexOf('.');
+  if (separatorIndex <= 0) return null;
+  const payload = state.slice(0, separatorIndex);
+  const sig = state.slice(separatorIndex + 1);
   if (!CLIENT_SECRET) return null;
   const hmac = crypto.createHmac('sha256', CLIENT_SECRET);
   hmac.update(payload);
   const expected = hmac.digest('hex');
-  // Timing-safe compare
-  if (sig.length !== expected.length) return null;
+  if (!/^[a-f0-9]+$/i.test(sig) || sig.length !== expected.length) return null;
   if (!crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))) return null;
-  // 15-minute window
-  const ts = Number(parts[1]);
-  if (Date.now() - ts > 15 * 60 * 1000) return null;
-  return parts[0]; // userId
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      userId?: unknown;
+      timestamp?: unknown;
+      returnTo?: unknown;
+    };
+    if (typeof decoded.userId !== 'string' || !decoded.userId) return null;
+    const timestamp = Number(decoded.timestamp);
+    if (!Number.isFinite(timestamp) || Date.now() - timestamp > 15 * 60 * 1000 || timestamp > Date.now() + 60_000) return null;
+    return {
+      userId: decoded.userId,
+      returnTo: normalizeReturnTo(typeof decoded.returnTo === 'string' ? decoded.returnTo : null),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildClientRedirect(clientUrl: string, returnTo: string, key: string, value: string): string {
+  const base = clientUrl.replace(/\/+$/, '');
+  const safeReturnTo = normalizeReturnTo(returnTo);
+  const separator = safeReturnTo.includes('?') ? '&' : '?';
+  return `${base}${safeReturnTo}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
 }
 
 // ── Load stored token, refreshing if expired ─────────────────────────────────
@@ -158,6 +202,44 @@ async function graphGetText(token: string, path: string): Promise<string> {
   return res.text();
 }
 
+async function graphGetBuffer(token: string, path: string, maxBytes: number): Promise<{ buffer: Buffer; contentType: string }> {
+  const res = await fetch(`${GRAPH_URL}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    redirect: 'follow',
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ProjectDocumentUploadError(502, `Microsoft Graph ${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const contentLength = Number(res.headers.get('content-length') ?? 0);
+  if (contentLength > maxBytes) {
+    throw new ProjectDocumentUploadError(413, `Teams file exceeds the ${Math.floor(maxBytes / (1024 * 1024))} MB upload limit.`);
+  }
+  if (!res.body) {
+    throw new ProjectDocumentUploadError(502, 'Microsoft Graph returned an empty file response.');
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  const reader = res.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      throw new ProjectDocumentUploadError(413, `Teams file exceeds the ${Math.floor(maxBytes / (1024 * 1024))} MB upload limit.`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+
+  return {
+    buffer: Buffer.concat(chunks),
+    contentType: res.headers.get('content-type')?.split(';')[0]?.trim() ?? 'application/octet-stream',
+  };
+}
+
 // ── Strip HTML → plain text ───────────────────────────────────────────────────
 function stripHtml(html: string): string {
   return html
@@ -180,7 +262,7 @@ function stripHtml(html: string): string {
 // ── Fastify plugin ────────────────────────────────────────────────────────────
 export async function microsoftRoutes(server: FastifyInstance) {
   // ── 1. Generate OAuth URL ──────────────────────────────────────────────────
-  server.get('/microsoft/auth/url', async (request, reply) => {
+  server.get<{ Querystring: { returnTo?: string } }>('/microsoft/auth/url', async (request, reply) => {
     const userId = await getUserFromJWT(request.headers.authorization);
     if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
 
@@ -200,7 +282,7 @@ export async function microsoftRoutes(server: FastifyInstance) {
       });
     }
 
-    const state = buildState(userId);
+    const state = buildState(userId, normalizeReturnTo(request.query.returnTo));
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
       response_type: 'code',
@@ -221,17 +303,22 @@ export async function microsoftRoutes(server: FastifyInstance) {
     const { code, state, error } = request.query;
     const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173';
 
-    if (error || !code || !state) {
-      return reply.redirect(`${clientUrl}/settings?ms_error=${encodeURIComponent(error ?? 'missing_params')}`);
+    if (error) {
+      const errorState = state ? verifyState(state) : null;
+      return reply.redirect(buildClientRedirect(clientUrl, errorState?.returnTo ?? '/settings', 'ms_error', error));
+    }
+    if (!code || !state) {
+      return reply.redirect(buildClientRedirect(clientUrl, '/settings', 'ms_error', 'missing_params'));
     }
     if (!CLIENT_SECRET || !canEncrypt) {
-      return reply.redirect(`${clientUrl}/settings?ms_error=server_misconfigured`);
+      return reply.redirect(buildClientRedirect(clientUrl, '/settings', 'ms_error', 'server_misconfigured'));
     }
 
-    const userId = verifyState(state);
-    if (!userId) {
-      return reply.redirect(`${clientUrl}/settings?ms_error=invalid_state`);
+    const verifiedState = verifyState(state);
+    if (!verifiedState) {
+      return reply.redirect(buildClientRedirect(clientUrl, '/settings', 'ms_error', 'invalid_state'));
     }
+    const { userId, returnTo } = verifiedState;
 
     // Exchange authorization code for tokens
     const params = new URLSearchParams({
@@ -250,7 +337,7 @@ export async function microsoftRoutes(server: FastifyInstance) {
     });
 
     if (!tokenRes.ok) {
-      return reply.redirect(`${clientUrl}/settings?ms_error=token_exchange_failed`);
+      return reply.redirect(buildClientRedirect(clientUrl, returnTo, 'ms_error', 'token_exchange_failed'));
     }
 
     const td = (await tokenRes.json()) as {
@@ -290,7 +377,7 @@ export async function microsoftRoutes(server: FastifyInstance) {
 
     if (dbErr) {
       server.log.error(dbErr);
-      return reply.redirect(`${clientUrl}/settings?ms_error=db_error`);
+      return reply.redirect(buildClientRedirect(clientUrl, returnTo, 'ms_error', 'db_error'));
     }
 
     if (msDisplayName || msEmail) {
@@ -303,7 +390,7 @@ export async function microsoftRoutes(server: FastifyInstance) {
         }, { onConflict: 'id' });
     }
 
-    return reply.redirect(`${clientUrl}/settings?ms_connected=true`);
+    return reply.redirect(buildClientRedirect(clientUrl, returnTo, 'ms_connected', 'true'));
   });
 
   // ── 3. Disconnect Microsoft account ───────────────────────────────────────
@@ -497,7 +584,7 @@ export async function microsoftRoutes(server: FastifyInstance) {
 
       const { groupId, channelId } = request.params;
       const { folderId, driveId } = request.query;
-      const fields = '$select=id,name,file,folder,size,lastModifiedDateTime,webUrl,lastModifiedBy';
+      const fields = '$select=id,name,file,folder,size,lastModifiedDateTime,webUrl,lastModifiedBy,parentReference';
 
       try {
         let path: string;
@@ -620,6 +707,103 @@ export async function microsoftRoutes(server: FastifyInstance) {
       }
     },
   );
+
+  // ── 9c. Teams: ingest the real file into Odyssey project storage ─────────
+  interface TeamsImportBody {
+    projectId: string;
+    driveId: string;
+    itemId: string;
+    teamId?: string;
+    teamName?: string;
+    channelId?: string;
+    channelName?: string;
+  }
+
+  server.post<{ Body: TeamsImportBody }>('/microsoft/teams/import', async (request, reply) => {
+    const userId = await getUserFromJWT(request.headers.authorization);
+    if (!userId) return reply.status(401).send({ error: 'Unauthorized' });
+
+    const projectId = request.body?.projectId?.trim();
+    const driveId = request.body?.driveId?.trim();
+    const itemId = request.body?.itemId?.trim();
+    if (!projectId || !driveId || !itemId) {
+      return reply.status(400).send({ error: 'projectId, driveId, and itemId are required.' });
+    }
+
+    if (!(await userHasProjectAccess(projectId, userId))) {
+      return reply.status(403).send({ error: 'Not a member of this project.' });
+    }
+
+    const token = await getAccessToken(userId);
+    if (!token) {
+      return reply.status(403).send({ error: 'Microsoft account not connected or token expired. Reconnect in Settings.' });
+    }
+
+    try {
+      const meta = (await graphGet(
+        token,
+        `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=id,name,size,file,folder,webUrl,lastModifiedDateTime,parentReference`,
+      )) as {
+        id?: string;
+        name?: string;
+        size?: number;
+        file?: { mimeType?: string };
+        folder?: unknown;
+        webUrl?: string;
+        lastModifiedDateTime?: string;
+        parentReference?: { driveId?: string };
+      };
+
+      if (meta.folder || !meta.file) {
+        return reply.status(400).send({ error: 'Select a file, not a Teams folder.' });
+      }
+      const filename = meta.name?.trim() || 'Teams document';
+      if (Number(meta.size ?? 0) > MAX_PROJECT_DOCUMENT_BYTES) {
+        return reply.status(413).send({ error: `Teams file exceeds the ${Math.floor(MAX_PROJECT_DOCUMENT_BYTES / (1024 * 1024))} MB upload limit.` });
+      }
+
+      const downloaded = await graphGetBuffer(
+        token,
+        `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`,
+        MAX_PROJECT_DOCUMENT_BYTES,
+      );
+      const teamName = request.body.teamName?.trim();
+      const channelName = request.body.channelName?.trim();
+      const sourceLocation = [teamName, channelName].filter(Boolean).join(' / ');
+
+      const stored = await storeProjectDocumentFile({
+        projectId,
+        userId,
+        filename,
+        mimeType: meta.file.mimeType || downloaded.contentType,
+        fileBuffer: downloaded.buffer,
+        source: 'teams',
+        title: filename,
+        summary: sourceLocation
+          ? `${filename} — imported from Microsoft Teams (${sourceLocation})`
+          : `${filename} — imported from Microsoft Teams`,
+        metadata: {
+          import_source: 'microsoft_teams',
+          ms_item_id: meta.id ?? itemId,
+          ms_drive_id: meta.parentReference?.driveId ?? driveId,
+          ms_team_id: request.body.teamId?.trim() || null,
+          ms_team_name: teamName || null,
+          ms_channel_id: request.body.channelId?.trim() || null,
+          ms_channel_name: channelName || null,
+          web_url: meta.webUrl ?? null,
+          ms_last_modified_at: meta.lastModifiedDateTime ?? null,
+        },
+      });
+
+      return { ...stored, source: 'teams' };
+    } catch (error) {
+      const statusCode = error instanceof ProjectDocumentUploadError ? error.statusCode : 500;
+      server.log.error({ err: error, projectId, driveId, itemId }, 'Failed to import Teams document');
+      return reply.status(statusCode).send({
+        error: error instanceof Error ? error.message : 'Failed to import Teams document.',
+      });
+    }
+  });
 
   // ── 10. OneDrive: get file text content ────────────────────────────────────
   server.get<{ Params: { itemId: string } }>(

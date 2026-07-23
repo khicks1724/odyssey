@@ -22,6 +22,10 @@ import {
   withGenAiBrowserRelay,
 } from '../lib/genai-browser-relay.js';
 import { GenAiMilApiError } from '../lib/genai-mil.js';
+import {
+  buildTokenUsageLimitMessage,
+  getReachedTokenUsageLimitForUser,
+} from '../lib/token-usage-limits.js';
 
 // Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
 const ALL_PROVIDERS: AIProvider[] = ['claude-haiku', 'claude-sonnet', 'claude-opus', 'gpt-4o', 'genai-mil'];
@@ -882,6 +886,41 @@ async function streamChatWithAudit(
 }
 
 export async function aiRoutes(server: FastifyInstance) {
+  // Enforce user budgets before any token-generating route starts. Keeping this
+  // at the route boundary also prevents streaming responses from opening before
+  // a reached limit has been checked.
+  server.addHook('preHandler', async (request, reply) => {
+    if (request.method !== 'POST') return;
+
+    const userId = await getUserFromAuthHeader(request.headers.authorization);
+    if (!userId) {
+      return reply.status(401).send({
+        error: 'Sign in is required for AI requests.',
+        code: 'AI_AUTH_REQUIRED',
+      });
+    }
+
+    try {
+      const reachedLimit = await getReachedTokenUsageLimitForUser(userId);
+      if (!reachedLimit) return;
+
+      return reply.status(429).send({
+        error: buildTokenUsageLimitMessage(reachedLimit),
+        code: 'TOKEN_USAGE_LIMIT_REACHED',
+        period: reachedLimit.period,
+        used: reachedLimit.used,
+        limit: reachedLimit.limit,
+        resetsAt: reachedLimit.resetsAt,
+      });
+    } catch (limitError) {
+      server.log.error({ err: limitError, userId }, 'Failed to evaluate token usage limit');
+      return reply.status(503).send({
+        error: 'Token usage limits could not be checked. Please try again shortly.',
+        code: 'TOKEN_USAGE_LIMIT_CHECK_FAILED',
+      });
+    }
+  });
+
   // ── Available providers endpoint ──
   // Returns user-key availability enriched with per-user key detection.
   server.get<{ Querystring: { refresh?: string } }>('/ai/providers', async (request) => {

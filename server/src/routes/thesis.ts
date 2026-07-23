@@ -18,6 +18,38 @@ import {
   listThesisSources,
   persistThesisSourceSnapshot,
 } from '../lib/zotero-sync.js';
+import { logAiTokenUsage } from './token-usage.js';
+import { getReachedTokenUsageLimitForUser } from '../lib/token-usage-limits.js';
+
+type ThesisAiUsageContext = {
+  userId: string;
+  authHeader: string | undefined;
+  feature: string;
+  routePath: string;
+};
+
+async function chatWithThesisUsage(
+  context: ThesisAiUsageContext,
+  provider: AIProviderSelection,
+  message: Parameters<typeof chat>[1],
+  credential: Parameters<typeof chat>[2],
+) {
+  if (await getReachedTokenUsageLimitForUser(context.userId)) return null;
+
+  const result = await chat(provider, message, credential);
+  try {
+    await logAiTokenUsage({
+      authHeader: context.authHeader,
+      result,
+      feature: context.feature,
+      routePath: context.routePath,
+      knownUserId: context.userId,
+    });
+  } catch {
+    // Usage auditing must not discard an otherwise valid thesis result.
+  }
+  return result;
+}
 
 type ThesisDocumentRow = {
   user_id: string;
@@ -1104,6 +1136,7 @@ async function aiEnhanceCitationMetadata(
   url: string,
   html: string,
   existing: { title?: string | null; credit?: string | null; year?: string | null; contextField?: string | null },
+  usageContext: ThesisAiUsageContext,
 ): Promise<{ title?: string; credit?: string; year?: string; contextField?: string }> {
   try {
     // Only use AI enhancement when a server-side AI key is configured
@@ -1129,7 +1162,7 @@ async function aiEnhanceCitationMetadata(
       .trim()
       .slice(0, 4000);
 
-    const result = await chat(provider, {
+    const result = await chatWithThesisUsage(usageContext, provider, {
       system: 'You are a citation extraction assistant. Extract bibliographic metadata from web page text. Return ONLY valid JSON with the requested fields. If a field cannot be determined with reasonable confidence, omit it from the JSON.',
       user: `URL: ${url}
 
@@ -1142,6 +1175,7 @@ ${missingFields.map((f) => `- ${f}`).join('\n')}
 Return JSON like: {"title":"...","author":"...","year":"2024","publisher":"..."} using only keys: title, author, year, publisher. Omit any key you are not confident about.`,
       maxTokens: 300,
     }, serverCred);
+    if (!result) return {};
 
     const raw = result.text.match(/\{[\s\S]*\}/)?.[0];
     if (!raw) return {};
@@ -1213,7 +1247,7 @@ async function aiEnhanceKnowledgeGraph(input: {
     label: string;
     sourceIds: string[];
   }>;
-}): Promise<ThesisKnowledgeAiEnhancement> {
+}, usageContext: ThesisAiUsageContext): Promise<ThesisKnowledgeAiEnhancement> {
   try {
     const serverCred = getServerOpenAiCredential();
     if (!serverCred?.apiKey) {
@@ -1239,7 +1273,7 @@ async function aiEnhanceKnowledgeGraph(input: {
     }
 
     const provider: AIProviderSelection = `openai:${getServerOpenAiPrimaryModel('gpt-4o')}`;
-    const result = await chat(provider, {
+    const result = await chatWithThesisUsage(usageContext, provider, {
       system: [
         'You improve thesis knowledge graphs.',
         'Return ONLY valid JSON.',
@@ -1314,6 +1348,16 @@ async function aiEnhanceKnowledgeGraph(input: {
       maxTokens: 1800,
       jsonMode: true,
     }, serverCred);
+    if (!result) {
+      return {
+        themes: [],
+        insights: [],
+        sourceLinks: [],
+        documentSourceLinks: [],
+        projectSourceLinks: [],
+        projectDocumentLinks: [],
+      };
+    }
 
     const parsed = JSON.parse(extractJsonPayload(result.text)) as Record<string, unknown>;
     const safeThemes = Array.isArray(parsed.themes) ? parsed.themes : [];
@@ -1432,7 +1476,10 @@ async function aiEnhanceKnowledgeGraph(input: {
   }
 }
 
-async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourceRecord> {
+async function inferUrlSourceMetadata(
+  rawUrl: string,
+  usageContext: ThesisAiUsageContext,
+): Promise<ParsedThesisSourceRecord> {
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(rawUrl);
@@ -1646,6 +1693,7 @@ async function inferUrlSourceMetadata(rawUrl: string): Promise<ParsedThesisSourc
       finalUrl.toString(),
       html,
       { title: finalTitle, credit: finalCredit, year: finalYear, contextField: finalContextField },
+      usageContext,
     );
     if (!finalTitle && aiFields.title) finalTitle = aiFields.title;
     if (!finalCredit && aiFields.credit) finalCredit = aiFields.credit;
@@ -2199,6 +2247,7 @@ async function buildThesisKnowledgeGraph(
   linkedProjects: ThesisKnowledgeLinkedProject[],
   linkedGoals: ThesisKnowledgeLinkedGoal[],
   linkedEvents: ThesisKnowledgeLinkedEvent[],
+  usageContext: ThesisAiUsageContext,
 ): Promise<ThesisKnowledgeGraphPayload> {
   const hydratedSources = await Promise.all(sourceLibrary.map(async (source) => {
     const zoteroAnnotationText = (source.zoteroAnnotations ?? [])
@@ -2210,7 +2259,7 @@ async function buildThesisKnowledgeGraph(
       ? source.zoteroFulltextPreview?.slice(0, 20_000) ?? ''
       : '';
     const urlMetadata = isHttpUrl(source.locator)
-      ? await inferUrlSourceMetadata(source.locator).catch(() => null)
+      ? await inferUrlSourceMetadata(source.locator, usageContext).catch(() => null)
       : null;
     const attachmentPreview = source.attachmentStoragePath
       ? await readThesisAttachmentTextPreview(
@@ -2440,7 +2489,7 @@ async function buildThesisKnowledgeGraph(
       label: theme.label,
       sourceIds: theme.sourceIds,
     })),
-  });
+  }, usageContext);
 
   const themeContextMap = new Map<string, {
     id: string;
@@ -3615,7 +3664,12 @@ export async function thesisRoutes(server: FastifyInstance) {
 
     try {
       return {
-        document: await inferUrlSourceMetadata(url),
+        document: await inferUrlSourceMetadata(url, {
+          userId,
+          authHeader: request.headers.authorization,
+          feature: 'thesis-source-metadata',
+          routePath: '/api/thesis/sources/parse-url',
+        }),
       };
     } catch (error) {
       request.log.warn({
@@ -3673,7 +3727,19 @@ export async function thesisRoutes(server: FastifyInstance) {
     try {
       const enrichedLinkedProjects = await enrichThesisKnowledgeLinkedProjectsWithGitLabRepos(linkedProjects);
       return {
-        graph: await buildThesisKnowledgeGraph(sourceLibrary, thesisDocuments, enrichedLinkedProjects, linkedGoals, linkedEvents),
+        graph: await buildThesisKnowledgeGraph(
+          sourceLibrary,
+          thesisDocuments,
+          enrichedLinkedProjects,
+          linkedGoals,
+          linkedEvents,
+          {
+            userId,
+            authHeader: request.headers.authorization,
+            feature: 'thesis-knowledge-graph',
+            routePath: '/api/thesis/knowledge/graph',
+          },
+        ),
       };
     } catch (error) {
       request.log.error({

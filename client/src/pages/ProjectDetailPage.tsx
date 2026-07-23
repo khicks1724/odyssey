@@ -75,6 +75,7 @@ const FinancialsTab = lazyWithRetry(() => import('../components/project-tabs/Fin
 const TimelinePage = lazyWithRetry(() => import('../components/TimelinePage'), 'project-timeline');
 const FileViewerLazy = lazyWithRetry(() => import('../components/FileViewer'), 'project-file-viewer');
 const GoalReportModal = lazyWithRetry(() => import('../components/GoalReportModal'), 'project-goal-report');
+const OfficeFilePicker = lazyWithRetry(() => import('../components/OfficeFilePicker'), 'project-office-file-picker');
 
 function stripAiDisplayPrefix(value: string | null | undefined): string {
   return (value ?? '')
@@ -412,6 +413,16 @@ export default function ProjectDetailPage() {
       setActiveTab(tab);
     });
   }, []);
+  const [openTeamsPickerRequested, setOpenTeamsPickerRequested] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('openTeams') !== '1') return;
+    setOpenTeamsPickerRequested(true);
+    handleTabChange('documents');
+    params.delete('openTeams');
+    const remainingQuery = params.toString();
+    navigate(`${location.pathname}${remainingQuery ? `?${remainingQuery}` : ''}`, { replace: true });
+  }, [handleTabChange, location.pathname, location.search, navigate]);
   const goalModal = useModal();
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDeadline, setNewGoalDeadline] = useState('');
@@ -917,7 +928,7 @@ export default function ProjectDetailPage() {
       // Send to AI for analysis
       const scanRes = await fetch(`${API_BASE}/ai/repo-scan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectName: project.name,
           goals: goals.map((g) => ({ id: g.id, title: g.title, status: g.status })),
@@ -1320,13 +1331,19 @@ export default function ProjectDetailPage() {
       closeGoalModal();
       // Auto-generate AI guidance in background after creation
       if (newGoal?.id) {
-        fetch(`${API_BASE}/ai/task-guidance`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
-        }).then((r) => r.ok ? r.json() : null).then((data) => {
-          if (data?.guidance) updateGoal(newGoal.id, { ai_guidance: data.guidance }).catch(() => {});
-        }).catch(() => {});
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          void fetch(`${API_BASE}/ai/task-guidance`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ agent, projectId, taskTitle: newGoal.title, taskStatus: newGoal.status, taskProgress: newGoal.progress, taskCategory: newGoal.category, taskLoe: newGoal.loe }),
+          }).then((r) => r.ok ? r.json() : null).then((data) => {
+            if (data?.guidance) updateGoal(newGoal.id, { ai_guidance: data.guidance }).catch(() => {});
+          }).catch(() => {});
+        }
       }
     } catch (err: any) {
       setGoalCreateError(err?.message ?? 'Unable to create task.');
@@ -1735,6 +1752,9 @@ export default function ProjectDetailPage() {
           events={events}
           eventsLoading={eventsLoading}
           projectId={projectId!}
+          projectName={project.name}
+          openTeamsPickerRequested={openTeamsPickerRequested}
+          onTeamsPickerRequestHandled={() => setOpenTeamsPickerRequested(false)}
           docEditMode={docEditMode}
           setDocEditMode={setDocEditMode}
           docSelected={docSelected}
@@ -1755,7 +1775,7 @@ export default function ProjectDetailPage() {
           githubRepo={githubRepos}
           gitlabRepos={gitlabRepos}
           goals={goals.map((g) => ({ id: g.id, title: g.title, status: g.status, progress: g.progress ?? 0 }))}
-          o365Docs={events.filter((e) => e.source === 'local')}
+          o365Docs={events.filter((e) => e.event_type === 'file_upload')}
           onNavigateSettings={() => handleTabChange('settings')}
         />
       )}
@@ -2091,6 +2111,9 @@ interface DocumentsTabProps {
   events: import('../types').OdysseyEvent[];
   eventsLoading: boolean;
   projectId: string;
+  projectName: string;
+  openTeamsPickerRequested: boolean;
+  onTeamsPickerRequestHandled: () => void;
   docEditMode: boolean;
   setDocEditMode: (v: boolean) => void;
   docSelected: Set<string>;
@@ -2104,7 +2127,8 @@ interface DocumentsTabProps {
 }
 
 function DocumentsTab({
-  events, eventsLoading, projectId,
+  events, eventsLoading, projectId, projectName,
+  openTeamsPickerRequested, onTeamsPickerRequestHandled,
   docEditMode, setDocEditMode,
   docSelected, setDocSelected,
   bulkDeleting, setBulkDeleting,
@@ -2112,10 +2136,15 @@ function DocumentsTab({
   onRefresh,
   savedReportsVersion = 0,
 }: DocumentsTabProps) {
-  const docs = events.filter((e) => e.source === 'local');
+  const docs = events.filter((event) => event.event_type === 'file_upload');
   const allSelected = docSelected.size === docs.length && docs.length > 0;
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [officePickerOpen, setOfficePickerOpen] = useState(openTeamsPickerRequested);
+
+  useEffect(() => {
+    if (openTeamsPickerRequested) setOfficePickerOpen(true);
+  }, [openTeamsPickerRequested]);
 
   // ── Saved reports ──────────────────────────────────────────────────────────
   const [savedReports, setSavedReports] = useState<SavedReport[]>([]);
@@ -2322,6 +2351,14 @@ function DocumentsTab({
                   Edit
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setOfficePickerOpen(true)}
+                className="flex items-center gap-2 rounded-md border border-accent2/30 px-4 py-2 text-xs font-sans font-semibold uppercase tracking-wider text-accent2 transition-colors hover:bg-accent2/10"
+              >
+                <Plug size={12} />
+                Import from Teams
+              </button>
               <label
                 title="Upload PDF, DOCX, or text file"
                 className={`flex items-center gap-2 px-4 py-2 border border-border text-xs font-sans font-semibold tracking-wider uppercase transition-colors rounded-md cursor-pointer ${uploading ? 'opacity-50 pointer-events-none text-muted' : 'text-muted hover:text-heading hover:bg-surface2'}`}
@@ -2347,6 +2384,21 @@ function DocumentsTab({
 
       {uploadError && (
         <div className="text-xs text-danger bg-danger/10 border border-danger/30 rounded px-3 py-2">{uploadError}</div>
+      )}
+
+      {officePickerOpen && (
+        <Suspense fallback={<SuspenseFallback label="Loading Microsoft Teams…" />}>
+          <OfficeFilePicker
+            projectId={projectId}
+            projectName={projectName}
+            initialTab="teams"
+            onClose={() => {
+              setOfficePickerOpen(false);
+              onTeamsPickerRequestHandled();
+            }}
+            onImported={onRefresh}
+          />
+        </Suspense>
       )}
 
       {eventsLoading ? (

@@ -5,6 +5,10 @@ import { decryptUserKey } from '../routes/user-ai-keys.js';
 import { logAiTokenUsage } from '../routes/token-usage.js';
 import { isServerFallbackPausedForUser } from './server-fallback-controls.js';
 import { supabase } from './supabase.js';
+import {
+  buildTokenUsageLimitMessage,
+  getReachedTokenUsageLimitForUser,
+} from './token-usage-limits.js';
 
 const NODE_TYPES = ['person', 'task', 'document', 'repo', 'file', 'concept', 'deliverable'] as const;
 const EDGE_TYPES = [
@@ -1811,6 +1815,11 @@ async function inferGraphEnhancements(input: {
   });
 
   try {
+    if (input.generatedBy) {
+      const reachedLimit = await getReachedTokenUsageLimitForUser(input.generatedBy);
+      if (reachedLimit) throw new Error(buildTokenUsageLimitMessage(reachedLimit));
+    }
+
     const result = await chat(
       providerSelection.provider,
       {

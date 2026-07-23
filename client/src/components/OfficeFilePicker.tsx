@@ -25,7 +25,10 @@ import {
   fetchTeamChannels,
   fetchTeamChannelFiles,
   fetchTeamFileContent,
+  getMicrosoftAuthHeaders,
+  importTeamFileToProject,
   importToProject,
+  useMicrosoftIntegration,
 } from '../hooks/useMicrosoftIntegration';
 
 const API_BASE = '/api';
@@ -38,14 +41,15 @@ interface AnalysisResult {
   provider: string;
 }
 
+type ActiveTab = 'onenote' | 'onedrive' | 'teams';
+
 interface Props {
   projectId: string;
   projectName: string;
   onClose: () => void;
   onImported: () => void;
+  initialTab?: ActiveTab;
 }
-
-type ActiveTab = 'onenote' | 'onedrive' | 'teams';
 
 interface TeamItem { id: string; displayName: string; description?: string }
 interface ChannelItem { id: string; displayName: string; description?: string }
@@ -134,9 +138,11 @@ function OneNoteBrowser({
     if (!content?.text) { setAnalysisPageId(null); return; }
 
     try {
+      const authHeaders = await getMicrosoftAuthHeaders();
+      if (!authHeaders) throw new Error('Please sign in again.');
       const res = await fetch(`${API_BASE}/ai/analyze-document`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: page.title,
           content: content.text,
@@ -419,9 +425,11 @@ function OneDriveBrowser({
     if (!content?.text) { setAnalysisItemId(null); return; }
 
     try {
+      const authHeaders = await getMicrosoftAuthHeaders();
+      if (!authHeaders) throw new Error('Please sign in again.');
       const res = await fetch(`${API_BASE}/ai/analyze-document`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: item.name,
           content: content.text,
@@ -629,13 +637,14 @@ function TeamsBrowser({
   const [analysisItemId, setAnalysisItemId] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<Record<string, AnalysisResult>>({});
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchTeams().then((data) => {
       setTeams(data as TeamItem[]);
       setLoading(false);
-    }).catch(() => {
-      setError('Failed to load Teams. Make sure you have granted Team.ReadBasic.All permission — reconnect your Microsoft account if needed.');
+    }).catch((loadError) => {
+      setError(loadError instanceof Error ? loadError.message : 'Failed to load Microsoft Teams.');
       setLoading(false);
     });
   }, []);
@@ -651,8 +660,9 @@ function TeamsBrowser({
     try {
       const data = await fetchTeamChannels(team.id);
       setChannels(data as ChannelItem[]);
-    } catch {
-      setError('Failed to load channels');
+    } catch (loadError) {
+      const detail = loadError instanceof Error ? loadError.message : 'Failed to load channels.';
+      setError(`${detail} Reconnect Microsoft in Settings to grant Channel.ReadBasic.All if needed.`);
     }
     setLoading(false);
   }, []);
@@ -667,8 +677,9 @@ function TeamsBrowser({
     try {
       const data = await fetchTeamChannelFiles(selectedTeam.id, channel.id);
       setFiles(data as TeamsFileItem[]);
-    } catch {
-      setError('Failed to load channel files');
+    } catch (loadError) {
+      const detail = loadError instanceof Error ? loadError.message : 'Failed to load channel files.';
+      setError(`${detail} Reconnect Microsoft in Settings to grant Files.Read.All and Sites.Read.All if needed.`);
     }
     setLoading(false);
   }, [selectedTeam]);
@@ -696,23 +707,26 @@ function TeamsBrowser({
 
   const handleImport = useCallback(async (item: TeamsFileItem) => {
     setImportingId(item.id);
-    const driveId = item.parentReference?.driveId ?? '';
-    let text: string | undefined;
-    if (driveId) {
-      const content = await fetchTeamFileContent(driveId, item.id);
-      text = content?.text;
+    setActionError(null);
+    try {
+      const driveId = item.parentReference?.driveId ?? folderStack.at(-1)?.driveId ?? '';
+      if (!driveId) throw new Error('Microsoft did not return a drive identifier for this file. Reopen the channel and try again.');
+      await importTeamFileToProject({
+        projectId,
+        driveId,
+        itemId: item.id,
+        teamId: selectedTeam?.id,
+        teamName: selectedTeam?.displayName,
+        channelId: selectedChannel?.id,
+        channelName: selectedChannel?.displayName,
+      });
+      onImported();
+    } catch (importError) {
+      setActionError(importError instanceof Error ? importError.message : 'Failed to import Teams document.');
+    } finally {
+      setImportingId(null);
     }
-    await importToProject({
-      projectId,
-      source: 'onedrive',
-      itemId: item.id,
-      title: item.name,
-      webUrl: item.webUrl,
-      content: text,
-    });
-    setImportingId(null);
-    onImported();
-  }, [projectId, onImported]);
+  }, [folderStack, onImported, projectId, selectedChannel, selectedTeam]);
 
   const handleAnalyze = useCallback(async (item: TeamsFileItem) => {
     setAnalysisItemId(item.id);
@@ -722,9 +736,11 @@ function TeamsBrowser({
     if (!content?.text || content.text.startsWith('[')) { setAnalysisItemId(null); return; }
 
     try {
+      const authHeaders = await getMicrosoftAuthHeaders();
+      if (!authHeaders) throw new Error('Please sign in again.');
       const res = await fetch(`${API_BASE}/ai/analyze-document`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: item.name, content: content.text, projectName }),
       });
       if (res.ok) {
@@ -740,7 +756,27 @@ function TeamsBrowser({
   }
 
   if (error) {
-    return <div className="flex items-center gap-2 py-8 text-danger text-xs"><AlertCircle size={14} /> {error}</div>;
+    return (
+      <div className="py-8 text-xs">
+        <div className="flex items-start gap-2 text-danger"><AlertCircle size={14} className="mt-0.5 shrink-0" /> {error}</div>
+        {selectedTeam && (
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setSelectedTeam(null);
+              setSelectedChannel(null);
+              setChannels([]);
+              setFiles([]);
+              setFolderStack([]);
+            }}
+            className="mt-4 border border-border px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted hover:bg-surface2 hover:text-heading"
+          >
+            Back to Teams
+          </button>
+        )}
+      </div>
+    );
   }
 
   // Breadcrumb
@@ -830,6 +866,12 @@ function TeamsBrowser({
   return (
     <div>
       <BreadcrumbNav />
+      {actionError && (
+        <div className="mb-3 flex items-start gap-2 border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+          <AlertCircle size={13} className="mt-0.5 shrink-0" />
+          <span>{actionError}</span>
+        </div>
+      )}
       {folderStack.length > 0 && (
         <button type="button" onClick={goUpFolder} className="flex items-center gap-1 text-[11px] text-muted hover:text-heading mb-3 transition-colors">
           <ChevronLeft size={12} /> Back
@@ -867,7 +909,7 @@ function TeamsBrowser({
                     <button type="button" onClick={() => handleImport(item)} disabled={importingId === item.id}
                       className="flex items-center gap-1 px-2 py-1 border border-accent2/30 text-accent2 text-[10px] tracking-wider uppercase hover:bg-accent2/5 transition-colors rounded disabled:opacity-50">
                       {importingId === item.id ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
-                      Import
+                      Upload
                     </button>
                     {item.webUrl && (
                       <a href={item.webUrl} target="_blank" rel="noopener noreferrer"
@@ -903,9 +945,17 @@ function TeamsBrowser({
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
-export default function OfficeFilePicker({ projectId, projectName, onClose, onImported }: Props) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('onenote');
+export default function OfficeFilePicker({ projectId, projectName, onClose, onImported, initialTab = 'teams' }: Props) {
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
   const [importCount, setImportCount] = useState(0);
+  const {
+    status: microsoftStatus,
+    loading: microsoftLoading,
+    connecting: microsoftConnecting,
+    connectError: microsoftConnectError,
+    connect: connectMicrosoft,
+  } = useMicrosoftIntegration();
+  const microsoftReturnTo = `/projects/${encodeURIComponent(projectId)}?openTeams=1`;
 
   const handleImported = useCallback(() => {
     setImportCount((c) => c + 1);
@@ -920,12 +970,27 @@ export default function OfficeFilePicker({ projectId, projectName, onClose, onIm
           <div>
             <h2 className="font-sans text-sm font-bold text-heading">Microsoft 365 Files</h2>
             <p className="text-[11px] text-muted font-mono">Browse and import files into {projectName}</p>
+            {microsoftStatus?.connected && (
+              <p className="mt-1 text-[10px] text-accent3">
+                Connected as {microsoftStatus.email || microsoftStatus.displayName || 'Microsoft account'}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-3">
             {importCount > 0 && (
               <span className="text-[10px] text-accent3 font-mono">
                 {importCount} imported
               </span>
+            )}
+            {microsoftStatus?.connected && (
+              <button
+                type="button"
+                onClick={() => { void connectMicrosoft(microsoftReturnTo); }}
+                disabled={microsoftConnecting}
+                className="text-[10px] uppercase tracking-wider text-muted transition-colors hover:text-heading disabled:opacity-50"
+              >
+                {microsoftConnecting ? 'Connecting…' : 'Reconnect permissions'}
+              </button>
             )}
             <button type="button" onClick={onClose} className="text-muted hover:text-heading transition-colors" title="Close">
               <X size={16} />
@@ -934,7 +999,7 @@ export default function OfficeFilePicker({ projectId, projectName, onClose, onIm
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-px border-b border-border bg-border">
+        <div className={`flex gap-px border-b border-border bg-border ${microsoftStatus?.connected ? '' : 'opacity-50'}`}>
           {([
             { id: 'onenote', label: 'OneNote' },
             { id: 'onedrive', label: 'OneDrive' },
@@ -944,6 +1009,7 @@ export default function OfficeFilePicker({ projectId, projectName, onClose, onIm
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
+              disabled={!microsoftStatus?.connected}
               className={`px-5 py-2.5 bg-surface text-[11px] tracking-wider uppercase transition-colors ${
                 activeTab === tab.id ? 'text-heading bg-surface2 font-medium' : 'text-muted hover:text-heading hover:bg-surface2'
               }`}
@@ -955,13 +1021,35 @@ export default function OfficeFilePicker({ projectId, projectName, onClose, onIm
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
-          {activeTab === 'onenote' && (
+          {microsoftLoading ? (
+            <div className="flex items-center justify-center py-12 text-xs text-muted">
+              <Loader2 size={14} className="mr-2 animate-spin" /> Checking Microsoft connection…
+            </div>
+          ) : !microsoftStatus?.connected ? (
+            <div className="mx-auto max-w-md py-10 text-center">
+              <Users size={28} className="mx-auto mb-4 text-accent2" />
+              <h3 className="text-sm font-semibold text-heading">Connect Microsoft 365</h3>
+              <p className="mt-2 text-xs leading-relaxed text-muted">
+                Microsoft sign-in identifies your Odyssey account, but Teams files need one-time Graph permission for teams, channels, SharePoint sites, and files.
+              </p>
+              <button
+                type="button"
+                onClick={() => { void connectMicrosoft(microsoftReturnTo); }}
+                disabled={microsoftConnecting}
+                className="mt-5 inline-flex items-center gap-2 rounded border border-accent2/30 bg-accent2/10 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-accent2 transition-colors hover:bg-accent2/15 disabled:opacity-50"
+              >
+                {microsoftConnecting ? <Loader2 size={12} className="animate-spin" /> : <Users size={12} />}
+                {microsoftConnecting ? 'Connecting…' : 'Connect Microsoft 365'}
+              </button>
+              {microsoftConnectError && (
+                <p className="mt-3 text-xs text-danger">{microsoftConnectError}</p>
+              )}
+            </div>
+          ) : activeTab === 'onenote' ? (
             <OneNoteBrowser projectId={projectId} projectName={projectName} onImported={handleImported} />
-          )}
-          {activeTab === 'onedrive' && (
+          ) : activeTab === 'onedrive' ? (
             <OneDriveBrowser projectId={projectId} projectName={projectName} onImported={handleImported} />
-          )}
-          {activeTab === 'teams' && (
+          ) : (
             <TeamsBrowser projectId={projectId} projectName={projectName} onImported={handleImported} />
           )}
         </div>

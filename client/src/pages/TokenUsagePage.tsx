@@ -11,6 +11,7 @@ type UsageSourceFilter = 'all' | 'server';
 type UsageViewMode = 'table' | 'visuals';
 type SortKey = 'displayName' | 'email' | 'totalTokens' | 'promptTokens' | 'completionTokens' | 'requestCount';
 type SortDirection = 'asc' | 'desc';
+type TokenLimitPeriod = 'daily' | 'weekly' | 'monthly';
 
 interface UsageBucket {
   periodStart: string;
@@ -34,11 +35,28 @@ interface UsageEntry {
   totalTokens: number;
 }
 
+interface TokenLimitPeriodStatus {
+  period: TokenLimitPeriod;
+  limit: number | null;
+  used: number;
+  percentage: number;
+  periodStart: string;
+  resetsAt: string;
+  reached: boolean;
+}
+
+interface TokenLimitStatus {
+  daily: TokenLimitPeriodStatus;
+  weekly: TokenLimitPeriodStatus;
+  monthly: TokenLimitPeriodStatus;
+}
+
 interface UsageUserRow {
   userId: string;
   displayName: string;
   email: string;
   serverFallbackPaused?: boolean;
+  tokenLimitStatus?: TokenLimitStatus;
   totalTokens: number;
   promptTokens: number;
   completionTokens: number;
@@ -414,9 +432,18 @@ export default function TokenUsagePage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [pauseSavingUserId, setPauseSavingUserId] = useState<string | null>(null);
+  const [limitSavingUserId, setLimitSavingUserId] = useState<string | null>(null);
+  const [limitSavedForUserId, setLimitSavedForUserId] = useState<string | null>(null);
+  const [limitSaveError, setLimitSaveError] = useState<string | null>(null);
+  const [limitDraft, setLimitDraft] = useState<Record<TokenLimitPeriod, string>>({
+    daily: '',
+    weekly: '',
+    monthly: '',
+  });
   const accessResolved = !authLoading && !profileLoading;
   const viewerIsAdmin = data?.viewer?.isAdmin === true;
   const canManageServerFallback = viewerIsAdmin && data?.viewer?.email === SERVER_FALLBACK_CONTROL_ADMIN_EMAIL;
+  const canManageTokenLimits = canManageServerFallback;
 
   const loadUsage = useCallback(async () => {
     if (!user) return;
@@ -478,6 +505,23 @@ export default function TokenUsagePage() {
     () => sortedUsers.find((entry) => entry.userId === selectedUserId) ?? null,
     [selectedUserId, sortedUsers],
   );
+  const selectedDailyLimit = selectedUser?.tokenLimitStatus?.daily.limit ?? null;
+  const selectedWeeklyLimit = selectedUser?.tokenLimitStatus?.weekly.limit ?? null;
+  const selectedMonthlyLimit = selectedUser?.tokenLimitStatus?.monthly.limit ?? null;
+
+  useEffect(() => {
+    if (!selectedUserId) return;
+    setLimitDraft({
+      daily: selectedDailyLimit?.toString() ?? '',
+      weekly: selectedWeeklyLimit?.toString() ?? '',
+      monthly: selectedMonthlyLimit?.toString() ?? '',
+    });
+  }, [selectedDailyLimit, selectedMonthlyLimit, selectedUserId, selectedWeeklyLimit]);
+
+  useEffect(() => {
+    setLimitSavedForUserId(null);
+    setLimitSaveError(null);
+  }, [selectedUserId]);
 
   const selectedUserFeatureSummary = useMemo(() => {
     if (!selectedUser) return [];
@@ -550,6 +594,66 @@ export default function TokenUsagePage() {
       setError(toggleError instanceof Error ? toggleError.message : 'Failed to update server fallback control.');
     } finally {
       setPauseSavingUserId(null);
+    }
+  };
+
+  const handleSaveTokenLimits = async () => {
+    if (!selectedUser || !canManageTokenLimits) return;
+
+    const parseDraftLimit = (value: string) => {
+      const normalized = value.replaceAll(',', '').trim();
+      if (!normalized) return null;
+      const parsed = Number(normalized);
+      if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+        throw new Error('Token limits must be positive whole numbers or blank.');
+      }
+      return parsed;
+    };
+
+    setLimitSavingUserId(selectedUser.userId);
+    setLimitSavedForUserId(null);
+    setLimitSaveError(null);
+    setError(null);
+    try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) throw new Error('Please sign in again.');
+
+      const response = await fetch(`/api/admin/token-usage/limits/${selectedUser.userId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authHeader,
+        },
+        body: JSON.stringify({
+          dailyLimit: parseDraftLimit(limitDraft.daily),
+          weeklyLimit: parseDraftLimit(limitDraft.weekly),
+          monthlyLimit: parseDraftLimit(limitDraft.monthly),
+        }),
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        error?: string;
+        tokenLimitStatus?: TokenLimitStatus;
+      };
+      if (!response.ok || !payload.tokenLimitStatus) {
+        throw new Error(payload.error?.trim() || 'Failed to update token limits.');
+      }
+
+      setData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          users: current.users.map((entry) => (
+            entry.userId === selectedUser.userId
+              ? { ...entry, tokenLimitStatus: payload.tokenLimitStatus }
+              : entry
+          )),
+        };
+      });
+      setLimitSavedForUserId(selectedUser.userId);
+    } catch (saveError) {
+      setLimitSaveError(saveError instanceof Error ? saveError.message : 'Failed to update token limits.');
+    } finally {
+      setLimitSavingUserId(null);
     }
   };
 
@@ -1094,6 +1198,89 @@ export default function TokenUsagePage() {
             </div>
 
             <div className="max-h-[calc(85vh-5rem)] overflow-y-auto p-6">
+              <section className="mb-6 border border-border bg-paper">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-heading">Token Limits</h3>
+                    <p className="mt-1 text-[11px] text-muted">
+                      Daily, weekly, and calendar-month usage resets on UTC boundaries. Users are notified at 75% and blocked at 100%.
+                    </p>
+                  </div>
+                  {canManageTokenLimits && (
+                    <div className="flex items-center gap-3">
+                      {limitSavedForUserId === selectedUser.userId && (
+                        <span className="text-[11px] text-accent3">Limits saved</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => { void handleSaveTokenLimits(); }}
+                        disabled={limitSavingUserId === selectedUser.userId}
+                        className="border border-accent/30 bg-accent/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/15 disabled:opacity-50"
+                      >
+                        {limitSavingUserId === selectedUser.userId ? 'Saving…' : 'Save Limits'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="grid gap-px bg-border lg:grid-cols-3">
+                  {(['daily', 'weekly', 'monthly'] as TokenLimitPeriod[]).map((period) => {
+                    const status = selectedUser.tokenLimitStatus?.[period];
+                    const limit = status?.limit ?? null;
+                    const used = status?.used ?? 0;
+                    const percentUsed = limit ? Math.max(0, Math.min(100, status?.percentage ?? 0)) : 0;
+                    const warning = limit !== null && used >= limit * 0.75;
+                    return (
+                      <div key={period} className="bg-paper p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">{period}</div>
+                          <div className={`text-[11px] font-semibold ${status?.reached ? 'text-danger' : warning ? 'text-accent2' : 'text-muted'}`}>
+                            {limit ? `${Math.round(status?.percentage ?? 0)}%` : 'Unlimited'}
+                          </div>
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-heading">
+                          {formatNumber(used)} {limit ? `of ${formatNumber(limit)}` : 'tokens used'}
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full border border-border bg-surface">
+                          <div
+                            className={`h-full transition-all ${status?.reached ? 'bg-danger' : warning ? 'bg-accent2' : 'bg-accent'}`}
+                            style={{ width: `${percentUsed}%` }}
+                          />
+                        </div>
+                        {status?.resetsAt && (
+                          <div className="mt-2 text-[10px] text-muted">
+                            Resets {formatUsageTimestamp(status.resetsAt, settings.timezone, settings.hourCycle)}
+                          </div>
+                        )}
+                        {canManageTokenLimits && (
+                          <label className="mt-3 block text-[10px] font-mono uppercase tracking-[0.14em] text-muted">
+                            {period} limit
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              inputMode="numeric"
+                              value={limitDraft[period]}
+                              onChange={(event) => {
+                                setLimitSavedForUserId(null);
+                                setLimitSaveError(null);
+                                setLimitDraft((current) => ({ ...current, [period]: event.target.value }));
+                              }}
+                              placeholder="No limit"
+                              className="mt-2 w-full border border-border bg-surface px-3 py-2 text-xs text-heading placeholder:text-muted focus:outline-none"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {limitSaveError && (
+                  <div className="border-t border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">
+                    {limitSaveError}
+                  </div>
+                )}
+              </section>
+
               <div className="mb-6 grid gap-3 lg:grid-cols-4">
                 <div className="border border-border bg-paper p-4">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-muted">Total Tokens</div>

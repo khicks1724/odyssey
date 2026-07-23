@@ -47,7 +47,7 @@ export default function NotificationsPage() {
         <div>
           <p className="text-[11px] tracking-[0.25em] uppercase text-accent mb-2 font-mono">Notifications</p>
           <h1 className="font-sans text-3xl font-extrabold text-heading tracking-tight">Platform Notifications</h1>
-          <p className="text-sm text-muted mt-1">Join requests, approvals, and shared workspace updates that are relevant to your account.</p>
+          <p className="text-sm text-muted mt-1">Token-limit alerts, join requests, approvals, and shared workspace updates relevant to your account.</p>
         </div>
 
         <button
