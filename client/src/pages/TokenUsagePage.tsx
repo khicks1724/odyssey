@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CalendarRange, ChartNoAxesColumn, RefreshCw, Users, X } from 'lucide-react';
+import { CalendarRange, ChartNoAxesColumn, Pencil, Plus, RefreshCw, Trash2, Users, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { useProfile } from '../hooks/useProfile';
@@ -12,6 +12,8 @@ type UsageViewMode = 'table' | 'visuals';
 type SortKey = 'displayName' | 'email' | 'totalTokens' | 'promptTokens' | 'completionTokens' | 'requestCount';
 type SortDirection = 'asc' | 'desc';
 type TokenLimitPeriod = 'daily' | 'weekly' | 'monthly';
+type TokenUsageKeyScope = 'all' | 'server' | 'user';
+type TokenUsageProviderFamily = 'all' | 'openai' | 'anthropic' | 'google_ai' | 'genai_mil' | 'nvidia' | 'gemma4' | 'other';
 
 interface UsageBucket {
   periodStart: string;
@@ -51,12 +53,49 @@ interface TokenLimitStatus {
   monthly: TokenLimitPeriodStatus;
 }
 
+interface TokenUsageRateStatus {
+  requestsPerMinute: number | null;
+  tokensPerMinute: number | null;
+  requestsUsed: number;
+  tokensUsed: number;
+  requestsPercentage: number;
+  tokensPercentage: number;
+  requestsReached: boolean;
+  tokensReached: boolean;
+  windowStartedAt: string;
+  resetsAt: string;
+}
+
+interface TokenUsagePolicyStatus extends TokenLimitStatus {
+  id: string;
+  userId: string;
+  keySource: TokenUsageKeyScope;
+  providerFamily: TokenUsageProviderFamily;
+  enabled: boolean;
+  revision: number;
+  updatedAt: string;
+  rate: TokenUsageRateStatus;
+}
+
+interface TokenPolicyDraft {
+  id: string | null;
+  keySource: TokenUsageKeyScope;
+  providerFamily: TokenUsageProviderFamily;
+  daily: string;
+  weekly: string;
+  monthly: string;
+  requestsPerMinute: string;
+  tokensPerMinute: string;
+  enabled: boolean;
+}
+
 interface UsageUserRow {
   userId: string;
   displayName: string;
   email: string;
   serverFallbackPaused?: boolean;
   tokenLimitStatus?: TokenLimitStatus;
+  tokenPolicies?: TokenUsagePolicyStatus[];
   totalTokens: number;
   promptTokens: number;
   completionTokens: number;
@@ -87,6 +126,35 @@ interface TokenUsageResponse {
 }
 
 const SERVER_FALLBACK_CONTROL_ADMIN_EMAIL = 'kyle.hicks@nps.edu';
+
+const EMPTY_TOKEN_POLICY_DRAFT: TokenPolicyDraft = {
+  id: null,
+  keySource: 'all',
+  providerFamily: 'all',
+  daily: '',
+  weekly: '',
+  monthly: '',
+  requestsPerMinute: '',
+  tokensPerMinute: '',
+  enabled: true,
+};
+
+const TOKEN_KEY_SCOPE_OPTIONS: Array<{ value: TokenUsageKeyScope; label: string; description: string }> = [
+  { value: 'all', label: 'All API keys', description: 'Combined server and personal-key usage' },
+  { value: 'server', label: 'Odyssey server key', description: 'Only shared server-fallback usage' },
+  { value: 'user', label: 'Personal API keys', description: 'Only keys supplied by this user' },
+];
+
+const TOKEN_PROVIDER_OPTIONS: Array<{ value: TokenUsageProviderFamily; label: string }> = [
+  { value: 'all', label: 'All providers' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'google_ai', label: 'Google AI' },
+  { value: 'genai_mil', label: 'GenAI.mil' },
+  { value: 'nvidia', label: 'NVIDIA' },
+  { value: 'gemma4', label: 'Gemma' },
+  { value: 'other', label: 'Other providers' },
+];
 
 interface TokenUsageVisualPalette {
   primary: string;
@@ -433,17 +501,15 @@ export default function TokenUsagePage() {
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [pauseSavingUserId, setPauseSavingUserId] = useState<string | null>(null);
   const [limitSavingUserId, setLimitSavingUserId] = useState<string | null>(null);
+  const [deletingPolicyId, setDeletingPolicyId] = useState<string | null>(null);
   const [limitSavedForUserId, setLimitSavedForUserId] = useState<string | null>(null);
   const [limitSaveError, setLimitSaveError] = useState<string | null>(null);
-  const [limitDraft, setLimitDraft] = useState<Record<TokenLimitPeriod, string>>({
-    daily: '',
-    weekly: '',
-    monthly: '',
-  });
+  const [policyEditorOpen, setPolicyEditorOpen] = useState(false);
+  const [policyDraft, setPolicyDraft] = useState<TokenPolicyDraft>(EMPTY_TOKEN_POLICY_DRAFT);
   const accessResolved = !authLoading && !profileLoading;
   const viewerIsAdmin = data?.viewer?.isAdmin === true;
   const canManageServerFallback = viewerIsAdmin && data?.viewer?.email === SERVER_FALLBACK_CONTROL_ADMIN_EMAIL;
-  const canManageTokenLimits = canManageServerFallback;
+  const canManageTokenLimits = viewerIsAdmin;
 
   const loadUsage = useCallback(async () => {
     if (!user) return;
@@ -505,18 +571,11 @@ export default function TokenUsagePage() {
     () => sortedUsers.find((entry) => entry.userId === selectedUserId) ?? null,
     [selectedUserId, sortedUsers],
   );
-  const selectedDailyLimit = selectedUser?.tokenLimitStatus?.daily.limit ?? null;
-  const selectedWeeklyLimit = selectedUser?.tokenLimitStatus?.weekly.limit ?? null;
-  const selectedMonthlyLimit = selectedUser?.tokenLimitStatus?.monthly.limit ?? null;
-
   useEffect(() => {
     if (!selectedUserId) return;
-    setLimitDraft({
-      daily: selectedDailyLimit?.toString() ?? '',
-      weekly: selectedWeeklyLimit?.toString() ?? '',
-      monthly: selectedMonthlyLimit?.toString() ?? '',
-    });
-  }, [selectedDailyLimit, selectedMonthlyLimit, selectedUserId, selectedWeeklyLimit]);
+    setPolicyDraft(EMPTY_TOKEN_POLICY_DRAFT);
+    setPolicyEditorOpen((selectedUser?.tokenPolicies?.length ?? 0) === 0 && canManageTokenLimits);
+  }, [canManageTokenLimits, selectedUser?.tokenPolicies?.length, selectedUserId]);
 
   useEffect(() => {
     setLimitSavedForUserId(null);
@@ -597,7 +656,31 @@ export default function TokenUsagePage() {
     }
   };
 
-  const handleSaveTokenLimits = async () => {
+  const editTokenPolicy = (policy: TokenUsagePolicyStatus) => {
+    setLimitSavedForUserId(null);
+    setLimitSaveError(null);
+    setPolicyDraft({
+      id: policy.id,
+      keySource: policy.keySource,
+      providerFamily: policy.providerFamily,
+      daily: policy.daily.limit?.toString() ?? '',
+      weekly: policy.weekly.limit?.toString() ?? '',
+      monthly: policy.monthly.limit?.toString() ?? '',
+      requestsPerMinute: policy.rate.requestsPerMinute?.toString() ?? '',
+      tokensPerMinute: policy.rate.tokensPerMinute?.toString() ?? '',
+      enabled: policy.enabled,
+    });
+    setPolicyEditorOpen(true);
+  };
+
+  const startNewTokenPolicy = () => {
+    setLimitSavedForUserId(null);
+    setLimitSaveError(null);
+    setPolicyDraft(EMPTY_TOKEN_POLICY_DRAFT);
+    setPolicyEditorOpen(true);
+  };
+
+  const handleSaveTokenPolicy = async () => {
     if (!selectedUser || !canManageTokenLimits) return;
 
     const parseDraftLimit = (value: string) => {
@@ -605,7 +688,7 @@ export default function TokenUsagePage() {
       if (!normalized) return null;
       const parsed = Number(normalized);
       if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-        throw new Error('Token limits must be positive whole numbers or blank.');
+        throw new Error('Budgets and rate caps must be positive whole numbers or blank.');
       }
       return parsed;
     };
@@ -618,24 +701,30 @@ export default function TokenUsagePage() {
       const authHeader = await getAuthHeader();
       if (!authHeader) throw new Error('Please sign in again.');
 
-      const response = await fetch(`/api/admin/token-usage/limits/${selectedUser.userId}`, {
+      const response = await fetch(`/api/admin/token-usage/policies/${selectedUser.userId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           Authorization: authHeader,
         },
         body: JSON.stringify({
-          dailyLimit: parseDraftLimit(limitDraft.daily),
-          weeklyLimit: parseDraftLimit(limitDraft.weekly),
-          monthlyLimit: parseDraftLimit(limitDraft.monthly),
+          id: policyDraft.id,
+          keySource: policyDraft.keySource,
+          providerFamily: policyDraft.providerFamily,
+          dailyLimit: parseDraftLimit(policyDraft.daily),
+          weeklyLimit: parseDraftLimit(policyDraft.weekly),
+          monthlyLimit: parseDraftLimit(policyDraft.monthly),
+          requestsPerMinute: parseDraftLimit(policyDraft.requestsPerMinute),
+          tokensPerMinute: parseDraftLimit(policyDraft.tokensPerMinute),
+          enabled: policyDraft.enabled,
         }),
       });
       const payload = await response.json().catch(() => ({})) as {
         error?: string;
-        tokenLimitStatus?: TokenLimitStatus;
+        policy?: TokenUsagePolicyStatus;
       };
-      if (!response.ok || !payload.tokenLimitStatus) {
-        throw new Error(payload.error?.trim() || 'Failed to update token limits.');
+      if (!response.ok || !payload.policy) {
+        throw new Error(payload.error?.trim() || 'Failed to update token usage policy.');
       }
 
       setData((current) => {
@@ -644,16 +733,57 @@ export default function TokenUsagePage() {
           ...current,
           users: current.users.map((entry) => (
             entry.userId === selectedUser.userId
-              ? { ...entry, tokenLimitStatus: payload.tokenLimitStatus }
+              ? {
+                  ...entry,
+                  tokenPolicies: (entry.tokenPolicies ?? []).some((policy) => policy.id === payload.policy!.id)
+                    ? (entry.tokenPolicies ?? []).map((policy) => policy.id === payload.policy!.id ? payload.policy! : policy)
+                    : [...(entry.tokenPolicies ?? []), payload.policy!],
+                  tokenLimitStatus: payload.policy!.keySource === 'all' && payload.policy!.providerFamily === 'all'
+                    ? payload.policy
+                    : entry.tokenLimitStatus,
+                }
               : entry
           )),
         };
       });
       setLimitSavedForUserId(selectedUser.userId);
+      setPolicyEditorOpen(false);
+      setPolicyDraft(EMPTY_TOKEN_POLICY_DRAFT);
     } catch (saveError) {
-      setLimitSaveError(saveError instanceof Error ? saveError.message : 'Failed to update token limits.');
+      setLimitSaveError(saveError instanceof Error ? saveError.message : 'Failed to update token usage policy.');
     } finally {
       setLimitSavingUserId(null);
+    }
+  };
+
+  const handleDeleteTokenPolicy = async (policy: TokenUsagePolicyStatus) => {
+    if (!selectedUser || !canManageTokenLimits) return;
+    if (!window.confirm('Delete this token usage policy? The user will no longer be limited by it.')) return;
+    setDeletingPolicyId(policy.id);
+    setLimitSaveError(null);
+    try {
+      const authHeader = await getAuthHeader();
+      if (!authHeader) throw new Error('Please sign in again.');
+      const response = await fetch(`/api/admin/token-usage/policies/${selectedUser.userId}/${policy.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: authHeader },
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error?.trim() || 'Failed to delete token usage policy.');
+      setData((current) => current ? {
+        ...current,
+        users: current.users.map((entry) => entry.userId === selectedUser.userId
+          ? { ...entry, tokenPolicies: (entry.tokenPolicies ?? []).filter((entryPolicy) => entryPolicy.id !== policy.id) }
+          : entry),
+      } : current);
+      if (policyDraft.id === policy.id) {
+        setPolicyDraft(EMPTY_TOKEN_POLICY_DRAFT);
+        setPolicyEditorOpen(false);
+      }
+    } catch (deleteError) {
+      setLimitSaveError(deleteError instanceof Error ? deleteError.message : 'Failed to delete token usage policy.');
+    } finally {
+      setDeletingPolicyId(null);
     }
   };
 
@@ -1198,85 +1328,214 @@ export default function TokenUsagePage() {
             </div>
 
             <div className="max-h-[calc(85vh-5rem)] overflow-y-auto p-6">
-              <section className="mb-6 border border-border bg-paper">
-                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-heading">Token Limits</h3>
-                    <p className="mt-1 text-[11px] text-muted">
-                      Daily, weekly, and calendar-month usage resets on UTC boundaries. Users are notified at 75% and blocked at 100%.
+              <section className="mb-6 overflow-hidden border border-border bg-paper">
+                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border bg-surface2 px-4 py-4">
+                  <div className="max-w-3xl">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-heading">AI Usage Policies</h3>
+                      <span className="border border-border bg-paper px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
+                        {(selectedUser.tokenPolicies ?? []).length} polic{(selectedUser.tokenPolicies ?? []).length === 1 ? 'y' : 'ies'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                      Set token budgets and rate caps for all usage, the Odyssey server key, or personal API keys. Policies can also target one provider family. UTC budgets block at 100%.
                     </p>
                   </div>
                   {canManageTokenLimits && (
-                    <div className="flex items-center gap-3">
-                      {limitSavedForUserId === selectedUser.userId && (
-                        <span className="text-[11px] text-accent3">Limits saved</span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => { void handleSaveTokenLimits(); }}
-                        disabled={limitSavingUserId === selectedUser.userId}
-                        className="border border-accent/30 bg-accent/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/15 disabled:opacity-50"
-                      >
-                        {limitSavingUserId === selectedUser.userId ? 'Saving…' : 'Save Limits'}
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={startNewTokenPolicy}
+                      className="inline-flex items-center gap-2 border border-accent/30 bg-accent/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-accent transition-colors hover:bg-accent/15"
+                    >
+                      <Plus size={14} /> Add policy
+                    </button>
                   )}
                 </div>
-                <div className="grid gap-px bg-border lg:grid-cols-3">
-                  {(['daily', 'weekly', 'monthly'] as TokenLimitPeriod[]).map((period) => {
-                    const status = selectedUser.tokenLimitStatus?.[period];
-                    const limit = status?.limit ?? null;
-                    const used = status?.used ?? 0;
-                    const percentUsed = limit ? Math.max(0, Math.min(100, status?.percentage ?? 0)) : 0;
-                    const warning = limit !== null && used >= limit * 0.75;
-                    return (
-                      <div key={period} className="bg-paper p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted">{period}</div>
-                          <div className={`text-[11px] font-semibold ${status?.reached ? 'text-danger' : warning ? 'text-accent2' : 'text-muted'}`}>
-                            {limit ? `${Math.round(status?.percentage ?? 0)}%` : 'Unlimited'}
+
+                {(selectedUser.tokenPolicies ?? []).length === 0 ? (
+                  <div className="px-5 py-7 text-center">
+                    <div className="text-sm font-semibold text-heading">No usage policy yet</div>
+                    <p className="mx-auto mt-1 max-w-xl text-xs leading-relaxed text-muted">
+                      This user currently has unlimited AI usage. Add a policy below to cap a period, requests per minute, tokens per minute, or any combination.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid gap-3 p-4 xl:grid-cols-2">
+                    {(selectedUser.tokenPolicies ?? []).map((policy) => {
+                      const scope = TOKEN_KEY_SCOPE_OPTIONS.find((option) => option.value === policy.keySource);
+                      const provider = TOKEN_PROVIDER_OPTIONS.find((option) => option.value === policy.providerFamily);
+                      const metrics = [
+                        { key: 'daily', label: 'Daily tokens', limit: policy.daily.limit, used: policy.daily.used, percentage: policy.daily.percentage, reached: policy.daily.reached },
+                        { key: 'weekly', label: 'Weekly tokens', limit: policy.weekly.limit, used: policy.weekly.used, percentage: policy.weekly.percentage, reached: policy.weekly.reached },
+                        { key: 'monthly', label: 'Monthly tokens', limit: policy.monthly.limit, used: policy.monthly.used, percentage: policy.monthly.percentage, reached: policy.monthly.reached },
+                        { key: 'rpm', label: 'Requests / min', limit: policy.rate.requestsPerMinute, used: policy.rate.requestsUsed, percentage: policy.rate.requestsPercentage, reached: policy.rate.requestsReached },
+                        { key: 'tpm', label: 'Tokens / min', limit: policy.rate.tokensPerMinute, used: policy.rate.tokensUsed, percentage: policy.rate.tokensPercentage, reached: policy.rate.tokensReached },
+                      ].filter((metric) => metric.limit !== null);
+                      return (
+                        <article key={policy.id} className={`border bg-surface p-4 ${policy.enabled ? 'border-border' : 'border-border opacity-65'}`}>
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="truncate text-sm font-semibold text-heading">{scope?.label ?? policy.keySource}</h4>
+                                <span className={`border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] ${policy.enabled ? 'border-accent3/30 bg-accent3/10 text-accent3' : 'border-border bg-paper text-muted'}`}>
+                                  {policy.enabled ? 'Enforced' : 'Paused'}
+                                </span>
+                              </div>
+                              <p className="mt-1 truncate text-[11px] text-muted">{provider?.label ?? policy.providerFamily} · {scope?.description}</p>
+                            </div>
+                            {canManageTokenLimits && (
+                              <div className="flex shrink-0 items-center gap-1">
+                                <button type="button" onClick={() => editTokenPolicy(policy)} className="border border-border bg-paper p-2 text-muted transition-colors hover:text-accent" aria-label="Edit policy">
+                                  <Pencil size={13} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { void handleDeleteTokenPolicy(policy); }}
+                                  disabled={deletingPolicyId === policy.id}
+                                  className="border border-border bg-paper p-2 text-muted transition-colors hover:border-danger/40 hover:text-danger disabled:opacity-50"
+                                  aria-label="Delete policy"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                        <div className="mt-2 text-sm font-semibold text-heading">
-                          {formatNumber(used)} {limit ? `of ${formatNumber(limit)}` : 'tokens used'}
-                        </div>
-                        <div className="mt-3 h-2 overflow-hidden rounded-full border border-border bg-surface">
-                          <div
-                            className={`h-full transition-all ${status?.reached ? 'bg-danger' : warning ? 'bg-accent2' : 'bg-accent'}`}
-                            style={{ width: `${percentUsed}%` }}
-                          />
-                        </div>
-                        {status?.resetsAt && (
-                          <div className="mt-2 text-[10px] text-muted">
-                            Resets {formatUsageTimestamp(status.resetsAt, settings.timezone, settings.hourCycle)}
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            {metrics.map((metric) => {
+                              const warning = metric.percentage >= 75;
+                              return (
+                                <div key={metric.key} className="min-w-0">
+                                  <div className="flex items-center justify-between gap-2 text-[10px]">
+                                    <span className="truncate uppercase tracking-[0.12em] text-muted">{metric.label}</span>
+                                    <span className={metric.reached ? 'text-danger' : warning ? 'text-accent2' : 'text-heading'}>{Math.round(metric.percentage)}%</span>
+                                  </div>
+                                  <div className="mt-1 truncate text-[11px] font-semibold text-heading">{formatNumber(metric.used)} / {formatNumber(metric.limit ?? 0)}</div>
+                                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-paper">
+                                    <div className={`h-full ${metric.reached ? 'bg-danger' : warning ? 'bg-accent2' : 'bg-accent'}`} style={{ width: `${Math.min(100, Math.max(0, metric.percentage))}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                        )}
-                        {canManageTokenLimits && (
-                          <label className="mt-3 block text-[10px] font-mono uppercase tracking-[0.14em] text-muted">
-                            {period} limit
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {policyEditorOpen && canManageTokenLimits && (
+                  <div className="border-t border-border bg-surface px-4 py-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-sm font-semibold text-heading">{policyDraft.id ? 'Edit usage policy' : 'New usage policy'}</h4>
+                        <p className="mt-1 text-[11px] text-muted">Leave a field blank for no cap. At least one budget or rate cap is required.</p>
+                      </div>
+                      <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-heading">
+                        <input
+                          type="checkbox"
+                          checked={policyDraft.enabled}
+                          onChange={(event) => setPolicyDraft((current) => ({ ...current, enabled: event.target.checked }))}
+                          className="accent-[var(--color-accent)]"
+                        />
+                        Enforce this policy
+                      </label>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <label className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted">
+                        API key scope
+                        <select
+                          value={policyDraft.keySource}
+                          onChange={(event) => setPolicyDraft((current) => ({ ...current, keySource: event.target.value as TokenUsageKeyScope }))}
+                          className="mt-2 w-full border border-border bg-paper px-3 py-2.5 text-xs normal-case tracking-normal text-heading focus:border-accent focus:outline-none"
+                        >
+                          {TOKEN_KEY_SCOPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                        <span className="mt-1.5 block font-sans normal-case tracking-normal text-muted">{TOKEN_KEY_SCOPE_OPTIONS.find((option) => option.value === policyDraft.keySource)?.description}</span>
+                      </label>
+                      <label className="text-[10px] font-mono uppercase tracking-[0.14em] text-muted">
+                        Provider scope
+                        <select
+                          value={policyDraft.providerFamily}
+                          onChange={(event) => setPolicyDraft((current) => ({ ...current, providerFamily: event.target.value as TokenUsageProviderFamily }))}
+                          className="mt-2 w-full border border-border bg-paper px-3 py-2.5 text-xs normal-case tracking-normal text-heading focus:border-accent focus:outline-none"
+                        >
+                          {TOKEN_PROVIDER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="mt-5">
+                      <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-accent">Token budgets</div>
+                      <div className="mt-2 grid gap-3 sm:grid-cols-3">
+                        {(['daily', 'weekly', 'monthly'] as TokenLimitPeriod[]).map((period) => (
+                          <label key={period} className="text-[10px] uppercase tracking-[0.12em] text-muted">
+                            {period}
                             <input
                               type="number"
                               min="1"
                               step="1"
                               inputMode="numeric"
-                              value={limitDraft[period]}
-                              onChange={(event) => {
-                                setLimitSavedForUserId(null);
-                                setLimitSaveError(null);
-                                setLimitDraft((current) => ({ ...current, [period]: event.target.value }));
-                              }}
-                              placeholder="No limit"
-                              className="mt-2 w-full border border-border bg-surface px-3 py-2 text-xs text-heading placeholder:text-muted focus:outline-none"
+                              value={policyDraft[period]}
+                              onChange={(event) => setPolicyDraft((current) => ({ ...current, [period]: event.target.value }))}
+                              placeholder="No cap"
+                              className="mt-1.5 w-full border border-border bg-paper px-3 py-2.5 text-xs normal-case tracking-normal text-heading placeholder:text-muted focus:border-accent focus:outline-none"
                             />
                           </label>
-                        )}
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
-                {limitSaveError && (
-                  <div className="border-t border-danger/30 bg-danger/5 px-4 py-3 text-xs text-danger">
-                    {limitSaveError}
+                    </div>
+
+                    <div className="mt-5">
+                      <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-accent">Rate caps</div>
+                      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                        {([
+                          { key: 'requestsPerMinute', label: 'Requests per minute' },
+                          { key: 'tokensPerMinute', label: 'Tokens per minute' },
+                        ] as const).map((field) => (
+                          <label key={field.key} className="text-[10px] uppercase tracking-[0.12em] text-muted">
+                            {field.label}
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              inputMode="numeric"
+                              value={policyDraft[field.key]}
+                              onChange={(event) => setPolicyDraft((current) => ({ ...current, [field.key]: event.target.value }))}
+                              placeholder="No cap"
+                              className="mt-1.5 w-full border border-border bg-paper px-3 py-2.5 text-xs normal-case tracking-normal text-heading placeholder:text-muted focus:border-accent focus:outline-none"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+                      <div className="text-[11px] text-muted">Policy changes apply to the user’s next AI request.</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => { setPolicyEditorOpen(false); setPolicyDraft(EMPTY_TOKEN_POLICY_DRAFT); setLimitSaveError(null); }}
+                          className="border border-border bg-paper px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted hover:text-heading"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { void handleSaveTokenPolicy(); }}
+                          disabled={limitSavingUserId === selectedUser.userId}
+                          className="border border-accent/40 bg-accent px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                        >
+                          {limitSavingUserId === selectedUser.userId ? 'Saving…' : policyDraft.id ? 'Update policy' : 'Create policy'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {(limitSavedForUserId === selectedUser.userId || limitSaveError) && (
+                  <div className={`border-t px-4 py-3 text-xs ${limitSaveError ? 'border-danger/30 bg-danger/5 text-danger' : 'border-accent3/30 bg-accent3/5 text-accent3'}`}>
+                    {limitSaveError ?? 'Usage policy saved and now enforced.'}
                   </div>
                 )}
               </section>

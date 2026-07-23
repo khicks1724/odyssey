@@ -131,6 +131,22 @@ function isSameOpenAiCredential(a?: OpenAiCredentialOverride, b?: OpenAiCredenti
     && (a.modelOverride ?? '') === (b.modelOverride ?? '');
 }
 
+export function getProviderCredentialKeySource(
+  provider: AIProviderSelection,
+  credential?: ProviderCredentialOverride,
+): 'server' | 'user' {
+  const normalizedProvider = provider.toLowerCase();
+  const isOpenAiCompatible = provider === 'gpt-4o' || normalizedProvider.startsWith('openai:');
+  if (!isOpenAiCompatible) return 'user';
+
+  const serverCredential = getServerOpenAiCredential();
+  if (!credential) return serverCredential ? 'server' : 'user';
+  const normalizedCredential = typeof credential === 'string'
+    ? { apiKey: credential, authMode: 'bearer' as const }
+    : credential;
+  return isSameOpenAiCredential(normalizedCredential, serverCredential) ? 'server' : 'user';
+}
+
 function getProviderStatusCacheKey(provider: AIProvider, credential?: ProviderCredentialOverride): string {
   const value = extractCredentialValue(credential);
   if (!value) return `${provider}:none`;

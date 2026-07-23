@@ -28,11 +28,11 @@ export function useZoteroIntegration() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (returnPath = '/thesis?tab=sources') => {
     setConnecting(true);
     setError(null);
     try {
-      await startZoteroConnection();
+      await startZoteroConnection(returnPath);
     } catch (nextError) {
       setConnecting(false);
       setError(nextError instanceof Error ? nextError.message : 'Failed to start Zotero connection.');

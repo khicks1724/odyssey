@@ -77,6 +77,7 @@ const PdfFieldCaptureModal = lazyWithRetry(() => import('../components/PdfFieldC
 const ZoteroLibraryModal = lazyWithRetry(() => import('../components/ZoteroLibraryModal'), 'zotero-library-modal');
 const ZoteroConflictModal = lazyWithRetry(() => import('../components/ZoteroConflictModal'), 'zotero-conflict-modal');
 const ZoteroSourcePanel = lazyWithRetry(() => import('../components/ZoteroSourcePanel'), 'zotero-source-panel');
+const ZoteroSetupModal = lazyWithRetry(() => import('../components/ZoteroSetupModal'), 'zotero-setup-modal');
 
 type ThesisTabId = 'overview' | 'milestones' | 'sources' | 'documents' | 'graph' | 'paper';
 
@@ -2260,6 +2261,7 @@ export default function ThesisPage() {
   const [selectedLibrarySourceRedoStack, setSelectedLibrarySourceRedoStack] = useState<SourceLibraryItem[]>([]);
   const [pendingLibrarySourceDelete, setPendingLibrarySourceDelete] = useState<SourceLibraryItem | null>(null);
   const [zoteroStatus, setZoteroStatus] = useState<ZoteroStatus | null>(null);
+  const [zoteroSetupOpen, setZoteroSetupOpen] = useState(false);
   const [zoteroLibraryOpen, setZoteroLibraryOpen] = useState(false);
   const [zoteroConflictOpen, setZoteroConflictOpen] = useState(false);
   const [zoteroSyncing, setZoteroSyncing] = useState(false);
@@ -4955,6 +4957,61 @@ Thesis AI should help with literature synthesis, argument structure, methodology
       {activeTab === 'sources' && (
         <>
         <div className="space-y-8">
+          <section className={`overflow-hidden border ${zoteroStatus?.connected ? 'border-accent3/30 bg-accent3/5' : 'border-accent/30 bg-accent/5'}`}>
+            <div className="flex flex-col gap-5 p-5 lg:flex-row lg:items-center lg:justify-between lg:p-6">
+              <div className="flex min-w-0 items-start gap-4">
+                <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border ${zoteroStatus?.connected ? 'border-accent3/30 bg-accent3/10 text-accent3' : 'border-accent/30 bg-accent/10 text-accent'}`}>
+                  {zoteroStatus?.connected ? <CheckCircle2 size={21} /> : <BookOpen size={21} />}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">Zotero integration</p>
+                  <h2 className="mt-1 text-base font-bold text-heading">
+                    {zoteroStatus?.connected ? `Connected${zoteroStatus.username ? ` as ${zoteroStatus.username}` : ''}` : 'Bring your Zotero library into Thesis Sources'}
+                  </h2>
+                  <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted">
+                    {zoteroStatus?.connected
+                      ? 'Zotero Desktop syncs through your Zotero account to Odyssey. Import references, keep metadata and notes synchronized, and handle conflicts here.'
+                      : 'A guided setup links your Zotero account, explains Zotero Desktop sync, and opens your library for citation import in just a few steps.'}
+                  </p>
+                  {zoteroStatus?.connected && (
+                    <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-mono uppercase tracking-[0.12em] text-muted">
+                      <span className="border border-border bg-surface px-2 py-1">{zoteroStatus.connectionMethod === 'api_key' ? 'Personal API key' : 'Zotero authorization'}</span>
+                      <span className="border border-border bg-surface px-2 py-1">Sync: {zoteroStatus.lastSyncStatus || 'idle'}</span>
+                      <span className="border border-border bg-surface px-2 py-1">{zoteroStatus.conflictCount ?? 0} conflicts</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                {zoteroStatus?.connected ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setZoteroLibraryOpen(true)}
+                      className="inline-flex items-center gap-2 border border-accent bg-accent px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-accent-fg)]"
+                    >
+                      <BookOpen size={13} /> Browse Zotero
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setZoteroSetupOpen(true)}
+                      className="border border-border bg-surface px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted hover:text-heading"
+                    >
+                      Connection details
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setZoteroSetupOpen(true)}
+                    className="inline-flex items-center gap-2 border border-accent bg-accent px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--color-accent-fg)]"
+                  >
+                    Set up Zotero <ArrowRight size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
           {sourceIntakeOpen && (
           <div className="border border-border bg-surface p-6 xl:p-8">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between mb-6">
@@ -5497,7 +5554,7 @@ Thesis AI should help with literature synthesis, argument structure, methodology
                 ) : (
                   <button
                     type="button"
-                    onClick={() => navigate('/settings?section=integrations')}
+                    onClick={() => setZoteroSetupOpen(true)}
                     className="inline-flex h-11 items-center gap-2 border border-border bg-surface px-4 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted transition-colors hover:bg-surface2 hover:text-heading"
                   >
                     <BookOpen size={13} /> Connect Zotero
@@ -6308,6 +6365,21 @@ Thesis AI should help with literature synthesis, argument structure, methodology
               applySyncedSources(sources);
               void fetchZoteroStatus().then(setZoteroStatus).catch(() => undefined);
             }}
+          />
+        </Suspense>
+      )}
+
+      {zoteroSetupOpen && (
+        <Suspense fallback={<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 text-sm text-white">Loading Zotero setup...</div>}>
+          <ZoteroSetupModal
+            status={zoteroStatus}
+            returnPath="/thesis?tab=sources"
+            onClose={() => setZoteroSetupOpen(false)}
+            onStatus={(status) => {
+              setZoteroStatus(status);
+              setZoteroError(null);
+            }}
+            onOpenLibrary={() => setZoteroLibraryOpen(true)}
           />
         </Suspense>
       )}

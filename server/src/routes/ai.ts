@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import OpenAI from 'openai';
-import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getServerOpenAiCredential, getServerOpenAiPrimaryModel, getGenAiMilModelFromSelection, isGenAiMilKey, isGenAiMilProviderSelection, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
+import { chat, streamChat, getAvailableProviders, getCachedProviderStatus, getProviderCredentialKeySource, getServerOpenAiCredential, getServerOpenAiPrimaryModel, getGenAiMilModelFromSelection, isGenAiMilKey, isGenAiMilProviderSelection, type AIProvider, type AIProviderSelection, type ChatResult, type OpenAiProviderSelection, type ProviderCredentialOverride } from '../ai-providers.js';
 import { supabase } from '../lib/supabase.js';
 import { canonicalizeOpenAiModelId, normalizeOpenAiModelIds } from '../lib/openai-models.js';
 import { decryptUserKey } from './user-ai-keys.js';
@@ -25,6 +25,7 @@ import { GenAiMilApiError } from '../lib/genai-mil.js';
 import {
   buildTokenUsageLimitMessage,
   getReachedTokenUsageLimitForUser,
+  normalizeTokenUsageProviderFamily,
 } from '../lib/token-usage-limits.js';
 
 // Google (gemini-pro), NVIDIA, and Gemma 4 are intentionally excluded — not offered sitewide.
@@ -814,6 +815,14 @@ async function chatWithAudit(
     userId?: string | null;
   },
 ): Promise<ChatResult> {
+  const userId = options.userId ?? await getUserFromAuthHeader(authHeader);
+  if (userId) {
+    const reachedLimit = await getReachedTokenUsageLimitForUser(userId, new Date(), {
+      keySource: getProviderCredentialKeySource(provider, apiKey),
+      providerFamily: normalizeTokenUsageProviderFamily(provider),
+    });
+    if (reachedLimit) throw new Error(buildTokenUsageLimitMessage(reachedLimit));
+  }
   const run = () => chat(provider, msg, apiKey);
   let result: ChatResult;
   if (provider === 'genai-mil' || isGenAiMilProviderSelection(provider)) {
@@ -856,6 +865,14 @@ async function streamChatWithAudit(
     userId?: string | null;
   },
 ): Promise<ChatResult> {
+  const userId = options.userId ?? await getUserFromAuthHeader(authHeader);
+  if (userId) {
+    const reachedLimit = await getReachedTokenUsageLimitForUser(userId, new Date(), {
+      keySource: getProviderCredentialKeySource(provider, apiKey),
+      providerFamily: normalizeTokenUsageProviderFamily(provider),
+    });
+    if (reachedLimit) throw new Error(buildTokenUsageLimitMessage(reachedLimit));
+  }
   const run = () => streamChat(provider, msg, onToken, apiKey);
   let result: ChatResult;
   if (provider === 'genai-mil' || isGenAiMilProviderSelection(provider)) {

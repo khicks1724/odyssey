@@ -45,6 +45,7 @@ export type ZoteroConnection = {
   userId: string;
   zoteroUserId: string;
   username: string | null;
+  connectionMethod: 'oauth' | 'api_key';
   apiKey: string;
   permissions: Record<string, unknown>;
   selectedCollectionKeys: string[];
@@ -510,6 +511,7 @@ export async function getZoteroConnection(userId: string): Promise<ZoteroConnect
     userId,
     zoteroUserId: String(data.zotero_user_id),
     username: data.zotero_username ?? null,
+    connectionMethod: data.connection_method === 'api_key' ? 'api_key' : 'oauth',
     apiKey: decryptZoteroSecret({
       encrypted: data.encrypted_api_key,
       iv: data.iv,

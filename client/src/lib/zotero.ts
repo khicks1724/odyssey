@@ -3,7 +3,10 @@ import { supabase } from './supabase';
 
 export type ZoteroStatus = {
   configured: boolean;
+  oauthConfigured: boolean;
+  apiKeyConfigured: boolean;
   connected: boolean;
+  connectionMethod?: 'oauth' | 'api_key';
   zoteroUserId?: string;
   username?: string | null;
   permissions?: Record<string, unknown>;
@@ -88,9 +91,19 @@ export function fetchZoteroStatus() {
   return request<ZoteroStatus>('/api/zotero/status');
 }
 
-export async function startZoteroConnection() {
-  const result = await request<{ url: string }>('/api/zotero/auth/start', { method: 'POST' });
+export async function startZoteroConnection(returnPath = '/thesis?tab=sources') {
+  const result = await request<{ url: string }>('/api/zotero/auth/start', {
+    method: 'POST',
+    body: JSON.stringify({ returnPath }),
+  }, true);
   window.location.assign(result.url);
+}
+
+export function connectZoteroWithApiKey(apiKey: string) {
+  return request<ZoteroStatus>('/api/zotero/connection/api-key', {
+    method: 'POST',
+    body: JSON.stringify({ apiKey }),
+  }, true);
 }
 
 export function disconnectZotero() {

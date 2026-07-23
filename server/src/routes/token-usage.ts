@@ -7,9 +7,16 @@ import {
 } from '../lib/server-fallback-controls.js';
 import { supabase } from '../lib/supabase.js';
 import {
-  getTokenUsageLimitStatusMap,
+  deleteUserTokenUsagePolicy,
+  getTokenUsagePolicyStatusMap,
+  normalizeTokenUsageProviderFamily,
+  setUserTokenUsagePolicy,
   setUserTokenUsageLimits,
+  tokenUsageLimitStatusMapFromPolicies,
+  type TokenUsageKeyScope,
+  type TokenUsageProviderFamily,
   type UserTokenUsageLimitStatus,
+  type UserTokenUsagePolicyStatus,
 } from '../lib/token-usage-limits.js';
 
 const TOKEN_USAGE_ADMIN_EMAILS = new Set([
@@ -72,6 +79,15 @@ interface TokenUsageLimitsBody {
   monthlyLimit?: number | null;
 }
 
+interface TokenUsagePolicyBody extends TokenUsageLimitsBody {
+  id?: string | null;
+  keySource?: TokenUsageKeyScope;
+  providerFamily?: TokenUsageProviderFamily;
+  requestsPerMinute?: number | null;
+  tokensPerMinute?: number | null;
+  enabled?: boolean;
+}
+
 function normalizeDateOnly(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim() ?? '';
   if (!trimmed) return fallback;
@@ -105,6 +121,20 @@ function parseTokenLimit(value: number | null | undefined): number | null {
     throw new Error('Limits must be positive whole numbers or blank.');
   }
   return value;
+}
+
+function parseKeyScope(value: unknown): TokenUsageKeyScope {
+  if (value === 'server' || value === 'user') return value;
+  return 'all';
+}
+
+function parseProviderFamily(value: unknown): TokenUsageProviderFamily {
+  const allowed = new Set<TokenUsageProviderFamily>([
+    'all', 'openai', 'anthropic', 'google_ai', 'genai_mil', 'nvidia', 'gemma4', 'other',
+  ]);
+  return typeof value === 'string' && allowed.has(value as TokenUsageProviderFamily)
+    ? value as TokenUsageProviderFamily
+    : 'all';
 }
 
 function formatDateKey(year: number, month: number, day: number): string {
@@ -262,6 +292,7 @@ export async function logAiTokenUsage(input: LogAiTokenUsageInput) {
       route_path: input.routePath,
       project_id: input.projectId ?? null,
       provider: input.result.provider,
+      provider_family: normalizeTokenUsageProviderFamily(input.result.provider),
       model: input.result.model,
       prompt_tokens: input.result.usage.promptTokens,
       completion_tokens: input.result.usage.completionTokens,
@@ -305,7 +336,7 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
     const rangeEndExclusive = zonedDateStartToUtc(addDaysToDateKey(end, 1), timeZone).toISOString();
     const logsQuery = supabase
       .from('fallback_token_usage_logs')
-      .select('user_id, email, display_name, key_source, feature, route_path, project_id, provider, model, prompt_tokens, completion_tokens, total_tokens, created_at')
+      .select('user_id, email, display_name, key_source, feature, route_path, project_id, provider, provider_family, model, prompt_tokens, completion_tokens, total_tokens, created_at')
       .gte('created_at', startDateUtc.toISOString())
       .lt('created_at', rangeEndExclusive)
       .order('created_at', { ascending: true });
@@ -428,11 +459,16 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
 
     let pausedFallbackMap: Map<string, boolean>;
     let tokenLimitStatusMap: Map<string, UserTokenUsageLimitStatus>;
+    let tokenPolicyStatusMap: Map<string, UserTokenUsagePolicyStatus[]>;
     try {
-      [pausedFallbackMap, tokenLimitStatusMap] = await Promise.all([
+      [pausedFallbackMap, tokenPolicyStatusMap] = await Promise.all([
         getServerFallbackPauseMap(userRows.map((profile) => profile.id)),
-        getTokenUsageLimitStatusMap(userRows.map((profile) => profile.id)),
+        getTokenUsagePolicyStatusMap(userRows.map((profile) => profile.id)),
       ]);
+      tokenLimitStatusMap = tokenUsageLimitStatusMapFromPolicies(
+        userRows.map((profile) => profile.id),
+        tokenPolicyStatusMap,
+      );
     } catch (statusError) {
       server.log.error({ err: statusError }, 'Failed to load token limit status');
       return reply.status(500).send({ error: 'Failed to load token limits.' });
@@ -449,6 +485,7 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
           email: profile.email?.trim().toLowerCase() || fallbackEmail,
           serverFallbackPaused: pausedFallbackMap.get(profile.id) === true,
           tokenLimitStatus: tokenLimitStatusMap.get(profile.id),
+          tokenPolicies: tokenPolicyStatusMap.get(profile.id) ?? [],
           totalTokens: usage?.totalTokens ?? 0,
           promptTokens: usage?.promptTokens ?? 0,
           completionTokens: usage?.completionTokens ?? 0,
@@ -482,8 +519,8 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
     Params: { userId: string };
     Body: TokenUsageLimitsBody;
   }>('/admin/token-usage/limits/:userId', async (request, reply) => {
-    const authorizedAdmin = await getAuthorizedServerFallbackAdmin(request.headers.authorization);
-    if (!authorizedAdmin) {
+    const authorizedAdmin = await authorizeTokenUsageViewer(request.headers.authorization);
+    if (!authorizedAdmin?.isAdmin) {
       return reply.status(404).send({ error: 'Not found' });
     }
 
@@ -537,6 +574,78 @@ export async function tokenUsageRoutes(server: FastifyInstance) {
     } catch (updateError) {
       server.log.error({ err: updateError, userId }, 'Failed to update token limits');
       return reply.status(500).send({ error: 'Failed to update token limits.' });
+    }
+  });
+
+  server.patch<{
+    Params: { userId: string };
+    Body: TokenUsagePolicyBody;
+  }>('/admin/token-usage/policies/:userId', async (request, reply) => {
+    const authorizedAdmin = await authorizeTokenUsageViewer(request.headers.authorization);
+    if (!authorizedAdmin?.isAdmin) return reply.status(404).send({ error: 'Not found' });
+
+    const userId = request.params.userId?.trim();
+    if (!userId) return reply.status(400).send({ error: 'User id is required.' });
+
+    let dailyLimit: number | null;
+    let weeklyLimit: number | null;
+    let monthlyLimit: number | null;
+    let requestsPerMinute: number | null;
+    let tokensPerMinute: number | null;
+    try {
+      dailyLimit = parseTokenLimit(request.body?.dailyLimit);
+      weeklyLimit = parseTokenLimit(request.body?.weeklyLimit);
+      monthlyLimit = parseTokenLimit(request.body?.monthlyLimit);
+      requestsPerMinute = parseTokenLimit(request.body?.requestsPerMinute);
+      tokensPerMinute = parseTokenLimit(request.body?.tokensPerMinute);
+    } catch (validationError) {
+      return reply.status(400).send({
+        error: validationError instanceof Error ? validationError.message : 'Invalid token usage policy.',
+      });
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('id', userId)
+      .maybeSingle();
+    if (profileError) return reply.status(500).send({ error: 'Failed to load user.' });
+    if (!profile?.id) return reply.status(404).send({ error: 'User not found.' });
+
+    try {
+      const policy = await setUserTokenUsagePolicy(userId, {
+        id: request.body?.id,
+        keySource: parseKeyScope(request.body?.keySource),
+        providerFamily: parseProviderFamily(request.body?.providerFamily),
+        dailyLimit,
+        weeklyLimit,
+        monthlyLimit,
+        requestsPerMinute,
+        tokensPerMinute,
+        enabled: request.body?.enabled !== false,
+      }, authorizedAdmin.userId);
+      return { ok: true, userId, policy };
+    } catch (updateError) {
+      server.log.error({ err: updateError, userId }, 'Failed to update token usage policy');
+      const message = updateError instanceof Error ? updateError.message : 'Failed to update token usage policy.';
+      return reply.status(/at least one/i.test(message) ? 400 : 500).send({ error: message });
+    }
+  });
+
+  server.delete<{
+    Params: { userId: string; policyId: string };
+  }>('/admin/token-usage/policies/:userId/:policyId', async (request, reply) => {
+    const authorizedAdmin = await authorizeTokenUsageViewer(request.headers.authorization);
+    if (!authorizedAdmin?.isAdmin) return reply.status(404).send({ error: 'Not found' });
+    const userId = request.params.userId?.trim();
+    const policyId = request.params.policyId?.trim();
+    if (!userId || !policyId) return reply.status(400).send({ error: 'User and policy ids are required.' });
+    try {
+      await deleteUserTokenUsagePolicy(userId, policyId);
+      return { ok: true, userId, policyId };
+    } catch (deleteError) {
+      server.log.error({ err: deleteError, userId, policyId }, 'Failed to delete token usage policy');
+      return reply.status(500).send({ error: 'Failed to delete token usage policy.' });
     }
   });
 

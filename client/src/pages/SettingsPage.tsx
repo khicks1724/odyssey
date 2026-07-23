@@ -27,6 +27,7 @@ import {
 } from '../lib/genai-mil-browser';
 
 const TimezoneGlobe = lazyWithRetry(() => import('../components/TimezoneGlobe'), 'settings-timezone-globe');
+const ZoteroSetupModal = lazyWithRetry(() => import('../components/ZoteroSetupModal'), 'settings-zotero-setup-modal');
 
 // ── AI Provider key management ─────────────────────────────────────────────
 
@@ -1157,7 +1158,8 @@ function AiProviderCard({
 }
 
 function ZoteroConnectionCard() {
-  const { status, loading, connecting, syncing, error, connect, disconnect, sync } = useZoteroIntegration();
+  const { status, loading, syncing, error, disconnect, sync, refresh } = useZoteroIntegration();
+  const [setupOpen, setSetupOpen] = useState(false);
   const params = new URLSearchParams(window.location.search);
   const connectedNotice = params.get('zotero_connected') === 'true';
   const callbackError = params.get('zotero_error');
@@ -1223,18 +1225,27 @@ function ZoteroConnectionCard() {
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <button type="button" onClick={() => { void connect(); }} disabled={connecting || status?.configured === false}
+          <button type="button" onClick={() => setSetupOpen(true)}
             className="inline-flex items-center gap-1.5 rounded border border-accent/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent hover:bg-accent/5 disabled:opacity-50">
-            {connecting ? <Loader2 size={10} className="animate-spin" /> : <BookOpen size={10} />}
-            {connecting ? 'Opening Zotero' : 'Connect Zotero'}
+            <BookOpen size={10} /> Guided setup
           </button>
-          <span className="text-[10px] text-muted">Requests personal-library, notes, and write access. Group libraries are not requested.</span>
+          <span className="text-[10px] text-muted">Connect through Zotero or paste a personal API key with a step-by-step guide.</span>
         </div>
       )}
 
       {connectedNotice && <p className="text-[10px] font-mono text-accent3">Zotero connected successfully.</p>}
       {(error || callbackError) && <p className="text-[10px] font-mono text-danger">{error || `Zotero authorization failed: ${callbackError}`}</p>}
-      {status?.configured === false && <p className="text-[10px] font-mono text-danger">This server still needs Zotero OAuth credentials and an encryption key.</p>}
+      {status?.configured === false && <p className="text-[10px] font-mono text-danger">This server still needs a Zotero encryption key for secure credential storage.</p>}
+      {setupOpen && (
+        <Suspense fallback={<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 text-sm text-white">Loading Zotero setup...</div>}>
+          <ZoteroSetupModal
+            status={status}
+            returnPath="/settings?section=integrations"
+            onClose={() => { setSetupOpen(false); void refresh(); }}
+            onStatus={() => { void refresh(); }}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -1396,6 +1407,13 @@ export default function SettingsPage() {
   const [nameLoaded, setNameLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('section') !== 'integrations') return;
+    window.requestAnimationFrame(() => {
+      document.getElementById('settings-integrations')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
 
   // Avatar editor state
   const [avatarEditing, setAvatarEditing] = useState(false);
@@ -1780,7 +1798,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Integrations */}
-        <div className="bg-surface p-6">
+        <div id="settings-integrations" className="scroll-mt-20 bg-surface p-6">
           <div className="flex items-center gap-2 mb-2">
             <Github size={14} className="text-accent" />
             <h2 className="font-sans text-sm font-bold text-heading">Integrations</h2>

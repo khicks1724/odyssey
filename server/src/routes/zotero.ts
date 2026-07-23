@@ -10,6 +10,7 @@ import {
   encryptZoteroSecret,
   exchangeZoteroOAuthToken,
   hashZoteroState,
+  isZoteroEncryptionConfigured,
   isZoteroOAuthConfigured,
   publicZoteroCallbackUrl,
   requestZoteroOAuthToken,
@@ -49,6 +50,12 @@ function stringValue(value: unknown) {
 
 function safeArray(value: unknown) {
   return Array.isArray(value) ? value : [];
+}
+
+function normalizeReturnPath(value: unknown) {
+  const path = stringValue(value);
+  if (/^\/(?:thesis|settings)(?:[/?#]|$)/.test(path) && !path.startsWith('//')) return path;
+  return '/thesis?tab=sources';
 }
 
 async function requireUser(authorization: string | undefined, reply: FastifyReply) {
@@ -104,12 +111,17 @@ async function fetchAllCollections(userId: string) {
 }
 
 function connectionStatusPayload(connection: Awaited<ReturnType<typeof getZoteroConnection>>, conflictCount = 0) {
+  const oauthConfigured = isZoteroOAuthConfigured();
+  const apiKeyConfigured = isZoteroEncryptionConfigured();
   if (!connection) {
-    return { configured: isZoteroOAuthConfigured(), connected: false, conflictCount };
+    return { configured: apiKeyConfigured, oauthConfigured, apiKeyConfigured, connected: false, conflictCount };
   }
   return {
-    configured: isZoteroOAuthConfigured(),
+    configured: apiKeyConfigured,
+    oauthConfigured,
+    apiKeyConfigured,
     connected: true,
+    connectionMethod: connection.connectionMethod,
     zoteroUserId: connection.zoteroUserId,
     username: connection.username,
     permissions: connection.permissions,
@@ -139,7 +151,7 @@ export async function zoteroRoutes(server: FastifyInstance) {
     }
   });
 
-  server.post('/zotero/auth/start', async (request, reply) => {
+  server.post<{ Body: { returnPath?: string } }>('/zotero/auth/start', async (request, reply) => {
     const userId = await requireUser(request.headers.authorization, reply);
     if (!userId) return;
     if (!isZoteroOAuthConfigured()) {
@@ -158,6 +170,7 @@ export async function zoteroRoutes(server: FastifyInstance) {
         encrypted_request_secret: encrypted.encrypted,
         iv: encrypted.iv,
         auth_tag: encrypted.authTag,
+        return_path: normalizeReturnPath(request.body?.returnPath),
         expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
       });
       if (error) throw error;
@@ -171,7 +184,8 @@ export async function zoteroRoutes(server: FastifyInstance) {
     Querystring: { oauth_token?: string; oauth_verifier?: string; state?: string; denied?: string };
   }>('/zotero/auth/callback', async (request, reply) => {
     const { oauth_token: requestToken, oauth_verifier: verifier, state, denied } = request.query;
-    const fail = (reason: string) => reply.redirect(buildZoteroClientRedirect('settings', { zotero_error: reason }));
+    let returnPath = '/thesis?tab=sources';
+    const fail = (reason: string) => reply.redirect(buildZoteroClientRedirect(returnPath, { zotero_error: reason }));
     if (denied) return fail('authorization_denied');
     if (!requestToken || !verifier || !state) return fail('missing_callback_parameters');
     try {
@@ -182,6 +196,7 @@ export async function zoteroRoutes(server: FastifyInstance) {
         .maybeSingle();
       if (error) throw error;
       if (!pending || new Date(pending.expires_at).getTime() <= Date.now()) return fail('expired_oauth_request');
+      returnPath = normalizeReturnPath(pending.return_path);
       const receivedHash = Buffer.from(hashZoteroState(state));
       const expectedHash = Buffer.from(String(pending.state_hash));
       if (receivedHash.length !== expectedHash.length || !timingSafeEqual(receivedHash, expectedHash)) {
@@ -206,16 +221,57 @@ export async function zoteroRoutes(server: FastifyInstance) {
         iv: encrypted.iv,
         auth_tag: encrypted.authTag,
         permissions: validationData,
+        connection_method: 'oauth',
         last_sync_status: 'idle',
         last_sync_error: null,
         backoff_until: null,
       }, { onConflict: 'user_id' });
       if (upsertError) throw upsertError;
       await supabase.from('zotero_oauth_requests').delete().eq('request_token', requestToken);
-      return reply.redirect(buildZoteroClientRedirect('settings', { zotero_connected: 'true' }));
+      return reply.redirect(buildZoteroClientRedirect(returnPath, { zotero_connected: 'true' }));
     } catch (error) {
       request.log.warn({ error: error instanceof Error ? error.message : 'Unknown error' }, 'Zotero OAuth callback failed');
       return fail('token_exchange_failed');
+    }
+  });
+
+  server.post<{ Body: { apiKey?: string } }>('/zotero/connection/api-key', async (request, reply) => {
+    const userId = await requireUser(request.headers.authorization, reply);
+    if (!userId) return;
+    if (!isZoteroEncryptionConfigured()) {
+      return reply.status(503).send({ error: 'Secure Zotero credential storage is not configured on this Odyssey server.' });
+    }
+    const apiKey = stringValue(request.body?.apiKey);
+    if (!apiKey) return reply.status(400).send({ error: 'Paste a Zotero API key to continue.' });
+    try {
+      const validation = await validateZoteroApiKey(apiKey);
+      const permissions = asObject(validation.data);
+      const rawZoteroUserId = permissions.userID;
+      const zoteroUserId = typeof rawZoteroUserId === 'number'
+        ? String(rawZoteroUserId)
+        : stringValue(rawZoteroUserId);
+      if (!zoteroUserId) throw new Error('This Zotero key is not associated with a personal library.');
+      const encrypted = encryptZoteroSecret(apiKey);
+      const { error } = await supabase.from('user_zotero_connections').upsert({
+        user_id: userId,
+        zotero_user_id: zoteroUserId,
+        zotero_username: stringValue(permissions.username) || null,
+        encrypted_api_key: encrypted.encrypted,
+        iv: encrypted.iv,
+        auth_tag: encrypted.authTag,
+        permissions,
+        connection_method: 'api_key',
+        last_library_version: 0,
+        last_fulltext_version: 0,
+        last_sync_status: 'idle',
+        last_sync_error: null,
+        backoff_until: null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id' });
+      if (error) throw error;
+      return connectionStatusPayload(await getZoteroConnection(userId));
+    } catch (error) {
+      return sendZoteroError(reply, error);
     }
   });
 
@@ -232,7 +288,7 @@ export async function zoteroRoutes(server: FastifyInstance) {
     if (cleanupError) return reply.status(500).send({ error: 'Failed to unlink Zotero sources.' });
     const { error } = await supabase.from('user_zotero_connections').delete().eq('user_id', userId);
     if (error) return reply.status(500).send({ error: 'Failed to disconnect Zotero.' });
-    if (connection) {
+    if (connection?.connectionMethod === 'oauth') {
       await zoteroRequest(connection.apiKey, `/keys/${encodeURIComponent(connection.apiKey)}`, { method: 'DELETE' }).catch(() => undefined);
     }
     return { disconnected: true, retainedSources: true };

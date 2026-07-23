@@ -13,13 +13,13 @@ import {
   DEFAULT_THESIS_EXAMPLE_PATH,
   isKyleHicksDisplayName,
 } from '../lib/thesis-default.js';
-import { chat, getServerOpenAiCredential, getServerOpenAiPrimaryModel, type AIProviderSelection } from '../ai-providers.js';
+import { chat, getProviderCredentialKeySource, getServerOpenAiCredential, getServerOpenAiPrimaryModel, type AIProviderSelection } from '../ai-providers.js';
 import {
   listThesisSources,
   persistThesisSourceSnapshot,
 } from '../lib/zotero-sync.js';
 import { logAiTokenUsage } from './token-usage.js';
-import { getReachedTokenUsageLimitForUser } from '../lib/token-usage-limits.js';
+import { getReachedTokenUsageLimitForUser, normalizeTokenUsageProviderFamily } from '../lib/token-usage-limits.js';
 
 type ThesisAiUsageContext = {
   userId: string;
@@ -34,7 +34,10 @@ async function chatWithThesisUsage(
   message: Parameters<typeof chat>[1],
   credential: Parameters<typeof chat>[2],
 ) {
-  if (await getReachedTokenUsageLimitForUser(context.userId)) return null;
+  if (await getReachedTokenUsageLimitForUser(context.userId, new Date(), {
+    keySource: getProviderCredentialKeySource(provider, credential),
+    providerFamily: normalizeTokenUsageProviderFamily(provider),
+  })) return null;
 
   const result = await chat(provider, message, credential);
   try {
