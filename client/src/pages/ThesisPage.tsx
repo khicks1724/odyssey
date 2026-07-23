@@ -31,7 +31,7 @@ import {
 import { useProjects } from '../hooks/useProjects';
 import { useProfile } from '../hooks/useProfile';
 import { useChatPanel } from '../lib/chat-panel';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseRealtimeEnabled } from '../lib/supabase';
 import type { Goal, OdysseyEvent } from '../types';
 import WorkspaceTabBar from '../components/WorkspaceTabBar';
 import FilterDropdown from '../components/FilterDropdown';
@@ -3217,7 +3217,7 @@ export default function ThesisPage() {
   }, []);
 
   useEffect(() => {
-    if (!profile?.id) return undefined;
+    if (!profile?.id || !supabaseRealtimeEnabled) return undefined;
     const refreshFromServer = () => {
       if (zoteroRealtimeTimerRef.current !== null) window.clearTimeout(zoteroRealtimeTimerRef.current);
       zoteroRealtimeTimerRef.current = window.setTimeout(() => {

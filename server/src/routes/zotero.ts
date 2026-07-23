@@ -403,7 +403,7 @@ export async function zoteroRoutes(server: FastifyInstance) {
     const itemKeys = safeArray(request.body?.itemKeys).map(stringValue).filter(Boolean).slice(0, 200);
     if (itemKeys.length === 0) return reply.status(400).send({ error: 'Select at least one Zotero item.' });
     try {
-      const sources = await importZoteroItems(userId, itemKeys);
+      const result = await importZoteroItems(userId, itemKeys);
       if (request.body.selectedCollectionKeys || typeof request.body.syncAll === 'boolean') {
         await supabase.from('user_zotero_connections').update({
           selected_collection_keys: safeArray(request.body.selectedCollectionKeys).map(stringValue).filter(Boolean),
@@ -411,7 +411,7 @@ export async function zoteroRoutes(server: FastifyInstance) {
           last_library_version: 0,
         }).eq('user_id', userId);
       }
-      return { ok: true, sources };
+      return { ok: true, ...result };
     } catch (error) {
       return sendZoteroError(reply, error);
     }

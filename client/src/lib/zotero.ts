@@ -141,7 +141,7 @@ export function importZoteroItems(input: {
   selectedCollectionKeys?: string[];
   syncAll?: boolean;
 }) {
-  return request<{ ok: boolean; sources: unknown[] }>('/api/zotero/import', {
+  return request<{ ok: boolean; sources: unknown[]; importedCount: number; skippedCount: number }>('/api/zotero/import', {
     method: 'POST',
     body: JSON.stringify(input),
   }, true);

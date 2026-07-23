@@ -74,3 +74,48 @@ test('three-way merge reports only same-field divergent edits', () => {
     remote: 'Zotero title',
   });
 });
+
+test('standalone Zotero attachments are importable library sources', () => {
+  const item = {
+    key: 'PDF12345',
+    version: 7,
+    data: {
+      itemType: 'attachment',
+      title: 'Standalone research paper',
+      filename: 'paper.pdf',
+      contentType: 'application/pdf',
+      linkMode: 'imported_file',
+    },
+  };
+  assert.equal(zoteroSyncTestables.isImportableLibraryItem(item), true);
+  assert.deepEqual(zoteroSyncTestables.childrenForItem(item, {
+    notes: [],
+    attachments: [],
+    annotations: [],
+  }).attachments, [{
+    key: 'PDF12345',
+    version: 7,
+    title: 'Standalone research paper',
+    filename: 'paper.pdf',
+    contentType: 'application/pdf',
+    linkMode: 'imported_file',
+    url: '',
+    md5: '',
+    mtime: null,
+    standalone: true,
+  }]);
+});
+
+test('child attachments, notes, and annotations are not independent sources', () => {
+  for (const data of [
+    { itemType: 'attachment', parentItem: 'PARENT01' },
+    { itemType: 'note' },
+    { itemType: 'annotation' },
+  ]) {
+    assert.equal(zoteroSyncTestables.isImportableLibraryItem({
+      key: 'CHILD001',
+      version: 1,
+      data,
+    }), false);
+  }
+});

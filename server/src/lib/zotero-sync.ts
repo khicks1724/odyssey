@@ -249,8 +249,45 @@ function sourceClassification(itemType: string) {
     case 'document': return { sourceKind: 'archive_record', type: 'document' };
     case 'webpage': return { sourceKind: 'web_article', type: 'link' };
     case 'computerProgram': return { sourceKind: 'documentation', type: 'link' };
+    case 'attachment': return { sourceKind: 'archive_record', type: 'document' };
     default: return { sourceKind: 'archive_record', type: 'document' };
   }
+}
+
+function isStandaloneAttachment(item: ZoteroApiItem) {
+  return stringValue(item.data.itemType) === 'attachment' && !stringValue(item.data.parentItem);
+}
+
+function isImportableLibraryItem(item: ZoteroApiItem) {
+  const itemType = stringValue(item.data.itemType);
+  if (itemType === 'attachment') return isStandaloneAttachment(item);
+  return itemType !== 'note' && itemType !== 'annotation';
+}
+
+function attachmentFromItem(item: ZoteroApiItem) {
+  return {
+    key: item.key,
+    version: item.version,
+    title: stringValue(item.data.title),
+    filename: stringValue(item.data.filename),
+    contentType: stringValue(item.data.contentType),
+    linkMode: stringValue(item.data.linkMode),
+    url: stringValue(item.data.url),
+    md5: stringValue(item.data.md5),
+    mtime: item.data.mtime ?? null,
+    standalone: true,
+  };
+}
+
+function childrenForItem(item: ZoteroApiItem, children: ZoteroChildData): ZoteroChildData {
+  if (!isStandaloneAttachment(item)) return children;
+  return {
+    ...children,
+    attachments: [
+      attachmentFromItem(item),
+      ...children.attachments.filter((attachment) => stringValue(attachment.key) !== item.key),
+    ],
+  };
 }
 
 function zoteroItemTypeForSource(source: SourceRecord) {
@@ -391,6 +428,23 @@ function patchFromCanonical(
   const patch: Record<string, unknown> = {};
   const changed = new Set(changedFields);
   if (changed.has('title')) patch.title = canonical.title;
+  if (stringValue(remoteData.itemType) === 'attachment') {
+    if (changed.has('locator')) patch.url = canonical.locator;
+    if (changed.has('collectionKeys')) patch.collections = canonical.collectionKeys;
+    if (changed.has('tags')) {
+      const automaticTags = Array.isArray(remoteData.tags)
+        ? remoteData.tags
+          .map((tag) => asObject(tag))
+          .filter((tag) => tag.type === 1 && stringValue(tag.tag))
+        : [];
+      const automaticNames = new Set(automaticTags.map((tag) => stringValue(tag.tag)));
+      patch.tags = [
+        ...automaticTags,
+        ...canonical.tags.filter((tag) => !automaticNames.has(tag)).map((tag) => ({ tag, type: 0 })),
+      ];
+    }
+    return patch;
+  }
   if (changed.has('creators') || changed.has('credit')) patch.creators = canonical.creators;
   if (changed.has('date') || changed.has('year')) patch.date = canonical.date || canonical.year;
   if (changed.has('venue')) patch[venueField(stringValue(remoteData.itemType))] = canonical.venue;
@@ -441,6 +495,8 @@ function mergeCanonical(base: CanonicalSource, local: CanonicalSource, remote: C
 
 export const zoteroSyncTestables = {
   canonicalFromSource,
+  childrenForItem,
+  isImportableLibraryItem,
   mergeCanonical,
 };
 
@@ -747,6 +803,7 @@ async function createImportedSource(
   usedCiteKeys: Set<string>,
   existingSourceId?: string,
 ) {
+  const normalizedChildren = childrenForItem(item, children);
   const canonical = canonicalFromRemote(item.data);
   const classification = sourceClassification(stringValue(item.data.itemType));
   const sourceId = existingSourceId ?? `zotero-${item.key.toLowerCase()}`;
@@ -771,9 +828,9 @@ async function createImportedSource(
     attachmentStoragePath: current?.attachmentStoragePath || '',
     attachmentMimeType: current?.attachmentMimeType || '',
     attachmentUploadedAt: current?.attachmentUploadedAt || '',
-    zoteroNotes: children.notes,
-    zoteroAttachments: children.attachments,
-    zoteroAnnotations: children.annotations,
+    zoteroNotes: normalizedChildren.notes,
+    zoteroAttachments: normalizedChildren.attachments,
+    zoteroAnnotations: normalizedChildren.annotations,
   } as SourceRecord, canonical);
   const now = new Date().toISOString();
   const link: ZoteroLinkRow = {
@@ -843,17 +900,30 @@ async function syncExistingItem(
   item: ZoteroApiItem,
   children: ZoteroChildData,
 ) {
-  const remote = canonicalFromRemote(item.data);
   const local = canonicalFromSource(source);
+  const rawRemote = canonicalFromRemote(item.data);
+  // Standalone attachments have a much smaller Zotero schema than regular
+  // bibliography items. Keep Odyssey-only citation metadata local while still
+  // synchronizing the fields Zotero attachments actually support.
+  const remote = isStandaloneAttachment(item)
+    ? {
+      ...local,
+      title: rawRemote.title,
+      locator: rawRemote.locator,
+      tags: rawRemote.tags,
+      collectionKeys: rawRemote.collectionKeys,
+    }
+    : rawRemote;
+  const normalizedChildren = childrenForItem(item, children);
   const baseline = parseBaseline(link.baseline_data, remote, item.data);
   const merge = mergeCanonical(baseline.canonical, local, remote);
   let mergedSource = applyCanonicalToSource(source, merge.merged);
   mergedSource = {
     ...mergedSource,
     citation: stripHtml(item.bib) || stringValue(source.citation),
-    zoteroNotes: children.notes,
-    zoteroAttachments: children.attachments,
-    zoteroAnnotations: children.annotations,
+    zoteroNotes: normalizedChildren.notes,
+    zoteroAttachments: normalizedChildren.attachments,
+    zoteroAnnotations: normalizedChildren.annotations,
   };
   if (Object.keys(merge.conflicts).length > 0) {
     mergedSource.zoteroLink = zoteroLinkPayload({
@@ -864,7 +934,7 @@ async function syncExistingItem(
       last_error: 'Resolve conflicting Zotero and Odyssey changes.',
     });
     await saveSource(userId, mergedSource);
-    await saveConflict(userId, link, merge.conflicts, item, remote, children);
+    await saveConflict(userId, link, merge.conflicts, item, remote, normalizedChildren);
     return { conflict: true, libraryVersion: item.version };
   }
 
@@ -1049,7 +1119,7 @@ async function performZoteroSyncInternal(userId: string, options: ZoteroSyncOpti
     latestVersion = Math.max(latestVersion, fetched.libraryVersion);
     let conflictCount = 0;
     for (const item of fetched.items) {
-      if (['attachment', 'note', 'annotation'].includes(stringValue(item.data.itemType))) continue;
+      if (!isImportableLibraryItem(item)) continue;
       const result = await syncItemWithRetry(userId, connection, item, sources, linksByItem, usedCiteKeys, style);
       latestVersion = Math.max(latestVersion, result.libraryVersion);
       if (result.conflict) conflictCount += 1;
@@ -1141,14 +1211,22 @@ export async function importZoteroItems(userId: string, itemKeys: string[]) {
   const connection = await getZoteroConnection(userId);
   if (!connection) throw new Error('Zotero is not connected');
   const style = await citationStyleForUser(userId);
-  const fetched = await fetchItems(connection, [...new Set(itemKeys)].slice(0, 200), style);
+  const requestedKeys = [...new Set(itemKeys)].slice(0, 200);
+  const fetched = await fetchItems(connection, requestedKeys, style);
+  const importableItems = fetched.items.filter(isImportableLibraryItem);
+  if (importableItems.length === 0) {
+    throw new Error('None of the selected Zotero items can be imported. Select a library item or a standalone file, rather than a note, annotation, or child attachment.');
+  }
   const { sources, linksByItem } = await sourceAndLinks(userId);
   const usedCiteKeys = new Set([...sources.values()].map((source) => stringValue(source.citeKey)).filter(Boolean));
-  for (const item of fetched.items) {
-    if (['attachment', 'note', 'annotation'].includes(stringValue(item.data.itemType))) continue;
+  for (const item of importableItems) {
     await syncItemWithRetry(userId, connection, item, sources, linksByItem, usedCiteKeys, style);
   }
-  return listThesisSources(userId);
+  return {
+    sources: await listThesisSources(userId),
+    importedCount: importableItems.length,
+    skippedCount: Math.max(0, requestedKeys.length - importableItems.length),
+  };
 }
 
 export async function exportThesisSourceToZotero(userId: string, sourceId: string) {

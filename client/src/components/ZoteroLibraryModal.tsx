@@ -126,6 +126,9 @@ export default function ZoteroLibraryModal({
           syncAll: !collectionKey,
         } : {}),
       });
+      if (result.importedCount < 1) {
+        throw new Error('Zotero did not return an importable source for the selected item.');
+      }
       onImported(result.sources);
       onClose();
     } catch (nextError) {
