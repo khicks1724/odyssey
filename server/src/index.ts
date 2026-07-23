@@ -109,7 +109,7 @@ try {
   if (!process.env.AI_KEY_SECRET) console.warn('WARNING: AI_KEY_SECRET not set — encrypted provider credentials and GitLab tokens will be unavailable');
   if (!process.env.MICROSOFT_CLIENT_ID) console.warn('WARNING: MICROSOFT_CLIENT_ID not set — Microsoft 365 integration disabled');
   if (!process.env.MICROSOFT_TOKEN_ENCRYPT_KEY) console.warn('WARNING: MICROSOFT_TOKEN_ENCRYPT_KEY not set — tokens stored unencrypted (insecure)');
-  if (!process.env.ZOTERO_CLIENT_KEY || !process.env.ZOTERO_CLIENT_SECRET || !process.env.ZOTERO_REDIRECT_URI) console.warn('WARNING: Zotero OAuth is not configured - Zotero integration disabled');
+  if (!process.env.ZOTERO_CLIENT_KEY || !process.env.ZOTERO_CLIENT_SECRET || !process.env.ZOTERO_REDIRECT_URI) console.warn('NOTICE: Zotero one-click OAuth is not configured; guided personal API-key connection remains available');
   if (!process.env.ZOTERO_TOKEN_ENCRYPT_KEY) console.warn('WARNING: ZOTERO_TOKEN_ENCRYPT_KEY not set - Zotero integration disabled');
   console.log('GitLab integration uses per-project repository URLs and personal access tokens');
   console.log(`Supabase service key loaded: ${process.env.SUPABASE_SERVICE_KEY ? 'YES' : 'NO'}`);
