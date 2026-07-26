@@ -351,19 +351,28 @@ async function resolveAutoProvider(authHeader: string | undefined, fallback: AIP
     if (user) {
       const { data: keys } = await supabase
         .from('user_ai_keys')
-        .select('provider, config')
+        .select('provider, config, updated_at')
         .eq('user_id', user.id);
       if (keys && keys.length > 0) {
         const storedServices = new Set(keys.map((k: { provider: string }) => k.provider));
         const configsByService = new Map(
           keys.map((k: { provider: string; config?: unknown }) => [k.provider, k.config]),
         );
-        // Pick the first provider (in preference order) whose service has a stored key
-        // and whose key isn't already known to be broken (recently returned an
-        // auth/credit error). A stale credential earlier in the preference list
-        // should not blackhole routes that can't fall back to an explicit
-        // user-selected provider — skip it and keep looking.
-        for (const p of AUTO_PROVIDER_PREFERENCE) {
+        const updatedAtByService = new Map(
+          keys.map((k: { provider: string; updated_at: string }) => [k.provider, Date.parse(k.updated_at) || 0]),
+        );
+        // Try providers most-recently (re)configured first — a key the user set
+        // up or updated more recently reflects their current intent better than
+        // a fixed preference order, so an older, since-abandoned credential
+        // earlier in that order can't blackhole auto-resolved routes. Ties fall
+        // back to AUTO_PROVIDER_PREFERENCE order. A candidate already known to
+        // be broken (recently returned an auth/credit error) is skipped too.
+        const orderedCandidates = [...AUTO_PROVIDER_PREFERENCE].sort((a, b) => {
+          const recencyDiff = (updatedAtByService.get(providerToService(b)) ?? 0) - (updatedAtByService.get(providerToService(a)) ?? 0);
+          if (recencyDiff !== 0) return recencyDiff;
+          return AUTO_PROVIDER_PREFERENCE.indexOf(a) - AUTO_PROVIDER_PREFERENCE.indexOf(b);
+        });
+        for (const p of orderedCandidates) {
           const service = providerToService(p);
           if (!storedServices.has(service)) continue;
 
