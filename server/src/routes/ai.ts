@@ -359,23 +359,36 @@ async function resolveAutoProvider(authHeader: string | undefined, fallback: AIP
           keys.map((k: { provider: string; config?: unknown }) => [k.provider, k.config]),
         );
         // Pick the first provider (in preference order) whose service has a stored key
+        // and whose key isn't already known to be broken (recently returned an
+        // auth/credit error). A stale credential earlier in the preference list
+        // should not blackhole routes that can't fall back to an explicit
+        // user-selected provider — skip it and keep looking.
         for (const p of AUTO_PROVIDER_PREFERENCE) {
           const service = providerToService(p);
           if (!storedServices.has(service)) continue;
 
           const configuredVisibleModels = getEnabledModelsFromConfig(configsByService.get(service));
+          let candidate: AIProviderSelection;
           if (service === 'openai') {
-            return getConfiguredOpenAiSelection(configsByService.get(service));
+            candidate = getConfiguredOpenAiSelection(configsByService.get(service));
+          } else if (service === 'google') {
+            candidate = getConfiguredGenAiMilSelection(configsByService.get(service));
+          } else {
+            if (service === 'anthropic' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes(p)) continue;
+            if (service === 'google_ai' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemini-pro')) continue;
+            if (service === 'nvidia' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('nvidia')) continue;
+            if (service === 'gemma4' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemma4')) continue;
+            candidate = p;
           }
-          if (service === 'google') {
-            return getConfiguredGenAiMilSelection(configsByService.get(service));
-          }
-          if (service === 'anthropic' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes(p)) continue;
-          if (service === 'google_ai' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemini-pro')) continue;
-          if (service === 'nvidia' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('nvidia')) continue;
-          if (service === 'gemma4' && configuredVisibleModels.length > 0 && !configuredVisibleModels.includes('gemma4')) continue;
 
-          return p;
+          const candidateKey = await getUserApiKey(authHeader, candidate);
+          const cachedStatus = getCachedProviderStatus(
+            (candidate.startsWith('genai-mil') ? 'genai-mil' : candidate.startsWith('openai:') ? 'gpt-4o' : candidate) as AIProvider,
+            candidateKey,
+          );
+          if (cachedStatus === 'invalid_key' || cachedStatus === 'no_credits') continue;
+
+          return candidate;
         }
       }
       if (!(await isServerFallbackPausedForUser(user.id)) && getServerOpenAiCredential()?.apiKey) {
