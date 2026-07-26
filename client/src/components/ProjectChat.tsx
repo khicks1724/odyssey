@@ -6,6 +6,7 @@ import {
   Download, TableIcon,
 } from 'lucide-react';
 import { useAIAgent } from '../lib/ai-agent';
+import { isGenAiMilBrowserReady } from '../lib/genai-mil-browser';
 import { useChatPanel, type ChatMessage as Message, type MessageAttachment, type ReportFormat, type SuggestedTask, type TaskProposal, type TaskProposalState } from '../lib/chat-panel';
 import { supabase } from '../lib/supabase';
 import { saveGeneratedReportToProject } from '../lib/report-storage';
@@ -1388,6 +1389,14 @@ export default function ProjectChat({ projectId, projectName, projects, onGoalMu
     setMessages(next);
     if (!overrideText) setInput('');
     if (!overrideText) setAttachments([]);
+
+    if (agent.startsWith('genai-mil') && !isGenAiMilBrowserReady()) {
+      const message = 'The GenAI.mil workstation bridge is not active in this browser tab. Open Settings → AI Providers and test your STARK key here before sending — otherwise this would sit waiting for a bridge that can\'t respond.';
+      setError(message);
+      showAIError(message);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 

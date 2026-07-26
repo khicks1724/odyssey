@@ -542,7 +542,7 @@ function AiProviderCard({
         setGenAiMilModels(uniqueModelIds(savedConfig.availableModels));
       }
 
-      if (provider === 'google' && trimmed) setGenAiMilBrowserKey(trimmed);
+      if (provider === 'google' && trimmed) await setGenAiMilBrowserKey(trimmed);
       setInputKey('');
       if (isNvidia) {
         setNvidiaModelId(config.preferredModel ?? DEFAULT_NVIDIA_MODEL_ID);
@@ -755,7 +755,7 @@ function AiProviderCard({
         <div className={`space-y-2 border px-3 py-2.5 rounded ${browserSessionReady ? 'border-accent3/25 bg-accent3/5' : 'border-accent/20 bg-accent/5'}`}>
           <div className="flex items-center justify-between gap-3">
             <p className="text-[10px] text-muted">
-              GenAI.mil calls leave through this workstation, not the Odyssey AWS server. Its browser copy is retained only for this tab session.
+              GenAI.mil calls leave through this workstation, not the Odyssey AWS server. Its browser copy is encrypted and stored on this device so it survives closing the browser — remove it below if you're on a shared machine.
             </p>
             <span className={`shrink-0 text-[9px] font-mono uppercase ${browserSessionReady ? 'text-accent3' : 'text-accent'}`}>
               {browserSessionReady

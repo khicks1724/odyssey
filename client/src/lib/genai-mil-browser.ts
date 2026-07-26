@@ -1,7 +1,11 @@
+import { decryptFromLocalStorage, encryptForLocalStorage } from './local-key-vault';
+
 const GENAI_MIL_BASE_URL = 'https://api.genai.mil/v1';
 const LOCAL_RELAY_BASE_URL = 'http://127.0.0.1:43127/v1';
-const SESSION_STORAGE_KEY = 'odyssey-genai-mil-browser-key-v1';
-const SESSION_VERIFIED_KEY = 'odyssey-genai-mil-browser-verified-v1';
+// Encrypted at rest (see local-key-vault.ts) so the plaintext STARK key isn't
+// sitting as a raw localStorage value, while still surviving browser restarts.
+const LOCAL_STORAGE_KEY = 'odyssey-genai-mil-browser-key-v2';
+const LOCAL_VERIFIED_KEY = 'odyssey-genai-mil-browser-verified-v2';
 const PAGE_MESSAGE_SOURCE = 'odyssey-genai-mil-page-v1';
 const EXTENSION_MESSAGE_SOURCE = 'odyssey-genai-mil-extension-v1';
 
@@ -14,27 +18,50 @@ const keyListeners = new Set<KeyListener>();
 const readinessListeners = new Set<ReadinessListener>();
 const transportListeners = new Set<TransportListener>();
 
-function readSessionValue(key: string): string {
+function readPlainLocalValue(key: string): string {
   if (typeof window === 'undefined') return '';
   try {
-    return window.sessionStorage.getItem(key)?.trim() ?? '';
+    return window.localStorage.getItem(key)?.trim() ?? '';
   } catch {
     return '';
   }
 }
 
-let sessionKey = readSessionValue(SESSION_STORAGE_KEY);
-let sessionVerified = readSessionValue(SESSION_VERIFIED_KEY) === '1';
-let activeTransport: GenAiMilBrowserTransport | null = null;
-
-function writeSessionValue(key: string, value: string | null): void {
+function writePlainLocalValue(key: string, value: string | null): void {
   if (typeof window === 'undefined') return;
   try {
-    if (value === null) window.sessionStorage.removeItem(key);
-    else window.sessionStorage.setItem(key, value);
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
   } catch {
-    // Memory-only mode remains usable when session storage is unavailable.
+    // Memory-only mode remains usable when local storage is unavailable.
   }
+}
+
+let sessionKey = '';
+let sessionVerified = false;
+let activeTransport: GenAiMilBrowserTransport | null = null;
+
+// The vault key lives in IndexedDB, so decrypting the stored STARK key on
+// load is async. Until this resolves, the getters below report "no key" —
+// callers already react to the key/readiness subscriptions once it lands.
+const hydration: Promise<void> = (async () => {
+  const encrypted = readPlainLocalValue(LOCAL_STORAGE_KEY);
+  if (!encrypted) return;
+  const decrypted = await decryptFromLocalStorage(encrypted).catch(() => null);
+  if (decrypted && isGenAiMilBrowserKey(decrypted)) {
+    sessionKey = decrypted;
+    sessionVerified = readPlainLocalValue(LOCAL_VERIFIED_KEY) === '1';
+    for (const listener of keyListeners) listener(true);
+    notifyReadiness();
+  } else {
+    // Stored value didn't decrypt (vault key reset, corrupted entry, etc).
+    writePlainLocalValue(LOCAL_STORAGE_KEY, null);
+    writePlainLocalValue(LOCAL_VERIFIED_KEY, null);
+  }
+})();
+
+export function waitForGenAiMilBrowserKeyHydration(): Promise<void> {
+  return hydration;
 }
 
 function notifyReadiness(): void {
@@ -51,7 +78,7 @@ function setActiveTransport(transport: GenAiMilBrowserTransport | null): void {
 
 function setSessionVerified(verified: boolean): void {
   sessionVerified = verified;
-  writeSessionValue(SESSION_VERIFIED_KEY, verified ? '1' : null);
+  writePlainLocalValue(LOCAL_VERIFIED_KEY, verified ? '1' : null);
   notifyReadiness();
 }
 
@@ -76,12 +103,13 @@ export function getGenAiMilBrowserTransport(): GenAiMilBrowserTransport | null {
   return activeTransport;
 }
 
-export function setGenAiMilBrowserKey(value: string): void {
+export async function setGenAiMilBrowserKey(value: string): Promise<void> {
   const key = value.trim();
   if (!isGenAiMilBrowserKey(key)) throw new Error('Enter a valid STARK API key.');
   const changed = key !== sessionKey;
   sessionKey = key;
-  writeSessionValue(SESSION_STORAGE_KEY, key);
+  const encrypted = await encryptForLocalStorage(key);
+  writePlainLocalValue(LOCAL_STORAGE_KEY, encrypted);
   if (changed) setSessionVerified(false);
   for (const listener of keyListeners) listener(true);
   notifyReadiness();
@@ -90,8 +118,8 @@ export function setGenAiMilBrowserKey(value: string): void {
 export function clearGenAiMilBrowserKey(): void {
   sessionKey = '';
   sessionVerified = false;
-  writeSessionValue(SESSION_STORAGE_KEY, null);
-  writeSessionValue(SESSION_VERIFIED_KEY, null);
+  writePlainLocalValue(LOCAL_STORAGE_KEY, null);
+  writePlainLocalValue(LOCAL_VERIFIED_KEY, null);
   for (const listener of keyListeners) listener(false);
   notifyReadiness();
 }
@@ -480,7 +508,7 @@ export async function testGenAiMilFromBrowser(apiKey: string, preferredModel?: s
 }> {
   const previousKey = getGenAiMilBrowserKey();
   const previousVerified = sessionVerified;
-  setGenAiMilBrowserKey(apiKey);
+  await setGenAiMilBrowserKey(apiKey);
   try {
     const modelsResponse = await performGenAiMilBrowserFetch({
       path: '/models',
@@ -540,7 +568,8 @@ export async function testGenAiMilFromBrowser(apiKey: string, preferredModel?: s
   } catch (error) {
     if (isGenAiMilBrowserKey(previousKey)) {
       sessionKey = previousKey;
-      writeSessionValue(SESSION_STORAGE_KEY, previousKey);
+      const encrypted = await encryptForLocalStorage(previousKey);
+      writePlainLocalValue(LOCAL_STORAGE_KEY, encrypted);
       setSessionVerified(previousVerified);
       for (const listener of keyListeners) listener(true);
     } else {
